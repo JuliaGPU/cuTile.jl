@@ -190,17 +190,6 @@ Ceiling division: ceil(a/b).
 cdiv(a, b) = cld(a, b)
 
 """
-    tileiras_path() -> String
-
-Get the path to the tileiras binary.
-"""
-function tileiras_path()
-    path = joinpath(@__DIR__, "..", "bin", "tileiras")
-    isfile(path) || error("tileiras not found at $path")
-    return path
-end
-
-"""
     compile_to_cubin(tile_bytecode::Vector{UInt8}; sm_arch="sm_100", opt_level=3) -> Vector{UInt8}
 
 Compile Tile IR bytecode to a CUBIN using tileiras.
@@ -213,7 +202,7 @@ function compile_to_cubin(tile_bytecode::Vector{UInt8}; sm_arch::String="sm_100"
 
     try
         write(input_path, tile_bytecode)
-        run(`$(tileiras_path()) $input_path -o $output_path --gpu-name $sm_arch -O$opt_level`)
+        run(`tileiras $input_path -o $output_path --gpu-name $sm_arch -O$opt_level`)
         return read(output_path)
     finally
         rm(input_path, force=true)
