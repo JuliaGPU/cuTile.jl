@@ -16,7 +16,7 @@ include("bytecode/encodings.jl")
 export emit_tileir, compile, launch
 export Tile, Constant, TileArray, ArraySpec, flatten
 export mma, full, num_tiles, cdiv
-export code_structured
+export code_structured, validate_structured_control_flow, UnstructuredControlFlowError
 
 # Compilation cache - stores CuFunction directly to avoid re-loading CuModule
 const _compilation_cache = Dict{Any, Any}()  # (f, argtypes, sm_arch, opt_level) => CuFunction

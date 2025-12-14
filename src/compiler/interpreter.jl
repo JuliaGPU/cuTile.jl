@@ -39,7 +39,7 @@ end
 =============================================================================#
 
 """
-    code_structured(f, argtypes; world=Base.get_world_counter(), optimize=true) -> StructuredCodeInfo
+    code_structured(f, argtypes; world=Base.get_world_counter(), optimize=true, validate=false) -> StructuredCodeInfo
 
 Get the structured IR for a function with the given argument types.
 
@@ -51,6 +51,8 @@ control flow restructured into nested SCF-style operations (if/for/while).
 - `argtypes`: Argument types as a Tuple type (e.g., `Tuple{Int, Float64}`)
 - `world`: World age for method lookup (default: current)
 - `optimize`: Whether to use optimized IR (default: true)
+- `validate`: Whether to validate that all control flow was properly structured (default: false).
+  When `true`, throws `UnstructuredControlFlowError` if any unstructured control flow remains.
 
 # Returns
 A `StructuredCodeInfo` that displays with MLIR SCF-style syntax showing
@@ -72,11 +74,18 @@ StructuredCodeInfo {
   }
   return %3
 }
+
+julia> code_structured(f, Tuple{Int}; validate=true)  # throws if restructuring incomplete
 ```
 """
 function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          world::UInt = Base.get_world_counter(),
-                         optimize::Bool = true)
+                         optimize::Bool = true,
+                         validate::Bool = false)
     ci, _ = get_typed_ir(f, argtypes; world, optimize)
-    return lower_to_structured_ir(ci)
+    sci = lower_to_structured_ir(ci)
+    if validate
+        validate_structured_control_flow(sci)
+    end
+    return sci
 end

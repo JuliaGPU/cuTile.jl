@@ -1307,3 +1307,59 @@ function set_terminator!(block::Block, code::CodeInfo)
         end
     end
 end
+
+#=============================================================================
+ Structured Control Flow Validation
+=============================================================================#
+
+"""
+    UnstructuredControlFlowError <: Exception
+
+Exception thrown when unstructured control flow is detected in structured IR.
+"""
+struct UnstructuredControlFlowError <: Exception
+    stmt_indices::Vector{Int}
+end
+
+function Base.showerror(io::IO, e::UnstructuredControlFlowError)
+    print(io, "UnstructuredControlFlowError: unstructured control flow at statement(s): ",
+          join(e.stmt_indices, ", "))
+end
+
+"""
+    validate_structured_control_flow(sci::StructuredCodeInfo) -> Bool
+
+Validate that all control flow in the original CodeInfo has been properly
+converted to structured control flow operations (IfOp, LoopOp, ForOp).
+
+Throws `UnstructuredControlFlowError` if unstructured control flow remains.
+Returns `true` if all control flow is properly structured.
+
+The invariant is simple: no statement index in any `block.stmts` should point
+to a `GotoNode` or `GotoIfNot` - those should have been replaced by structured
+ops that the visitor descends into.
+
+# Example
+```julia
+sci = code_structured(my_kernel, Tuple{Vector{Float32}})
+validate_structured_control_flow(sci)  # throws if unstructured control flow remains
+```
+"""
+function validate_structured_control_flow(sci::StructuredCodeInfo)
+    stmts = sci.code.code
+    unstructured = Int[]
+
+    # Walk all blocks and check that no statement is unstructured control flow
+    each_stmt(sci.entry) do idx
+        stmt = stmts[idx]
+        if stmt isa GotoNode || stmt isa GotoIfNot
+            push!(unstructured, idx)
+        end
+    end
+
+    if !isempty(unstructured)
+        throw(UnstructuredControlFlowError(sort!(unstructured)))
+    end
+
+    return true
+end

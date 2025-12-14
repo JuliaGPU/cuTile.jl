@@ -1,7 +1,8 @@
 @testset "restructuring" verbose=true begin
 
 using cuTile: code_structured, StructuredCodeInfo, Block, IfOp, ForOp, LoopOp,
-              YieldOp, ContinueOp, BreakOp
+              YieldOp, ContinueOp, BreakOp, validate_structured_control_flow,
+              UnstructuredControlFlowError, get_typed_ir
 
 # Helper to check if a block contains a specific control flow op type
 function has_nested_op(block::Block, ::Type{T}) where T
@@ -313,6 +314,70 @@ end
     h(x::Int, y::Float64) = x + y
     sci = code_structured(h, Tuple{Int, Float64})
     @test sci isa StructuredCodeInfo
+end
+
+@testset "validation" begin
+    # Straight-line code should pass validation
+    f(x) = x + 1
+    sci = code_structured(f, Tuple{Int}; validate=true)
+    @test sci isa StructuredCodeInfo
+    @test validate_structured_control_flow(sci)
+
+    # Simple ternary should pass validation
+    g(x) = x > 0 ? x + 1 : x - 1
+    sci = code_structured(g, Tuple{Int}; validate=true)
+    @test sci isa StructuredCodeInfo
+
+    # If-then-else terminating should pass
+    function foo(x, y)
+        if x > y
+            return y * x
+        end
+        y^2 - x
+    end
+    sci = code_structured(foo, Tuple{Int, Int}; validate=true)
+    @test sci isa StructuredCodeInfo
+
+    # While loop should pass validation
+    function bar(x, y)
+        acc = 0
+        while acc < x
+            acc += y
+        end
+        return acc
+    end
+    sci = code_structured(bar, Tuple{Int, Int}; validate=true)
+    @test sci isa StructuredCodeInfo
+
+    # Test that validate=false doesn't throw (default behavior)
+    h(x) = x > 0 ? x : -x
+    sci = code_structured(h, Tuple{Int})  # validate=false by default
+    @test sci isa StructuredCodeInfo
+
+    # Test direct validation call
+    sci = code_structured(f, Tuple{Int})
+    @test validate_structured_control_flow(sci) === true
+
+    # Test UnstructuredControlFlowError is actually thrown for unstructured control flow
+    # Manually create a StructuredCodeInfo with a GotoIfNot in stmts
+    g_with_cf(x) = x > 0 ? x + 1 : x - 1
+    ci, _ = get_typed_ir(g_with_cf, Tuple{Int})
+    # Find the GotoIfNot statement index
+    gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ci.code)
+    @test gotoifnot_idx !== nothing
+    # Create a block that incorrectly includes the GotoIfNot
+    bad_block = Block(1)
+    push!(bad_block.stmts, gotoifnot_idx)
+    bad_sci = StructuredCodeInfo(ci, bad_block)
+    @test_throws UnstructuredControlFlowError validate_structured_control_flow(bad_sci)
+
+    # Verify error contains the statement index
+    try
+        validate_structured_control_flow(bad_sci)
+    catch e
+        @test e isa UnstructuredControlFlowError
+        @test gotoifnot_idx in e.stmt_indices
+    end
 end
 
 end  # @testset "restructuring"
