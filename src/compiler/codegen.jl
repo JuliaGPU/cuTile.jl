@@ -120,23 +120,15 @@ function emit_block!(ctx::CodegenContext, block::Block)
     code_stmts = code(ctx.target)
     types = ssatypes(ctx.target)
 
-    # Emit statements before nested ops
-    for stmt_idx in block.stmts
-        stmt = code_stmts[stmt_idx]
-        result_type = types[stmt_idx]
-        emit_statement!(ctx, stmt, stmt_idx, result_type)
-    end
-
-    # Emit nested control flow operations
-    for op in block.nested
-        emit_control_flow_op!(ctx, op)
-    end
-
-    # Emit statements after nested ops (e.g., after a loop)
-    for stmt_idx in block.post_stmts
-        stmt = code_stmts[stmt_idx]
-        result_type = types[stmt_idx]
-        emit_statement!(ctx, stmt, stmt_idx, result_type)
+    # Emit body items (interleaved statements and control flow ops)
+    for item in block.body
+        if item isa Int
+            stmt = code_stmts[item]
+            result_type = types[item]
+            emit_statement!(ctx, stmt, item, result_type)
+        else
+            emit_control_flow_op!(ctx, item)
+        end
     end
 
     # Emit terminator

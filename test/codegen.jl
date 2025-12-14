@@ -139,7 +139,7 @@ end
         target = ct.TileTarget(ternary_func, Tuple{Int32})
         structured = ct.lower_to_structured_ir(target)
         # Check that we have an IfOp in the structured IR
-        has_ifop = any(op -> op isa ct.IfOp, structured.entry.nested)
+        has_ifop = any(item -> item isa ct.IfOp, structured.entry.body)
         @test has_ifop
     end
 
@@ -155,7 +155,7 @@ end
         target = ct.TileTarget(multi_return_func, Tuple{Int32})
         structured = ct.lower_to_structured_ir(target)
         # Terminating if-else becomes an IfOp
-        has_ifop = any(op -> op isa ct.IfOp, structured.entry.nested)
+        has_ifop = any(item -> item isa ct.IfOp, structured.entry.body)
         @test has_ifop
     end
 

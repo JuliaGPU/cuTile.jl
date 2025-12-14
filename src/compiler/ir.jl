@@ -93,30 +93,39 @@ const Terminator = Union{ReturnNode, YieldOp, ContinueOp, BreakOp, Nothing}
 abstract type ControlFlowOp end
 
 """
+    BlockItem
+
+Union type for items in a block's body.
+Can be either an SSA statement index (Int) or a structured control flow operation.
+"""
+const BlockItem = Union{Int, ControlFlowOp}
+
+"""
     Block
 
 A basic block containing statements and potentially nested control flow.
 Statements are indices into the original CodeInfo.code array.
+Body items are interleaved - SSA indices and control flow ops can appear in any order.
 """
 mutable struct Block
     id::Int
     args::Vector{BlockArg}           # Block arguments (for loop carried values)
-    stmts::Vector{Int}               # Indices into CodeInfo.code (before nested ops)
-    nested::Vector{ControlFlowOp}    # Structured control flow ops within this block
-    post_stmts::Vector{Int}          # Statements after nested ops (e.g., after a loop)
+    body::Vector{BlockItem}          # Interleaved SSA indices and control flow ops
     terminator::Terminator           # ReturnNode, ContinueOp, YieldOp, BreakOp, or nothing
 end
 
-Block(id::Int) = Block(id, BlockArg[], Int[], ControlFlowOp[], Int[], nothing)
+Block(id::Int) = Block(id, BlockArg[], BlockItem[], nothing)
 
 function Base.show(io::IO, block::Block)
     print(io, "Block(id=", block.id)
     if !isempty(block.args)
         print(io, ", args=", length(block.args))
     end
-    print(io, ", stmts=", length(block.stmts))
-    if !isempty(block.nested)
-        print(io, ", nested=", length(block.nested))
+    n_stmts = count(x -> x isa Int, block.body)
+    n_ops = count(x -> x isa ControlFlowOp, block.body)
+    print(io, ", stmts=", n_stmts)
+    if n_ops > 0
+        print(io, ", ops=", n_ops)
     end
     print(io, ")")
 end
@@ -223,7 +232,7 @@ function StructuredCodeInfo(code::CodeInfo)
             entry.terminator = stmt
         else
             # Include ALL statements, including control flow
-            push!(entry.stmts, i)
+            push!(entry.body, i)
         end
     end
 
@@ -241,8 +250,10 @@ Recursively iterate over all blocks, calling f on each.
 """
 function each_block(f, block::Block)
     f(block)
-    for op in block.nested
-        each_block_in_op(f, op)
+    for item in block.body
+        if item isa ControlFlowOp
+            each_block_in_op(f, item)
+        end
     end
 end
 
@@ -265,14 +276,12 @@ end
 Recursively iterate over all statement indices.
 """
 function each_stmt(f, block::Block)
-    for stmt_idx in block.stmts
-        f(stmt_idx)
-    end
-    for op in block.nested
-        each_stmt_in_op(f, op)
-    end
-    for stmt_idx in block.post_stmts
-        f(stmt_idx)
+    for item in block.body
+        if item isa Int
+            f(item)
+        else
+            each_stmt_in_op(f, item)
+        end
     end
 end
 
@@ -529,14 +538,12 @@ function print_block_body(p::IRPrinter, block::Block)
     # Collect all items to print to determine which is last
     items = []
 
-    for stmt_idx in block.stmts
-        push!(items, (:stmt, stmt_idx))
-    end
-    for op in block.nested
-        push!(items, (:nested, op))
-    end
-    for stmt_idx in block.post_stmts
-        push!(items, (:stmt, stmt_idx))
+    for item in block.body
+        if item isa Int
+            push!(items, (:stmt, item))
+        else
+            push!(items, (:nested, item))
+        end
     end
     if block.terminator !== nothing
         push!(items, (:term, block.terminator))

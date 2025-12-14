@@ -2,16 +2,31 @@
 
 using cuTile: code_structured, StructuredCodeInfo, Block, IfOp, ForOp, LoopOp,
               YieldOp, ContinueOp, BreakOp, UnstructuredControlFlowError,
-              get_typed_ir, structurize!, validate_scf
+              get_typed_ir, structurize!, validate_scf, ControlFlowOp
 
 # Helper to check if a block contains a specific control flow op type
 function has_nested_op(block::Block, ::Type{T}) where T
-    any(op -> op isa T, block.nested)
+    any(item -> item isa T, block.body)
 end
 
 # Helper to count nested ops of a type
 function count_nested_ops(block::Block, ::Type{T}) where T
-    count(op -> op isa T, block.nested)
+    count(item -> item isa T, block.body)
+end
+
+# Helper to count statements (Int items) in a block
+function count_stmts(block::Block)
+    count(item -> item isa Int, block.body)
+end
+
+# Helper to check if a block has any statements
+function has_stmts(block::Block)
+    any(item -> item isa Int, block.body)
+end
+
+# Helper to check if a block has any control flow ops
+function has_ops(block::Block)
+    any(item -> item isa ControlFlowOp, block.body)
 end
 
 # Recursive helper to find all ops of a type in a StructuredCodeInfo
@@ -22,11 +37,13 @@ function find_all_ops(sci::StructuredCodeInfo, ::Type{T}) where T
 end
 
 function find_ops_in_block!(ops::Vector{T}, block::Block, ::Type{T}) where T
-    for op in block.nested
-        if op isa T
-            push!(ops, op)
+    for item in block.body
+        if item isa T
+            push!(ops, item)
         end
-        find_ops_in_op!(ops, op, T)
+        if item isa ControlFlowOp
+            find_ops_in_op!(ops, item, T)
+        end
     end
 end
 
@@ -49,8 +66,8 @@ end
 
     sci = code_structured(f, Tuple{Int})
     @test sci isa StructuredCodeInfo
-    @test !isempty(sci.entry.stmts)
-    @test isempty(sci.entry.nested)  # No nested control flow
+    @test has_stmts(sci.entry)
+    @test !has_ops(sci.entry)  # No nested control flow
     @test sci.entry.terminator isa Core.ReturnNode
 
     # Multiple operations, still straight-line
@@ -58,7 +75,7 @@ end
 
     sci = code_structured(g, Tuple{Int, Int})
     @test sci isa StructuredCodeInfo
-    @test isempty(sci.entry.nested)
+    @test !has_ops(sci.entry)
     @test sci.entry.terminator isa Core.ReturnNode
 end
 
@@ -74,7 +91,7 @@ end
     sci = code_structured(f, Tuple{Int})
     @test sci isa StructuredCodeInfo
     # Should have statements (either restructured or flat)
-    @test !isempty(sci.entry.stmts) || !isempty(sci.entry.nested)
+    @test !isempty(sci.entry.body)
 
     # Multiple returns
     function multi_return(x)
@@ -121,15 +138,15 @@ end
     @test has_nested_op(sci.entry, IfOp)
 
     # Should have condition computation before the IfOp
-    @test !isempty(sci.entry.stmts)
+    @test has_stmts(sci.entry)
 
     # Verify IfOp with computations in branches
     if_ops = find_all_ops(sci, IfOp)
     @test length(if_ops) == 1
     if_op = if_ops[1]
     # Each branch should have a computation statement and a return
-    @test !isempty(if_op.then_block.stmts)
-    @test !isempty(if_op.else_block.stmts)
+    @test has_stmts(if_op.then_block)
+    @test has_stmts(if_op.else_block)
     @test if_op.then_block.terminator isa Core.ReturnNode
     @test if_op.else_block.terminator isa Core.ReturnNode
 
@@ -154,7 +171,7 @@ end
     @test has_nested_op(sci.entry, IfOp)
 
     # Should have condition computation before the IfOp
-    @test !isempty(sci.entry.stmts)
+    @test has_stmts(sci.entry)
 
     # Verify IfOp structure
     if_ops = find_all_ops(sci, IfOp)
@@ -162,11 +179,11 @@ end
     if_op = if_ops[1]
 
     # Then branch: y * x, return
-    @test !isempty(if_op.then_block.stmts)
+    @test has_stmts(if_op.then_block)
     @test if_op.then_block.terminator isa Core.ReturnNode
 
     # Else branch: y^2 - x computation, return
-    @test !isempty(if_op.else_block.stmts)
+    @test has_stmts(if_op.else_block)
     @test if_op.else_block.terminator isa Core.ReturnNode
 
     # Display should show proper structure
@@ -342,18 +359,18 @@ end
     g(x) = x > 0 ? x + 1 : x - 1
     ci, _ = get_typed_ir(g, Tuple{Int})
 
-    # Create flat view - this has GotoIfNot in stmts
+    # Create flat view - this has GotoIfNot in body
     sci = StructuredCodeInfo(ci)
     @test sci isa StructuredCodeInfo
 
     # Flat view should fail validation (has unstructured control flow)
     gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ci.code)
     @test gotoifnot_idx !== nothing
-    @test gotoifnot_idx in sci.entry.stmts
+    @test gotoifnot_idx in sci.entry.body
 
     # After structurize!, control flow is structured
     structurize!(sci)
-    @test gotoifnot_idx ∉ sci.entry.stmts
+    @test gotoifnot_idx ∉ sci.entry.body
     @test has_nested_op(sci.entry, IfOp)
 
     # code_structured validates by default, so this should work

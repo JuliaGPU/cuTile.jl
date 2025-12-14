@@ -1008,9 +1008,9 @@ function collect_statements!(block::Block, tree::ControlTree, code::CodeInfo, bl
             stmt = code.code[idx]
             # Don't include control flow terminators as regular statements
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-                push!(block.stmts, idx)
+                push!(block.body, idx)
             elseif stmt isa ReturnNode
-                # Mark as terminator, don't include in stmts
+                # Mark as terminator, don't include in body
                 block.terminator = stmt
             end
         end
@@ -1020,7 +1020,7 @@ end
 """
     handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, block_id::Ref{Int})
 
-Handle a nested control flow region by creating the appropriate op and adding to block.nested.
+Handle a nested control flow region by creating the appropriate op and adding to block.body.
 """
 function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, block_id::Ref{Int})
     rtype = region_type(tree)
@@ -1057,7 +1057,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     if 1 <= cond_idx <= length(code.code)
         stmt = code.code[cond_idx]
         if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(block.stmts, cond_idx)
+            push!(block.body, cond_idx)
         end
     end
 
@@ -1073,7 +1073,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
 
     # Create IfOp
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-    push!(block.nested, if_op)
+    push!(block.body, if_op)
 end
 
 """
@@ -1104,7 +1104,7 @@ function handle_if_then_else_terminating!(block::Block, tree::ControlTree, code:
     for i in cond_idx:gotoifnot_idx-1
         stmt = code.code[i]
         if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(block.stmts, i)
+            push!(block.body, i)
         end
     end
 
@@ -1124,14 +1124,14 @@ function handle_if_then_else_terminating!(block::Block, tree::ControlTree, code:
 
     # Create IfOp - no result vars since both branches terminate
     if_op = IfOp(cond_value, then_blk, else_blk, SSAValue[])
-    push!(block.nested, if_op)
+    push!(block.body, if_op)
 end
 
 """
     collect_branch_statements!(block::Block, start_idx::Int, code::CodeInfo)
 
 Collect statements from start_idx until hitting a return.
-Adds non-control-flow statements to block.stmts and sets the return as terminator.
+Adds non-control-flow statements to block.body and sets the return as terminator.
 """
 function collect_branch_statements!(block::Block, start_idx::Int, code::CodeInfo)
     i = start_idx
@@ -1144,7 +1144,7 @@ function collect_branch_statements!(block::Block, start_idx::Int, code::CodeInfo
             # Unexpected control flow - stop
             break
         else
-            push!(block.stmts, i)
+            push!(block.body, i)
         end
         i += 1
     end
@@ -1166,7 +1166,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, block_
     if 1 <= cond_idx <= length(code.code)
         stmt = code.code[cond_idx]
         if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(block.stmts, cond_idx)
+            push!(block.body, cond_idx)
         end
     end
 
@@ -1182,7 +1182,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, block_
 
     # Create IfOp
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-    push!(block.nested, if_op)
+    push!(block.body, if_op)
 end
 
 """
@@ -1200,11 +1200,11 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, block_id:
         if 1 <= idx <= length(code.code)
             stmt = code.code[idx]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-                push!(body_block.stmts, idx)
+                push!(body_block.body, idx)
             end
         end
         loop_op = LoopOp(IRValue[], body_block, SSAValue[])
-        push!(block.nested, loop_op)
+        push!(block.body, loop_op)
     else
         # Header + body
         header_tree = tree.children[1]
@@ -1214,7 +1214,7 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, block_id:
         if 1 <= header_idx <= length(code.code)
             stmt = code.code[header_idx]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-                push!(block.stmts, header_idx)
+                push!(block.body, header_idx)
             end
         end
 
@@ -1228,7 +1228,7 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, block_id:
         end
 
         loop_op = LoopOp(IRValue[], body_block, SSAValue[])
-        push!(block.nested, loop_op)
+        push!(block.body, loop_op)
     end
 end
 
@@ -1246,12 +1246,12 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
     if 1 <= idx <= length(code.code)
         stmt = code.code[idx]
         if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(body_block.stmts, idx)
+            push!(body_block.body, idx)
         end
     end
 
     loop_op = LoopOp(IRValue[], body_block, SSAValue[])
-    push!(block.nested, loop_op)
+    push!(block.body, loop_op)
 end
 
 """
@@ -1297,13 +1297,18 @@ function set_terminator!(block::Block, code::CodeInfo)
     end
 
     # Check if the last collected statement leads to a return
-    if !isempty(block.stmts)
-        last_idx = block.stmts[end]
-        if last_idx < length(code.code)
-            next_stmt = code.code[last_idx + 1]
-            if next_stmt isa ReturnNode
-                block.terminator = next_stmt
-            end
+    # Find the last statement index in body
+    last_idx = nothing
+    for item in reverse(block.body)
+        if item isa Int
+            last_idx = item
+            break
+        end
+    end
+    if last_idx !== nothing && last_idx < length(code.code)
+        next_stmt = code.code[last_idx + 1]
+        if next_stmt isa ReturnNode
+            block.terminator = next_stmt
         end
     end
 end
@@ -1342,7 +1347,7 @@ function structurize!(sci::StructuredCodeInfo)
     has_control_flow = any(s -> s isa GotoNode || s isa GotoIfNot, stmts)
 
     if !has_control_flow
-        # Straight-line code: just filter out the control flow from stmts
+        # Straight-line code: just filter out the control flow from body
         # (there shouldn't be any, but be safe)
         new_entry = Block(1)
         for i in 1:n
@@ -1350,7 +1355,7 @@ function structurize!(sci::StructuredCodeInfo)
             if stmt isa ReturnNode
                 new_entry.terminator = stmt
             elseif !(stmt isa GotoNode || stmt isa GotoIfNot)
-                push!(new_entry.stmts, i)
+                push!(new_entry.body, i)
             end
         end
         sci.entry = new_entry
@@ -1398,9 +1403,9 @@ function structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops
 
     # Create the LoopOp
     loop_op = build_loop_op(code, blocks, loop, block_id)
-    push!(entry.nested, loop_op)
+    push!(entry.body, loop_op)
 
-    # Process blocks after the loop (exit blocks) - add to post_stmts
+    # Process blocks after the loop (exit blocks) - add to body after the loop
     for exit_bi in sort(collect(loop.exit_blocks))
         block = blocks[exit_bi]
         for si in block.range
@@ -1408,7 +1413,7 @@ function structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops
             if stmt isa ReturnNode
                 entry.terminator = stmt
             elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
-                push!(entry.post_stmts, si)
+                push!(entry.body, si)
             end
         end
     end
@@ -1428,7 +1433,7 @@ function collect_block_stmts!(block::Block, info::BlockInfo, code::CodeInfo)
         if stmt isa ReturnNode
             block.terminator = stmt
         elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
-            push!(block.stmts, si)
+            push!(block.body, si)
         end
     end
 end
@@ -1629,7 +1634,7 @@ function build_for_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo,
                     continue
                 end
             end
-            push!(body.stmts, si)
+            push!(body.body, si)
         end
     end
 
@@ -1740,7 +1745,7 @@ function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo
     for si in header_block.range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(body.stmts, si)
+            push!(body.body, si)
         end
     end
 
@@ -1761,7 +1766,7 @@ function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo
             for si in latch_block.range
                 stmt = stmts[si]
                 if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-                    push!(body.stmts, si)
+                    push!(body.body, si)
                 end
             end
         end
@@ -1784,7 +1789,7 @@ function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo
         else_block.terminator = BreakOp(result_values)
 
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-        push!(body.nested, if_op)
+        push!(body.body, if_op)
     else
         body.terminator = ContinueOp(carried_values)
     end
@@ -1842,7 +1847,7 @@ converted to structured control flow operations (IfOp, LoopOp, ForOp).
 Throws `UnstructuredControlFlowError` if unstructured control flow remains.
 Returns `true` if all control flow is properly structured.
 
-The invariant is simple: no statement index in any `block.stmts` should point
+The invariant is simple: no statement index in any `block.body` should point
 to a `GotoNode` or `GotoIfNot` - those should have been replaced by structured
 ops that the visitor descends into.
 """
