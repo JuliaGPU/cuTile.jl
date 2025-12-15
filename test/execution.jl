@@ -542,3 +542,141 @@ end
 end
 
 end
+
+@testset "tile broadcasting" begin
+
+@testset "1D broadcast: (1,) + (128,)" begin
+    # Test broadcasting a single-element tile to a larger tile
+    function broadcast_1d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                  c::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        # Load scalar-like tile (1 element)
+        scalar_tile = ct.load(a, 0, (1,))
+        # Load full tile (128 elements)
+        full_tile = ct.load(b, pid, (128,))
+        # Broadcast add: (1,) + (128,) -> (128,)
+        result = scalar_tile + full_tile
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 128
+    a = CUDA.rand(Float32, 1)  # Single element
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(broadcast_1d_kernel, cld(n, tile_size), a, b, c)
+
+    # Each output element should be a[1] + b[i]
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    c_cpu = Array(c)
+    @test c_cpu ≈ a_cpu[1] .+ b_cpu rtol=1e-5
+end
+
+@testset "2D broadcast: (1, 128) + (64, 1)" begin
+    # Test broadcasting 2D tiles with complementary shapes
+    function broadcast_2d_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                                  c::ct.TileArray{Float32,2})
+        # Load row tile (1, 128) and column tile (64, 1)
+        row_tile = ct.load(a, (0, 0), (1, 128))
+        col_tile = ct.load(b, (0, 0), (64, 1))
+        # Broadcast add: (1, 128) + (64, 1) -> (64, 128)
+        result = row_tile + col_tile
+        ct.store(c, (0, 0), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, 1, n)   # Row vector
+    b = CUDA.rand(Float32, m, 1)   # Column vector
+    c = CUDA.zeros(Float32, m, n)
+
+    ct.launch(broadcast_2d_kernel, 1, a, b, c)
+
+    # Result should be outer sum: c[i,j] = a[1,j] + b[i,1]
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    c_cpu = Array(c)
+    expected = a_cpu .+ b_cpu  # Julia broadcasting
+    @test c_cpu ≈ expected rtol=1e-5
+end
+
+@testset "broadcast mul: (4, 1) * (1, 8)" begin
+    function broadcast_mul_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                                   c::ct.TileArray{Float32,2})
+        col_tile = ct.load(a, (0, 0), (4, 1))
+        row_tile = ct.load(b, (0, 0), (1, 8))
+        # Broadcast multiply: (4, 1) * (1, 8) -> (4, 8)
+        result = col_tile * row_tile
+        ct.store(c, (0, 0), result)
+        return
+    end
+
+    a = CUDA.rand(Float32, 4, 1)
+    b = CUDA.rand(Float32, 1, 8)
+    c = CUDA.zeros(Float32, 4, 8)
+
+    ct.launch(broadcast_mul_kernel, 1, a, b, c)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    c_cpu = Array(c)
+    expected = a_cpu .* b_cpu  # Outer product
+    @test c_cpu ≈ expected rtol=1e-5
+end
+
+@testset "broadcast sub: (128,) - (1,)" begin
+    function broadcast_sub_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                   c::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        full_tile = ct.load(a, pid, (128,))
+        scalar_tile = ct.load(b, 0, (1,))
+        # Broadcast subtract: (128,) - (1,) -> (128,)
+        result = full_tile - scalar_tile
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 128
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, 1)  # Single element
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(broadcast_sub_kernel, cld(n, tile_size), a, b, c)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    c_cpu = Array(c)
+    @test c_cpu ≈ a_cpu .- b_cpu[1] rtol=1e-5
+end
+
+@testset "broadcast div: (64, 128) / (1, 128)" begin
+    # Divide each row by a scaling vector
+    function broadcast_div_kernel(a::ct.TileArray{Float32,2}, scale::ct.TileArray{Float32,2},
+                                   c::ct.TileArray{Float32,2})
+        data = ct.load(a, (0, 0), (64, 128))
+        scale_row = ct.load(scale, (0, 0), (1, 128))
+        # Broadcast divide: (64, 128) / (1, 128) -> (64, 128)
+        result = data / scale_row
+        ct.store(c, (0, 0), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    scale = CUDA.rand(Float32, 1, n) .+ 0.1f0  # Non-zero scale factors
+    c = CUDA.zeros(Float32, m, n)
+
+    ct.launch(broadcast_div_kernel, 1, a, scale, c)
+
+    a_cpu = Array(a)
+    scale_cpu = Array(scale)
+    c_cpu = Array(c)
+    expected = a_cpu ./ scale_cpu
+    @test c_cpu ≈ expected rtol=1e-5
+end
+
+end

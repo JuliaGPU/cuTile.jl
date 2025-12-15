@@ -1,29 +1,68 @@
 #=============================================================================
+ Tile Shape Broadcasting
+=============================================================================#
+
+"""
+    broadcast_shape(s1::Tuple, s2::Tuple) -> Tuple
+
+Compute the broadcast shape from two tile shapes using NumPy-style broadcasting rules.
+- Shapes are compared from right to left (trailing dimensions)
+- Dimensions are compatible if they're equal or one of them is 1
+- Missing dimensions are treated as 1
+
+This is a pure function that Julia's const-prop can evaluate at compile time.
+
+# Examples
+```julia
+broadcast_shape((128,), (1, 128))   # => (1, 128)
+broadcast_shape((1,), (128,))       # => (128,)
+broadcast_shape((4, 1), (1, 8))     # => (4, 8)
+broadcast_shape((16, 32), (16, 32)) # => (16, 32)
+```
+"""
+@inline function broadcast_shape(s1::Tuple, s2::Tuple)
+    max_ndim = max(length(s1), length(s2))
+    ntuple(max_ndim) do i
+        # Index from the right (trailing dimensions)
+        idx1 = length(s1) - max_ndim + i
+        idx2 = length(s2) - max_ndim + i
+        d1 = idx1 > 0 ? s1[idx1] : 1
+        d2 = idx2 > 0 ? s2[idx2] : 1
+        # Check compatibility
+        (d1 == d2 || d1 == 1 || d2 == 1) || error("Shapes $s1 and $s2 are not broadcastable")
+        max(d1, d2)
+    end
+end
+
+# Special case: same shape returns same shape (fast path)
+@inline broadcast_shape(s1::S, s2::S) where {S <: Tuple} = s1
+
+#=============================================================================
  Tile Arithmetic
 =============================================================================#
 
 # These are stub implementations that the compiler intercepts.
-# They return a new Tile with the same shape, enabling proper type inference.
+# They return a new Tile with the broadcast result shape, enabling proper type inference.
 
-@noinline function tile_add(a::Tile{T, S}, b::Tile{T, S})::Tile{T, S} where {T, S}
+@noinline function tile_add(a::Tile{T, S1}, b::Tile{T, S2})::Tile{T, broadcast_shape(S1, S2)} where {T, S1, S2}
     Base.donotdelete(a, b)
-    Tile{T, S}()
+    Tile{T, broadcast_shape(S1, S2)}()
 end
 
-@noinline function tile_sub(a::Tile{T, S}, b::Tile{T, S})::Tile{T, S} where {T, S}
+@noinline function tile_sub(a::Tile{T, S1}, b::Tile{T, S2})::Tile{T, broadcast_shape(S1, S2)} where {T, S1, S2}
     Base.donotdelete(a, b)
-    Tile{T, S}()
+    Tile{T, broadcast_shape(S1, S2)}()
 end
 
-@noinline function tile_mul(a::Tile{T, S}, b::Tile{T, S})::Tile{T, S} where {T, S}
+@noinline function tile_mul(a::Tile{T, S1}, b::Tile{T, S2})::Tile{T, broadcast_shape(S1, S2)} where {T, S1, S2}
     Base.donotdelete(a, b)
-    Tile{T, S}()
+    Tile{T, broadcast_shape(S1, S2)}()
 end
 
 # Operator overloads dispatch to the intrinsic functions
-Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = tile_add(a, b)
-Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = tile_sub(a, b)
-Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = tile_mul(a, b)
+Base.:(+)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} = tile_add(a, b)
+Base.:(-)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} = tile_sub(a, b)
+Base.:(*)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} = tile_mul(a, b)
 
 #=============================================================================
  Tile Shape Operations
@@ -295,13 +334,13 @@ Minimum of two integers.
 
 public tile_div
 
-@noinline function tile_div(a::Tile{T, S}, b::Tile{T, S})::Tile{T, S} where {T <: AbstractFloat, S}
+@noinline function tile_div(a::Tile{T, S1}, b::Tile{T, S2})::Tile{T, broadcast_shape(S1, S2)} where {T <: AbstractFloat, S1, S2}
     Base.donotdelete(a, b)
-    Tile{T, S}()
+    Tile{T, broadcast_shape(S1, S2)}()
 end
 
 # Division operator for tiles
-Base.:(/)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_div(a, b)
+Base.:(/)(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2} = tile_div(a, b)
 
 # Scalar-tile division (tile / scalar - broadcast scalar to tile)
 @noinline function tile_div_scalar(a::Tile{T, S}, b::T)::Tile{T, S} where {T <: AbstractFloat, S}

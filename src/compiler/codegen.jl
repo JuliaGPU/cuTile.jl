@@ -730,6 +730,65 @@ end
 # Tile arithmetic
 #-----------------------------------------------------------------------------
 
+"""
+    compute_broadcast_shape(s1::Vector{Int}, s2::Vector{Int}) -> Vector{Int}
+
+Compute the NumPy-style broadcast shape from two shapes.
+Shapes are compared from the right, dimensions must be equal or 1.
+"""
+function compute_broadcast_shape(s1::Vector{Int}, s2::Vector{Int})
+    max_ndim = max(length(s1), length(s2))
+    result = Vector{Int}(undef, max_ndim)
+    for i in 1:max_ndim
+        idx1 = length(s1) - max_ndim + i
+        idx2 = length(s2) - max_ndim + i
+        d1 = idx1 > 0 ? s1[idx1] : 1
+        d2 = idx2 > 0 ? s2[idx2] : 1
+        if d1 != d2 && d1 != 1 && d2 != 1
+            error("Shapes $s1 and $s2 are not broadcastable")
+        end
+        result[i] = max(d1, d2)
+    end
+    result
+end
+
+"""
+    broadcast_tile_to_shape!(cb, tt, tv::TileValue, target_shape::Vector{Int}, dtype::TypeId) -> Value
+
+Broadcast a tile to a target shape by inserting ReshapeOp (for leading 1s) and BroadcastOp.
+Returns the value after broadcasting, or the original value if shapes already match.
+"""
+function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::TileValue,
+                                   target_shape::Vector{Int}, dtype::TypeId)
+    src_shape = tv.shape
+
+    # Already the right shape?
+    if src_shape == target_shape
+        return tv.v
+    end
+
+    current_val = tv.v
+    current_shape = src_shape
+
+    # Step 1: Add leading 1s via ReshapeOp if needed (dimension mismatch)
+    if length(current_shape) < length(target_shape)
+        # Prepend 1s to match target ndim
+        n_extra = length(target_shape) - length(current_shape)
+        new_shape = vcat(fill(1, n_extra), current_shape)
+        reshaped_type = tile_type!(tt, dtype, new_shape)
+        current_val = encode_ReshapeOp!(cb, reshaped_type, current_val)
+        current_shape = new_shape
+    end
+
+    # Step 2: Broadcast dimensions that are 1 to target size
+    if current_shape != target_shape
+        broadcast_type = tile_type!(tt, dtype, target_shape)
+        current_val = encode_BroadcastOp!(cb, broadcast_type, current_val)
+    end
+
+    current_val
+end
+
 function emit_binop!(ctx::CodegenContext, args, float_encoder::Function, int_encoder::Function)
     lhs = emit_value!(ctx, args[1])
     rhs = emit_value!(ctx, args[2])
@@ -742,13 +801,31 @@ function emit_binop!(ctx::CodegenContext, args, float_encoder::Function, int_enc
         elem_type = elem_type.parameters[1]
     end
 
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Compute broadcast shape
+    result_shape = compute_broadcast_shape(lhs.shape, rhs.shape)
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Broadcast each operand to result shape if needed
+    lhs_v = broadcast_tile_to_shape!(cb, tt, lhs, result_shape, dtype)
+    rhs_v = broadcast_tile_to_shape!(cb, tt, rhs, result_shape, dtype)
+
+    # Create result type
+    result_type_id = tile_type!(tt, dtype, result_shape)
+
+    # Perform the operation
     if elem_type <: AbstractFloat
-        result_v = float_encoder(ctx.cb, lhs.type_id, lhs.v, rhs.v)
+        result_v = float_encoder(cb, result_type_id, lhs_v, rhs_v)
     else
-        result_v = int_encoder(ctx.cb, lhs.type_id, lhs.v, rhs.v)
+        result_v = int_encoder(cb, result_type_id, lhs_v, rhs_v)
     end
 
-    TileValue(result_v, lhs.type_id, lhs.jltype, lhs.shape)
+    # Compute result Julia type
+    result_jltype = Tile{elem_type, Tuple(result_shape)}
+
+    TileValue(result_v, result_type_id, result_jltype, result_shape)
 end
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_add), args, @nospecialize(_)) =
