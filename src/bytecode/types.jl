@@ -175,6 +175,7 @@ function function_type!(table::TypeTable,
 end
 
 # Julia type to Tile type mapping
+# Note: TFloat32 is defined in cuTile.jl before this file is included
 function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
     if T === Bool
         I1(table)
@@ -190,6 +191,8 @@ function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
         F16(table)
     elseif T === Float32
         F32(table)
+    elseif T === TFloat32
+        TF32(table)
     elseif T === Float64
         F64(table)
     else

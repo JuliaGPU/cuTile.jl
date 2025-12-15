@@ -6,6 +6,24 @@ using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
 using Core.Compiler
 const CC = Core.Compiler
 
+# TFloat32 must be defined before bytecode/types.jl which references it
+"""
+    TFloat32 <: AbstractFloat
+
+Tensor Float 32 - a 32-bit floating-point type optimized for tensor core operations.
+Has the same range as Float32 (8 exponent bits) but reduced precision (10 mantissa bits).
+
+Use with `astype()` to convert Float32 tiles to TFloat32 for tensor core acceleration:
+```julia
+a = ct.load(A, (bid_m, k), (tm, tk))
+a_tf32 = ct.astype(a, ct.TFloat32)  # Convert to TF32 for tensor cores
+```
+
+Note: This is a compile-time only type for Tile IR code generation. It has no runtime
+representation and cannot be instantiated.
+"""
+primitive type TFloat32 <: AbstractFloat 32 end
+
 # Bytecode infrastructure
 include("bytecode/basic.jl")
 include("bytecode/types.jl")
@@ -14,7 +32,7 @@ include("bytecode/encodings.jl")
 
 # Public API
 export emit_tileir, compile, launch
-export Tile, Constant, TileArray, ArraySpec, flatten
+export Tile, Constant, TileArray, ArraySpec, flatten, TFloat32
 export mma, full, num_tiles, cdiv, floordiv
 export code_structured, structurize!, UnstructuredControlFlowError
 

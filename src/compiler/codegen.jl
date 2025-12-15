@@ -383,6 +383,9 @@ function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @no
         if slot_tv !== nothing
             ctx[SSAValue(idx)] = slot_tv
         end
+    elseif stmt isa PiNode
+        # PiNode is a type narrowing assertion - handled via extract_constant
+        # No bytecode emission needed
     elseif stmt === nothing
         # No-op
     else
@@ -470,6 +473,16 @@ extract_constant(ctx::CodegenContext, val::Tuple) = val
 
 function extract_constant(ctx::CodegenContext, node::QuoteNode)
     extract_constant(ctx, node.value)
+end
+
+function extract_constant(ctx::CodegenContext, node::PiNode)
+    # PiNode narrows the type. If the narrowed type is Type{T}, extract T
+    if node.typ isa Type{<:Type}
+        # Type{TFloat32} -> TFloat32
+        return node.typ.parameters[1]
+    end
+    # Otherwise try to extract from the value
+    extract_constant(ctx, node.val)
 end
 
 function extract_constant(ctx::CodegenContext, ssa::SSAValue)
