@@ -15,7 +15,7 @@ include("bytecode/encodings.jl")
 # Public API
 export emit_tileir, compile, launch
 export Tile, Constant, TileArray, ArraySpec, flatten
-export mma, full, num_tiles, cdiv
+export mma, full, num_tiles, cdiv, floordiv
 export code_structured, structurize!, UnstructuredControlFlowError
 
 # Compilation cache - stores CuFunction directly to avoid re-loading CuModule
@@ -552,11 +552,18 @@ This is equivalent to `a ÷ b` but provided for consistency with the cuTile API.
 @noinline floordiv(a::Integer, b::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
 
 """
-    mod(a::Integer, b::Integer) -> Int32
+    rem(a::Integer, b::Integer) -> Int32
 
-Modulo operation: a % b (C-style, result has same sign as dividend)
+Remainder operation: a % b (C-style, result has same sign as dividend)
 """
-@noinline Base.mod(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
+@noinline Base.rem(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
+
+"""
+    min(a::Integer, b::Integer) -> Int32
+
+Minimum of two integers.
+"""
+@noinline Base.min(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
 
 #=============================================================================
  Compiler Infrastructure (must be after stub definitions for multiple dispatch)

@@ -42,32 +42,52 @@ Represents a value during Tile IR code generation, bundling the IR value
 with its type information and metadata.
 
 Similar to Julia compiler's `jl_cgval_t`, this provides a unified representation
-for all values flowing through codegen.
+for all values flowing through codegen. A TileValue can be either:
+1. A concrete SSA value (v is set, arg_ref is nothing)
+2. A lazy argument reference chain (v is nothing, arg_ref tracks the access path)
 """
 struct TileValue
-    v::Union{Value, Nothing}  # Tile IR value (nothing for ghost values)
-    type_id::TypeId           # Tile IR type
+    v::Union{Value, Nothing}  # Tile IR value (nothing for ghost values or lazy refs)
+    type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs)
     jltype::Any               # Original Julia type
     shape::Vector{Int}        # Tile shape (empty for scalars)
+    # Lazy argument reference: (arg_idx, [:field, index, ...])
+    # e.g., (1, [:sizes, 2]) means "argument 1, field :sizes, index 2"
+    arg_ref::Union{Tuple{Int, Vector{Union{Symbol, Int}}}, Nothing}
 end
 
-# Convenience constructors
+# Convenience constructors for concrete values
 TileValue(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    TileValue(v, type_id, jltype, Int[])
+    TileValue(v, type_id, jltype, Int[], nothing)
+
+TileValue(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Vector{Int}) =
+    TileValue(v, type_id, jltype, shape, nothing)
+
+# Constructor for lazy argument references
+function arg_ref_value(arg_idx::Int, chain::Vector{Union{Symbol, Int}}, @nospecialize(jltype))
+    TileValue(nothing, nothing, jltype, Int[], (arg_idx, chain))
+end
 
 """
     ghost_value(jltype) -> TileValue
 
 Create a ghost value (zero-size singleton with no runtime representation).
 """
-ghost_value(@nospecialize(jltype)) = TileValue(nothing, TypeId(-1), jltype, Int[])
+ghost_value(@nospecialize(jltype)) = TileValue(nothing, TypeId(-1), jltype, Int[], nothing)
 
 """
     is_ghost(tv::TileValue) -> Bool
 
 Check if a TileValue is a ghost (no runtime representation).
 """
-is_ghost(tv::TileValue) = tv.v === nothing
+is_ghost(tv::TileValue) = tv.v === nothing && tv.arg_ref === nothing
+
+"""
+    is_arg_ref(tv::TileValue) -> Bool
+
+Check if a TileValue is a lazy argument reference.
+"""
+is_arg_ref(tv::TileValue) = tv.arg_ref !== nothing
 
 #=============================================================================
  CodegenContext: Compilation context

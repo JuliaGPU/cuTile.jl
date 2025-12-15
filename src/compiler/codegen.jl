@@ -84,7 +84,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         ctx.arg_flat_values[key] = values
 
         if field === nothing
-            # Regular argument
+            # Regular argument - create concrete TileValue
             @assert length(values) == 1
             val = values[1]
             type_id = tile_type_for_julia!(ctx, target.argtypes[arg_idx])
@@ -92,6 +92,13 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             ctx[SlotNumber(arg_idx + 1)] = tv
             ctx[Argument(arg_idx + 1)] = tv
         end
+    end
+
+    # For destructured args, create lazy TileValues that track the argument index
+    for (arg_idx, argtype) in ctx.arg_types
+        tv = arg_ref_value(arg_idx, Union{Symbol, Int}[], argtype)
+        ctx[SlotNumber(arg_idx + 1)] = tv
+        ctx[Argument(arg_idx + 1)] = tv
     end
 
     # Create memory ordering token
@@ -694,6 +701,14 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(floordiv), args, @nospeci
     emit_floordiv!(ctx, args, result_type)
 end
 
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.rem), args, @nospecialize(result_type))
+    emit_rem!(ctx, args, result_type)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.min), args, @nospecialize(result_type))
+    emit_min!(ctx, args, result_type)
+end
+
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(astype), args, @nospecialize(result_type))
     emit_astype!(ctx, args, result_type)
 end
@@ -735,6 +750,18 @@ emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_mul), args, @nospecialize(_))
 # Base operators on Tiles
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(+)), args, @nospecialize(_)) =
     emit_binop!(ctx, args, encode_AddFOp!, encode_AddIOp!)
+
+# Julia integer intrinsics (all are Core.IntrinsicFunction, so dispatch by value)
+function emit_intrinsic!(ctx::CodegenContext, func::Core.IntrinsicFunction, args, @nospecialize(_))
+    if func === Base.add_int
+        return emit_binop!(ctx, args, encode_AddFOp!, encode_AddIOp!)
+    elseif func === Base.sub_int
+        return emit_binop!(ctx, args, encode_SubFOp!, encode_SubIOp!)
+    elseif func === Base.mul_int
+        return emit_binop!(ctx, args, encode_MulFOp!, encode_MulIOp!)
+    end
+    missing  # Unknown intrinsic
+end
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(-)), args, @nospecialize(_)) =
     emit_binop!(ctx, args, encode_SubFOp!, encode_SubIOp!)
@@ -784,7 +811,7 @@ emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(!=)), args, @nospecialize(_
     emit_cmp!(ctx, args, CmpNotEqual)
 
 #-----------------------------------------------------------------------------
-# getfield for destructured arguments
+# getfield for destructured arguments (lazy chain extension)
 #-----------------------------------------------------------------------------
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @nospecialize(result_type))
@@ -793,27 +820,40 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @no
     obj_arg = args[1]
     field_arg = args[2]
 
-    # Extract field name
-    field_name = extract_constant(ctx, field_arg)
-    field_name isa Symbol || return nothing
+    # Extract field name or index
+    field = extract_constant(ctx, field_arg)
 
-    # Get argument index
-    arg_idx = extract_argument_index(obj_arg)
-    arg_idx === nothing && return nothing
+    # Try to get the object as a TileValue
+    obj_tv = emit_value!(ctx, obj_arg)
 
-    # Get flat values for this field
-    values = get_arg_flat_values(ctx, arg_idx, field_name)
-    values === nothing && return nothing
+    # If obj is a lazy arg_ref, extend the chain
+    if obj_tv !== nothing && is_arg_ref(obj_tv)
+        arg_idx, chain = obj_tv.arg_ref
 
-    if length(values) == 1
-        # Single value - determine type from context
-        type_id = tile_type!(ctx.tt, I32(ctx.tt), Int[])  # Default to i32 for sizes/strides
-        return TileValue(values[1], type_id, Int32)
-    else
-        # Multiple values (tuple field) - return first for now
-        type_id = tile_type!(ctx.tt, I32(ctx.tt), Int[])
-        return TileValue(values[1], type_id, Int32)
+        if field isa Symbol
+            # Field access: extend chain with symbol
+            new_chain = Union{Symbol, Int}[chain..., field]
+            # Check if this resolves to a scalar field (auto-materialize leaf)
+            values = get_arg_flat_values(ctx, arg_idx, field)
+            if values !== nothing && length(values) == 1
+                # Scalar field - materialize immediately
+                type_id = tile_type_for_julia!(ctx, unwrap_type(result_type))
+                return TileValue(values[1], type_id, unwrap_type(result_type))
+            end
+            return arg_ref_value(arg_idx, new_chain, unwrap_type(result_type))
+        elseif field isa Integer && !isempty(chain) && chain[end] isa Symbol
+            # Tuple indexing: chain ends with field name, now indexing into it
+            # This is a leaf - materialize immediately
+            field_name = chain[end]
+            values = get_arg_flat_values(ctx, arg_idx, field_name)
+            if values !== nothing && 1 <= field <= length(values)
+                type_id = tile_type_for_julia!(ctx, unwrap_type(result_type))
+                return TileValue(values[field], type_id, unwrap_type(result_type))
+            end
+        end
     end
+
+    nothing
 end
 
 function extract_argument_index(@nospecialize(arg))
@@ -822,6 +862,35 @@ function extract_argument_index(@nospecialize(arg))
     elseif arg isa Argument
         return arg.n - 1
     end
+    nothing
+end
+
+#-----------------------------------------------------------------------------
+# getindex for tuple field access (lazy chain extension)
+#-----------------------------------------------------------------------------
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getindex), args, @nospecialize(result_type))
+    length(args) >= 2 || return nothing
+
+    obj_arg = args[1]
+    index_arg = args[2]
+
+    # Extract constant index
+    index = extract_constant(ctx, index_arg)
+    index isa Integer || return nothing
+
+    # Try to get the object as a TileValue
+    obj_tv = emit_value!(ctx, obj_arg)
+    obj_tv === nothing && return nothing
+
+    # If obj is a lazy arg_ref, extend the chain with the index
+    if is_arg_ref(obj_tv)
+        arg_idx, chain = obj_tv.arg_ref
+        new_chain = Union{Symbol, Int}[chain..., Int(index)]
+        return arg_ref_value(arg_idx, new_chain, unwrap_type(result_type))
+    end
+
+    # Not an arg_ref - not handled here
     nothing
 end
 
@@ -1466,10 +1535,38 @@ function emit_floordiv!(ctx::CodegenContext, args::AbstractVector, @nospecialize
     TileValue(result, scalar_i32, Int32)
 end
 
+function emit_rem!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    result = encode_RemIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
+
+    TileValue(result, scalar_i32, Int32)
+end
+
+function emit_min!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    result = encode_MinIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
+
+    TileValue(result, scalar_i32, Int32)
+end
+
 function resolve_or_constant(ctx::CodegenContext, @nospecialize(arg), type_id::TypeId)
     tv = emit_value!(ctx, arg)
     if tv !== nothing
-        return tv.v
+        tv.v !== nothing && return tv.v
     end
 
     val = extract_constant(ctx, arg)
