@@ -219,7 +219,7 @@ This is used internally to convert scalars to tiles for broadcasting.
 
 In kernel code, this is compiled to a ConstantOp.
 """
-@noinline function Tile(val::T)::Tile{T, ()} where {T <: AbstractFloat}
+@noinline function Tile(val::T)::Tile{T, ()} where {T <: Number}
     Base.donotdelete(val)
     Tile{T, ()}()
 end

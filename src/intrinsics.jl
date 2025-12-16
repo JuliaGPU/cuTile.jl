@@ -134,6 +134,9 @@ Base.Broadcast.BroadcastStyle(::Type{<:Tile}) = TileStyle()
 # When combining TileStyle with itself, return TileStyle
 Base.Broadcast.BroadcastStyle(::TileStyle, ::TileStyle) = TileStyle()
 
+# When combining TileStyle with scalars, TileStyle wins
+Base.Broadcast.BroadcastStyle(::TileStyle, ::Base.Broadcast.DefaultArrayStyle{0}) = TileStyle()
+
 # Tiles are already broadcastable - return as-is
 Base.Broadcast.broadcastable(t::Tile) = t
 
@@ -570,29 +573,106 @@ end
  Comparison Operations (returning Boolean tiles)
 =============================================================================#
 
-# Element-wise comparisons that return Boolean tiles
-@noinline function tile_gt(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S}
+# Element-wise comparisons - same shape intrinsics (work for any element type T)
+# These are what the compiler intercepts
+@noinline function tile_lt(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
     Base.donotdelete(a, b)
     Tile{Bool, S}()
 end
 
-@noinline function tile_lt(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S}
+@noinline function tile_gt(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
     Base.donotdelete(a, b)
     Tile{Bool, S}()
 end
 
-@noinline function tile_ge(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S}
+@noinline function tile_le(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
     Base.donotdelete(a, b)
     Tile{Bool, S}()
 end
 
-@noinline function tile_le(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S}
+@noinline function tile_ge(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
     Base.donotdelete(a, b)
     Tile{Bool, S}()
 end
 
-# Operator overloads for tile comparisons
-Base.:(>)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_gt(a, b)
-Base.:(<)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_lt(a, b)
-Base.:(>=)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_ge(a, b)
-Base.:(<=)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_le(a, b)
+@noinline function tile_eq(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
+
+@noinline function tile_ne(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
+
+# Broadcasting versions - different shapes, broadcast then recurse
+@inline function tile_lt(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
+    S = broadcast_shape(S1, S2)
+    tile_lt(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+@inline function tile_gt(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
+    S = broadcast_shape(S1, S2)
+    tile_gt(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+@inline function tile_le(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
+    S = broadcast_shape(S1, S2)
+    tile_le(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+@inline function tile_ge(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
+    S = broadcast_shape(S1, S2)
+    tile_ge(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+@inline function tile_eq(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
+    S = broadcast_shape(S1, S2)
+    tile_eq(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+@inline function tile_ne(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
+    S = broadcast_shape(S1, S2)
+    tile_ne(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+# Broadcast hooks for comparison operators (tile .< tile, etc.)
+# Tile-Tile comparisons
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(<), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
+    tile_lt(a, b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(>), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
+    tile_gt(a, b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(<=), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
+    tile_le(a, b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(>=), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
+    tile_ge(a, b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(==), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
+    tile_eq(a, b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(!=), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
+    tile_ne(a, b)
+
+# Tile-Scalar comparisons (convert scalar to 0D tile, then broadcast)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(<), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_lt(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(<), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_lt(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(>), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_gt(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(>), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_gt(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(<=), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_le(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(<=), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_le(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(>=), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_ge(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(>=), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_ge(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(==), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_eq(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(==), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_eq(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(!=), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_ne(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(!=), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_ne(Tile(T(a)), b)

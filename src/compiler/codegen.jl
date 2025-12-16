@@ -1879,7 +1879,7 @@ end
  Tile Comparison Operations
 =============================================================================#
 
-function emit_tile_cmpf!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
+function emit_tile_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -1892,23 +1892,40 @@ function emit_tile_cmpf!(ctx::CodegenContext, args, predicate::ComparisonPredica
     tile_shape = lhs.shape
     bool_tile_type = tile_type!(tt, I1(tt), tile_shape)
 
-    result_v = encode_CmpFOp!(cb, bool_tile_type, lhs.v, rhs.v;
-                              predicate=predicate, ordering=CmpOrdered)
+    # Determine element type to choose CmpFOp vs CmpIOp
+    elem_type = unwrap_type(lhs.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+
+    result_v = if elem_type <: AbstractFloat
+        encode_CmpFOp!(cb, bool_tile_type, lhs.v, rhs.v;
+                       predicate=predicate, ordering=CmpOrdered)
+    else
+        encode_CmpIOp!(cb, bool_tile_type, lhs.v, rhs.v;
+                       predicate=predicate, signedness=SignednessSigned)
+    end
 
     TileValue(result_v, bool_tile_type, Tile{Bool, Tuple(tile_shape)}, tile_shape)
 end
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_gt), args, @nospecialize(_)) =
-    emit_tile_cmpf!(ctx, args, CmpGreaterThan)
-
 emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_lt), args, @nospecialize(_)) =
-    emit_tile_cmpf!(ctx, args, CmpLessThan)
+    emit_tile_cmp!(ctx, args, CmpLessThan)
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_ge), args, @nospecialize(_)) =
-    emit_tile_cmpf!(ctx, args, CmpGreaterThanOrEqual)
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_gt), args, @nospecialize(_)) =
+    emit_tile_cmp!(ctx, args, CmpGreaterThan)
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_le), args, @nospecialize(_)) =
-    emit_tile_cmpf!(ctx, args, CmpLessThanOrEqual)
+    emit_tile_cmp!(ctx, args, CmpLessThanOrEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_ge), args, @nospecialize(_)) =
+    emit_tile_cmp!(ctx, args, CmpGreaterThanOrEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_eq), args, @nospecialize(_)) =
+    emit_tile_cmp!(ctx, args, CmpEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_ne), args, @nospecialize(_)) =
+    emit_tile_cmp!(ctx, args, CmpNotEqual)
 
 #=============================================================================
  Constants

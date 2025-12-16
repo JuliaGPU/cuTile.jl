@@ -719,3 +719,53 @@ end
 end
 
 end
+
+@testset "comparison operations" begin
+
+@testset "float comparison operators" begin
+    # Test all broadcast comparison operators with Float32 tiles
+    tile = ct.Tile{Float32, (16,)}()
+
+    @test (tile .< tile) isa ct.Tile{Bool, (16,)}
+    @test (tile .> tile) isa ct.Tile{Bool, (16,)}
+    @test (tile .<= tile) isa ct.Tile{Bool, (16,)}
+    @test (tile .>= tile) isa ct.Tile{Bool, (16,)}
+    @test (tile .== tile) isa ct.Tile{Bool, (16,)}
+    @test (tile .!= tile) isa ct.Tile{Bool, (16,)}
+end
+
+@testset "integer comparison operators" begin
+    # Test all broadcast comparison operators with Int32 tiles
+    int_tile = ct.arange((16,), Int32)
+
+    @test (int_tile .< int_tile) isa ct.Tile{Bool, (16,)}
+    @test (int_tile .> int_tile) isa ct.Tile{Bool, (16,)}
+    @test (int_tile .<= int_tile) isa ct.Tile{Bool, (16,)}
+    @test (int_tile .>= int_tile) isa ct.Tile{Bool, (16,)}
+    @test (int_tile .== int_tile) isa ct.Tile{Bool, (16,)}
+    @test (int_tile .!= int_tile) isa ct.Tile{Bool, (16,)}
+end
+
+@testset "tile vs scalar comparison" begin
+    int_tile = ct.arange((16,), Int32)
+    float_tile = ct.Tile{Float32, (16,)}()
+
+    # Int32 tile vs Int32 scalar
+    @test (int_tile .< Int32(10)) isa ct.Tile{Bool, (16,)}
+    @test (Int32(5) .< int_tile) isa ct.Tile{Bool, (16,)}
+
+    # Float32 tile vs Float32 scalar
+    @test (float_tile .< 2.0f0) isa ct.Tile{Bool, (16,)}
+    @test (1.0f0 .> float_tile) isa ct.Tile{Bool, (16,)}
+end
+
+@testset "broadcast comparison shapes" begin
+    tile_a = ct.Tile{Float32, (1, 16)}()
+    tile_b = ct.Tile{Float32, (8, 1)}()
+
+    # (1, 16) .< (8, 1) -> (8, 16)
+    result = tile_a .< tile_b
+    @test result isa ct.Tile{Bool, (8, 16)}
+end
+
+end
