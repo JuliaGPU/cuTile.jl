@@ -129,10 +129,11 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     ctx.token = encode_MakeTokenOp!(cb, token_type)
 
     # Lower to structured IR
-    structured_ir = lower_to_structured_ir(target)
+    sci = StructuredCodeInfo(target.ci)
+    structurize!(sci)
 
     # Emit the structured IR
-    emit_block!(ctx, structured_ir.entry)
+    emit_block!(ctx, sci.entry)
 
     finalize_function!(func_buf, cb, writer.debug_info)
 end

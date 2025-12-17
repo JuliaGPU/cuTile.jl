@@ -22,7 +22,6 @@ include("compiler/ir.jl")
 include("compiler/restructuring.jl")
 include("compiler/interpreter.jl")
 include("compiler/target.jl")
-include("compiler/lowering.jl")
 include("compiler/codegen.jl")
 include("compiler/intrinsics.jl")
 
