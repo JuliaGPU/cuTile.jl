@@ -54,26 +54,29 @@ struct TileValue
     # Lazy argument reference: (arg_idx, [:field, index, ...])
     # e.g., (1, [:sizes, 2]) means "argument 1, field :sizes, index 2"
     arg_ref::Union{Tuple{Int, Vector{Union{Symbol, Int}}}, Nothing}
+    constant::Any             # Compile-time constant value (nothing if not known)
 end
 
-# Convenience constructors for concrete values
+# Convenience constructors for concrete values (constant = nothing by default)
 TileValue(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    TileValue(v, type_id, jltype, Int[], nothing)
+    TileValue(v, type_id, jltype, Int[], nothing, nothing)
 
 TileValue(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Vector{Int}) =
-    TileValue(v, type_id, jltype, shape, nothing)
+    TileValue(v, type_id, jltype, shape, nothing, nothing)
 
-# Constructor for lazy argument references
+# Constructor for lazy argument references (never have constants)
 function arg_ref_value(arg_idx::Int, chain::Vector{Union{Symbol, Int}}, @nospecialize(jltype))
-    TileValue(nothing, nothing, jltype, Int[], (arg_idx, chain))
+    TileValue(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing)
 end
 
 """
-    ghost_value(jltype) -> TileValue
+    ghost_value(jltype[, constant]) -> TileValue
 
 Create a ghost value (zero-size singleton with no runtime representation).
+Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = TileValue(nothing, TypeId(-1), jltype, Int[], nothing)
+ghost_value(@nospecialize(jltype)) = TileValue(nothing, TypeId(-1), jltype, Int[], nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = TileValue(nothing, TypeId(-1), jltype, Int[], nothing, constant)
 
 """
     is_ghost(tv::TileValue) -> Bool

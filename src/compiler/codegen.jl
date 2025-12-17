@@ -154,7 +154,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
     cb = ctx.cb
 
     # Get condition value
-    cond_tv = emit_irvalue!(ctx, op.condition)
+    cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
 
     # Determine result types from the result_vars
@@ -200,9 +200,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     tt = ctx.tt
 
     # Get bounds values
-    lower_tv = emit_irvalue!(ctx, op.lower)
-    upper_tv = emit_irvalue!(ctx, op.upper)
-    step_tv = emit_irvalue!(ctx, op.step)
+    lower_tv = emit_value!(ctx, op.lower)
+    upper_tv = emit_value!(ctx, op.upper)
+    step_tv = emit_value!(ctx, op.step)
 
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         error("Cannot resolve ForOp bounds")
@@ -210,8 +210,8 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     # Get init values
     init_values = Value[]
     for init_val in op.init_values
-        tv = emit_irvalue!(ctx, init_val)
-        tv === nothing && error("Cannot resolve ForOp init value")
+        tv = emit_value!(ctx, init_val)
+        (tv === nothing || tv.v === nothing) && error("Cannot resolve ForOp init value")
         push!(init_values, tv.v)
     end
     # Add token as additional init value (for memory ordering)
@@ -285,8 +285,8 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     # Get init values
     init_values = Value[]
     for init_val in op.init_values
-        tv = emit_irvalue!(ctx, init_val)
-        tv === nothing && error("Cannot resolve LoopOp init value")
+        tv = emit_value!(ctx, init_val)
+        (tv === nothing || tv.v === nothing) && error("Cannot resolve LoopOp init value")
         push!(init_values, tv.v)
     end
     # Add token as additional init value (for memory ordering)
@@ -371,9 +371,9 @@ function emit_terminator!(ctx::CodegenContext, op::YieldOp)
     # Collect yield operands
     operands = Value[]
     for val in op.values
-        tv = emit_irvalue!(ctx, val)
+        tv = emit_value!(ctx, val)
         @debug "YieldOp value $val => $(tv !== nothing ? tv : "nothing")"
-        tv !== nothing && push!(operands, tv.v)
+        tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
     # Append current token for memory ordering
     push!(operands, ctx.token)
@@ -385,8 +385,8 @@ function emit_terminator!(ctx::CodegenContext, op::ContinueOp)
     # Collect continue operands (updated carried values)
     operands = Value[]
     for val in op.values
-        tv = emit_irvalue!(ctx, val)
-        tv !== nothing && push!(operands, tv.v)
+        tv = emit_value!(ctx, val)
+        tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
     # Append current token for memory ordering
     push!(operands, ctx.token)
@@ -397,8 +397,8 @@ function emit_terminator!(ctx::CodegenContext, op::BreakOp)
     # Collect break operands (final values)
     operands = Value[]
     for val in op.values
-        tv = emit_irvalue!(ctx, val)
-        tv !== nothing && push!(operands, tv.v)
+        tv = emit_value!(ctx, val)
+        tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
     # Append current token for memory ordering
     push!(operands, ctx.token)
@@ -409,16 +409,6 @@ function emit_terminator!(ctx::CodegenContext, ::Nothing)
     # No terminator, nothing to emit
 end
 
-"""
-    emit_irvalue!(ctx, ref::IRValue) -> Union{TileValue, Nothing}
-
-Emit/resolve an IRValue reference.
-"""
-emit_irvalue!(ctx::CodegenContext, ssa::SSAValue) = ctx[ssa]
-emit_irvalue!(ctx::CodegenContext, arg::Argument) = ctx[arg]
-emit_irvalue!(ctx::CodegenContext, slot::SlotNumber) = ctx[slot]
-emit_irvalue!(ctx::CodegenContext, block_arg::BlockArg) = ctx[block_arg]
-emit_irvalue!(ctx::CodegenContext, lit::Literal) = emit_value!(ctx, lit.value)
 
 #=============================================================================
  Statement Emission
@@ -490,15 +480,24 @@ end
 
 Emit/resolve a value reference to a TileValue using multiple dispatch.
 """
-emit_value!(ctx::CodegenContext, ssa::SSAValue) = ctx[ssa]
+function emit_value!(ctx::CodegenContext, ssa::SSAValue)
+    # First try to get from context (already processed)
+    tv = ctx[ssa]
+    tv !== nothing && return tv
+    # Otherwise follow the SSA chain to the defining statement
+    stmt = code(ctx.target)[ssa.id]
+    emit_value!(ctx, stmt)
+end
 emit_value!(ctx::CodegenContext, arg::Argument) = ctx[arg]
 emit_value!(ctx::CodegenContext, slot::SlotNumber) = ctx[slot]
+emit_value!(ctx::CodegenContext, block_arg::BlockArg) = ctx[block_arg]
+emit_value!(ctx::CodegenContext, lit::Literal) = emit_value!(ctx, lit.value)
 
 function emit_value!(ctx::CodegenContext, val::Integer)
     type_id = tile_type_for_julia!(ctx, Int32)
     bytes = reinterpret(UInt8, [Int32(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    TileValue(v, type_id, Int32)
+    TileValue(v, type_id, Int32, Int[], nothing, val)  # Preserve original type in constant
 end
 
 function emit_value!(ctx::CodegenContext, val::AbstractFloat)
@@ -506,87 +505,80 @@ function emit_value!(ctx::CodegenContext, val::AbstractFloat)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    TileValue(v, type_id, jltype)
+    TileValue(v, type_id, jltype, Int[], nothing, val)
 end
 
 function emit_value!(ctx::CodegenContext, node::QuoteNode)
     emit_value!(ctx, node.value)
 end
 
-emit_value!(ctx::CodegenContext, ::GlobalRef) = nothing
+function emit_value!(ctx::CodegenContext, expr::Expr)
+    # Try to extract constant from Expr (e.g., call to tuple or type assert)
+    if expr.head === :call
+        callee = expr.args[1]
+        # Handle Core.tuple - extract elements as constant tuple
+        if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
+            elements = Any[]
+            for arg in expr.args[2:end]
+                tv = emit_value!(ctx, arg)
+                tv === nothing && return nothing
+                tv.constant === nothing && return nothing
+                push!(elements, tv.constant)
+            end
+            return ghost_value(typeof(Tuple(elements)), Tuple(elements))
+        end
+    end
+    nothing
+end
+
+function emit_value!(ctx::CodegenContext, ref::GlobalRef)
+    val = getfield(ref.mod, ref.name)
+    ghost_value(typeof(val), val)
+end
+
+function emit_value!(ctx::CodegenContext, node::PiNode)
+    # PiNode narrows the type. If the narrowed type is Type{T}, extract T
+    if node.typ isa Type{<:Type}
+        return ghost_value(node.typ, node.typ.parameters[1])
+    end
+    # Otherwise emit the underlying value
+    emit_value!(ctx, node.val)
+end
+
 emit_value!(ctx::CodegenContext, ::Nothing) = nothing
+
+"""
+    get_constant(ctx, ref) -> Union{Any, Nothing}
+
+Get the compile-time constant from an IR reference, or nothing if not available.
+"""
+function get_constant(ctx::CodegenContext, @nospecialize(ref))
+    tv = emit_value!(ctx, ref)
+    tv === nothing ? nothing : tv.constant
+end
+
+# Symbols are compile-time only values
+emit_value!(ctx::CodegenContext, val::Symbol) = ghost_value(Symbol, val)
+
+# Tuples are compile-time only values
+emit_value!(ctx::CodegenContext, val::Tuple) = ghost_value(typeof(val), val)
+
+# Types are compile-time only values
+emit_value!(ctx::CodegenContext, @nospecialize(val::Type)) = ghost_value(Type{val}, val)
 
 # Fallback for other types (constants embedded in IR)
 function emit_value!(ctx::CodegenContext, @nospecialize(val))
-    # Try to interpret as a constant
-    if val isa Type
-        return nothing  # Type values are not runtime values
-    end
-    @warn "Unhandled value type in emit_value!" typeof(val)
-    nothing
-end
-
-#=============================================================================
- Constant Extraction
-=============================================================================#
-
-"""
-    extract_constant(ctx, ref) -> Union{Any, Nothing}
-
-Extract a compile-time constant from an IR reference.
-"""
-extract_constant(ctx::CodegenContext, val::Integer) = val
-extract_constant(ctx::CodegenContext, val::AbstractFloat) = val
-extract_constant(ctx::CodegenContext, val::Symbol) = val
-extract_constant(ctx::CodegenContext, val::Type) = val
-extract_constant(ctx::CodegenContext, val::Tuple) = val
-
-function extract_constant(ctx::CodegenContext, node::QuoteNode)
-    extract_constant(ctx, node.value)
-end
-
-function extract_constant(ctx::CodegenContext, ref::GlobalRef)
-    # Resolve GlobalRef to its value
-    val = getfield(ref.mod, ref.name)
-    extract_constant(ctx, val)
-end
-
-function extract_constant(ctx::CodegenContext, node::PiNode)
-    # PiNode narrows the type. If the narrowed type is Type{T}, extract T
-    if node.typ isa Type{<:Type}
-        # Type{TFloat32} -> TFloat32
-        return node.typ.parameters[1]
-    end
-    # Otherwise try to extract from the value
-    extract_constant(ctx, node.val)
-end
-
-function extract_constant(ctx::CodegenContext, ssa::SSAValue)
-    stmt = code(ctx.target)[ssa.id]
-    extract_constant(ctx, stmt)
-end
-
-function extract_constant(ctx::CodegenContext, @nospecialize(val))
-    # Handle Val{V} instances
     T = typeof(val)
+    # Handle Val{V} instances
     if T <: Val && length(T.parameters) == 1
-        return T.parameters[1]
+        return ghost_value(T, T.parameters[1])
     end
     # Handle Constant{T, V} instances
     if T <: Constant && length(T.parameters) >= 2
-        return T.parameters[2]
+        return ghost_value(T, T.parameters[2])
     end
+    @warn "Unhandled value type in emit_value!" typeof(val)
     nothing
-end
-
-"""
-    extract_tuple(ctx, ref) -> Union{Tuple, Nothing}
-
-Extract a constant tuple from an IR reference.
-"""
-function extract_tuple(ctx::CodegenContext, @nospecialize(ref))
-    val = extract_constant(ctx, ref)
-    val isa Tuple ? val : nothing
 end
 
 #=============================================================================
@@ -733,8 +725,7 @@ emit_intrinsic!(ctx::CodegenContext, ::typeof(isa), args, @nospecialize(result_t
 #-----------------------------------------------------------------------------
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(bid), args, @nospecialize(result_type))
-    axis = extract_constant(ctx, args[1])
-    axis === nothing && error("bid() axis must be a compile-time constant")
+    axis = @something get_constant(ctx, args[1]) error("bid() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("bid() axis must be 0, 1, or 2, got $axis")
 
     res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
@@ -745,8 +736,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(bid), args, @nospecialize
 end
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(num_blocks), args, @nospecialize(result_type))
-    axis = extract_constant(ctx, args[1])
-    axis === nothing && error("num_blocks() axis must be a compile-time constant")
+    axis = @something get_constant(ctx, args[1]) error("num_blocks() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("num_blocks() axis must be 0, 1, or 2, got $axis")
 
     res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
@@ -829,48 +819,21 @@ function emit_intrinsic!(ctx::CodegenContext, ::Type{<:Tile}, args, @nospecializ
         nothing  # Will be determined later
     end
 
-    # Try to extract as compile-time constant first
-    scalar_val = extract_constant(ctx, args[1])
-
-    if scalar_val !== nothing
-        # Compile-time constant path
-        if elem_type === nothing
-            elem_type = typeof(scalar_val)
-        end
-
-        dtype = julia_to_tile_dtype!(tt, elem_type)
-        scalar_type = tile_type!(tt, dtype, Int[])
-        value_bytes = constant_to_bytes(scalar_val, elem_type)
-        scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
-
-        return TileValue(scalar_const, scalar_type, Tile{elem_type, ()}, Int[])
-    end
-
-    # Runtime scalar path - emit the value and use it directly as a 0D tile
+    # Emit the value - this handles both compile-time constants and runtime values
     source = emit_value!(ctx, args[1])
     source === nothing && error("Cannot resolve source operand for Tile(scalar)")
 
-    if source isa TileValue
-        # Already a tile value, just return it (might need reshape to 0D)
-        if isempty(source.shape)
-            return source
-        else
-            # Reshape to 0D if it's a scalar-sized tile
-            error("Tile(scalar) called with non-scalar tile")
-        end
+    # If we have a compile-time constant, determine elem_type from it
+    if source.constant !== nothing && elem_type === nothing
+        elem_type = typeof(source.constant)
+    end
+
+    # Already a tile value, just return it (might need reshape to 0D)
+    if isempty(source.shape)
+        return source
     else
-        # source is a raw Value - need to determine the type
-        # The argument type should give us the element type
-        arg_type = ctx.types[args[1]]
-        if elem_type === nothing
-            elem_type = unwrap_type(arg_type)
-        end
-
-        dtype = julia_to_tile_dtype!(tt, elem_type)
-        scalar_type = tile_type!(tt, dtype, Int[])
-
-        # The source is already a scalar value - wrap it as a TileValue
-        return TileValue(source, scalar_type, Tile{elem_type, ()}, Int[])
+        # Reshape to 0D if it's a scalar-sized tile
+        error("Tile(scalar) called with non-scalar tile")
     end
 end
 
@@ -1169,7 +1132,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @no
     field_arg = args[2]
 
     # Extract field name or index
-    field = extract_constant(ctx, field_arg)
+    field = get_constant(ctx, field_arg)
 
     # Try to get the object as a TileValue
     obj_tv = emit_value!(ctx, obj_arg)
@@ -1224,7 +1187,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getindex), args, @no
     index_arg = args[2]
 
     # Extract constant index
-    index = extract_constant(ctx, index_arg)
+    index = get_constant(ctx, index_arg)
     index isa Integer || return nothing
 
     # Try to get the object as a TileValue
@@ -1295,7 +1258,7 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     # Parse shape from Val{shape} argument
     tile_shape = Int[16]  # Default
     if length(args) >= 3
-        shape = extract_constant(ctx, args[3])
+        shape = get_constant(ctx, args[3])
         if shape isa Tuple
             tile_shape = collect(Int, shape)
         end
@@ -1306,7 +1269,7 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     # Parse padding_mode from args[4] (default: PaddingMode.Undetermined = 0)
     padding_mode_int = 0  # Default: Undetermined
     if length(args) >= 4
-        pm = extract_constant(ctx, args[4])
+        pm = get_constant(ctx, args[4])
         if pm isa Integer
             padding_mode_int = Int(pm)
         end
@@ -1499,10 +1462,8 @@ function emit_atomic_cas!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     desired_tv === nothing && error("atomic_cas requires desired value")
 
     # Get memory order and scope from args
-    memory_order = extract_constant(ctx, args[5])
-    memory_order === nothing && error("atomic_cas requires constant memory_order")
-    memory_scope = extract_constant(ctx, args[6])
-    memory_scope === nothing && error("atomic_cas requires constant memory_scope")
+    memory_order = @something get_constant(ctx, args[5]) error("atomic_cas requires constant memory_order")
+    memory_scope = @something get_constant(ctx, args[6]) error("atomic_cas requires constant memory_scope")
 
     # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -1572,10 +1533,8 @@ function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     val_tv === nothing && error("atomic operation requires value")
 
     # Get memory order and scope from args
-    memory_order = extract_constant(ctx, args[4])
-    memory_order === nothing && error("atomic operation requires constant memory_order")
-    memory_scope = extract_constant(ctx, args[5])
-    memory_scope === nothing && error("atomic operation requires constant memory_scope")
+    memory_order = @something get_constant(ctx, args[4]) error("atomic operation requires constant memory_order")
+    memory_scope = @something get_constant(ctx, args[5]) error("atomic operation requires constant memory_scope")
 
     # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -1704,17 +1663,17 @@ function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos
             if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
                 for elem_arg in tuple_stmt.args[2:end]
                     tv = emit_value!(ctx, elem_arg)
-                    tv !== nothing && push!(index_vals, tv.v)
+                    tv.v !== nothing && push!(index_vals, tv.v)
                 end
                 return index_vals
             end
         end
         # Single value
         tv = emit_value!(ctx, index_arg)
-        tv !== nothing && push!(index_vals, tv.v)
+        tv.v !== nothing && push!(index_vals, tv.v)
     else
         tv = emit_value!(ctx, index_arg)
-        tv !== nothing && push!(index_vals, tv.v)
+        tv.v !== nothing && push!(index_vals, tv.v)
     end
 
     return index_vals
@@ -1892,8 +1851,7 @@ function emit_astype!(ctx::CodegenContext, args::AbstractVector, @nospecialize(r
     tile_shape = source.shape
 
     # Get target element type from the Type argument
-    target_elem = extract_constant(ctx, args[2])
-    target_elem === nothing && error("astype() requires a compile-time constant type")
+    target_elem = @something get_constant(ctx, args[2]) error("astype() requires a compile-time constant type")
     target_elem isa Type || error("astype() second argument must be a Type")
 
     # Same type? Return source unchanged
@@ -1961,7 +1919,7 @@ function emit_broadcast_to!(ctx::CodegenContext, args::AbstractVector, @nospecia
     source_elem = source_type <: Tile ? source_type.parameters[1] : source_type
 
     # Extract target shape from the constant tuple argument
-    target_shape_tuple = extract_constant(ctx, args[2])
+    target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || error("broadcast_to() shape must be a compile-time constant tuple")
     target_shape = collect(Int, target_shape_tuple)
 
@@ -1987,13 +1945,12 @@ function emit_full!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     tt = ctx.tt
 
     # Extract shape
-    shape = extract_constant(ctx, args[1])
+    shape = get_constant(ctx, args[1])
     shape isa Tuple || error("full() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
 
     # Extract value
-    value = extract_constant(ctx, args[2])
-    value === nothing && error("full() value must be a compile-time constant")
+    value = @something get_constant(ctx, args[2]) error("full() value must be a compile-time constant")
 
     # Extract dtype from result type
     result_type_unwrapped = unwrap_type(result_type)
@@ -2034,11 +1991,10 @@ function emit_num_tiles!(ctx::CodegenContext, args::AbstractVector, @nospecializ
     tt = ctx.tt
 
     array_arg = args[1]
-    axis = extract_constant(ctx, args[2])
-    axis === nothing && error("num_tiles() axis must be a compile-time constant")
+    axis = @something get_constant(ctx, args[2]) error("num_tiles() axis must be a compile-time constant")
 
-    shape = extract_tuple(ctx, args[3])
-    shape === nothing && error("num_tiles() shape must be a compile-time constant tuple")
+    shape = get_constant(ctx, args[3])
+    shape isa Tuple || error("num_tiles() shape must be a compile-time constant tuple")
 
     tile_size = shape[axis + 1]
 
@@ -2124,13 +2080,10 @@ end
 
 function resolve_or_constant(ctx::CodegenContext, @nospecialize(arg), type_id::TypeId)
     tv = emit_value!(ctx, arg)
-    if tv !== nothing
-        tv.v !== nothing && return tv.v
-    end
-
-    val = extract_constant(ctx, arg)
-    val !== nothing || error("Cannot resolve argument")
-
+    # If we have a runtime value, use it
+    tv.v !== nothing && return tv.v
+    # Otherwise emit a constant from the compile-time value
+    val = @something tv.constant error("Cannot resolve argument")
     bytes = reinterpret(UInt8, [Int32(val)])
     encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
 end
@@ -2159,7 +2112,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(arange), args, @nospecial
     tt = ctx.tt
 
     # Extract shape
-    shape = extract_constant(ctx, args[1])
+    shape = get_constant(ctx, args[1])
     shape isa Tuple || error("arange() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
 
@@ -2200,8 +2153,7 @@ function emit_reduce!(ctx::CodegenContext, args, @nospecialize(result_type), red
     input_tv === nothing && error("Cannot resolve input tile for reduction")
 
     # Get reduction axis
-    axis = extract_constant(ctx, args[2])
-    axis === nothing && error("Reduction axis must be a compile-time constant")
+    axis = @something get_constant(ctx, args[2]) error("Reduction axis must be a compile-time constant")
 
     # Get element type and shapes
     input_type = unwrap_type(input_tv.jltype)
