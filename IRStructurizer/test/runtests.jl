@@ -1,6 +1,8 @@
-using cuTile: code_structured, StructuredCodeInfo, Block, IfOp, ForOp, LoopOp,
-              YieldOp, ContinueOp, BreakOp, UnstructuredControlFlowError,
-              get_typed_ir, structurize!, validate_scf, ControlFlowOp
+using Test
+
+using IRStructurizer
+using IRStructurizer: Block, IfOp, ForOp, LoopOp, YieldOp, ContinueOp, BreakOp,
+                      ControlFlowOp, validate_scf
 
 # Helper to check if a block contains a specific control flow op type
 function has_nested_op(block::Block, ::Type{T}) where T
@@ -57,6 +59,8 @@ end
 function find_ops_in_op!(ops::Vector{T}, op::LoopOp, ::Type{T}) where T
     find_ops_in_block!(ops, op.body, T)
 end
+
+@testset "IRStructurizer" verbose=true begin
 
 @testset "straight-line code" begin
     # Simple function with no control flow
@@ -464,7 +468,7 @@ end
 @testset "structurize! API" begin
     # Test the StructuredCodeInfo(ci) -> structurize! flow
     g(x) = x > 0 ? x + 1 : x - 1
-    ci, _ = get_typed_ir(g, Tuple{Int})
+    ci, _ = only(code_typed(g, (Int,)))
 
     # Create flat view - this has GotoIfNot in body
     sci = StructuredCodeInfo(ci)
@@ -488,7 +492,7 @@ end
 @testset "UnstructuredControlFlowError" begin
     # Verify that validation throws on unstructured control flow
     g(x) = x > 0 ? x + 1 : x - 1
-    ci, _ = get_typed_ir(g, Tuple{Int})
+    ci, _ = only(code_typed(g, (Int,)))
 
     # Flat view has unstructured control flow
     sci = StructuredCodeInfo(ci)
@@ -615,4 +619,6 @@ end
         # Some complex patterns may not be supported yet - that's OK
         @test e isa UnstructuredControlFlowError
     end
+end
+
 end

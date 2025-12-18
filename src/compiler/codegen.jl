@@ -445,10 +445,6 @@ Emit bytecode for a single SSA statement.
 function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @nospecialize(result_type))
     if stmt isa ReturnNode
         emit_return!(ctx, stmt)
-    elseif stmt isa GotoNode
-        # Skip - needs restructuring pass
-    elseif stmt isa GotoIfNot
-        error("Control flow not yet supported: GotoIfNot")
     elseif stmt isa Expr
         tv = emit_expr!(ctx, stmt, result_type)
         if tv !== nothing

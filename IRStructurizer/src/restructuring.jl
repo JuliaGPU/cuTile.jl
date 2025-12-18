@@ -1,70 +1,8 @@
-# Julia IR -> Structured IR
-
-public UnstructuredControlFlowError
-
-# Control flow restructuring - converts unstructured Julia IR to nested structured IR
-#
-# Adapted from SPIRV.jl's structural_analysis.jl
+export StructuredCodeInfo, structurize!
 
 using Graphs: SimpleDiGraph, add_edge!, vertices, edges, nv, ne,
               inneighbors, outneighbors, Edge, strongly_connected_components
 
-#=============================================================================
- Public API: code_structured
-=============================================================================#
-
-"""
-    code_structured(f, argtypes; world=Base.get_world_counter(), optimize=true, validate=true) -> StructuredCodeInfo
-
-Get the structured IR for a function with the given argument types.
-
-This is analogous to `code_typed` but returns a `StructuredCodeInfo` with
-control flow restructured into nested SCF-style operations (if/for/while).
-
-# Arguments
-- `f`: The function to analyze
-- `argtypes`: Argument types as a Tuple type (e.g., `Tuple{Int, Float64}`)
-- `world`: World age for method lookup (default: current)
-- `optimize`: Whether to use optimized IR (default: true)
-- `validate`: Whether to validate that all control flow was properly structured (default: true).
-  When `true`, throws `UnstructuredControlFlowError` if any unstructured control flow remains.
-
-# Returns
-A `StructuredCodeInfo` that displays with MLIR SCF-style syntax showing
-nested control flow structure.
-
-# Example
-```julia
-julia> f(x) = x > 0 ? x + 1 : x - 1
-
-julia> code_structured(f, Tuple{Int})
-StructuredCodeInfo {
-  %1 = Base.slt_int(0, x) : Bool
-  scf.if %1 {
-    %3 = Base.add_int(x, 1) : Int64
-    scf.yield %3
-  } else {
-    %5 = Base.sub_int(x, 1) : Int64
-    scf.yield %5
-  }
-  return %3
-}
-
-julia> code_structured(f, Tuple{Int}; validate=false)  # skip validation
-```
-"""
-function code_structured(@nospecialize(f), @nospecialize(argtypes);
-                         world::UInt = Base.get_world_counter(),
-                         optimize::Bool = true,
-                         validate::Bool = true)
-    ci, _ = get_typed_ir(f, argtypes; world, optimize)
-    sci = StructuredCodeInfo(ci)
-    structurize!(sci)
-    if validate
-        validate_scf(sci)
-    end
-    return sci
-end
 
 #=============================================================================
  Region Types
@@ -1464,7 +1402,7 @@ Returns `sci` for convenience (allows chaining).
 
 # Example
 ```julia
-ci, _ = get_typed_ir(f, Tuple{Int})
+ci, _ = code_typed(f, (Int,))[1]
 sci = StructuredCodeInfo(ci)  # flat view with raw control flow
 structurize!(sci)              # convert to structured ops
 validate_structured_control_flow(sci)  # verify no unstructured control flow remains
@@ -2163,54 +2101,4 @@ function convert_phi_value(val)
     else
         return 0  # Fallback
     end
-end
-
-#=============================================================================
- Structured Control Flow Validation
-=============================================================================#
-
-"""
-    UnstructuredControlFlowError <: Exception
-
-Exception thrown when unstructured control flow is detected in structured IR.
-"""
-struct UnstructuredControlFlowError <: Exception
-    stmt_indices::Vector{Int}
-end
-
-function Base.showerror(io::IO, e::UnstructuredControlFlowError)
-    print(io, "UnstructuredControlFlowError: unstructured control flow at statement(s): ",
-          join(e.stmt_indices, ", "))
-end
-
-"""
-    validate_scf(sci::StructuredCodeInfo) -> Bool
-
-Validate that all control flow in the original CodeInfo has been properly
-converted to structured control flow operations (IfOp, LoopOp, ForOp).
-
-Throws `UnstructuredControlFlowError` if unstructured control flow remains.
-Returns `true` if all control flow is properly structured.
-
-The invariant is simple: no statement index in any `block.body` should point
-to a `GotoNode` or `GotoIfNot` - those should have been replaced by structured
-ops that the visitor descends into.
-"""
-function validate_scf(sci::StructuredCodeInfo)
-    stmts = sci.code.code
-    unstructured = Int[]
-
-    # Walk all blocks and check that no statement is unstructured control flow
-    each_stmt(sci.entry) do idx
-        stmt = stmts[idx]
-        if stmt isa GotoNode || stmt isa GotoIfNot
-            push!(unstructured, idx)
-        end
-    end
-
-    if !isempty(unstructured)
-        throw(UnstructuredControlFlowError(sort!(unstructured)))
-    end
-
-    return true
 end
