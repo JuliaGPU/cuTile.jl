@@ -274,13 +274,13 @@ end
 
 """
     build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                 pattern::ForLoopPattern, block_id::Ref{Int}) -> ForOp
+                 pattern::ForLoopPattern, block_id::Ref{Int}; loop_patterning=true) -> ForOp
 
 Build a ForOp from a pre-analyzed ForLoopPattern.
 Uses the pre-computed values from pattern detection to avoid redundant IR traversals.
 """
 function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                      pattern::ForLoopPattern, block_id::Ref{Int})
+                      pattern::ForLoopPattern, block_id::Ref{Int}; loop_patterning::Bool=true)
     # Build block args from pattern
     block_args = BlockArg[]
 
@@ -309,13 +309,13 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
 
         child_rtype = region_type(child)
         if child_rtype == REGION_WHILE_LOOP || child_rtype == REGION_NATURAL_LOOP
-            handle_loop!(body, child, code, blocks, block_id)
+            handle_loop!(body, child, code, blocks, block_id; loop_patterning)
         elseif child_rtype == REGION_IF_THEN || child_rtype == REGION_IF_THEN_ELSE
-            handle_nested_region!(body, child, code, blocks, block_id)
+            handle_nested_region!(body, child, code, blocks, block_id; loop_patterning)
         elseif child_rtype == REGION_BLOCK
-            process_for_body_region!(body, child, code, blocks, block_id, pattern.iv_incr_idx)
+            process_for_body_region!(body, child, code, blocks, block_id, pattern.iv_incr_idx; loop_patterning)
         else
-            handle_nested_region!(body, child, code, blocks, block_id)
+            handle_nested_region!(body, child, code, blocks, block_id; loop_patterning)
         end
     end
 
@@ -328,11 +328,11 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
 end
 
 """
-    process_for_body_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, iv_incr_idx)
+    process_for_body_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, iv_incr_idx; loop_patterning=true)
 
 Process a REGION_BLOCK inside a ForOp body, handling nested loops and skipping induction variable operations.
 """
-function process_for_body_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, iv_incr_idx)
+function process_for_body_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, iv_incr_idx; loop_patterning::Bool=true)
     stmts = code.code
 
     if isempty(children(tree))
@@ -364,11 +364,11 @@ function process_for_body_region!(block::Block, tree::ControlTree, code::CodeInf
         for child in children(tree)
             child_rtype = region_type(child)
             if child_rtype == REGION_WHILE_LOOP || child_rtype == REGION_NATURAL_LOOP
-                handle_loop!(block, child, code, blocks, block_id)
+                handle_loop!(block, child, code, blocks, block_id; loop_patterning)
             elseif child_rtype == REGION_BLOCK
-                process_for_body_region!(block, child, code, blocks, block_id, iv_incr_idx)
+                process_for_body_region!(block, child, code, blocks, block_id, iv_incr_idx; loop_patterning)
             else
-                handle_nested_region!(block, child, code, blocks, block_id)
+                handle_nested_region!(block, child, code, blocks, block_id; loop_patterning)
             end
         end
     end
@@ -376,12 +376,12 @@ end
 
 """
     build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                   pattern::WhileLoopPattern, block_id::Ref{Int}) -> WhileOp
+                   pattern::WhileLoopPattern, block_id::Ref{Int}; loop_patterning=true) -> WhileOp
 
 Build a WhileOp from a pre-analyzed WhileLoopPattern.
 """
 function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                        pattern::WhileLoopPattern, block_id::Ref{Int})
+                        pattern::WhileLoopPattern, block_id::Ref{Int}; loop_patterning::Bool=true)
     stmts = code.code
 
     # Build block args from carried phi nodes
@@ -419,11 +419,11 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
 
         child_rtype = region_type(child)
         if child_rtype == REGION_WHILE_LOOP || child_rtype == REGION_NATURAL_LOOP
-            handle_loop!(body, child, code, blocks, block_id)
+            handle_loop!(body, child, code, blocks, block_id; loop_patterning)
         elseif child_rtype == REGION_BLOCK
-            handle_block_region!(body, child, code, blocks, block_id)
+            handle_block_region!(body, child, code, blocks, block_id; loop_patterning)
         else
-            handle_nested_region!(body, child, code, blocks, block_id)
+            handle_nested_region!(body, child, code, blocks, block_id; loop_patterning)
         end
     end
 
@@ -434,12 +434,12 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
 end
 
 """
-    build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> LoopOp
+    build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true) -> LoopOp
 
 Build a general LoopOp from a loop control tree.
 This is the fallback when ForOp and WhileOp patterns don't match.
 """
-function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     stmts = code.code
     header_idx = node_index(tree)
     loop_blocks = get_loop_blocks(tree, blocks)
@@ -527,7 +527,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(then_block, child, code, blocks, block_id)
+                handle_block_region!(then_block, child, code, blocks, block_id; loop_patterning)
             end
         end
         then_block.terminator = ContinueOp(carried_values)
@@ -547,7 +547,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(body, child, code, blocks, block_id)
+                handle_block_region!(body, child, code, blocks, block_id; loop_patterning)
             end
         end
         body.terminator = ContinueOp(carried_values)

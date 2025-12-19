@@ -13,22 +13,22 @@ using Graphs: SimpleDiGraph, add_edge!, vertices, edges, nv, ne,
 =============================================================================#
 
 """
-    control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}) -> Block
+    control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}; loop_patterning=true) -> Block
 
 Convert a control tree to structured IR entry block.
 """
-function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
+function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}; loop_patterning::Bool=true)
     block_id = Ref(1)
-    entry_block = tree_to_block(ctree, code, blocks, block_id)
+    entry_block = tree_to_block(ctree, code, blocks, block_id; loop_patterning)
     return entry_block
 end
 
 """
-    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> Block
+    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true) -> Block
 
 Convert a control tree node to a Block.
 """
-function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     idx = node_index(tree)
     rtype = region_type(tree)
     id = block_id[]
@@ -37,24 +37,24 @@ function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
     block = Block(id)
 
     if rtype == REGION_BLOCK
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, block_id)
+        handle_if_then_else!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, block_id)
+        handle_if_then!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, block_id)
+        handle_termination!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, block_id)
+        handle_loop!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_SELF_LOOP
         handle_self_loop!(block, tree, code, blocks, block_id)
     elseif rtype == REGION_PROPER
-        handle_proper_region!(block, tree, code, blocks, block_id)
+        handle_proper_region!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, block_id)
+        handle_switch!(block, tree, code, blocks, block_id; loop_patterning)
     else
         # Fallback: collect statements
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
     end
 
     # Set terminator if not already set
@@ -64,11 +64,11 @@ function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
 end
 
 """
-    handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_BLOCK - a linear sequence of blocks.
 """
-function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     if isempty(children(tree))
         # Leaf node - collect statements from the block
         idx = node_index(tree)
@@ -80,50 +80,50 @@ function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, b
         for child in children(tree)
             child_rtype = region_type(child)
             if child_rtype == REGION_BLOCK
-                handle_block_region!(block, child, code, blocks, block_id)
+                handle_block_region!(block, child, code, blocks, block_id; loop_patterning)
             else
                 # Nested control flow - create appropriate op
-                handle_nested_region!(block, child, code, blocks, block_id)
+                handle_nested_region!(block, child, code, blocks, block_id; loop_patterning)
             end
         end
     end
 end
 
 """
-    handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle a nested control flow region.
 """
-function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     rtype = region_type(tree)
 
     if rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, block_id)
+        handle_if_then_else!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, block_id)
+        handle_if_then!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, block_id)
+        handle_termination!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, block_id)
+        handle_loop!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_SELF_LOOP
         handle_self_loop!(block, tree, code, blocks, block_id)
     elseif rtype == REGION_PROPER
-        handle_proper_region!(block, tree, code, blocks, block_id)
+        handle_proper_region!(block, tree, code, blocks, block_id; loop_patterning)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, block_id)
+        handle_switch!(block, tree, code, blocks, block_id; loop_patterning)
     else
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
     end
 end
 
 """
-    handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_IF_THEN_ELSE.
 """
-function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     tree_children = children(tree)
-    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, block_id)
+    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -146,8 +146,8 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     then_tree = tree_children[2]
     else_tree = tree_children[3]
 
-    then_block = tree_to_block(then_tree, code, blocks, block_id)
-    else_block = tree_to_block(else_tree, code, blocks, block_id)
+    then_block = tree_to_block(then_tree, code, blocks, block_id; loop_patterning)
+    else_block = tree_to_block(else_tree, code, blocks, block_id; loop_patterning)
 
     # Create IfOp
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
@@ -155,13 +155,13 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
 end
 
 """
-    handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_IF_THEN.
 """
-function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     tree_children = children(tree)
-    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, block_id)
+    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -182,7 +182,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
 
     # Then block
     then_tree = tree_children[2]
-    then_block = tree_to_block(then_tree, code, blocks, block_id)
+    then_block = tree_to_block(then_tree, code, blocks, block_id; loop_patterning)
 
     # Empty else block
     else_block = Block(block_id[])
@@ -193,13 +193,13 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
 end
 
 """
-    handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_TERMINATION - branches where some paths terminate.
 """
-function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     tree_children = children(tree)
-    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, block_id)
+    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -222,13 +222,13 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
     if length(tree_children) >= 3
         then_tree = tree_children[2]
         else_tree = tree_children[3]
-        then_block = tree_to_block(then_tree, code, blocks, block_id)
-        else_block = tree_to_block(else_tree, code, blocks, block_id)
+        then_block = tree_to_block(then_tree, code, blocks, block_id; loop_patterning)
+        else_block = tree_to_block(else_tree, code, blocks, block_id; loop_patterning)
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
         push!(block.body, if_op)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
-        then_block = tree_to_block(then_tree, code, blocks, block_id)
+        then_block = tree_to_block(then_tree, code, blocks, block_id; loop_patterning)
         else_block = Block(block_id[])
         block_id[] += 1
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
@@ -237,30 +237,33 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
 end
 
 """
-    handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_WHILE_LOOP and REGION_NATURAL_LOOP.
-Tries loop patterns in order: ForOp > WhileOp > LoopOp
+When loop_patterning=true, tries loop patterns in order: ForOp > WhileOp > LoopOp.
+When loop_patterning=false, uses LoopOp directly.
 """
-function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
-    # Try to detect for-loop pattern first (most structured)
-    for_pattern = detect_for_loop_pattern(tree, code, blocks)
-    if for_pattern !== nothing
-        for_op = build_for_op(tree, code, blocks, for_pattern, block_id)
-        push!(block.body, for_op)
-        return
+function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
+    if loop_patterning
+        # Try to detect for-loop pattern first (most structured)
+        for_pattern = detect_for_loop_pattern(tree, code, blocks)
+        if for_pattern !== nothing
+            for_op = build_for_op(tree, code, blocks, for_pattern, block_id; loop_patterning)
+            push!(block.body, for_op)
+            return
+        end
+
+        # Try to detect while-loop pattern (condition at header)
+        while_pattern = detect_while_loop_pattern(tree, code, blocks)
+        if while_pattern !== nothing
+            while_op = build_while_op(tree, code, blocks, while_pattern, block_id; loop_patterning)
+            push!(block.body, while_op)
+            return
+        end
     end
 
-    # Try to detect while-loop pattern (condition at header)
-    while_pattern = detect_while_loop_pattern(tree, code, blocks)
-    if while_pattern !== nothing
-        while_op = build_while_op(tree, code, blocks, while_pattern, block_id)
-        push!(block.body, while_op)
-        return
-    end
-
-    # Fallback: Build general LoopOp
-    loop_op = build_loop_op(tree, code, blocks, block_id)
+    # Fallback (or when loop_patterning=false): Build general LoopOp
+    loop_op = build_loop_op(tree, code, blocks, block_id; loop_patterning)
     push!(block.body, loop_op)
 end
 
@@ -284,24 +287,24 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
 end
 
 """
-    handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_PROPER - acyclic region not matching other patterns.
 """
-function handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     # Process as a sequence of blocks
-    handle_block_region!(block, tree, code, blocks, block_id)
+    handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
 end
 
 """
-    handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning=true)
 
 Handle REGION_SWITCH.
 """
-function handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}; loop_patterning::Bool=true)
     # For now, handle as a nested if-else chain
     # TODO: Implement proper switch handling if needed
-    handle_block_region!(block, tree, code, blocks, block_id)
+    handle_block_region!(block, tree, code, blocks, block_id; loop_patterning)
 end
 
 """
@@ -374,7 +377,7 @@ end
 =============================================================================#
 
 """
-    structurize!(sci::StructuredCodeInfo) -> StructuredCodeInfo
+    structurize!(sci::StructuredCodeInfo; loop_patterning=true) -> StructuredCodeInfo
 
 Convert unstructured control flow in `sci` to structured control flow operations
 (IfOp, ForOp, WhileOp, LoopOp) in-place.
@@ -382,9 +385,12 @@ Convert unstructured control flow in `sci` to structured control flow operations
 This transforms GotoNode and GotoIfNot statements into nested structured ops
 that can be traversed hierarchically.
 
+When `loop_patterning=true` (default), loops are classified as ForOp (bounded counters)
+or WhileOp (condition-based). When `false`, all loops become LoopOp.
+
 Returns `sci` for convenience (allows chaining).
 """
-function structurize!(sci::StructuredCodeInfo)
+function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     code = sci.code
     stmts = code.code
     n = length(stmts)
@@ -416,7 +422,7 @@ function structurize!(sci::StructuredCodeInfo)
     ctree = ControlTree(cfg)
 
     # Convert control tree to structured IR
-    sci.entry = control_tree_to_structured_ir(ctree, code, blocks)
+    sci.entry = control_tree_to_structured_ir(ctree, code, blocks; loop_patterning)
 
     return sci
 end

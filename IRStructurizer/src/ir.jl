@@ -323,13 +323,14 @@ mutable struct IRPrinter
     indent::Int
     line_prefix::String    # Prefix for continuation lines (│, spaces)
     is_last_stmt::Bool     # Whether current stmt is last in block
+    ssa_to_blockarg::Dict{Int,BlockArg}  # Maps SSA indices to block arguments (for loop-carried values)
 end
 
-IRPrinter(io::IO, code::CodeInfo) = IRPrinter(io, code, 0, "", false)
+IRPrinter(io::IO, code::CodeInfo) = IRPrinter(io, code, 0, "", false, Dict{Int,BlockArg}())
 
 function indent(p::IRPrinter, n::Int=1)
     new_prefix = p.line_prefix * "    "  # 4 spaces per indent level
-    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false)
+    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, copy(p.ssa_to_blockarg))
 end
 
 function print_indent(p::IRPrinter)
@@ -338,6 +339,10 @@ end
 
 # Format an IR value for printing
 function format_value(p::IRPrinter, v::SSAValue)
+    # Check if this SSA value maps to a block argument (loop-carried variable)
+    if haskey(p.ssa_to_blockarg, v.id)
+        return format_value(p, p.ssa_to_blockarg[v.id])
+    end
     string("%", v.id)
 end
 function format_value(p::IRPrinter, v::BlockArg)
@@ -585,7 +590,7 @@ function print_control_flow(p::IRPrinter, op::IfOp; is_last::Bool=false)
     println(p.io)
 
     # Then block body (indented with continuation line)
-    then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false)
+    then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, copy(p.ssa_to_blockarg))
     print_block_body(then_p, op.then_block)
 
     # else - aligned with "if"
@@ -634,15 +639,25 @@ function print_control_flow(p::IRPrinter, op::ForOp; is_last::Bool=false)
 
     println(p.io)
 
-    # Body
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false)
+    # Body - create printer with SSA-to-blockarg mapping for loop-carried values
+    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, copy(p.ssa_to_blockarg))
+    # Map induction variable SSA to first block arg
+    if !isempty(op.body.args)
+        body_p.ssa_to_blockarg[op.iv_ssa.id] = op.body.args[1]
+    end
+    # Map result vars to remaining block args
+    for (i, rv) in enumerate(op.result_vars)
+        if i + 1 <= length(op.body.args)
+            body_p.ssa_to_blockarg[rv.id] = op.body.args[i + 1]
+        end
+    end
     print_block_body(body_p, op.body)
 
     print_indent(p)
     println(p.io, cont_prefix, "end")
 end
 
-# Print LoopOp (Julia-style while)
+# Print LoopOp (general loop - distinct from structured WhileOp)
 function print_control_flow(p::IRPrinter, op::LoopOp; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
@@ -652,15 +667,21 @@ function print_control_flow(p::IRPrinter, op::LoopOp; is_last::Bool=false)
     # Print results assignment if any
     if !isempty(op.result_vars)
         print(p.io, prefix, " ", format_results(p, op.result_vars), " = ")
-        print(p.io, "while")
+        print(p.io, "loop")
     else
-        print(p.io, prefix, " while")
+        print(p.io, prefix, " loop")
     end
     print_iter_args(p, op.body.args, op.init_values)
     println(p.io)
 
-    # Body
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false)
+    # Body - create printer with SSA-to-blockarg mapping for loop-carried values
+    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, copy(p.ssa_to_blockarg))
+    # Map result vars to block args
+    for (i, rv) in enumerate(op.result_vars)
+        if i <= length(op.body.args)
+            body_p.ssa_to_blockarg[rv.id] = op.body.args[i]
+        end
+    end
     print_block_body(body_p, op.body)
 
     print_indent(p)
@@ -684,8 +705,14 @@ function print_control_flow(p::IRPrinter, op::WhileOp; is_last::Bool=false)
     print_iter_args(p, op.body.args, op.init_values)
     println(p.io)
 
-    # Body
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false)
+    # Body - create printer with SSA-to-blockarg mapping for loop-carried values
+    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, copy(p.ssa_to_blockarg))
+    # Map result vars to block args
+    for (i, rv) in enumerate(op.result_vars)
+        if i <= length(op.body.args)
+            body_p.ssa_to_blockarg[rv.id] = op.body.args[i]
+        end
+    end
     print_block_body(body_p, op.body)
 
     print_indent(p)
@@ -711,7 +738,7 @@ function Base.show(io::IO, ::MIME"text/plain", sci::StructuredCodeInfo)
     # Print header like CodeInfo
     println(io, "StructuredCodeInfo(")
 
-    p = IRPrinter(io, sci.code, 0, "", false)
+    p = IRPrinter(io, sci.code, 0, "", false, Dict{Int,BlockArg}())
 
     # Print entry block body
     print_block_body(p, sci.entry)
