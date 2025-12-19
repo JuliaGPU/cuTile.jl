@@ -9,17 +9,11 @@
 
 Represents a block argument (similar to MLIR block arguments).
 Used for loop carried values and condition branch results.
-
-The `ssa_origin` field tracks the original SSA index this block arg
-corresponds to (for phi node substitution). Set to 0 if not from a phi.
 """
 struct BlockArg
     id::Int           # Sequential ID within block (1, 2, 3...)
     type::Any         # Julia type
-    ssa_origin::Int   # Original SSA index (0 if not from phi)
 end
-
-BlockArg(id::Int, type::Any) = BlockArg(id, type, 0)
 
 #=============================================================================
  IR Values - references to SSA values or block arguments

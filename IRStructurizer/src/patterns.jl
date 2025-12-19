@@ -204,7 +204,7 @@ function try_upgrade_to_for(loop::LoopOp)
         if j != iv_idx && j <= length(loop.init_values)
             push!(other_init_values, loop.init_values[j])
             # Renumber block args sequentially
-            push!(other_block_args, BlockArg(length(other_block_args) + 1, arg.type, arg.ssa_origin))
+            push!(other_block_args, BlockArg(length(other_block_args) + 1, arg.type))
         end
     end
 
@@ -302,9 +302,9 @@ function try_upgrade_to_while(loop::LoopOp)
 
     # Build "after" region: statements from the then_block + YieldOp
     after = Block(loop.body.id + 1000)  # Different block ID
-    # After region receives args from ConditionOp - create new BlockArgs (no ssa_origin needed)
+    # After region receives args from ConditionOp
     for (i, arg) in enumerate(before.args)
-        push!(after.args, BlockArg(i, arg.type, 0))
+        push!(after.args, BlockArg(i, arg.type))
     end
 
     # Copy body statements from the continue path

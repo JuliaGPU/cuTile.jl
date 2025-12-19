@@ -407,8 +407,8 @@ end
 """
     build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> LoopOp
 
-Build a LoopOp for Phase 1. No substitutions applied yet.
-Pattern detection and substitution happens in Phase 2.
+Build a LoopOp with substitutions applied inline.
+Phi node SSA references inside the loop body are replaced with BlockArgs.
 """
 function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     stmts = code.code
@@ -420,10 +420,12 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     header_block = blocks[header_idx]
     stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
 
-    # Find phi nodes in header - these become loop-carried values and results
+    # Find phi nodes in header - these become loop-carried values and block args
+    # Also build substitution map: SSA index -> BlockArg
     init_values = IRValue[]
     carried_values = IRValue[]
     block_args = BlockArg[]
+    subs = Substitutions()
 
     for si in header_block.range
         stmt = stmts[si]
@@ -459,8 +461,10 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
             carried_val !== nothing && push!(carried_values, carried_val)
 
             phi_type = types[si]
-            # Store ssa_origin so we know which SSA index this block arg replaces
-            push!(block_args, BlockArg(length(block_args) + 1, phi_type, si))
+            block_arg = BlockArg(length(block_args) + 1, phi_type)
+            push!(block_args, block_arg)
+            # Map this phi's SSA index to its block arg
+            subs[si] = block_arg
         end
     end
 
@@ -479,7 +483,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
     end
 
-    # Collect header statements (excluding phi nodes and control flow) - NO SUBSTITUTION
+    # Collect header statements (excluding phi nodes and control flow)
     for si in header_block.range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
@@ -501,7 +505,6 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(then_block, child, code, blocks, block_id)
             end
         end
-        # Raw carried values (no substitution yet)
         then_block.terminator = ContinueOp(carried_values)
 
         else_block = Block(block_id[])
@@ -525,6 +528,9 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
         body.terminator = ContinueOp(carried_values)
     end
+
+    # Apply substitutions to the loop body (phi SSA refs -> block args)
+    substitute_block!(body, subs)
 
     # Compute result type from block args
     result_type = compute_result_type(block_args)
@@ -550,41 +556,3 @@ function compute_result_type(block_args::Vector{BlockArg})
     end
 end
 
-#=============================================================================
- Phase 1 Completion: Apply SSA Substitutions (outer → inner)
-=============================================================================#
-
-"""
-    apply_loop_substitutions!(block::Block)
-
-Apply SSA→BlockArg substitutions to all loops, processing outer→inner.
-Must be called after Phase 1 to complete the structured IR.
-"""
-function apply_loop_substitutions!(block::Block)
-    for item in block.body
-        if item isa LoopOp
-            subs = compute_loop_subs(item)
-            substitute_block!(item.body, subs)
-            apply_loop_substitutions!(item.body)
-        elseif item isa IfOp
-            apply_loop_substitutions!(item.then_block)
-            apply_loop_substitutions!(item.else_block)
-        end
-    end
-end
-
-"""
-    compute_loop_subs(loop::LoopOp) -> Substitutions
-
-Compute the SSA→BlockArg substitutions for a loop.
-Maps each phi node SSA index (stored in BlockArg.ssa_origin) to its block argument.
-"""
-function compute_loop_subs(loop::LoopOp)
-    subs = Substitutions()
-    for arg in loop.body.args
-        if arg.ssa_origin > 0
-            subs[arg.ssa_origin] = arg
-        end
-    end
-    return subs
-end
