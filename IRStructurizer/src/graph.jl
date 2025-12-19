@@ -1,4 +1,4 @@
-# Adapted from SPIRV.jl/src/analysis/deltagraph.jl
+# directed graph implementation with stable vertex indices after deletions
 
 using Graphs
 using Graphs: AbstractGraph, Edge, SimpleDiGraph, add_edge!, rem_edge!,

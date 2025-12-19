@@ -1,7 +1,4 @@
-# Intermediate IR for control flow restructuring
-#
-# This is a minimal, generic IR for converting unstructured Julia control flow
-# to nested structured control flow suitable for Tile IR emission.
+# structured IR definitions
 
 #=============================================================================
  Block Arguments (for loop carried values)
@@ -175,6 +172,27 @@ function Base.show(io::IO, op::LoopOp)
           ", results=", length(op.result_vars), ")")
 end
 
+"""
+    WhileOp <: ControlFlowOp
+
+Structured while loop with explicit condition.
+The condition is evaluated at the start of each iteration.
+More structured than LoopOp - the condition is separate from the body.
+"""
+struct WhileOp <: ControlFlowOp
+    condition::IRValue               # Loop condition (evaluated each iteration)
+    init_values::Vector{IRValue}     # Initial values for loop-carried variables
+    body::Block                      # Loop body (no condition check inside)
+    result_vars::Vector{SSAValue}    # SSA values that receive final results
+end
+
+function Base.show(io::IO, op::WhileOp)
+    print(io, "WhileOp(cond=", op.condition,
+          ", init=", length(op.init_values),
+          ", body=Block(", op.body.id, ")",
+          ", results=", length(op.result_vars), ")")
+end
+
 #=============================================================================
  StructuredCodeInfo - the structured IR for a function
 =============================================================================#
@@ -253,6 +271,10 @@ function each_block_in_op(f, op::LoopOp)
     each_block(f, op.body)
 end
 
+function each_block_in_op(f, op::WhileOp)
+    each_block(f, op.body)
+end
+
 """
     each_stmt(f, block::Block)
 
@@ -278,6 +300,10 @@ function each_stmt_in_op(f, op::ForOp)
 end
 
 function each_stmt_in_op(f, op::LoopOp)
+    each_stmt(f, op.body)
+end
+
+function each_stmt_in_op(f, op::WhileOp)
     each_stmt(f, op.body)
 end
 
@@ -629,6 +655,31 @@ function print_control_flow(p::IRPrinter, op::LoopOp; is_last::Bool=false)
         print(p.io, "while")
     else
         print(p.io, prefix, " while")
+    end
+    print_iter_args(p, op.body.args, op.init_values)
+    println(p.io)
+
+    # Body
+    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false)
+    print_block_body(body_p, op.body)
+
+    print_indent(p)
+    println(p.io, cont_prefix, "end")
+end
+
+# Print WhileOp (structured while with explicit condition)
+function print_control_flow(p::IRPrinter, op::WhileOp; is_last::Bool=false)
+    prefix = is_last ? "└──" : "├──"
+    cont_prefix = is_last ? "    " : "│   "
+
+    print_indent(p)
+
+    # Print results assignment if any
+    if !isempty(op.result_vars)
+        print(p.io, prefix, " ", format_results(p, op.result_vars), " = ")
+        print(p.io, "while ", format_value(p, op.condition))
+    else
+        print(p.io, prefix, " while ", format_value(p, op.condition))
     end
     print_iter_args(p, op.body.args, op.init_values)
     println(p.io)

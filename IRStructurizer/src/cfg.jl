@@ -1,4 +1,4 @@
-# Adapted from SPIRV.jl/src/analysis/control_flow.jl
+# generic CFG infrastructure: trees, dominators, edge classification
 
 using Graphs
 using Graphs: AbstractGraph, SimpleDiGraph, Edge, add_edge!, rem_edge!,
@@ -8,7 +8,14 @@ using AbstractTrees: AbstractTrees, PreOrderDFS, PostOrderDFS
 
 function entry_node(g::AbstractGraph)
     vs = sources(g)
-    isempty(vs) && error("No entry node was found.")
+    if isempty(vs)
+        # No sources found - this can happen when loops have back edges to the entry block.
+        # For Julia IR CFGs, vertex 1 is always the entry block.
+        if 1 in vertices(g)
+            return 1
+        end
+        error("No entry node was found.")
+    end
     length(vs) > 1 && error("Multiple entry nodes were found.")
     first(vs)
 end

@@ -1,7 +1,7 @@
 using Test
 
 using IRStructurizer
-using IRStructurizer: Block, IfOp, ForOp, LoopOp, YieldOp, ContinueOp, BreakOp,
+using IRStructurizer: Block, IfOp, ForOp, WhileOp, LoopOp, YieldOp, ContinueOp, BreakOp,
                       ControlFlowOp, validate_scf
 
 # Helper to check if a block contains a specific control flow op type
@@ -57,6 +57,10 @@ function find_ops_in_op!(ops::Vector{T}, op::ForOp, ::Type{T}) where T
 end
 
 function find_ops_in_op!(ops::Vector{T}, op::LoopOp, ::Type{T}) where T
+    find_ops_in_block!(ops, op.body, T)
+end
+
+function find_ops_in_op!(ops::Vector{T}, op::WhileOp, ::Type{T}) where T
     find_ops_in_block!(ops, op.body, T)
 end
 
@@ -248,10 +252,11 @@ end
     sci = code_structured(bar, Tuple{Int, Int})
     @test sci isa StructuredCodeInfo
 
-    # Should have detected either ForOp or LoopOp
+    # Should have detected either ForOp, WhileOp, or LoopOp
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    @test length(for_ops) + length(loop_ops) >= 1
+    @test length(for_ops) + length(while_ops) + length(loop_ops) >= 1
 
     # Display should show loop structure
     io = IOBuffer()
@@ -269,10 +274,11 @@ end
 
     sci = code_structured(count_down, Tuple{Int})
     @test sci isa StructuredCodeInfo
-    # May be detected as ForOp or LoopOp depending on pattern
+    # May be detected as ForOp, WhileOp, or LoopOp depending on pattern
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    @test length(for_ops) + length(loop_ops) >= 1
+    @test length(for_ops) + length(while_ops) + length(loop_ops) >= 1
 
     # Simple for loop (converts to while-like IR)
     function sum_to_n(n)
@@ -326,6 +332,52 @@ end
     @test occursin("continue", output)  # ForOp uses "continue" terminator
 end
 
+@testset "while-loop detection" begin
+    # Spinlock-style pattern (not a for-loop) - should be WhileOp or LoopOp
+    # This tests the WhileOp detection path
+    function spinlock(flag::Int32)
+        while flag != Int32(0)
+            # spin (no-op body)
+        end
+        return flag
+    end
+
+    sci = code_structured(spinlock, Tuple{Int32})
+    @test sci isa StructuredCodeInfo
+
+    # Should detect WhileOp (not ForOp since no induction variable increment)
+    for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
+    loop_ops = find_all_ops(sci, LoopOp)
+
+    # Either WhileOp or LoopOp, but not ForOp
+    @test length(for_ops) == 0
+    @test length(while_ops) + length(loop_ops) >= 1
+
+    # Simple while with decrement (not a for-loop pattern since condition doesn't match)
+    function count_down(n::Int32)
+        while n > Int32(0)
+            n -= Int32(1)
+        end
+        return n
+    end
+
+    sci = code_structured(count_down, Tuple{Int32})
+    @test sci isa StructuredCodeInfo
+
+    # May be WhileOp or LoopOp (not ForOp since condition is n > 0, not n < upper)
+    for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
+    loop_ops = find_all_ops(sci, LoopOp)
+    @test length(for_ops) + length(while_ops) + length(loop_ops) >= 1
+
+    # Display should show while syntax
+    io = IOBuffer()
+    show(io, MIME"text/plain"(), sci)
+    output = String(take!(io))
+    @test occursin("while", output)
+end
+
 @testset "nested loop support" begin
     # Simple nested while loops
     function nested_while(n::Int32, m::Int32)
@@ -347,8 +399,9 @@ end
 
     # Should have at least 2 loops (outer and inner)
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    total_loops = length(for_ops) + length(loop_ops)
+    total_loops = length(for_ops) + length(while_ops) + length(loop_ops)
     @test total_loops >= 2
 
     # Display should show nested structure
@@ -378,8 +431,9 @@ end
 
     # Should have at least 2 loops
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    total_loops = length(for_ops) + length(loop_ops)
+    total_loops = length(for_ops) + length(while_ops) + length(loop_ops)
     @test total_loops >= 2
 
     # Triple nested loops
@@ -406,8 +460,9 @@ end
 
     # Should have at least 3 loops
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    total_loops = length(for_ops) + length(loop_ops)
+    total_loops = length(for_ops) + length(while_ops) + length(loop_ops)
     @test total_loops >= 3
 
     # Nested loop with outer ForOp and inner LoopOp
@@ -430,8 +485,9 @@ end
 
     # Should have at least 2 loops total
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    total_loops = length(for_ops) + length(loop_ops)
+    total_loops = length(for_ops) + length(while_ops) + length(loop_ops)
     @test total_loops >= 2
 end
 
@@ -540,8 +596,9 @@ end
 
     # Should have a loop
     for_ops = find_all_ops(sci, ForOp)
+    while_ops = find_all_ops(sci, WhileOp)
     loop_ops = find_all_ops(sci, LoopOp)
-    @test length(for_ops) + length(loop_ops) >= 1
+    @test length(for_ops) + length(while_ops) + length(loop_ops) >= 1
 
     # Verify output shows no duplication (each mul_int should appear once)
     io = IOBuffer()

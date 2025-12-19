@@ -1,4 +1,6 @@
-# Adapted from SPIRV.jl/src/analysis/structural_analysis.jl
+# graph-level CFG pattern detection
+#
+# inspects the control-flow graph to build a control tree
 
 using MLStyle: @active, @match
 using Graphs

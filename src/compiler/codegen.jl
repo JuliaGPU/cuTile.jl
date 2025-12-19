@@ -381,6 +381,125 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     end
 end
 
+function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
+    cb = ctx.cb
+
+    # Get init values
+    init_values = Value[]
+    for init_val in op.init_values
+        tv = emit_value!(ctx, init_val)
+        (tv === nothing || tv.v === nothing) && error("Cannot resolve WhileOp init value: $init_val")
+        push!(init_values, tv.v)
+    end
+    # Add token as additional init value (for memory ordering)
+    push!(init_values, ctx.token)
+
+    # Determine result types from result_vars
+    result_types = TypeId[]
+    for result_var in op.result_vars
+        result_type = ssatypes(ctx.target)[result_var.id]
+        type_id = tile_type_for_julia!(ctx, result_type)
+        push!(result_types, type_id)
+    end
+    # Add token type as additional result (for memory ordering)
+    push!(result_types, ctx.token_type)
+
+    # Number of user result types (excluding token)
+    n_user_results = length(op.result_vars)
+
+    # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
+    # Structure: loop { body_stmts; if (condition) { continue } else { break } }
+    # The body statements include the condition computation, so we emit them first
+    body_builder = function(block_args)
+        # Map block arguments (carried values, last is token)
+        for (i, body_arg) in enumerate(op.body.args)
+            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
+                shape = extract_tile_shape(body_arg.type)
+                ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
+            end
+        end
+
+        # Also map result_vars to block args
+        for (i, result_var) in enumerate(op.result_vars)
+            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
+                result_type = ssatypes(ctx.target)[result_var.id]
+                shape = extract_tile_shape(result_type)
+                ctx[result_var] = CGVal(block_args[i], result_types[i], result_type, shape)
+            end
+        end
+
+        # Set token from last block arg
+        ctx.token = block_args[end]
+
+        # Emit body statements first (this includes the condition computation)
+        code_stmts = code(ctx.target)
+        types = ssatypes(ctx.target)
+        for item in op.body.body
+            if item isa Int
+                stmt = code_stmts[item]
+                result_type = types[item]
+                emit_statement!(ctx, stmt, item, result_type)
+            elseif item isa ControlFlowOp
+                emit_control_flow_op!(ctx, item)
+            end
+        end
+
+        # Now condition should be in context
+        cond_tv = emit_value!(ctx, op.condition)
+        (cond_tv === nothing || cond_tv.v === nothing) && error("Cannot resolve WhileOp condition: $(op.condition)")
+
+        # Create if-then-else: if condition { continue } else { break }
+        then_body = function(_)
+            # Emit continue with updated carried values
+            continue_operands = Value[]
+            if op.body.terminator isa ContinueOp
+                for val in op.body.terminator.values
+                    tv = emit_value!(ctx, val)
+                    tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
+                end
+            end
+            push!(continue_operands, ctx.token)
+            encode_ContinueOp!(ctx.cb, continue_operands)
+        end
+
+        else_body = function(_)
+            # Break with current values
+            break_operands = Value[]
+            for i in 1:n_user_results
+                push!(break_operands, block_args[i])
+            end
+            push!(break_operands, ctx.token)
+            encode_BreakOp!(ctx.cb, break_operands)
+        end
+
+        # Emit IfOp without results (all control flow is via continue/break)
+        if_result_types = TypeId[ctx.token_type]  # Only token result
+        if_results = encode_IfOp!(then_body, else_body, cb, if_result_types, cond_tv.v)
+        ctx.token = if_results[end]
+
+        # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
+        # in all branches), the if is NOT a terminator. We need an explicit terminator
+        # after the if. Add an unreachable ContinueOp as fallback terminator.
+        fallback_operands = copy(block_args)
+        fallback_operands[end] = ctx.token
+        encode_ContinueOp!(ctx.cb, fallback_operands)
+    end
+    results = encode_LoopOp!(body_builder, cb, result_types, init_values)
+
+    # Last result is the token
+    ctx.token = results[end]
+
+    # Map user result values (excluding token)
+    for (i, result_var) in enumerate(op.result_vars)
+        if i <= length(results) - 1  # Exclude token
+            result_type = ssatypes(ctx.target)[result_var.id]
+            type_id = tile_type_for_julia!(ctx, result_type)
+            shape = extract_tile_shape(result_type)
+            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
+        end
+    end
+end
+
 """
     emit_terminator!(ctx, terminator)
 
