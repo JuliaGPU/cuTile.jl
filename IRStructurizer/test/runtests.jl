@@ -403,7 +403,7 @@ end
     @test length(for_op.body.args) == 1
 
     # Loop produces one result (the final accumulator value)
-    @test length(for_op.result_vars) == 1
+    @test for_op.result_type !== Nothing
 end
 
 @testset "nested for loops" begin

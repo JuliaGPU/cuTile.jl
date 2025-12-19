@@ -192,7 +192,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     else_block = tree_to_block(else_tree, code, blocks, block_id)
 
     # Create IfOp
-    if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+    if_op = IfOp(cond_value, then_block, else_block, Nothing)
     push!(block.body, if_op)
 end
 
@@ -230,7 +230,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     else_block = Block(block_id[])
     block_id[] += 1
 
-    if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+    if_op = IfOp(cond_value, then_block, else_block, Nothing)
     push!(block.body, if_op)
 end
 
@@ -266,14 +266,14 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         else_tree = tree_children[3]
         then_block = tree_to_block(then_tree, code, blocks, block_id)
         else_block = tree_to_block(else_tree, code, blocks, block_id)
-        if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+        if_op = IfOp(cond_value, then_block, else_block, Nothing)
         push!(block.body, if_op)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
         then_block = tree_to_block(then_tree, code, blocks, block_id)
         else_block = Block(block_id[])
         block_id[] += 1
-        if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+        if_op = IfOp(cond_value, then_block, else_block, Nothing)
         push!(block.body, if_op)
     end
 end
@@ -304,7 +304,7 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
         collect_block_statements!(body_block, blocks[idx], code)
     end
 
-    loop_op = LoopOp(IRValue[], body_block, SSAValue[])
+    loop_op = LoopOp(IRValue[], body_block, Nothing)
     push!(block.body, loop_op)
 end
 
@@ -424,12 +424,10 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     init_values = IRValue[]
     carried_values = IRValue[]
     block_args = BlockArg[]
-    result_vars = SSAValue[]
 
     for si in header_block.range
         stmt = stmts[si]
         if stmt isa PhiNode
-            push!(result_vars, SSAValue(si))
             phi = stmt
 
             entry_val = nothing
@@ -461,7 +459,8 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
             carried_val !== nothing && push!(carried_values, carried_val)
 
             phi_type = types[si]
-            push!(block_args, BlockArg(length(block_args) + 1, phi_type))
+            # Store ssa_origin so we know which SSA index this block arg replaces
+            push!(block_args, BlockArg(length(block_args) + 1, phi_type, si))
         end
     end
 
@@ -514,7 +513,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
         else_block.terminator = BreakOp(result_values)
 
-        if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+        if_op = IfOp(cond_value, then_block, else_block, Nothing)
         push!(body.body, if_op)
     else
         # No condition - process children directly
@@ -527,7 +526,28 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         body.terminator = ContinueOp(carried_values)
     end
 
-    return LoopOp(init_values, body, result_vars)
+    # Compute result type from block args
+    result_type = compute_result_type(block_args)
+
+    return LoopOp(init_values, body, result_type)
+end
+
+"""
+    compute_result_type(block_args::Vector{BlockArg}) -> Type
+
+Compute the result type for a control flow op based on its block arguments.
+- 0 args: Nothing
+- 1 arg: the single type
+- 2+ args: Tuple{types...}
+"""
+function compute_result_type(block_args::Vector{BlockArg})
+    if isempty(block_args)
+        return Nothing
+    elseif length(block_args) == 1
+        return block_args[1].type
+    else
+        return Tuple{(arg.type for arg in block_args)...}
+    end
 end
 
 #=============================================================================
@@ -557,13 +577,14 @@ end
     compute_loop_subs(loop::LoopOp) -> Substitutions
 
 Compute the SSA→BlockArg substitutions for a loop.
-Maps each phi node SSA index to its corresponding block argument.
+Maps each phi node SSA index (stored in BlockArg.ssa_origin) to its block argument.
 """
 function compute_loop_subs(loop::LoopOp)
-    @assert length(loop.result_vars) == length(loop.body.args) "Mismatch between result_vars and body.args"
     subs = Substitutions()
-    for (i, result_var) in enumerate(loop.result_vars)
-        subs[result_var.id] = loop.body.args[i]
+    for arg in loop.body.args
+        if arg.ssa_origin > 0
+            subs[arg.ssa_origin] = arg
+        end
     end
     return subs
 end

@@ -184,11 +184,9 @@ function try_upgrade_to_for(loop::LoopOp)
     iv_idx = findfirst(==(iv_arg), loop.body.args)
     iv_idx === nothing && return nothing
 
-    # Get lower bound from init_values and IV SSA from result_vars
+    # Get lower bound from init_values
     iv_idx > length(loop.init_values) && return nothing
-    iv_idx > length(loop.result_vars) && return nothing
     lower_bound = loop.init_values[iv_idx]
-    iv_ssa = loop.result_vars[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
     step_stmt = find_add_int_for_iv(loop.body, iv_arg)
@@ -199,13 +197,14 @@ function try_upgrade_to_for(loop::LoopOp)
     is_loop_invariant(upper_bound, loop.body) || return nothing
     is_loop_invariant(step, loop.body) || return nothing
 
-    # Separate non-IV carried values
-    other_result_vars = SSAValue[]
+    # Separate non-IV carried values and init values
     other_init_values = IRValue[]
-    for (j, rv) in enumerate(loop.result_vars)
+    other_block_args = BlockArg[]
+    for (j, arg) in enumerate(loop.body.args)
         if j != iv_idx && j <= length(loop.init_values)
-            push!(other_result_vars, rv)
             push!(other_init_values, loop.init_values[j])
+            # Renumber block args sequentially
+            push!(other_block_args, BlockArg(length(other_block_args) + 1, arg.type, arg.ssa_origin))
         end
     end
 
@@ -214,7 +213,7 @@ function try_upgrade_to_for(loop::LoopOp)
     # ForOp body: [body_stmts...] with ContinueOp terminator
     new_body = Block(loop.body.id)
     # Only include carried values, not IV (IV is stored separately in ForOp.iv_arg)
-    new_body.args = [arg for arg in loop.body.args if arg !== iv_arg]
+    new_body.args = other_block_args
 
     # Extract body statements, filtering out iv-related ones
     for item in loop.body.body
@@ -250,8 +249,11 @@ function try_upgrade_to_for(loop::LoopOp)
     end
     new_body.terminator = ContinueOp(yield_values)
 
-    return ForOp(lower_bound, upper_bound, step, iv_ssa, iv_arg,
-                 other_init_values, new_body, other_result_vars)
+    # Compute result type from non-IV block args
+    result_type = compute_result_type(other_block_args)
+
+    return ForOp(lower_bound, upper_bound, step, iv_arg,
+                 other_init_values, new_body, result_type)
 end
 
 """
@@ -300,9 +302,9 @@ function try_upgrade_to_while(loop::LoopOp)
 
     # Build "after" region: statements from the then_block + YieldOp
     after = Block(loop.body.id + 1000)  # Different block ID
-    # After region receives args from ConditionOp - create new BlockArgs
+    # After region receives args from ConditionOp - create new BlockArgs (no ssa_origin needed)
     for (i, arg) in enumerate(before.args)
-        push!(after.args, BlockArg(i, arg.type))
+        push!(after.args, BlockArg(i, arg.type, 0))
     end
 
     # Copy body statements from the continue path
@@ -317,5 +319,6 @@ function try_upgrade_to_while(loop::LoopOp)
     end
     after.terminator = YieldOp(yield_values)
 
-    return WhileOp(before, after, loop.init_values, loop.result_vars)
+    # Use the same result type as the original loop
+    return WhileOp(before, after, loop.init_values, loop.result_type)
 end

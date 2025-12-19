@@ -9,11 +9,17 @@
 
 Represents a block argument (similar to MLIR block arguments).
 Used for loop carried values and condition branch results.
+
+The `ssa_origin` field tracks the original SSA index this block arg
+corresponds to (for phi node substitution). Set to 0 if not from a phi.
 """
 struct BlockArg
-    id::Int
-    type::Any  # Julia type
+    id::Int           # Sequential ID within block (1, 2, 3...)
+    type::Any         # Julia type
+    ssa_origin::Int   # Original SSA index (0 if not from phi)
 end
+
+BlockArg(id::Int, type::Any) = BlockArg(id, type, 0)
 
 #=============================================================================
  IR Values - references to SSA values or block arguments
@@ -197,19 +203,22 @@ Base.eltype(::Type{Block}) = BlockItem
 
 Structured if-then-else with nested blocks.
 Both branches must yield values of the same types.
+
+The op itself can be used as an IRValue. For multiple results,
+it produces a tuple type.
 """
 struct IfOp <: ControlFlowOp
     condition::IRValue               # SSAValue or BlockArg for the condition
     then_block::Block
     else_block::Block
-    result_vars::Vector{SSAValue}    # SSA values that receive the yielded results
+    result_type::Type                # Nothing, T, or Tuple{T1, T2, ...}
 end
 
 function Base.show(io::IO, op::IfOp)
     print(io, "IfOp(cond=", op.condition,
           ", then=Block(", op.then_block.id, ")",
           ", else=Block(", op.else_block.id, ")",
-          ", results=", length(op.result_vars), ")")
+          ", result=", op.result_type, ")")
 end
 
 """
@@ -217,24 +226,26 @@ end
 
 Structured for loop with known bounds.
 Used when loop bounds can be determined (e.g., from range iteration).
+
+The op itself can be used as an IRValue. Result type is computed from
+the loop-carried values (excluding IV which is internal to the loop).
 """
 struct ForOp <: ControlFlowOp
     lower::IRValue                   # Lower bound
     upper::IRValue                   # Upper bound (exclusive)
     step::IRValue                    # Step value
-    iv_ssa::SSAValue                 # SSA value for induction variable phi (result)
     iv_arg::BlockArg                 # Block arg for induction variable (for body/printing)
     init_values::Vector{IRValue}     # Initial values for non-IV carried variables
-    body::Block                      # Block args in same order as LoopOp
-    result_vars::Vector{SSAValue}    # SSA values for non-IV carried results
+    body::Block                      # Block args for carried values (not IV)
+    result_type::Type                # Nothing, T, or Tuple{T1, T2, ...}
 end
 
 function Base.show(io::IO, op::ForOp)
     print(io, "ForOp(lower=", op.lower, ", upper=", op.upper, ", step=", op.step,
-          ", iv=", op.iv_ssa,
+          ", iv=", op.iv_arg,
           ", init=", length(op.init_values),
           ", body=Block(", op.body.id, ")",
-          ", results=", length(op.result_vars), ")")
+          ", result=", op.result_type, ")")
 end
 
 """
@@ -245,17 +256,20 @@ Used for while loops and when bounds cannot be determined.
 
 Also used as the initial loop representation before pattern matching
 upgrades it to ForOp or WhileOp.
+
+The op itself can be used as an IRValue. For multiple results,
+it produces a tuple type.
 """
 struct LoopOp <: ControlFlowOp
     init_values::Vector{IRValue}     # Initial values for loop-carried variables
     body::Block                      # Has carried vars as block args
-    result_vars::Vector{SSAValue}    # SSA values that receive final results
+    result_type::Type                # Nothing, T, or Tuple{T1, T2, ...}
 end
 
 function Base.show(io::IO, op::LoopOp)
     print(io, "LoopOp(init=", length(op.init_values),
           ", body=Block(", op.body.id, ")",
-          ", results=", length(op.result_vars), ")")
+          ", result=", op.result_type, ")")
 end
 
 """
@@ -268,19 +282,22 @@ Structured while loop with MLIR-style two-region structure (scf.while).
 
 When condition is true, args are passed to the after region.
 When condition is false, args become the final loop results.
+
+The op itself can be used as an IRValue. For multiple results,
+it produces a tuple type.
 """
 struct WhileOp <: ControlFlowOp
     before::Block                    # Condition computation, ends with ConditionOp
     after::Block                     # Loop body, ends with YieldOp
     init_values::Vector{IRValue}     # Initial values for loop-carried variables
-    result_vars::Vector{SSAValue}    # SSA values that receive final results
+    result_type::Type                # Nothing, T, or Tuple{T1, T2, ...}
 end
 
 function Base.show(io::IO, op::WhileOp)
     print(io, "WhileOp(before=Block(", op.before.id, ")",
           ", after=Block(", op.after.id, ")",
           ", init=", length(op.init_values),
-          ", results=", length(op.result_vars), ")")
+          ", result=", op.result_type, ")")
 end
 
 #=============================================================================
@@ -768,42 +785,13 @@ function print_type_annotation(p::IRPrinter, idx::Int, t)
     print_colored(p, string("::", format_type(t)), color)
 end
 
-# Format result variables (string version for backwards compat)
-function format_results(p::IRPrinter, results::Vector{SSAValue})
-    if isempty(results)
-        ""
-    elseif length(results) == 1
-        r = results[1]
-        typ = p.code.ssavaluetypes[r.id]
-        string(format_value(p, r), "::", format_type(typ))
-    else
-        parts = [string(format_value(p, r), "::", format_type(p.code.ssavaluetypes[r.id]))
-                 for r in results]
-        string("(", join(parts, ", "), ")")
-    end
-end
-
-# Print result variables with type colors
-function print_results(p::IRPrinter, results::Vector{SSAValue})
-    if isempty(results)
+# Print result type annotation for control flow ops
+function print_result_type(p::IRPrinter, result_type::Type)
+    if result_type === Nothing
         return
-    elseif length(results) == 1
-        r = results[1]
-        print(p.io, "%", r.id)
-        is_used = r.id in p.used
-        color = is_used ? :cyan : :light_black
-        print_colored(p, string("::", format_type(p.code.ssavaluetypes[r.id])), color)
-    else
-        print(p.io, "(")
-        for (i, r) in enumerate(results)
-            i > 1 && print(p.io, ", ")
-            print(p.io, "%", r.id)
-            is_used = r.id in p.used
-            color = is_used ? :cyan : :light_black
-            print_colored(p, string("::", format_type(p.code.ssavaluetypes[r.id])), color)
-        end
-        print(p.io, ")")
     end
+    print(p.io, " -> ")
+    print_colored(p, format_type(result_type), :cyan)
 end
 
 # Print a statement
@@ -1091,14 +1079,9 @@ function print_control_flow(p::IRPrinter, op::IfOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Print results assignment if any
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
-
     print(p.io, "if ")
     print_value(p, op.condition)
+    print_result_type(p, op.result_type)
     println(p.io)
 
     # Then block body (indented with continuation line)
@@ -1128,12 +1111,6 @@ function print_control_flow(p::IRPrinter, op::ForOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Print results assignment if any
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
-
     # for %iv = %lb:%step:%ub
     print_colored(p, "for", :yellow)  # Structured keyword
     print(p.io, " %arg", op.iv_arg.id, " = ")
@@ -1148,6 +1125,7 @@ function print_control_flow(p::IRPrinter, op::ForOp; is_last::Bool=false)
         print_iter_args(p, op.body.args, op.init_values)
     end
 
+    print_result_type(p, op.result_type)
     println(p.io)
 
     # Body - substitutions already applied
@@ -1168,14 +1146,9 @@ function print_control_flow(p::IRPrinter, op::LoopOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Print results assignment if any
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
-
     print_colored(p, "loop", :yellow)  # Structured keyword
     print_iter_args(p, op.body.args, op.init_values)
+    print_result_type(p, op.result_type)
     println(p.io)
 
     # Body - substitutions already applied during construction
@@ -1196,14 +1169,9 @@ function print_control_flow(p::IRPrinter, op::WhileOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Print results assignment if any
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
-
     print_colored(p, "while", :yellow)
     print_iter_args(p, op.before.args, op.init_values)
+    print_result_type(p, op.result_type)
     println(p.io, " {")
 
     # Before region (condition computation)
