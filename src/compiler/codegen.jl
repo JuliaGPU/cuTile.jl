@@ -192,31 +192,15 @@ end
     emit_block!(ctx, block::Block)
 
 Emit bytecode for a structured IR block.
-Uses the new ops array where position determines local SSA id.
-Also maps original SSA indices to values using block.ssa_map for outer scope references.
+Uses the ops array where position determines local SSA id.
 """
 function emit_block!(ctx::CodegenContext, block::Block)
-    # Build reverse map: local_pos -> original SSA index
-    local_to_ssa = Dict{Int, Int}()
-    for (ssa_idx, local_pos) in block.ssa_map
-        local_to_ssa[local_pos] = ssa_idx
-    end
-
     # Emit operations (position in ops array = local SSA id)
     for (local_idx, op) in enumerate(block.ops)
         if op.expr isa ControlFlowOp
             emit_control_flow_op!(ctx, op.expr, local_idx)
         else
             emit_statement!(ctx, op.expr, local_idx, op.type)
-        end
-
-        # Also store under original SSA index for outer scope references
-        if haskey(local_to_ssa, local_idx)
-            ssa_idx = local_to_ssa[local_idx]
-            tv = ctx[LocalSSA(local_idx)]
-            if tv !== nothing
-                ctx[SSAValue(ssa_idx)] = tv
-            end
         end
     end
 
@@ -238,6 +222,14 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp, local_idx::Int)
     # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
+
+    # Emit init_values (captured outer scope references)
+    init_cgvals = CGVal[]
+    for init_val in op.init_values
+        tv = emit_value!(ctx, init_val)
+        (tv === nothing) && error("Cannot resolve IfOp init value")
+        push!(init_cgvals, tv)
+    end
 
     # Determine result types from op.result_type
     result_types = TypeId[]
@@ -265,11 +257,23 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp, local_idx::Int)
     # Each branch will yield its final token via emit_terminator!
     then_body = function(_)
         ctx.token = token_before  # Reset to pre-branch token
+        # Map block_args to init_values for this branch
+        for (i, arg) in enumerate(op.then_block.args)
+            if i <= length(init_cgvals)
+                ctx[arg] = init_cgvals[i]
+            end
+        end
         emit_block!(ctx, op.then_block)
     end
     else_body = function(_)
         restore_local_scope!(ctx, saved_scope)  # Restore for else branch
         ctx.token = token_before  # Reset to pre-branch token
+        # Map block_args to init_values for this branch
+        for (i, arg) in enumerate(op.else_block.args)
+            if i <= length(init_cgvals)
+                ctx[arg] = init_cgvals[i]
+            end
+        end
         emit_block!(ctx, op.else_block)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
@@ -549,15 +553,35 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, local_idx::Int)
         before_scope = save_local_scope(ctx)
         token_before_if = ctx.token
 
+        # Emit extra ConditionOp.args (LocalSSA from before region) before entering then_body
+        # These are captured values that need to be passed to the after region.
+        n_loop_args = length(block_args) - 1  # -1 for token
+        extra_cond_values = CGVal[]
+        for i in (n_loop_args + 1):length(cond_op.args)
+            val = emit_value!(ctx, cond_op.args[i])
+            push!(extra_cond_values, val)
+        end
+
         # Create if-then-else: if condition { after_region; continue } else { break }
         then_body = function(_)
-            # Map ALL "after" region block args to the corresponding loop block_args.
-            # ConditionOp.args passes all block args to the after region (MLIR semantics).
+            # Clear LocalSSA values from "before" region - op.after has its own LocalSSA space.
+            # Block args are preserved in ctx.block_args.
+            empty!(ctx.values)
+
+            # Map "after" region block args:
+            # - First n_loop_args come from loop block_args
+            # - Remaining come from captured LocalSSA values (extra_cond_values)
             for (i, after_arg) in enumerate(op.after.args)
-                if i <= length(block_args) - 1  # -1 for token
+                if i <= n_loop_args
                     shape = extract_tile_shape(after_arg.type)
                     type_id = i <= length(result_types) - 1 ? result_types[i] : tile_type_for_julia!(ctx, after_arg.type)
                     ctx[after_arg] = CGVal(block_args[i], type_id, after_arg.type, shape)
+                else
+                    # Map to captured LocalSSA value from before region
+                    extra_idx = i - n_loop_args
+                    if extra_idx <= length(extra_cond_values)
+                        ctx[after_arg] = extra_cond_values[extra_idx]
+                    end
                 end
             end
 
@@ -773,13 +797,9 @@ function emit_value!(ctx::CodegenContext, ssa::LocalSSA)
 end
 
 function emit_value!(ctx::CodegenContext, ssa::SSAValue)
-    # SSAValue may still appear in expressions that reference original IR
-    # First try to get from context (already processed)
-    tv = ctx[ssa]
-    tv !== nothing && return tv
-    # Otherwise follow the SSA chain to the defining statement
-    stmt = code(ctx.target)[ssa.id]
-    emit_value!(ctx, stmt)
+    # Post-structurization, all SSAValue references should have been converted to LocalSSA.
+    # If we hit this, it indicates a bug in the structurizer.
+    error("SSAValue($(ssa.id)) found in structured IR - this should have been converted to LocalSSA")
 end
 emit_value!(ctx::CodegenContext, arg::Argument) = ctx[arg]
 emit_value!(ctx::CodegenContext, slot::SlotNumber) = ctx[slot]

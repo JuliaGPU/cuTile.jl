@@ -103,8 +103,8 @@ Holds all state during Tile IR code generation for a kernel function.
 Maps Julia SSA values to CGVals and manages bytecode emission.
 """
 mutable struct CodegenContext
-    # SSA value mappings
-    values::Dict{Int, CGVal}      # SSA id -> CGVal
+    # SSA value mappings (LocalSSA id -> CGVal)
+    values::Dict{Int, CGVal}
     args::Dict{Int, CGVal}        # Argument index -> CGVal
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
@@ -152,13 +152,8 @@ end
  Value lookup via indexing syntax
 =============================================================================#
 
-function Base.getindex(ctx::CodegenContext, ssa::SSAValue)
-    get(ctx.values, ssa.id, nothing)
-end
-
 function Base.getindex(ctx::CodegenContext, ssa::LocalSSA)
-    # LocalSSA uses negative ids to distinguish from SSAValue
-    get(ctx.values, -ssa.id, nothing)
+    get(ctx.values, ssa.id, nothing)
 end
 
 function Base.getindex(ctx::CodegenContext, arg::Argument)
@@ -169,13 +164,8 @@ function Base.getindex(ctx::CodegenContext, slot::SlotNumber)
     get(ctx.slots, slot.id, nothing)
 end
 
-function Base.setindex!(ctx::CodegenContext, tv::CGVal, ssa::SSAValue)
-    ctx.values[ssa.id] = tv
-end
-
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, ssa::LocalSSA)
-    # LocalSSA uses negative ids to distinguish from SSAValue
-    ctx.values[-ssa.id] = tv
+    ctx.values[ssa.id] = tv
 end
 
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, arg::Argument)

@@ -141,6 +141,33 @@ end
 # Convenience for empty substitutions
 substitute_ssa(value) = value
 
+"""
+    BlockArgRemap = Dict{Int, BlockArg}
+
+Map of BlockArg IDs to replacement BlockArgs.
+Used to remap BlockArg references when moving ops between different block scopes.
+"""
+const BlockArgRemap = Dict{Int, BlockArg}
+
+"""
+    remap_block_args(value, remap::BlockArgRemap)
+
+Recursively remap BlockArg references according to the remap map.
+Used when moving operations from one block scope to another (e.g., IfOp to WhileOp).
+"""
+function remap_block_args(value, remap::BlockArgRemap)
+    if value isa BlockArg && haskey(remap, value.id)
+        return remap[value.id]
+    elseif value isa Expr
+        new_args = Any[remap_block_args(a, remap) for a in value.args]
+        return Expr(value.head, new_args...)
+    elseif value isa PiNode
+        return PiNode(remap_block_args(value.val, remap), value.typ)
+    else
+        return value
+    end
+end
+
 #=============================================================================
  Statement - self-contained statement with type
 =============================================================================#
@@ -280,16 +307,25 @@ Both branches must yield values of the same types.
 
 The op itself can be used as an IRValue. For multiple results,
 it produces a tuple type.
+
+Init_values capture outer scope values that are used within the branches.
+The then_block and else_block have corresponding block_args.
 """
 struct IfOp <: ControlFlowOp
     condition::IRValue               # SSAValue or BlockArg for the condition
-    then_block::Block
-    else_block::Block
+    init_values::Vector{IRValue}     # Captured outer values (LocalSSA refs to parent)
+    then_block::Block                # Block args for captured values
+    else_block::Block                # Block args for captured values
     result_type::Type                # Nothing, T, or Tuple{T1, T2, ...}
 end
 
+# Convenience constructor without init_values (for backward compatibility during construction)
+IfOp(cond::IRValue, then_block::Block, else_block::Block, result_type::Type) =
+    IfOp(cond, IRValue[], then_block, else_block, result_type)
+
 function Base.show(io::IO, op::IfOp)
     print(io, "IfOp(cond=", op.condition,
+          ", init=", length(op.init_values),
           ", then=Block(", op.then_block.id, ")",
           ", else=Block(", op.else_block.id, ")",
           ", result=", op.result_type, ")")
@@ -386,7 +422,8 @@ Does NOT recurse into nested blocks (they have their own ssa_map).
 """
 function convert_cfop_refs(op::IfOp, ssa_map::Dict{Int,Int})
     new_condition = convert_to_local_ssa(op.condition, ssa_map)
-    IfOp(new_condition, op.then_block, op.else_block, op.result_type)
+    new_init = [convert_to_local_ssa(v, ssa_map) for v in op.init_values]
+    IfOp(new_condition, new_init, op.then_block, op.else_block, op.result_type)
 end
 
 function convert_cfop_refs(op::ForOp, ssa_map::Dict{Int,Int})
@@ -406,6 +443,39 @@ function convert_cfop_refs(op::WhileOp, ssa_map::Dict{Int,Int})
     new_init = [convert_to_local_ssa(v, ssa_map) for v in op.init_values]
     WhileOp(op.before, op.after, new_init, op.result_type)
 end
+
+#=============================================================================
+ BlockArg Remapping
+ Used when moving operations between block scopes (e.g., from IfOp to WhileOp)
+=============================================================================#
+
+"""
+    remap_operation(op::Operation, remap::BlockArgRemap) -> Operation
+
+Remap BlockArg references in an Operation.
+"""
+function remap_operation(op::Operation, remap::BlockArgRemap)
+    new_expr = if op.expr isa ControlFlowOp
+        remap_cfop(op.expr, remap)
+    else
+        remap_block_args(op.expr, remap)
+    end
+    Operation(new_expr, op.type)
+end
+
+"""
+    remap_cfop(op::IfOp, remap::BlockArgRemap) -> IfOp
+
+Remap BlockArg references in an IfOp (condition and init_values).
+"""
+function remap_cfop(op::IfOp, remap::BlockArgRemap)
+    new_condition = remap_block_args(op.condition, remap)
+    new_init = [remap_block_args(v, remap) for v in op.init_values]
+    IfOp(new_condition, new_init, op.then_block, op.else_block, op.result_type)
+end
+
+# Default: no remapping for other ControlFlowOps
+remap_cfop(op, remap::BlockArgRemap) = op
 
 """
     push_cfop!(block::Block, cfop::ControlFlowOp) -> Int
@@ -631,6 +701,9 @@ end
 
 function collect_cfop_ssa_refs(op::IfOp)
     refs = collect_ssa_refs(op.condition)
+    for v in op.init_values
+        union!(refs, collect_ssa_refs(v))
+    end
     union!(refs, collect_block_ssa_refs(op.then_block))
     union!(refs, collect_block_ssa_refs(op.else_block))
     refs
@@ -740,12 +813,14 @@ function get_cfop_defined_ssas(op::WhileOp)
 end
 
 """
-    capture_outer_refs!(block::Block, code::Vector{Any}, types::Vector{Any}) -> (Vector{IRValue}, Substitutions)
+    capture_outer_refs!(block::Block, scope_ssa_map::Dict{Int,Int}, types::Vector{Any}) -> (Vector{IRValue}, Substitutions)
 
 Identify SSAValue references to outer scope values and create block arguments for them.
-Returns the init_values to add and substitutions to apply.
+Returns the init_values (as LocalSSA refs using the scope's ssa_map) and substitutions to apply.
+
+The scope_ssa_map should be a merged map of all accessible ancestor ssa_maps.
 """
-function capture_outer_refs!(block::Block, code::Vector{Any}, types::Vector{Any})
+function capture_outer_refs!(block::Block, scope_ssa_map::Dict{Int,Int}, types::Vector{Any})
     # Collect all SSA refs used in the block
     used_refs = collect_block_ssa_refs(block)
 
@@ -776,8 +851,12 @@ function capture_outer_refs!(block::Block, code::Vector{Any}, types::Vector{Any}
         arg = BlockArg(next_arg_idx, ref_type)
         push!(block.args, arg)
 
-        # Add to init values
-        push!(init_values, SSAValue(ssa_id))
+        # Add to init values - use LocalSSA referencing the scope's ops
+        if haskey(scope_ssa_map, ssa_id)
+            push!(init_values, LocalSSA(scope_ssa_map[ssa_id]))
+        else
+            error("Outer SSA reference %$ssa_id not found in scope's ssa_map")
+        end
 
         # Create substitution
         subs[ssa_id] = arg
@@ -789,6 +868,72 @@ function capture_outer_refs!(block::Block, code::Vector{Any}, types::Vector{Any}
     substitute_block!(block, subs)
 
     return (init_values, subs)
+end
+
+"""
+    capture_if_outer_refs!(then_block::Block, else_block::Block, scope_ssa_map::Dict{Int,Int}, types::Vector{Any}) -> Vector{IRValue}
+
+Capture outer SSAValue references for both branches of an IfOp.
+Creates consistent block args in BOTH blocks and returns the shared init_values.
+"""
+function capture_if_outer_refs!(then_block::Block, else_block::Block, scope_ssa_map::Dict{Int,Int}, types::Vector{Any})
+    # Collect outer refs from both blocks
+    then_used = collect_block_ssa_refs(then_block)
+    else_used = collect_block_ssa_refs(else_block)
+
+    then_defined = get_defined_ssas(then_block)
+    else_defined = get_defined_ssas(else_block)
+
+    then_outer = setdiff(then_used, then_defined)
+    else_outer = setdiff(else_used, else_defined)
+
+    # Union of all outer refs needed by either block
+    all_outer = union(then_outer, else_outer)
+
+    isempty(all_outer) && return IRValue[]
+
+    # Sort for deterministic ordering
+    outer_refs_sorted = sort!(collect(all_outer))
+
+    # Create block args and substitutions for each outer ref
+    init_values = IRValue[]
+    then_subs = Substitutions()
+    else_subs = Substitutions()
+    next_arg_idx = 1  # IfOp blocks start with no args
+
+    for ssa_id in outer_refs_sorted
+        # Skip SSAValues not in scope - they'll be handled by parent substitutions
+        # (e.g., PhiNode refs inside loops that get substituted with BlockArgs)
+        haskey(scope_ssa_map, ssa_id) || continue
+
+        # Get the type from the original code
+        ref_type = ssa_id <= length(types) ? types[ssa_id] : Any
+        if ref_type isa Core.Const
+            ref_type = typeof(ref_type.val)
+        elseif ref_type isa Core.PartialStruct
+            ref_type = ref_type.typ
+        end
+
+        # Create block arg for both blocks (same ID and type)
+        arg = BlockArg(next_arg_idx, ref_type)
+        push!(then_block.args, arg)
+        push!(else_block.args, arg)
+
+        # Add to init values - use LocalSSA referencing the scope's ops
+        push!(init_values, LocalSSA(scope_ssa_map[ssa_id]))
+
+        # Create substitution for both blocks
+        then_subs[ssa_id] = arg
+        else_subs[ssa_id] = arg
+
+        next_arg_idx += 1
+    end
+
+    # Apply substitutions to both blocks
+    substitute_block!(then_block, then_subs)
+    substitute_block!(else_block, else_subs)
+
+    return init_values
 end
 
 #=============================================================================

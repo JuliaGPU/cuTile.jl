@@ -305,24 +305,51 @@ function try_upgrade_to_while(loop::LoopOp)
         end
     end
 
-    # ConditionOp args must include ALL block args (MLIR scf.while semantics).
-    # - When condition is true: all args are passed to after region
-    # - When condition is false: all args become the loop results
-    # We always pass all block args, not just the BreakOp values which may be a subset.
-    condition_args = IRValue[arg for arg in before.args]
-
-    before.terminator = ConditionOp(condition_ifop.condition, condition_args)
-
     # Build "after" region: operations from the then_block + YieldOp
     after = Block(loop.body.id + 1000)  # Different block ID
-    # After region receives args from ConditionOp
+    # After region receives args from ConditionOp - start with loop carried values
     for (i, arg) in enumerate(before.args)
         push!(after.args, BlockArg(i, arg.type))
     end
 
-    # Copy body operations from the continue path
+    # ConditionOp args must include ALL block args (MLIR scf.while semantics).
+    # Start with loop carried values, then add captured LocalSSA values.
+    condition_args = IRValue[arg for arg in before.args]
+
+    # Build BlockArg remapping: IfOp's then_block.args[i] -> after.args[...]
+    # The IfOp's init_values tell us which values are passed to then_block:
+    # - BlockArg: loop-carried values, map to existing after.args
+    # - LocalSSA: values computed in before region, add to condition_args and after.args
+    blockarg_remap = BlockArgRemap()
+    for (i, then_arg) in enumerate(condition_ifop.then_block.args)
+        if i <= length(condition_ifop.init_values)
+            init_val = condition_ifop.init_values[i]
+            if init_val isa BlockArg
+                # then_arg corresponds to loop body's BlockArg(init_val.id)
+                # Map to after.args which has the same indices as loop body args
+                blockarg_remap[then_arg.id] = after.args[init_val.id]
+            elseif init_val isa LocalSSA
+                # LocalSSA computed in before region - pass through ConditionOp
+                push!(condition_args, init_val)
+                # Get type from the operation that defines this LocalSSA in before region
+                localssa_type = if 1 <= init_val.id <= length(before.ops)
+                    before.ops[init_val.id].type
+                else
+                    then_arg.type  # Fallback if not found
+                end
+                new_arg = BlockArg(length(after.args) + 1, localssa_type)
+                push!(after.args, new_arg)
+                blockarg_remap[then_arg.id] = new_arg
+            end
+        end
+    end
+
+    before.terminator = ConditionOp(condition_ifop.condition, condition_args)
+
+    # Copy body operations from the continue path, remapping BlockArg references
     for op in condition_ifop.then_block.ops
-        push!(after.ops, op)
+        remapped_op = remap_operation(op, blockarg_remap)
+        push!(after.ops, remapped_op)
     end
 
     # Get yield values from the continue terminator.
@@ -330,7 +357,10 @@ function try_upgrade_to_while(loop::LoopOp)
     # For loop-invariant values (captured from outer scope), we pass them through unchanged.
     yield_values = IRValue[]
     if condition_ifop.then_block.terminator isa ContinueOp
-        yield_values = copy(condition_ifop.then_block.terminator.values)
+        # Remap any BlockArg references in the yield values
+        for v in condition_ifop.then_block.terminator.values
+            push!(yield_values, remap_block_args(v, blockarg_remap))
+        end
     end
     # For any remaining block args (loop-invariant), use the after block args directly
     for i in (length(yield_values) + 1):length(after.args)

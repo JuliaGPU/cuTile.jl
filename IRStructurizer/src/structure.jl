@@ -172,6 +172,9 @@ end
  Control Tree to Structured IR
 =============================================================================#
 
+# Accumulated scope ssa_map for nested control flow
+const ScopeSSAMap = Dict{Int, Int}
+
 """
     control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}) -> Block
 
@@ -180,16 +183,19 @@ All loops become LoopOp (no pattern matching yet, no substitutions).
 """
 function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     block_id = Ref(1)
-    entry_block = tree_to_block(ctree, code, blocks, block_id)
+    # Start with empty scope - entry block's ssa_map will be populated during construction
+    scope = ScopeSSAMap()
+    entry_block = tree_to_block(ctree, code, blocks, block_id, scope)
     return entry_block
 end
 
 """
-    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> Block
+    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap) -> Block
 
 Convert a control tree node to a Block. Creates Statement objects with raw expressions (no substitutions).
+The scope contains the accumulated ssa_map from ancestor blocks.
 """
-function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     idx = node_index(tree)
     rtype = region_type(tree)
     id = block_id[]
@@ -198,24 +204,24 @@ function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
     block = Block(id)
 
     if rtype == REGION_BLOCK
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, block_id)
+        handle_if_then_else!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, block_id)
+        handle_if_then!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, block_id)
+        handle_termination!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, block_id)
+        handle_loop!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_SELF_LOOP
-        handle_self_loop!(block, tree, code, blocks, block_id)
+        handle_self_loop!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_PROPER
-        handle_proper_region!(block, tree, code, blocks, block_id)
+        handle_proper_region!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, block_id)
+        handle_switch!(block, tree, code, blocks, block_id, scope)
     else
         # Fallback: collect statements
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks, block_id, scope)
     end
 
     # Set terminator if not already set
@@ -229,11 +235,11 @@ end
 =============================================================================#
 
 """
-    handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_BLOCK - a linear sequence of blocks.
 """
-function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     if isempty(children(tree))
         # Leaf node - collect statements from the block
         idx = node_index(tree)
@@ -245,51 +251,53 @@ function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, b
         for child in children(tree)
             child_rtype = region_type(child)
             if child_rtype == REGION_BLOCK
-                handle_block_region!(block, child, code, blocks, block_id)
+                handle_block_region!(block, child, code, blocks, block_id, scope)
             else
                 # Nested control flow - create appropriate op
-                handle_nested_region!(block, child, code, blocks, block_id)
+                # Merge current block's ssa_map with scope for nested regions
+                nested_scope = merge(scope, block.ssa_map)
+                handle_nested_region!(block, child, code, blocks, block_id, nested_scope)
             end
         end
     end
 end
 
 """
-    handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle a nested control flow region.
 """
-function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     rtype = region_type(tree)
 
     if rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, block_id)
+        handle_if_then_else!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, block_id)
+        handle_if_then!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, block_id)
+        handle_termination!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, block_id)
+        handle_loop!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_SELF_LOOP
-        handle_self_loop!(block, tree, code, blocks, block_id)
+        handle_self_loop!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_PROPER
-        handle_proper_region!(block, tree, code, blocks, block_id)
+        handle_proper_region!(block, tree, code, blocks, block_id, scope)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, block_id)
+        handle_switch!(block, tree, code, blocks, block_id, scope)
     else
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks, block_id, scope)
     end
 end
 
 """
-    handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_IF_THEN_ELSE.
 Also handles PhiNode results at the merge block by adding extraction statements.
 """
-function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     tree_children = children(tree)
-    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, block_id)
+    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, block_id, scope)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -307,6 +315,8 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     end
 
     cond_value = find_condition_value(cond_idx, code, blocks)
+    # Convert condition to LocalSSA using block's ssa_map
+    cond_value = convert_to_local_ssa(cond_value, block.ssa_map)
 
     # Then and else blocks
     then_tree = tree_children[2]
@@ -329,8 +339,10 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         phi_ssa_indices = find_if_merge_phis(merge_idx, then_blocks, else_blocks, code, blocks)
     end
 
-    then_block = tree_to_block(then_tree, code, blocks, block_id)
-    else_block = tree_to_block(else_tree, code, blocks, block_id)
+    # Merge current block's ssa_map with scope for nested regions
+    nested_scope = merge(scope, block.ssa_map)
+    then_block = tree_to_block(then_tree, code, blocks, block_id, nested_scope)
+    else_block = tree_to_block(else_tree, code, blocks, block_id, nested_scope)
 
     # Set YieldOp terminators if there are PhiNode results
     if !isempty(phi_ssa_indices)
@@ -363,8 +375,11 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         end
     end
 
-    # Compute result type
+    # Capture outer scope SSAValue references and convert to block args
     types = code.ssavaluetypes
+    init_values = capture_if_outer_refs!(then_block, else_block, nested_scope, types)
+
+    # Compute result type
     result_type = if isempty(phi_ssa_indices)
         Nothing
     elseif length(phi_ssa_indices) == 1
@@ -373,8 +388,8 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         Tuple{(types[idx] for idx in phi_ssa_indices)...}
     end
 
-    # Create IfOp with result type
-    if_op = IfOp(cond_value, then_block, else_block, result_type)
+    # Create IfOp with init_values and result type
+    if_op = IfOp(cond_value, init_values, then_block, else_block, result_type)
     if_pos = push_cfop!(block, if_op)
 
     # Add extraction statements for each PhiNode result
@@ -386,14 +401,14 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
 end
 
 """
-    handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_IF_THEN.
 Also handles PhiNode results at the merge block.
 """
-function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     tree_children = children(tree)
-    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, block_id)
+    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, block_id, scope)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -411,13 +426,15 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     end
 
     cond_value = find_condition_value(cond_idx, code, blocks)
+    # Convert condition to LocalSSA using block's ssa_map
+    cond_value = convert_to_local_ssa(cond_value, block.ssa_map)
 
     # Then block
     then_tree = tree_children[2]
 
-    # Get all blocks in the then branch (including condition block)
+    # Get all blocks in the then branch (NOT including condition block)
+    # For if-then, edges from cond_idx are "else" (fallthrough), not "then"
     then_blocks = get_loop_blocks(then_tree, blocks)
-    push!(then_blocks, cond_idx)
     # For if-then, the else "branch" is just the condition block fallthrough
     else_blocks = Set{Int}([cond_idx])
 
@@ -439,7 +456,9 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
         phi_ssa_indices = find_if_merge_phis(merge_idx, then_blocks, else_blocks, code, blocks)
     end
 
-    then_block = tree_to_block(then_tree, code, blocks, block_id)
+    # Merge current block's ssa_map with scope for nested regions
+    nested_scope = merge(scope, block.ssa_map)
+    then_block = tree_to_block(then_tree, code, blocks, block_id, nested_scope)
 
     # Empty else block
     else_block = Block(block_id[])
@@ -475,8 +494,11 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
         end
     end
 
-    # Compute result type
+    # Capture outer scope SSAValue references and convert to block args
     types = code.ssavaluetypes
+    init_values = capture_if_outer_refs!(then_block, else_block, nested_scope, types)
+
+    # Compute result type
     result_type = if isempty(phi_ssa_indices)
         Nothing
     elseif length(phi_ssa_indices) == 1
@@ -485,8 +507,8 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
         Tuple{(types[idx] for idx in phi_ssa_indices)...}
     end
 
-    # Create IfOp with result type
-    if_op = IfOp(cond_value, then_block, else_block, result_type)
+    # Create IfOp with init_values and result type
+    if_op = IfOp(cond_value, init_values, then_block, else_block, result_type)
     if_pos = push_cfop!(block, if_op)
 
     # Add extraction statements for each PhiNode result
@@ -498,14 +520,14 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
 end
 
 """
-    handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_TERMINATION - branches where some paths terminate.
 Also handles PhiNode results if there's a merge block.
 """
-function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     tree_children = children(tree)
-    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, block_id)
+    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, block_id, scope)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -523,6 +545,8 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
     end
 
     cond_value = find_condition_value(cond_idx, code, blocks)
+    # Convert condition to LocalSSA using block's ssa_map
+    cond_value = convert_to_local_ssa(cond_value, block.ssa_map)
 
     # Build then and else blocks from remaining children
     if length(tree_children) >= 3
@@ -545,8 +569,10 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
             phi_ssa_indices = find_if_merge_phis(merge_idx, then_blocks, else_blocks, code, blocks)
         end
 
-        then_block = tree_to_block(then_tree, code, blocks, block_id)
-        else_block = tree_to_block(else_tree, code, blocks, block_id)
+        # Merge current block's ssa_map with scope for nested regions
+        nested_scope = merge(scope, block.ssa_map)
+        then_block = tree_to_block(then_tree, code, blocks, block_id, nested_scope)
+        else_block = tree_to_block(else_tree, code, blocks, block_id, nested_scope)
 
         # Set YieldOp terminators if there are PhiNode results
         if !isempty(phi_ssa_indices)
@@ -578,8 +604,11 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
             end
         end
 
-        # Compute result type
+        # Capture outer scope SSAValue references and convert to block args
         types = code.ssavaluetypes
+        init_values = capture_if_outer_refs!(then_block, else_block, nested_scope, types)
+
+        # Compute result type
         result_type = if isempty(phi_ssa_indices)
             Nothing
         elseif length(phi_ssa_indices) == 1
@@ -588,8 +617,8 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
             Tuple{(types[idx] for idx in phi_ssa_indices)...}
         end
 
-        # Create IfOp with result type
-        if_op = IfOp(cond_value, then_block, else_block, result_type)
+        # Create IfOp with init_values and result type
+        if_op = IfOp(cond_value, init_values, then_block, else_block, result_type)
         if_pos = push_cfop!(block, if_op)
 
         # Add extraction statements for each PhiNode result
@@ -600,23 +629,30 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         end
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
-        then_block = tree_to_block(then_tree, code, blocks, block_id)
+        # Merge current block's ssa_map with scope for nested regions
+        nested_scope = merge(scope, block.ssa_map)
+        then_block = tree_to_block(then_tree, code, blocks, block_id, nested_scope)
         else_block = Block(block_id[])
         block_id[] += 1
-        if_op = IfOp(cond_value, then_block, else_block, Nothing)
+        # Capture outer scope SSAValue references
+        types = code.ssavaluetypes
+        init_values = capture_if_outer_refs!(then_block, else_block, nested_scope, types)
+        if_op = IfOp(cond_value, init_values, then_block, else_block, Nothing)
         push_cfop!(block, if_op)
     end
 end
 
 """
-    handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_WHILE_LOOP and REGION_NATURAL_LOOP.
 Phase 1: Always creates LoopOp with metadata. Pattern matching happens in Phase 2.
 Also adds extraction statements for loop results so PhiNode references are resolved.
 """
-function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
-    loop_op, phi_ssa_indices = build_loop_op_phase1(tree, code, blocks, block_id)
+function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
+    # Merge current block's ssa_map with scope for capture_outer_refs
+    full_scope = merge(scope, block.ssa_map)
+    loop_op, phi_ssa_indices = build_loop_op_phase1(tree, code, blocks, block_id, full_scope)
 
     # Push the LoopOp
     loop_pos = push_cfop!(block, loop_op)
@@ -631,11 +667,11 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::V
 end
 
 """
-    handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_SELF_LOOP.
 """
-function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     idx = node_index(tree)
     stmts = code.code
     types = code.ssavaluetypes
@@ -647,8 +683,10 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
         collect_block_statements!(body_block, blocks[idx], code)
     end
 
-    # Capture outer scope SSAValue references
-    outer_init_values, _ = capture_outer_refs!(body_block, stmts, types)
+    # Merge current block's ssa_map with scope for capture_outer_refs
+    full_scope = merge(scope, block.ssa_map)
+    # Capture outer scope SSAValue references (convert to LocalSSA using scope)
+    outer_init_values, _ = capture_outer_refs!(body_block, full_scope, types)
 
     # Compute result type from block args
     result_type = compute_result_type(body_block.args)
@@ -658,24 +696,24 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
 end
 
 """
-    handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_PROPER - acyclic region not matching other patterns.
 """
-function handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     # Process as a sequence of blocks
-    handle_block_region!(block, tree, code, blocks, block_id)
+    handle_block_region!(block, tree, code, blocks, block_id, scope)
 end
 
 """
-    handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
 
 Handle REGION_SWITCH.
 """
-function handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     # For now, handle as a nested if-else chain
     # TODO: Implement proper switch handling if needed
-    handle_block_region!(block, tree, code, blocks, block_id)
+    handle_block_region!(block, tree, code, blocks, block_id, scope)
 end
 
 #=============================================================================
@@ -753,13 +791,14 @@ end
 =============================================================================#
 
 """
-    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> Tuple{LoopOp, Vector{Int}}
+    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap) -> Tuple{LoopOp, Vector{Int}}
 
 Build a LoopOp with substitutions applied inline.
 Phi node SSA references inside the loop body are replaced with BlockArgs.
 Returns the LoopOp and the original PhiNode SSA indices it replaces (for result extraction).
+The scope contains the accumulated ssa_map from ancestor blocks.
 """
-function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}, scope::ScopeSSAMap)
     stmts = code.code
     types = code.ssavaluetypes
     header_idx = node_index(tree)
@@ -857,15 +896,19 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     # Create the conditional structure inside the loop body
     if condition !== nothing
         cond_value = convert_phi_value(condition)
+        # Convert condition to LocalSSA using body's ssa_map
+        cond_value = convert_to_local_ssa(cond_value, body.ssa_map)
 
         then_block = Block(block_id[])
         block_id[] += 1
 
         # Process loop body blocks (excluding header)
+        # Pass scope merged with body's ssa_map for nested regions
+        nested_scope = merge(scope, body.ssa_map)
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(then_block, child, code, blocks, block_id)
+                handle_block_region!(then_block, child, code, blocks, block_id, nested_scope)
             end
         end
         # Set terminator and convert SSAValue refs to LocalSSA using the block's ssa_map
@@ -881,14 +924,26 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
         else_block.terminator = BreakOp(result_values)
 
-        if_op = IfOp(cond_value, then_block, else_block, Nothing)
+        # Apply phi substitutions to then/else blocks before capturing outer refs
+        # (subs maps PhiNode SSA indices to BlockArgs)
+        substitute_block!(then_block, subs)
+        substitute_block!(else_block, subs)
+
+        # Capture outer scope SSAValue references for the IfOp
+        # IMPORTANT: Use only body.ssa_map, not nested_scope, because:
+        # - LocalSSA references are relative to the body block
+        # - nested_scope contains parent mappings that would create wrong LocalSSA refs
+        if_init_values = capture_if_outer_refs!(then_block, else_block, body.ssa_map, types)
+        if_op = IfOp(cond_value, if_init_values, then_block, else_block, Nothing)
         push_cfop!(body, if_op)
     else
         # No condition - process children directly
+        # Pass scope merged with body's ssa_map for nested regions
+        nested_scope = merge(scope, body.ssa_map)
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(body, child, code, blocks, block_id)
+                handle_block_region!(body, child, code, blocks, block_id, nested_scope)
             end
         end
         # Set terminator and convert SSAValue refs to LocalSSA
@@ -901,7 +956,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
 
     # Capture outer scope SSAValue references and convert to block args
     n_loop_args = length(body.args)  # Number of PhiNode loop args
-    outer_init_values, _ = capture_outer_refs!(body, stmts, types)
+    outer_init_values, _ = capture_outer_refs!(body, scope, types)
     append!(init_values, outer_init_values)
 
     # Update terminators to include captured args (passed through unchanged).

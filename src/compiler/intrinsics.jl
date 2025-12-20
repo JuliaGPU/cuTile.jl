@@ -1265,7 +1265,7 @@ function emit_broadcast_to!(ctx::CodegenContext, args::AbstractVector, @nospecia
 
     # Get source tile
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve source operand for broadcast_to()")
+    source === nothing && error("Cannot resolve source operand for broadcast_to(): $(args[1]) ($(typeof(args[1])))")
 
     # Get source element type
     source_type = unwrap_type(source.jltype)
