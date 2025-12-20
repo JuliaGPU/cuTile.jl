@@ -45,6 +45,129 @@ function convert_phi_value(val)
     end
 end
 
+"""
+    find_exit_block(tree::ControlTree, blocks::Vector{BlockInfo}) -> Int
+
+Find the exit block of a region (a block that has successors outside the region).
+Returns the block index, or -1 if not found.
+"""
+function find_exit_block(tree::ControlTree, blocks::Vector{BlockInfo})
+    region_blocks = get_loop_blocks(tree, blocks)
+
+    # Find blocks whose successors include blocks outside the region
+    for blk_idx in region_blocks
+        if 1 <= blk_idx <= length(blocks)
+            for succ in blocks[blk_idx].succs
+                if !(succ in region_blocks)
+                    return blk_idx
+                end
+            end
+        end
+    end
+
+    # Fallback: return the last block in the region by traversal order
+    last_idx = -1
+    for subtree in PreOrderDFS(tree)
+        idx = node_index(subtree)
+        if 1 <= idx <= length(blocks)
+            last_idx = idx
+        end
+    end
+    return last_idx
+end
+
+"""
+    find_merge_block(then_exit::Int, else_exit::Int, blocks::Vector{BlockInfo}) -> Union{Int, Nothing}
+
+Find the merge block (common successor) of then and else branches.
+Returns the block index, or nothing if not found.
+"""
+function find_merge_block(then_exit::Int, else_exit::Int, blocks::Vector{BlockInfo})
+    (1 <= then_exit <= length(blocks) && 1 <= else_exit <= length(blocks)) || return nothing
+
+    then_succs = Set(blocks[then_exit].succs)
+    else_succs = Set(blocks[else_exit].succs)
+    merge_candidates = intersect(then_succs, else_succs)
+
+    isempty(merge_candidates) && return nothing
+    return first(merge_candidates)
+end
+
+"""
+    build_block_label_to_idx(blocks::Vector{BlockInfo}) -> Dict{Int, Int}
+
+Build a mapping from statement indices to BlockInfo indices.
+PhiNode edges in Julia IR are the statement index of the last statement in the predecessor block
+(the transfer point), so we need to map all statement indices in each block to the block index.
+"""
+function build_block_label_to_idx(blocks::Vector{BlockInfo})
+    label_to_idx = Dict{Int, Int}()
+    for (idx, block) in enumerate(blocks)
+        for si in block.range
+            label_to_idx[si] = idx
+        end
+    end
+    return label_to_idx
+end
+
+"""
+    find_if_merge_phis(merge_idx::Int, then_blocks::Set{Int}, else_blocks::Set{Int},
+                       code::CodeInfo, blocks::Vector{BlockInfo}) -> Vector{Int}
+
+Find PhiNodes at the merge block that have edges from both then and else branches.
+Returns the SSA indices of the PhiNodes.
+"""
+function find_if_merge_phis(merge_idx::Int, then_blocks::Set{Int}, else_blocks::Set{Int},
+                            code::CodeInfo, blocks::Vector{BlockInfo})
+    (1 <= merge_idx <= length(blocks)) || return Int[]
+
+    phi_indices = Int[]
+    merge_block = blocks[merge_idx]
+    stmts = code.code
+
+    # Build mapping from block labels (stmt indices) to BlockInfo indices
+    label_to_idx = build_block_label_to_idx(blocks)
+
+    for si in merge_block.range
+        stmt = stmts[si]
+        if stmt isa PhiNode
+            # Check if phi has edges from both then and else branches
+            has_then = false
+            has_else = false
+
+            for edge in stmt.edges
+                # edge is a block label (first statement index of predecessor block)
+                block_idx = get(label_to_idx, edge, 0)
+                if block_idx in then_blocks
+                    has_then = true
+                elseif block_idx in else_blocks
+                    has_else = true
+                end
+            end
+
+            if has_then && has_else
+                push!(phi_indices, si)
+            end
+        end
+    end
+    return phi_indices
+end
+
+"""
+    get_phi_branch_value(phi::PhiNode, branch_blocks::Set{Int}, label_to_idx::Dict{Int, Int}) -> Union{IRValue, Nothing}
+
+Get the value from a PhiNode that comes from the given branch blocks.
+"""
+function get_phi_branch_value(phi::PhiNode, branch_blocks::Set{Int}, label_to_idx::Dict{Int, Int})
+    for (i, edge) in enumerate(phi.edges)
+        block_idx = get(label_to_idx, edge, 0)
+        if block_idx in branch_blocks && isassigned(phi.values, i)
+            return convert_phi_value(phi.values[i])
+        end
+    end
+    return nothing
+end
+
 #=============================================================================
  Control Tree to Structured IR
 =============================================================================#
@@ -162,6 +285,7 @@ end
     handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
 
 Handle REGION_IF_THEN_ELSE.
+Also handles PhiNode results at the merge block by adding extraction statements.
 """
 function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     tree_children = children(tree)
@@ -177,7 +301,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         for si in cond_block.range
             stmt = code.code[si]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block.body, Statement(si, stmt, code.ssavaluetypes[si]))
+                push_op!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -188,18 +312,84 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     then_tree = tree_children[2]
     else_tree = tree_children[3]
 
+    # Get all blocks in each branch (including the condition block for "then")
+    then_blocks = get_loop_blocks(then_tree, blocks)
+    else_blocks = get_loop_blocks(else_tree, blocks)
+    # Include condition block in both sets for edge detection
+    push!(then_blocks, cond_idx)
+    push!(else_blocks, cond_idx)
+
+    # Find merge block and PhiNodes
+    then_exit = find_exit_block(then_tree, blocks)
+    else_exit = find_exit_block(else_tree, blocks)
+    merge_idx = find_merge_block(then_exit, else_exit, blocks)
+
+    phi_ssa_indices = Int[]
+    if merge_idx !== nothing
+        phi_ssa_indices = find_if_merge_phis(merge_idx, then_blocks, else_blocks, code, blocks)
+    end
+
     then_block = tree_to_block(then_tree, code, blocks, block_id)
     else_block = tree_to_block(else_tree, code, blocks, block_id)
 
-    # Create IfOp
-    if_op = IfOp(cond_value, then_block, else_block, Nothing)
-    push!(block.body, if_op)
+    # Set YieldOp terminators if there are PhiNode results
+    if !isempty(phi_ssa_indices)
+        then_yields = IRValue[]
+        else_yields = IRValue[]
+        stmts = code.code
+        label_to_idx = build_block_label_to_idx(blocks)
+
+        for phi_idx in phi_ssa_indices
+            phi = stmts[phi_idx]::PhiNode
+            then_val = get_phi_branch_value(phi, then_blocks, label_to_idx)
+            else_val = get_phi_branch_value(phi, else_blocks, label_to_idx)
+            if then_val !== nothing
+                push!(then_yields, then_val)
+            end
+            if else_val !== nothing
+                push!(else_yields, else_val)
+            end
+        end
+
+        # Only set YieldOp if both branches have values and no existing terminator
+        # Convert SSAValue refs to LocalSSA using the block's ssa_map
+        if length(then_yields) == length(phi_ssa_indices) && then_block.terminator === nothing
+            then_block.terminator = convert_terminator_to_local_ssa(
+                YieldOp(then_yields), then_block.ssa_map)
+        end
+        if length(else_yields) == length(phi_ssa_indices) && else_block.terminator === nothing
+            else_block.terminator = convert_terminator_to_local_ssa(
+                YieldOp(else_yields), else_block.ssa_map)
+        end
+    end
+
+    # Compute result type
+    types = code.ssavaluetypes
+    result_type = if isempty(phi_ssa_indices)
+        Nothing
+    elseif length(phi_ssa_indices) == 1
+        types[phi_ssa_indices[1]]
+    else
+        Tuple{(types[idx] for idx in phi_ssa_indices)...}
+    end
+
+    # Create IfOp with result type
+    if_op = IfOp(cond_value, then_block, else_block, result_type)
+    if_pos = push_cfop!(block, if_op)
+
+    # Add extraction statements for each PhiNode result
+    for (element_idx, phi_idx) in enumerate(phi_ssa_indices)
+        phi_type = types[phi_idx]
+        elem_idx = length(phi_ssa_indices) == 1 ? 0 : element_idx
+        push_extraction!(block, phi_idx, if_pos, elem_idx, phi_type)
+    end
 end
 
 """
     handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
 
 Handle REGION_IF_THEN.
+Also handles PhiNode results at the merge block.
 """
 function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     tree_children = children(tree)
@@ -215,7 +405,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
         for si in cond_block.range
             stmt = code.code[si]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block.body, Statement(si, stmt, code.ssavaluetypes[si]))
+                push_op!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -224,20 +414,94 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
 
     # Then block
     then_tree = tree_children[2]
+
+    # Get all blocks in the then branch (including condition block)
+    then_blocks = get_loop_blocks(then_tree, blocks)
+    push!(then_blocks, cond_idx)
+    # For if-then, the else "branch" is just the condition block fallthrough
+    else_blocks = Set{Int}([cond_idx])
+
+    # Find merge block and PhiNodes
+    then_exit = find_exit_block(then_tree, blocks)
+    # For if-then, the else exit is the condition block itself
+    merge_idx = nothing
+    if 1 <= then_exit <= length(blocks) && 1 <= cond_idx <= length(blocks)
+        then_succs = Set(blocks[then_exit].succs)
+        cond_succs = Set(blocks[cond_idx].succs)
+        merge_candidates = intersect(then_succs, cond_succs)
+        if !isempty(merge_candidates)
+            merge_idx = first(merge_candidates)
+        end
+    end
+
+    phi_ssa_indices = Int[]
+    if merge_idx !== nothing
+        phi_ssa_indices = find_if_merge_phis(merge_idx, then_blocks, else_blocks, code, blocks)
+    end
+
     then_block = tree_to_block(then_tree, code, blocks, block_id)
 
     # Empty else block
     else_block = Block(block_id[])
     block_id[] += 1
 
-    if_op = IfOp(cond_value, then_block, else_block, Nothing)
-    push!(block.body, if_op)
+    # Set YieldOp terminators if there are PhiNode results
+    if !isempty(phi_ssa_indices)
+        then_yields = IRValue[]
+        else_yields = IRValue[]
+        stmts = code.code
+        label_to_idx = build_block_label_to_idx(blocks)
+
+        for phi_idx in phi_ssa_indices
+            phi = stmts[phi_idx]::PhiNode
+            then_val = get_phi_branch_value(phi, then_blocks, label_to_idx)
+            else_val = get_phi_branch_value(phi, else_blocks, label_to_idx)
+            if then_val !== nothing
+                push!(then_yields, then_val)
+            end
+            if else_val !== nothing
+                push!(else_yields, else_val)
+            end
+        end
+
+        # Convert SSAValue refs to LocalSSA using the block's ssa_map
+        if length(then_yields) == length(phi_ssa_indices) && then_block.terminator === nothing
+            then_block.terminator = convert_terminator_to_local_ssa(
+                YieldOp(then_yields), then_block.ssa_map)
+        end
+        if length(else_yields) == length(phi_ssa_indices) && else_block.terminator === nothing
+            else_block.terminator = convert_terminator_to_local_ssa(
+                YieldOp(else_yields), else_block.ssa_map)
+        end
+    end
+
+    # Compute result type
+    types = code.ssavaluetypes
+    result_type = if isempty(phi_ssa_indices)
+        Nothing
+    elseif length(phi_ssa_indices) == 1
+        types[phi_ssa_indices[1]]
+    else
+        Tuple{(types[idx] for idx in phi_ssa_indices)...}
+    end
+
+    # Create IfOp with result type
+    if_op = IfOp(cond_value, then_block, else_block, result_type)
+    if_pos = push_cfop!(block, if_op)
+
+    # Add extraction statements for each PhiNode result
+    for (element_idx, phi_idx) in enumerate(phi_ssa_indices)
+        phi_type = types[phi_idx]
+        elem_idx = length(phi_ssa_indices) == 1 ? 0 : element_idx
+        push_extraction!(block, phi_idx, if_pos, elem_idx, phi_type)
+    end
 end
 
 """
     handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
 
 Handle REGION_TERMINATION - branches where some paths terminate.
+Also handles PhiNode results if there's a merge block.
 """
 function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     tree_children = children(tree)
@@ -253,7 +517,7 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         for si in cond_block.range
             stmt = code.code[si]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block.body, Statement(si, stmt, code.ssavaluetypes[si]))
+                push_op!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -264,17 +528,83 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
     if length(tree_children) >= 3
         then_tree = tree_children[2]
         else_tree = tree_children[3]
+
+        # Get all blocks in each branch
+        then_blocks = get_loop_blocks(then_tree, blocks)
+        else_blocks = get_loop_blocks(else_tree, blocks)
+        push!(then_blocks, cond_idx)
+        push!(else_blocks, cond_idx)
+
+        # Find merge block and PhiNodes
+        then_exit = find_exit_block(then_tree, blocks)
+        else_exit = find_exit_block(else_tree, blocks)
+        merge_idx = find_merge_block(then_exit, else_exit, blocks)
+
+        phi_ssa_indices = Int[]
+        if merge_idx !== nothing
+            phi_ssa_indices = find_if_merge_phis(merge_idx, then_blocks, else_blocks, code, blocks)
+        end
+
         then_block = tree_to_block(then_tree, code, blocks, block_id)
         else_block = tree_to_block(else_tree, code, blocks, block_id)
-        if_op = IfOp(cond_value, then_block, else_block, Nothing)
-        push!(block.body, if_op)
+
+        # Set YieldOp terminators if there are PhiNode results
+        if !isempty(phi_ssa_indices)
+            then_yields = IRValue[]
+            else_yields = IRValue[]
+            stmts = code.code
+            label_to_idx = build_block_label_to_idx(blocks)
+
+            for phi_idx in phi_ssa_indices
+                phi = stmts[phi_idx]::PhiNode
+                then_val = get_phi_branch_value(phi, then_blocks, label_to_idx)
+                else_val = get_phi_branch_value(phi, else_blocks, label_to_idx)
+                if then_val !== nothing
+                    push!(then_yields, then_val)
+                end
+                if else_val !== nothing
+                    push!(else_yields, else_val)
+                end
+            end
+
+            # Convert SSAValue refs to LocalSSA using the block's ssa_map
+            if length(then_yields) == length(phi_ssa_indices) && then_block.terminator === nothing
+                then_block.terminator = convert_terminator_to_local_ssa(
+                    YieldOp(then_yields), then_block.ssa_map)
+            end
+            if length(else_yields) == length(phi_ssa_indices) && else_block.terminator === nothing
+                else_block.terminator = convert_terminator_to_local_ssa(
+                    YieldOp(else_yields), else_block.ssa_map)
+            end
+        end
+
+        # Compute result type
+        types = code.ssavaluetypes
+        result_type = if isempty(phi_ssa_indices)
+            Nothing
+        elseif length(phi_ssa_indices) == 1
+            types[phi_ssa_indices[1]]
+        else
+            Tuple{(types[idx] for idx in phi_ssa_indices)...}
+        end
+
+        # Create IfOp with result type
+        if_op = IfOp(cond_value, then_block, else_block, result_type)
+        if_pos = push_cfop!(block, if_op)
+
+        # Add extraction statements for each PhiNode result
+        for (element_idx, phi_idx) in enumerate(phi_ssa_indices)
+            phi_type = types[phi_idx]
+            elem_idx = length(phi_ssa_indices) == 1 ? 0 : element_idx
+            push_extraction!(block, phi_idx, if_pos, elem_idx, phi_type)
+        end
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
         then_block = tree_to_block(then_tree, code, blocks, block_id)
         else_block = Block(block_id[])
         block_id[] += 1
         if_op = IfOp(cond_value, then_block, else_block, Nothing)
-        push!(block.body, if_op)
+        push_cfop!(block, if_op)
     end
 end
 
@@ -283,10 +613,21 @@ end
 
 Handle REGION_WHILE_LOOP and REGION_NATURAL_LOOP.
 Phase 1: Always creates LoopOp with metadata. Pattern matching happens in Phase 2.
+Also adds extraction statements for loop results so PhiNode references are resolved.
 """
 function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
-    loop_op = build_loop_op_phase1(tree, code, blocks, block_id)
-    push!(block.body, loop_op)
+    loop_op, phi_ssa_indices = build_loop_op_phase1(tree, code, blocks, block_id)
+
+    # Push the LoopOp
+    loop_pos = push_cfop!(block, loop_op)
+
+    # Add extraction statements for each PhiNode result
+    types = code.ssavaluetypes
+    for (element_idx, phi_idx) in enumerate(phi_ssa_indices)
+        phi_type = types[phi_idx]
+        elem_idx = length(phi_ssa_indices) == 1 ? 0 : element_idx
+        push_extraction!(block, phi_idx, loop_pos, elem_idx, phi_type)
+    end
 end
 
 """
@@ -296,6 +637,8 @@ Handle REGION_SELF_LOOP.
 """
 function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     idx = node_index(tree)
+    stmts = code.code
+    types = code.ssavaluetypes
 
     body_block = Block(block_id[])
     block_id[] += 1
@@ -304,8 +647,14 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
         collect_block_statements!(body_block, blocks[idx], code)
     end
 
-    loop_op = LoopOp(IRValue[], body_block, Nothing)
-    push!(block.body, loop_op)
+    # Capture outer scope SSAValue references
+    outer_init_values, _ = capture_outer_refs!(body_block, stmts, types)
+
+    # Compute result type from block args
+    result_type = compute_result_type(body_block.args)
+
+    loop_op = LoopOp(outer_init_values, body_block, result_type)
+    push_cfop!(block, loop_op)
 end
 
 """
@@ -347,7 +696,7 @@ function collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo
         if stmt isa ReturnNode
             block.terminator = stmt
         elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
-            push!(block.body, Statement(si, stmt, types[si]))
+            push_op!(block, si, stmt, types[si])
         end
     end
 end
@@ -384,12 +733,11 @@ Set the block terminator based on statements.
 function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{BlockInfo})
     block.terminator !== nothing && return
 
-    # Find the last statement index in body
+    # Find the last original SSA index from the ssa_map
     last_idx = nothing
-    for item in reverse(block.body)
-        if item isa Statement
-            last_idx = item.idx
-            break
+    for (ssa_idx, _) in block.ssa_map
+        if last_idx === nothing || ssa_idx > last_idx
+            last_idx = ssa_idx
         end
     end
     if last_idx !== nothing && last_idx < length(code.code)
@@ -405,10 +753,11 @@ end
 =============================================================================#
 
 """
-    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> LoopOp
+    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> Tuple{LoopOp, Vector{Int}}
 
 Build a LoopOp with substitutions applied inline.
 Phi node SSA references inside the loop body are replaced with BlockArgs.
+Returns the LoopOp and the original PhiNode SSA indices it replaces (for result extraction).
 """
 function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     stmts = code.code
@@ -422,9 +771,11 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
 
     # Find phi nodes in header - these become loop-carried values and block args
     # Also build substitution map: SSA index -> BlockArg
+    # Track PhiNode indices for result extraction statements
     init_values = IRValue[]
     carried_values = IRValue[]
     block_args = BlockArg[]
+    phi_ssa_indices = Int[]  # Track which PhiNodes this loop replaces
     subs = Substitutions()
 
     for si in header_block.range
@@ -457,14 +808,26 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 end
             end
 
-            entry_val !== nothing && push!(init_values, entry_val)
-            carried_val !== nothing && push!(carried_values, carried_val)
+            # Only create a loop block arg if this is a LOOP PhiNode
+            # (has at least one edge from inside the loop).
+            # Non-loop PhiNodes (e.g., if/else merges before the loop) are
+            # substituted with their entry value directly.
+            if carried_val !== nothing
+                entry_val !== nothing && push!(init_values, entry_val)
+                push!(carried_values, carried_val)
 
-            phi_type = types[si]
-            block_arg = BlockArg(length(block_args) + 1, phi_type)
-            push!(block_args, block_arg)
-            # Map this phi's SSA index to its block arg
-            subs[si] = block_arg
+                phi_type = types[si]
+                block_arg = BlockArg(length(block_args) + 1, phi_type)
+                push!(block_args, block_arg)
+                push!(phi_ssa_indices, si)  # Track this PhiNode's SSA index
+                # Map this phi's SSA index to its block arg
+                subs[si] = block_arg
+            else
+                # Non-loop PhiNode: substitute with its entry value
+                if entry_val !== nothing
+                    subs[si] = entry_val
+                end
+            end
         end
     end
 
@@ -487,7 +850,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     for si in header_block.range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(body.body, Statement(si, stmt, types[si]))
+            push_op!(body, si, stmt, types[si])
         end
     end
 
@@ -505,11 +868,13 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(then_block, child, code, blocks, block_id)
             end
         end
-        then_block.terminator = ContinueOp(carried_values)
+        # Set terminator and convert SSAValue refs to LocalSSA using the block's ssa_map
+        then_block.terminator = convert_terminator_to_local_ssa(
+            ContinueOp(carried_values), then_block.ssa_map)
 
         else_block = Block(block_id[])
         block_id[] += 1
-        # Block args are the references for break
+        # Block args are the references for break (already LocalSSA-compatible)
         result_values = IRValue[]
         for arg in block_args
             push!(result_values, arg)
@@ -517,7 +882,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         else_block.terminator = BreakOp(result_values)
 
         if_op = IfOp(cond_value, then_block, else_block, Nothing)
-        push!(body.body, if_op)
+        push_cfop!(body, if_op)
     else
         # No condition - process children directly
         for child in children(tree)
@@ -526,16 +891,64 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(body, child, code, blocks, block_id)
             end
         end
-        body.terminator = ContinueOp(carried_values)
+        # Set terminator and convert SSAValue refs to LocalSSA
+        body.terminator = convert_terminator_to_local_ssa(
+            ContinueOp(carried_values), body.ssa_map)
     end
 
     # Apply substitutions to the loop body (phi SSA refs -> block args)
     substitute_block!(body, subs)
 
-    # Compute result type from block args
-    result_type = compute_result_type(block_args)
+    # Capture outer scope SSAValue references and convert to block args
+    n_loop_args = length(body.args)  # Number of PhiNode loop args
+    outer_init_values, _ = capture_outer_refs!(body, stmts, types)
+    append!(init_values, outer_init_values)
 
-    return LoopOp(init_values, body, result_type)
+    # Update terminators to include captured args (passed through unchanged).
+    # ContinueOp: extend with captured block args
+    # BreakOp: extend with captured block args
+    n_captured = length(body.args) - n_loop_args
+    if n_captured > 0
+        captured_args = body.args[n_loop_args+1:end]
+        extend_loop_terminators!(body, carried_values, captured_args)
+    end
+
+    # Compute result type from block args
+    result_type = compute_result_type(body.args)
+
+    return LoopOp(init_values, body, result_type), phi_ssa_indices
+end
+
+"""
+    extend_loop_terminators!(body::Block, carried_values::Vector, captured_args::Vector{BlockArg})
+
+Extend ContinueOp and BreakOp terminators in a LoopOp body to include captured block args.
+The captured args are passed through unchanged in both continue and break paths.
+"""
+function extend_loop_terminators!(body::Block, carried_values::Vector, captured_args::Vector{BlockArg})
+    for (i, op) in enumerate(body.ops)
+        if op.expr isa IfOp
+            # Extend ContinueOp in then_block
+            then_term = op.expr.then_block.terminator
+            if then_term isa ContinueOp
+                # Add captured args to continue values
+                new_values = vcat(then_term.values, captured_args)
+                op.expr.then_block.terminator = ContinueOp(new_values)
+            end
+            # Extend BreakOp in else_block
+            else_term = op.expr.else_block.terminator
+            if else_term isa BreakOp
+                # Add captured args to break values
+                new_values = vcat(else_term.values, captured_args)
+                op.expr.else_block.terminator = BreakOp(new_values)
+            end
+        end
+    end
+    # Also extend the body terminator if it's a ContinueOp
+    if body.terminator isa ContinueOp
+        new_values = vcat(body.terminator.values, captured_args)
+        body.terminator = ContinueOp(new_values)
+    end
 end
 
 """

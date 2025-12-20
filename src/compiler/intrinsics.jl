@@ -5,8 +5,19 @@
 # Generic fallback
 emit_intrinsic!(ctx::CodegenContext, @nospecialize(func), args, @nospecialize(result_type)) = missing
 
-# Skip tuple construction
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Core.tuple), args, @nospecialize(result_type)) = nothing
+# Tuple construction - store element CGVals for later extraction (e.g., multi-dim indices)
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Core.tuple), args, @nospecialize(result_type))
+    # Emit all element values and collect their CGVals
+    element_tvs = CGVal[]
+    for arg in args
+        tv = emit_value!(ctx, arg)
+        tv === nothing && return nothing
+        push!(element_tvs, tv)
+    end
+    # Store as ghost value with tuple of CGVals as the constant
+    # This allows extract_index_values to unpack the elements later
+    ghost_value(result_type, Tuple(element_tvs))
+end
 
 # Skip getproperty (module.field access, resolved elsewhere)
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getproperty), args, @nospecialize(result_type)) = nothing
@@ -309,6 +320,15 @@ function emit_intrinsic!(ctx::CodegenContext, func::Core.IntrinsicFunction, args
         return emit_int_cmp!(ctx, args, CmpEqual, SignednessSigned)
     elseif func === Base.ne_int
         return emit_int_cmp!(ctx, args, CmpNotEqual, SignednessSigned)
+    # Float comparison intrinsics
+    elseif func === Base.eq_float
+        return emit_float_cmp!(ctx, args, CmpEqual)
+    elseif func === Base.ne_float
+        return emit_float_cmp!(ctx, args, CmpNotEqual)
+    elseif func === Base.lt_float
+        return emit_float_cmp!(ctx, args, CmpLessThan)
+    elseif func === Base.le_float
+        return emit_float_cmp!(ctx, args, CmpLessThanOrEqual)
     end
     missing  # Unknown intrinsic
 end
@@ -379,6 +399,28 @@ function emit_int_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate
 
     result_v = encode_CmpIOp!(cb, result_type, lhs_v, rhs_v;
                               predicate=predicate, signedness=signedness)
+
+    CGVal(result_v, result_type, Bool, Int[])
+end
+
+function emit_float_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    lhs = emit_value!(ctx, args[1])
+    rhs = emit_value!(ctx, args[2])
+
+    lhs === nothing && error("Cannot resolve LHS operand for float comparison")
+    rhs === nothing && error("Cannot resolve RHS operand for float comparison")
+
+    # Result type is a boolean (i1) scalar
+    result_type = tile_type!(tt, I1(tt), Int[])
+
+    lhs_v = lhs isa CGVal ? lhs.v : lhs
+    rhs_v = rhs isa CGVal ? rhs.v : rhs
+
+    result_v = encode_CmpFOp!(cb, result_type, lhs_v, rhs_v;
+                              predicate=predicate, ordering=CmpOrdered)
 
     CGVal(result_v, result_type, Bool, Int[])
 end
@@ -515,6 +557,7 @@ end
 function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
     cb = ctx.cb
     tt = ctx.tt
+    @debug "emit_load! START: next_value_id=$(cb.next_value_id)"
 
     array_arg = args[1]
 
@@ -583,24 +626,31 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     size_vals, stride_vals = get_size_stride_vals(ctx, arg_idx, is_tilearray, ndim, tile_shape, index_vals, scalar_i32)
 
     # Emit AssumeOps for optimization hints (skip stride assumes for static strides)
+    @debug "emit_load! before emit_assume_ops: next_value_id=$(cb.next_value_id)"
     if array_spec !== nothing
         array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_i32; tv_strides)
     end
+    @debug "emit_load! after emit_assume_ops: next_value_id=$(cb.next_value_id), array_val=$array_val"
 
     # Filter strides to only pass dynamic ones as operands
     dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
 
     # Create tensor view
+    @debug "emit_load! before MakeTensorViewOp: next_value_id=$(cb.next_value_id)"
     tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, dynamic_stride_vals)
+    @debug "emit_load! after MakeTensorViewOp: tensor_view=$tensor_view, next_value_id=$(cb.next_value_id)"
 
     # Create partition view
     partition = encode_MakePartitionViewOp!(cb, pv_type, tensor_view)
+    @debug "emit_load! after MakePartitionViewOp: partition=$partition, next_value_id=$(cb.next_value_id)"
 
     # Pad indices if needed
     index_vals = pad_indices(ctx, index_vals, ndim, scalar_i32)
+    @debug "emit_load! after pad_indices: next_value_id=$(cb.next_value_id)"
 
     # Load tile with token
     tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, partition, index_vals; token=ctx.token)
+    @debug "emit_load! after LoadViewTkoOp: tile_val=$tile_val, new_token=$new_token, next_value_id=$(cb.next_value_id)"
     ctx.token = new_token
 
     CGVal(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
@@ -939,6 +989,26 @@ function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos
     length(args) < idx_pos && return index_vals
 
     index_arg = args[idx_pos]
+
+    # Handle LocalSSA - look up the stored tuple info
+    if index_arg isa LocalSSA
+        tv = ctx[index_arg]
+        if tv !== nothing && tv.constant isa Tuple
+            # This is a tuple ghost value - the constant holds the element CGVals
+            for elem_tv in tv.constant
+                if elem_tv isa CGVal && elem_tv.v !== nothing
+                    push!(index_vals, elem_tv.v)
+                end
+            end
+            return index_vals
+        elseif tv !== nothing && tv.v !== nothing
+            # Single value
+            push!(index_vals, tv.v)
+            return index_vals
+        end
+    end
+
+    # Handle SSAValue - look up in original CodeInfo
     if index_arg isa SSAValue
         tuple_stmt = code(ctx.target)[index_arg.id]
         if tuple_stmt isa Expr && tuple_stmt.head === :call
@@ -953,10 +1023,10 @@ function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos
         end
         # Single value
         tv = emit_value!(ctx, index_arg)
-        tv.v !== nothing && push!(index_vals, tv.v)
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
     else
         tv = emit_value!(ctx, index_arg)
-        tv.v !== nothing && push!(index_vals, tv.v)
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
     end
 
     return index_vals

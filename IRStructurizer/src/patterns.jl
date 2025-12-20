@@ -8,60 +8,62 @@
 =============================================================================#
 
 """
-    find_ifop(block::Block) -> Union{IfOp, Nothing}
+    find_ifop(block::Block) -> Union{Tuple{Int, IfOp}, Nothing}
 
-Find the first IfOp in a block's body.
+Find the first IfOp in a block's ops.
+Returns (position, IfOp) or nothing.
 """
 function find_ifop(block::Block)
-    for item in block.body
-        if item isa IfOp
-            return item
+    for (i, op) in enumerate(block.ops)
+        if op.expr isa IfOp
+            return (i, op.expr)
         end
     end
     return nothing
 end
 
 """
-    find_statement_by_ssa(block::Block, ssa::SSAValue) -> Union{Statement, Nothing}
+    find_op_by_local_ssa(block::Block, ssa::LocalSSA) -> Union{Operation, Nothing}
 
-Find a Statement in the block whose idx matches the SSAValue's id.
+Find an Operation in the block by its local SSA position.
 """
-function find_statement_by_ssa(block::Block, ssa::SSAValue)
-    for item in block.body
-        if item isa Statement && item.idx == ssa.id
-            return item
-        end
+function find_op_by_local_ssa(block::Block, ssa::LocalSSA)
+    if 1 <= ssa.id <= length(block.ops)
+        return block.ops[ssa.id]
     end
     return nothing
 end
 
 """
-    find_add_int_for_iv(block::Block, iv_arg::BlockArg) -> Union{Statement, Nothing}
+    find_add_int_for_iv(block::Block, iv_arg::BlockArg) -> Union{Tuple{Int, Operation}, Nothing}
 
-Find a Statement containing `add_int(iv_arg, step)` in the block.
+Find an Operation containing `add_int(iv_arg, step)` in the block.
 Searches inside IfOp blocks (since condition creates IfOp structure),
 but NOT into nested LoopOps (those have their own IVs).
+Returns (position, Operation) or nothing.
 """
 function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
-    for item in block.body
-        if item isa Statement
-            expr = item.expr
+    for (i, op) in enumerate(block.ops)
+        if op.expr isa ControlFlowOp
+            if op.expr isa IfOp
+                # Search in IfOp blocks (condition structure)
+                result = find_add_int_for_iv(op.expr.then_block, iv_arg)
+                result !== nothing && return result
+                result = find_add_int_for_iv(op.expr.else_block, iv_arg)
+                result !== nothing && return result
+            end
+            # Don't recurse into LoopOp - nested loops have their own IVs
+        else
+            expr = op.expr
             if expr isa Expr && expr.head === :call && length(expr.args) >= 3
                 func = expr.args[1]
                 if func isa GlobalRef && func.name === :add_int
                     if expr.args[2] == iv_arg
-                        return item
+                        return (i, op)
                     end
                 end
             end
-        elseif item isa IfOp
-            # Search in IfOp blocks (condition structure)
-            result = find_add_int_for_iv(item.then_block, iv_arg)
-            result !== nothing && return result
-            result = find_add_int_for_iv(item.else_block, iv_arg)
-            result !== nothing && return result
         end
-        # Don't recurse into LoopOp - nested loops have their own IVs
     end
     return nothing
 end
@@ -71,14 +73,19 @@ end
 
 Check if a value is loop-invariant (not defined inside the loop body).
 - BlockArgs are loop-variant (they're loop-carried values)
-- SSAValues are loop-invariant if no Statement in the body defines them
+- LocalSSA values that point to ops in this block are loop-variant
 - Constants and Arguments are always loop-invariant
 """
 function is_loop_invariant(val, block::Block)
     # BlockArgs are loop-carried values - not invariant
     val isa BlockArg && return false
 
-    # SSAValues: check if defined in the loop body (including nested blocks)
+    # LocalSSA: check if defined in this block (by position)
+    if val isa LocalSSA
+        return !(1 <= val.id <= length(block.ops))
+    end
+
+    # SSAValues shouldn't appear after structurization, but handle gracefully
     if val isa SSAValue
         return !defines(block, val)
     end
@@ -112,11 +119,14 @@ Assumes substitutions have already been applied.
 Pattern matches entirely on the structured IR.
 """
 function apply_loop_patterns!(block::Block)
-    for (i, item) in enumerate(block.body)
-        if item isa LoopOp
-            upgraded = try_upgrade_loop(item)
+    for (i, op) in enumerate(block.ops)
+        cfop = op.expr
+        cfop isa ControlFlowOp || continue
+
+        if cfop isa LoopOp
+            upgraded = try_upgrade_loop(cfop)
             if upgraded !== nothing
-                block.body[i] = upgraded
+                block.ops[i] = Operation(upgraded, get_result_type(upgraded))
                 # Recursively apply to the upgraded op's blocks
                 if upgraded isa ForOp
                     apply_loop_patterns!(upgraded.body)
@@ -125,14 +135,16 @@ function apply_loop_patterns!(block::Block)
                     apply_loop_patterns!(upgraded.after)
                 end
             else
-                apply_loop_patterns!(item.body)
+                apply_loop_patterns!(cfop.body)
             end
-        elseif item isa IfOp
-            apply_loop_patterns!(item.then_block)
-            apply_loop_patterns!(item.else_block)
-        elseif item isa WhileOp
-            apply_loop_patterns!(item.before)
-            apply_loop_patterns!(item.after)
+        elseif cfop isa IfOp
+            apply_loop_patterns!(cfop.then_block)
+            apply_loop_patterns!(cfop.else_block)
+        elseif cfop isa WhileOp
+            apply_loop_patterns!(cfop.before)
+            apply_loop_patterns!(cfop.after)
+        elseif cfop isa ForOp
+            apply_loop_patterns!(cfop.body)
         end
     end
 end
@@ -164,21 +176,23 @@ Pattern matches entirely on the structured IR (after substitutions).
 """
 function try_upgrade_to_for(loop::LoopOp)
     # Find the IfOp in the loop body - this contains the condition check
-    condition_ifop = find_ifop(loop.body)
-    condition_ifop === nothing && return nothing
+    ifop_result = find_ifop(loop.body)
+    ifop_result === nothing && return nothing
+    ifop_pos, condition_ifop = ifop_result
 
-    # The condition should be an SSAValue pointing to a comparison Statement
-    condition_ifop.condition isa SSAValue || return nothing
-    cond_stmt = find_statement_by_ssa(loop.body, condition_ifop.condition)
-    cond_stmt === nothing && return nothing
+    # The condition should be a LocalSSA pointing to a comparison Operation
+    condition_ifop.condition isa LocalSSA || return nothing
+    cond_op = find_op_by_local_ssa(loop.body, condition_ifop.condition)
+    cond_op === nothing && return nothing
+    cond_pos = condition_ifop.condition.id
 
     # Check it's a for-loop condition: slt_int(iv_arg, upper_bound)
-    is_for_condition(cond_stmt.expr) || return nothing
+    is_for_condition(cond_op.expr) || return nothing
 
     # After substitution, the IV should be a BlockArg
-    iv_arg = cond_stmt.expr.args[2]
+    iv_arg = cond_op.expr.args[2]
     iv_arg isa BlockArg || return nothing
-    upper_bound = cond_stmt.expr.args[3]
+    upper_bound = cond_op.expr.args[3]
 
     # Find which index this BlockArg corresponds to
     iv_idx = findfirst(==(iv_arg), loop.body.args)
@@ -189,9 +203,10 @@ function try_upgrade_to_for(loop::LoopOp)
     lower_bound = loop.init_values[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
-    step_stmt = find_add_int_for_iv(loop.body, iv_arg)
-    step_stmt === nothing && return nothing
-    step = step_stmt.expr.args[3]
+    step_result = find_add_int_for_iv(loop.body, iv_arg)
+    step_result === nothing && return nothing
+    step_pos, step_op = step_result
+    step = step_op.expr.args[3]
 
     # Verify upper_bound and step are loop-invariant
     is_loop_invariant(upper_bound, loop.body) || return nothing
@@ -209,40 +224,43 @@ function try_upgrade_to_for(loop::LoopOp)
     end
 
     # Rebuild body block without condition structure
-    # LoopOp body: [header_stmts..., IfOp(cond, continue_block, break_block)]
-    # ForOp body: [body_stmts...] with ContinueOp terminator
+    # LoopOp body: [header_ops..., IfOp(cond, continue_block, break_block)]
+    # ForOp body: [body_ops...] with ContinueOp terminator
     new_body = Block(loop.body.id)
     # Only include carried values, not IV (IV is stored separately in ForOp.iv_arg)
     new_body.args = other_block_args
 
-    # Extract body statements, filtering out iv-related ones
-    for item in loop.body.body
-        if item isa Statement
-            # Skip iv increment and condition comparison
-            item === step_stmt && continue
-            item === cond_stmt && continue
-            push!(new_body.body, item)
-        elseif item isa IfOp
+    # Extract body operations, filtering out iv-related ones
+    for (i, op) in enumerate(loop.body.ops)
+        # Skip iv increment and condition comparison
+        i == step_pos && continue
+        i == cond_pos && continue
+
+        if op.expr isa IfOp
             # Extract the continue path's body (skip condition check structure)
-            for sub_item in item.then_block.body
-                if sub_item isa Statement
-                    sub_item === step_stmt && continue
-                    push!(new_body.body, sub_item)
-                else
-                    push!(new_body.body, sub_item)
+            for (j, sub_op) in enumerate(op.expr.then_block.ops)
+                # Skip step increment if it's in here
+                if sub_op.expr isa Expr && sub_op.expr.head === :call
+                    func = sub_op.expr.args[1]
+                    if func isa GlobalRef && func.name === :add_int && length(sub_op.expr.args) >= 3
+                        if sub_op.expr.args[2] == iv_arg
+                            continue  # Skip IV increment
+                        end
+                    end
                 end
+                push!(new_body.ops, sub_op)
             end
         else
-            push!(new_body.body, item)
+            push!(new_body.ops, op)
         end
     end
 
     # Get yield values from continue terminator, excluding the IV
     yield_values = IRValue[]
-    if !isempty(loop.body.body)
-        last_item = loop.body.body[end]
-        if last_item isa IfOp && last_item.then_block.terminator isa ContinueOp
-            for (j, v) in enumerate(last_item.then_block.terminator.values)
+    if !isempty(loop.body.ops)
+        last_op = loop.body.ops[end]
+        if last_op.expr isa IfOp && last_op.expr.then_block.terminator isa ContinueOp
+            for (j, v) in enumerate(last_op.expr.then_block.terminator.values)
                 j != iv_idx && push!(yield_values, v)
             end
         end
@@ -270,52 +288,53 @@ function try_upgrade_to_while(loop::LoopOp)
     # The body already has substitutions applied from Phase 2a
 
     # Find the IfOp in the loop body - its condition is the while condition
-    condition_ifop = find_ifop(loop.body)
-    condition_ifop === nothing && return nothing
+    ifop_result = find_ifop(loop.body)
+    ifop_result === nothing && return nothing
+    ifop_pos, condition_ifop = ifop_result
 
-    # Build "before" region: statements before the IfOp + ConditionOp
+    # Build "before" region: operations before the IfOp + ConditionOp
     before = Block(loop.body.id)
     before.args = copy(loop.body.args)
 
-    for item in loop.body.body
-        if item isa Statement
-            push!(before.body, item)
-        elseif item isa IfOp
+    for (i, op) in enumerate(loop.body.ops)
+        if op.expr isa IfOp
             # Stop before IfOp - the condition becomes ConditionOp
             break
         else
-            push!(before.body, item)
+            push!(before.ops, op)
         end
     end
 
-    # Get break values (become results when condition is false)
-    # Also used as args passed to after region when condition is true
-    condition_args = IRValue[]
-    if condition_ifop.else_block.terminator isa BreakOp
-        condition_args = copy(condition_ifop.else_block.terminator.values)
-    elseif !isempty(before.args)
-        # Default: forward the block args
-        condition_args = [arg for arg in before.args]
-    end
+    # ConditionOp args must include ALL block args (MLIR scf.while semantics).
+    # - When condition is true: all args are passed to after region
+    # - When condition is false: all args become the loop results
+    # We always pass all block args, not just the BreakOp values which may be a subset.
+    condition_args = IRValue[arg for arg in before.args]
 
     before.terminator = ConditionOp(condition_ifop.condition, condition_args)
 
-    # Build "after" region: statements from the then_block + YieldOp
+    # Build "after" region: operations from the then_block + YieldOp
     after = Block(loop.body.id + 1000)  # Different block ID
     # After region receives args from ConditionOp
     for (i, arg) in enumerate(before.args)
         push!(after.args, BlockArg(i, arg.type))
     end
 
-    # Copy body statements from the continue path
-    for item in condition_ifop.then_block.body
-        push!(after.body, item)
+    # Copy body operations from the continue path
+    for op in condition_ifop.then_block.ops
+        push!(after.ops, op)
     end
 
-    # Get yield values from the continue terminator
+    # Get yield values from the continue terminator.
+    # The ContinueOp values are the "updated" carried values.
+    # For loop-invariant values (captured from outer scope), we pass them through unchanged.
     yield_values = IRValue[]
     if condition_ifop.then_block.terminator isa ContinueOp
         yield_values = copy(condition_ifop.then_block.terminator.values)
+    end
+    # For any remaining block args (loop-invariant), use the after block args directly
+    for i in (length(yield_values) + 1):length(after.args)
+        push!(yield_values, after.args[i])
     end
     after.terminator = YieldOp(yield_values)
 

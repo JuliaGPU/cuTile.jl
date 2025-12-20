@@ -812,12 +812,14 @@ function encode_IfOp!(then_body::Function, else_body::Function,
     encode_varint!(cb.buf, 2)  # 2 regions: then, else
 
     # Then region (no block args for if branches)
-    with_region(then_body, cb, TypeId[])
+    # Use scoped region so values inside branches don't affect outer numbering
+    with_scoped_region(then_body, cb, TypeId[])
 
     # Else region
-    with_region(else_body, cb, TypeId[])
+    with_scoped_region(else_body, cb, TypeId[])
 
-    # Create result values
+    # Allocate result values AFTER encoding regions
+    # (bytecode format numbers IF results after region values)
     num_results = length(result_types)
     if num_results == 0
         return Value[]
@@ -862,17 +864,11 @@ function encode_LoopOp!(body::Function, cb::CodeBuilder,
     encode_varint!(cb.buf, 1)  # 1 region: body
 
     # Body region - block args are the loop-carried values
-    with_region(body, cb, result_types)
+    # Use scoped region: values inside the loop body are region-local
+    block_args = with_scoped_region(body, cb, result_types)
 
-    # Create result values
-    num_results = length(result_types)
-    if num_results == 0
-        return Value[]
-    else
-        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
-        cb.next_value_id += num_results
-        return vals
-    end
+    # Loop results have the same IDs as block arguments
+    return block_args
 end
 
 """
@@ -913,17 +909,13 @@ function encode_ForOp!(body::Function, cb::CodeBuilder,
     # Induction var has same type as bounds (typically i32)
     iv_type = tile_type!(cb.type_table, I32(cb.type_table), Int[])
     body_arg_types = vcat([iv_type], result_types)
-    with_region(body, cb, body_arg_types)
 
-    # Create result values
-    num_results = length(result_types)
-    if num_results == 0
-        return Value[]
-    else
-        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
-        cb.next_value_id += num_results
-        return vals
-    end
+    # Use scoped region: values inside the loop body are region-local
+    block_args = with_scoped_region(body, cb, body_arg_types)
+
+    # ForOp results are the carried values (block_args without the induction variable)
+    # Results share IDs with the carried value block args
+    return block_args[2:end]
 end
 
 #=============================================================================
@@ -1105,16 +1097,28 @@ function encode_ReduceOp!(body::Function, cb::CodeBuilder,
         push!(body_arg_types, scalar_type)  # accumulator
         push!(body_arg_types, scalar_type)  # element
     end
-    with_region(body, cb, body_arg_types)
 
-    # Create result values
+    # Reduce body region - use regular with_region (not scoped), because we need
+    # special handling: results share IDs with accumulators, not separate values.
+    # Save state manually
+    parent_next_value_id = cb.next_value_id
+
+    # Create block args and execute body
+    block_args = with_region(body, cb, body_arg_types)
+
+    # Reduce results have the same IDs as the accumulator block args (first of each pair)
+    # For a single-operand reduce: block_args = [acc, elem], result = acc's ID
     num_results = length(result_types)
+
+    # After reduce, next value ID should be parent + num_results
+    # (the result IDs are the same as the first N block args)
+    cb.next_value_id = parent_next_value_id + num_results
+
     if num_results == 0
         return Value[]
     else
-        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
-        cb.next_value_id += num_results
-        return vals
+        # Each result corresponds to an accumulator (every other block arg starting at 0)
+        return [block_args[2*i + 1] for i in 0:num_results-1]
     end
 end
 

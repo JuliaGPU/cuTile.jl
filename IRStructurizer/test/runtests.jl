@@ -2,7 +2,33 @@ using Test
 
 using IRStructurizer
 using IRStructurizer: Block, IfOp, ForOp, WhileOp, LoopOp, YieldOp, ContinueOp, BreakOp,
-                      ConditionOp, ControlFlowOp, Statement, validate_scf
+                      ConditionOp, ControlFlowOp, Statement, Operation, LocalSSA, validate_scf
+
+# Helper to check if block contains a control flow op of given type
+function has_cfop(block::Block, T::Type)
+    for op in block.ops
+        if op.expr isa T
+            return true
+        end
+    end
+    return false
+end
+
+# Helper to get control flow ops of a given type from block
+function get_cfops(block::Block, T::Type)
+    cfops = T[]
+    for op in block.ops
+        if op.expr isa T
+            push!(cfops, op.expr)
+        end
+    end
+    return cfops
+end
+
+# Helper to count non-control-flow operations (statements)
+function count_stmts(block::Block)
+    count(op -> !(op.expr isa ControlFlowOp), block.ops)
+end
 
 @testset "IRStructurizer" verbose=true begin
 
@@ -18,14 +44,14 @@ using IRStructurizer: Block, IfOp, ForOp, WhileOp, LoopOp, YieldOp, ContinueOp, 
 
     # Create flat, then structurize
     sci = StructuredCodeInfo(ci)
-    @test !any(item -> item isa IfOp, sci.entry.body)
+    @test !has_cfop(sci.entry, IfOp)
 
     structurize!(sci)
-    @test any(item -> item isa IfOp, sci.entry.body)
+    @test has_cfop(sci.entry, IfOp)
 
     # code_structured does both steps
     sci2 = code_structured(g, Tuple{Int})
-    @test any(item -> item isa IfOp, sci2.entry.body)
+    @test has_cfop(sci2.entry, IfOp)
 end
 
 @testset "validation: UnstructuredControlFlowError" begin
@@ -37,16 +63,16 @@ end
     sci = StructuredCodeInfo(ci)
     gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ci.code)
     @test gotoifnot_idx !== nothing
-    # Check that the GotoIfNot statement is in the body
-    @test any(item -> item isa Statement && item.idx == gotoifnot_idx, sci.entry.body)
+    # Check that the GotoIfNot is in ops (before structurization)
+    @test any(op -> op.expr isa Core.GotoIfNot, sci.entry.ops)
 
     # Validation should throw
     @test_throws UnstructuredControlFlowError validate_scf(sci)
 
     # After structurize!, validation passes
     structurize!(sci)
-    # GotoIfNot should no longer be in body (replaced by IfOp)
-    @test !any(item -> item isa Statement && item.idx == gotoifnot_idx, sci.entry.body)
+    # GotoIfNot should no longer be present (replaced by IfOp in ops)
+    @test !any(op -> op.expr isa Core.GotoIfNot, sci.entry.ops)
     validate_scf(sci)  # Should not throw
 end
 
@@ -62,15 +88,15 @@ end
 
     # With patterning (default): ForOp
     sci_with = code_structured(count_loop, Tuple{Int}; loop_patterning=true)
-    loop_op_with = filter(item -> item isa ControlFlowOp, sci_with.entry.body)
-    @test !isempty(loop_op_with)
-    @test loop_op_with[1] isa ForOp
+    loop_ops_with = get_cfops(sci_with.entry, ForOp)
+    @test !isempty(loop_ops_with)
+    @test loop_ops_with[1] isa ForOp
 
     # Without patterning: LoopOp
     sci_without = code_structured(count_loop, Tuple{Int}; loop_patterning=false)
-    loop_op_without = filter(item -> item isa ControlFlowOp, sci_without.entry.body)
-    @test !isempty(loop_op_without)
-    @test loop_op_without[1] isa LoopOp
+    loop_ops_without = get_cfops(sci_without.entry, LoopOp)
+    @test !isempty(loop_ops_without)
+    @test loop_ops_without[1] isa LoopOp
 end
 
 @testset "display output format" begin
@@ -94,7 +120,7 @@ end
     output = String(take!(io))
 
     @test occursin("StructuredCodeInfo", output)
-    @test occursin("stmts", output)
+    @test occursin("ops", output)
 end
 
 end  # interface
@@ -117,9 +143,9 @@ end  # interface
     sci = code_structured(f, Tuple{Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry block: one statement (the add), no control flow ops
-    @test length(sci.entry.body) == 1
-    @test sci.entry.body[1] isa Statement
+    # Entry block: one operation (the add), no control flow ops
+    @test length(sci.entry.ops) == 1
+    @test !(sci.entry.ops[1].expr isa ControlFlowOp)
     @test sci.entry.terminator isa Core.ReturnNode
 
     # Multiple operations: (x + y) * (x - y)
@@ -128,9 +154,9 @@ end  # interface
     sci = code_structured(g, Tuple{Int, Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry block: 3 statements (add, sub, mul), no control flow ops
-    @test length(sci.entry.body) == 3
-    @test all(item isa Statement for item in sci.entry.body)
+    # Entry block: 3 operations (add, sub, mul), no control flow ops
+    @test length(sci.entry.ops) == 3
+    @test all(!(op.expr isa ControlFlowOp) for op in sci.entry.ops)
     @test sci.entry.terminator isa Core.ReturnNode
 end
 
@@ -141,21 +167,21 @@ end
     sci = code_structured(compute_branch, Tuple{Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry: comparison stmt, then IfOp
-    @test length(sci.entry.body) == 2
-    @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa IfOp
+    # Entry: comparison op, then IfOp
+    @test length(sci.entry.ops) == 2
+    @test !(sci.entry.ops[1].expr isa ControlFlowOp)
+    @test sci.entry.ops[2].expr isa IfOp
 
-    if_op = sci.entry.body[2]
+    if_op = sci.entry.ops[2].expr
 
-    # Then branch: one stmt (addition), then return
-    @test length(if_op.then_block.body) == 1
-    @test if_op.then_block.body[1] isa Statement
+    # Then branch: one op (addition), then return
+    @test length(if_op.then_block.ops) == 1
+    @test !(if_op.then_block.ops[1].expr isa ControlFlowOp)
     @test if_op.then_block.terminator isa Core.ReturnNode
 
-    # Else branch: one stmt (subtraction), then return
-    @test length(if_op.else_block.body) == 1
-    @test if_op.else_block.body[1] isa Statement
+    # Else branch: one op (subtraction), then return
+    @test length(if_op.else_block.ops) == 1
+    @test !(if_op.else_block.ops[1].expr isa ControlFlowOp)
     @test if_op.else_block.terminator isa Core.ReturnNode
 end
 
@@ -166,23 +192,23 @@ end
     sci = code_structured(branch_test, Tuple{Bool})
     @test sci isa StructuredCodeInfo
 
-    # Entry: exactly one IfOp, no statements
-    @test length(sci.entry.body) == 1
-    @test sci.entry.body[1] isa IfOp
+    # Entry: exactly one IfOp, no other operations
+    @test length(sci.entry.ops) == 1
+    @test sci.entry.ops[1].expr isa IfOp
 
-    if_op = sci.entry.body[1]
+    if_op = sci.entry.ops[1].expr
 
     # Condition is the first argument (the Bool)
     @test if_op.condition isa Core.Argument
     @test if_op.condition.n == 2  # arg 1 is #self#
 
-    # Then branch: empty body, returns constant 1
-    @test isempty(if_op.then_block.body)
+    # Then branch: empty ops, returns constant 1
+    @test isempty(if_op.then_block.ops)
     @test if_op.then_block.terminator isa Core.ReturnNode
     @test if_op.then_block.terminator.val == 1
 
-    # Else branch: empty body, returns constant 2
-    @test isempty(if_op.else_block.body)
+    # Else branch: empty ops, returns constant 2
+    @test isempty(if_op.else_block.ops)
     @test if_op.else_block.terminator isa Core.ReturnNode
     @test if_op.else_block.terminator.val == 2
 end
@@ -194,16 +220,16 @@ end
     sci = code_structured(cmp_branch, Tuple{Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry: one stmt (comparison), then IfOp
-    @test length(sci.entry.body) == 2
-    @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa IfOp
+    # Entry: one op (comparison), then IfOp
+    @test length(sci.entry.ops) == 2
+    @test !(sci.entry.ops[1].expr isa ControlFlowOp)
+    @test sci.entry.ops[2].expr isa IfOp
 
-    if_op = sci.entry.body[2]
+    if_op = sci.entry.ops[2].expr
 
-    # Condition references the comparison result
-    @test if_op.condition isa Core.SSAValue
-    @test if_op.condition.id == sci.entry.body[1].idx
+    # Condition references the comparison result (now LocalSSA)
+    @test if_op.condition isa LocalSSA
+    @test if_op.condition.id == 1  # First operation in block
 
     # Both branches terminate with return
     @test if_op.then_block.terminator isa Core.ReturnNode
@@ -222,12 +248,12 @@ end
     sci = code_structured(early_return, Tuple{Int, Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry: [comparison_stmt, IfOp]
-    @test length(sci.entry.body) == 2
-    @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa IfOp
+    # Entry: [comparison_op, IfOp]
+    @test length(sci.entry.ops) == 2
+    @test !(sci.entry.ops[1].expr isa ControlFlowOp)
+    @test sci.entry.ops[2].expr isa IfOp
 
-    if_op = sci.entry.body[2]
+    if_op = sci.entry.ops[2].expr
 
     # Both branches terminate with return
     @test if_op.then_block.terminator isa Core.ReturnNode
@@ -252,7 +278,7 @@ end  # acyclic regions
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = get_cfops(sci.entry, LoopOp)
     @test length(loop_ops) == 1
 end
 
@@ -269,7 +295,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = get_cfops(sci.entry, LoopOp)
     @test length(loop_ops) == 1
 
     loop_op = loop_ops[1]
@@ -291,7 +317,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = get_cfops(sci.entry, LoopOp)
     @test length(loop_ops) == 1
 end
 
@@ -315,19 +341,19 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have outer LoopOp
-    outer_loops = filter(item -> item isa LoopOp, sci.entry.body)
+    outer_loops = get_cfops(sci.entry, LoopOp)
     @test length(outer_loops) == 1
 
     # Find inner loop in outer loop's body
     outer_loop = outer_loops[1]
     function find_nested_loops(block::Block)
         loops = LoopOp[]
-        for item in block.body
-            if item isa LoopOp
-                push!(loops, item)
-            elseif item isa IfOp
-                append!(loops, find_nested_loops(item.then_block))
-                append!(loops, find_nested_loops(item.else_block))
+        for op in block.ops
+            if op.expr isa LoopOp
+                push!(loops, op.expr)
+            elseif op.expr isa IfOp
+                append!(loops, find_nested_loops(op.expr.then_block))
+                append!(loops, find_nested_loops(op.expr.else_block))
             end
         end
         return loops
@@ -364,7 +390,7 @@ end  # CFG analysis
     @test sci isa StructuredCodeInfo
 
     # Should produce ForOp
-    for_ops = filter(item -> item isa ForOp, sci.entry.body)
+    for_ops = get_cfops(sci.entry, ForOp)
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
@@ -394,7 +420,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Should produce ForOp
-    for_ops = filter(item -> item isa ForOp, sci.entry.body)
+    for_ops = get_cfops(sci.entry, ForOp)
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
@@ -425,19 +451,18 @@ end
     sci = code_structured(nested_count, Tuple{Int, Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry: [init_stmt, outer_ForOp]
-    @test length(sci.entry.body) == 2
-    @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa ForOp
+    # Entry contains at least: [init_op, outer_ForOp, (extraction stmts for loop results)]
+    @test length(sci.entry.ops) >= 2
+    # Find the ForOp (could have extraction statements after it)
+    outer_idx = findfirst(op -> op.expr isa ForOp, sci.entry.ops)
+    @test outer_idx !== nothing
+    outer_loop = sci.entry.ops[outer_idx].expr
 
-    outer_loop = sci.entry.body[2]
-
-    # Outer body: [init_stmt, inner_ForOp]
-    @test length(outer_loop.body.body) == 2
-    @test outer_loop.body.body[1] isa Statement
-    @test outer_loop.body.body[2] isa ForOp
-
-    inner_loop = outer_loop.body.body[2]
+    # Outer body contains at least: [init_op, inner_ForOp, (extraction stmts)]
+    @test length(outer_loop.body.ops) >= 2
+    inner_idx = findfirst(op -> op.expr isa ForOp, outer_loop.body.ops)
+    @test inner_idx !== nothing
+    inner_loop = outer_loop.body.ops[inner_idx].expr
 
     # Inner loop has its own structure
     @test inner_loop.body.terminator isa ContinueOp
@@ -459,24 +484,24 @@ end  # ForOp detection
     sci = code_structured(spinloop, Tuple{Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry: [WhileOp] - no setup statements
-    @test length(sci.entry.body) == 1
-    @test sci.entry.body[1] isa WhileOp
+    # Entry: [WhileOp] - no setup operations
+    @test length(sci.entry.ops) == 1
+    @test sci.entry.ops[1].expr isa WhileOp
 
-    while_op = sci.entry.body[1]
+    while_op = sci.entry.ops[1].expr
 
     # MLIR-style two-region structure: before (condition) and after (body)
     # Condition is in the ConditionOp terminator of the before region
     @test while_op.before.terminator isa ConditionOp
-    @test while_op.before.terminator.condition isa Core.SSAValue
+    @test while_op.before.terminator.condition isa LocalSSA
 
     # No loop-carried values (flag is just re-read each iteration)
     @test isempty(while_op.init_values)
     @test isempty(while_op.before.args)
 
-    # Before region has the condition computation statements
-    @test !isempty(while_op.before.body)
-    @test all(item isa Statement for item in while_op.before.body)
+    # Before region has the condition computation operations
+    @test !isempty(while_op.before.ops)
+    @test all(!(op.expr isa ControlFlowOp) for op in while_op.before.ops)
 
     # After region terminates with YieldOp
     @test while_op.after.terminator isa YieldOp
@@ -494,11 +519,10 @@ end
     sci = code_structured(countdown, Tuple{Int})
     @test sci isa StructuredCodeInfo
 
-    # Entry should have items, last is a loop op
-    @test !isempty(sci.entry.body)
-    loop_op = sci.entry.body[end]
-    # Could be ForOp, WhileOp, or LoopOp depending on pattern detection
-    @test loop_op isa Union{ForOp, WhileOp, LoopOp}
+    # Entry should contain a loop op (could have extraction statements after it)
+    @test !isempty(sci.entry.ops)
+    loop_idx = findfirst(op -> op.expr isa Union{ForOp, WhileOp, LoopOp}, sci.entry.ops)
+    @test loop_idx !== nothing
 end
 
 end  # WhileOp detection
@@ -521,7 +545,7 @@ end  # WhileOp detection
     @test sci isa StructuredCodeInfo
 
     # With loop_patterning=false, should be LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = get_cfops(sci.entry, LoopOp)
     @test length(loop_ops) == 1
 end
 
@@ -553,20 +577,12 @@ end  # loop patterning
     @test sci isa StructuredCodeInfo
 
     # Should have a loop op in entry
-    loop_ops = filter(item -> item isa Union{ForOp, WhileOp, LoopOp}, sci.entry.body)
+    loop_ops = [op.expr for op in sci.entry.ops if op.expr isa Union{ForOp, WhileOp, LoopOp}]
     @test !isempty(loop_ops)
 
     # The loop body should contain an IfOp
     loop_op = loop_ops[1]
-    function has_if_op(block::Block)
-        for item in block.body
-            if item isa IfOp
-                return true
-            end
-        end
-        return false
-    end
-    @test has_if_op(loop_op.body)
+    @test has_cfop(loop_op.body, IfOp)
 end
 
 @testset "loop inside if" begin
@@ -587,15 +603,15 @@ end
     @test sci isa StructuredCodeInfo
 
     # Should have IfOp in entry
-    if_ops = filter(item -> item isa IfOp, sci.entry.body)
+    if_ops = get_cfops(sci.entry, IfOp)
     @test !isempty(if_ops)
 
     if_op = if_ops[1]
 
     # Then branch should contain a loop
     function has_loop_op(block::Block)
-        for item in block.body
-            if item isa Union{ForOp, WhileOp, LoopOp}
+        for op in block.ops
+            if op.expr isa Union{ForOp, WhileOp, LoopOp}
                 return true
             end
         end
@@ -612,8 +628,8 @@ end  # nested control flow
 
 @testset "regression" begin
 
-@testset "no duplicated statements after loop" begin
-    # Statements after loop should not be duplicated
+@testset "no duplicated operations after loop" begin
+    # Operations after loop should not be duplicated
     function loop_then_compute(x::Int)
         i = 0
         while i < x
@@ -626,12 +642,6 @@ end  # nested control flow
 
     sci = code_structured(loop_then_compute, Tuple{Int})
     @test sci isa StructuredCodeInfo
-
-    # Collect all statement indices in entry block
-    stmt_indices = [item.idx for item in sci.entry.body if item isa Statement]
-
-    # No duplicates
-    @test length(stmt_indices) == length(unique(stmt_indices))
 
     # Check display output: mul_int should appear exactly once
     io = IOBuffer()

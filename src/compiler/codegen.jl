@@ -143,19 +143,80 @@ end
 =============================================================================#
 
 """
+    SavedScope
+
+Saved scope state for restoring after nested block emission.
+"""
+struct SavedScope
+    values::Dict{Int, CGVal}
+    block_args::Dict{Int, CGVal}
+end
+
+"""
+    save_local_scope(ctx) -> SavedScope
+
+Save all value mappings from the context.
+Used to preserve outer scope when entering nested blocks.
+"""
+function save_local_scope(ctx::CodegenContext)
+    saved_values = Dict{Int, CGVal}()
+    for (k, v) in ctx.values
+        saved_values[k] = v
+    end
+    saved_block_args = Dict{Int, CGVal}()
+    for (k, v) in ctx.block_args
+        saved_block_args[k] = v
+    end
+    return SavedScope(saved_values, saved_block_args)
+end
+
+"""
+    restore_local_scope!(ctx, saved)
+
+Restore previously saved value mappings.
+"""
+function restore_local_scope!(ctx::CodegenContext, saved::SavedScope)
+    # Clear and restore values
+    empty!(ctx.values)
+    for (k, v) in saved.values
+        ctx.values[k] = v
+    end
+    # Clear and restore block_args
+    empty!(ctx.block_args)
+    for (k, v) in saved.block_args
+        ctx.block_args[k] = v
+    end
+end
+
+"""
     emit_block!(ctx, block::Block)
 
 Emit bytecode for a structured IR block.
+Uses the new ops array where position determines local SSA id.
+Also maps original SSA indices to values using block.ssa_map for outer scope references.
 """
 function emit_block!(ctx::CodegenContext, block::Block)
-    # Emit body items (interleaved statements and control flow ops)
-    for item in block.body
-        if item isa Statement
-            emit_statement!(ctx, item.expr, item.idx, item.type)
-        elseif item isa ControlFlowOp
-            emit_control_flow_op!(ctx, item)
+    # Build reverse map: local_pos -> original SSA index
+    local_to_ssa = Dict{Int, Int}()
+    for (ssa_idx, local_pos) in block.ssa_map
+        local_to_ssa[local_pos] = ssa_idx
+    end
+
+    # Emit operations (position in ops array = local SSA id)
+    for (local_idx, op) in enumerate(block.ops)
+        if op.expr isa ControlFlowOp
+            emit_control_flow_op!(ctx, op.expr, local_idx)
         else
-            error("Unexpected item type in block body: $(typeof(item))")
+            emit_statement!(ctx, op.expr, local_idx, op.type)
+        end
+
+        # Also store under original SSA index for outer scope references
+        if haskey(local_to_ssa, local_idx)
+            ssa_idx = local_to_ssa[local_idx]
+            tv = ctx[LocalSSA(local_idx)]
+            if tv !== nothing
+                ctx[SSAValue(ssa_idx)] = tv
+            end
         end
     end
 
@@ -166,29 +227,39 @@ function emit_block!(ctx::CodegenContext, block::Block)
 end
 
 """
-    emit_control_flow_op!(ctx, op::ControlFlowOp)
+    emit_control_flow_op!(ctx, op::ControlFlowOp, local_idx::Int)
 
 Emit bytecode for a structured control flow operation.
+The local_idx is the position in the containing block's ops array.
 """
-function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
+function emit_control_flow_op!(ctx::CodegenContext, op::IfOp, local_idx::Int)
     cb = ctx.cb
 
     # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
 
-    # Determine result types from the result_vars
+    # Determine result types from op.result_type
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
-        push!(result_types, type_id)
+    result_jltype = op.result_type
+    if result_jltype !== Nothing
+        if result_jltype <: Tuple
+            # Multiple results from tuple type
+            for T in result_jltype.parameters
+                push!(result_types, tile_type_for_julia!(ctx, T))
+            end
+        else
+            # Single result
+            push!(result_types, tile_type_for_julia!(ctx, result_jltype))
+        end
     end
+    n_user_results = length(result_types)
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
-    # Save token before branches
+    # Save token and local scope before branches
     token_before = ctx.token
+    saved_scope = save_local_scope(ctx)
 
     # Emit IfOp with callback-based region building
     # Each branch will yield its final token via emit_terminator!
@@ -197,25 +268,31 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
         emit_block!(ctx, op.then_block)
     end
     else_body = function(_)
+        restore_local_scope!(ctx, saved_scope)  # Restore for else branch
         ctx.token = token_before  # Reset to pre-branch token
         emit_block!(ctx, op.else_block)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
+    # Restore local scope after nested block emission
+    restore_local_scope!(ctx, saved_scope)
+
     # Last result is the merged token from both branches
     ctx.token = results[end]
 
-    # Map result values to SSA values (excluding the token)
-    for (i, result_var) in enumerate(op.result_vars)
-        if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type)
-        end
+    # Map the IfOp result to its local SSA position
+    if n_user_results == 1 && length(results) > 1
+        type_id = result_types[1]
+        ctx[LocalSSA(local_idx)] = CGVal(results[1], type_id, result_jltype)
+    elseif n_user_results > 1
+        # For tuple results, store each element (TODO: tuple support)
+        # For now, store the first result
+        type_id = result_types[1]
+        ctx[LocalSSA(local_idx)] = CGVal(results[1], type_id, result_jltype)
     end
 end
 
-function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
+function emit_control_flow_op!(ctx::CodegenContext, op::ForOp, local_idx::Int)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -227,7 +304,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         error("Cannot resolve ForOp bounds")
 
-    # Get init values
+    # Get init values for carried variables (not IV)
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
@@ -237,20 +314,24 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types
+    # Determine result types from op.result_type
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
-        @debug "ForOp result_var $result_var: type=$result_type, type_id=$type_id"
-        push!(result_types, type_id)
+    result_jltype = op.result_type
+    if result_jltype !== Nothing
+        if result_jltype <: Tuple
+            for T in result_jltype.parameters
+                push!(result_types, tile_type_for_julia!(ctx, T))
+            end
+        else
+            push!(result_types, tile_type_for_julia!(ctx, result_jltype))
+        end
     end
+    n_user_results = length(result_types)
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
-    @debug "ForOp result_types: $result_types ($(length(result_types)) types)"
 
-    # Number of user result types (excluding token)
-    n_user_results = length(op.result_vars)
+    # Save local scope before entering loop body
+    saved_scope = save_local_scope(ctx)
 
     # Emit ForOp with callback-based region building
     body_builder = function(block_args)
@@ -260,14 +341,15 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
         iv_type = tile_type!(tt, I32(tt), Int[])
         iv_tv = CGVal(block_args[1], iv_type, Int32)
         ctx[op.iv_arg] = iv_tv
-        ctx[op.iv_ssa] = iv_tv
 
         # Map carried values (body.args only contains carried values, not IV)
         for (i, body_arg) in enumerate(op.body.args)
-            shape = extract_tile_shape(body_arg.type)
-            tv = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
-            ctx[body_arg] = tv
-            ctx[op.result_vars[i]] = tv
+            if i + 1 <= length(block_args) - 1  # +1 for IV, -1 for token
+                shape = extract_tile_shape(body_arg.type)
+                type_id = i <= n_user_results ? result_types[i] : tile_type_for_julia!(ctx, body_arg.type)
+                tv = CGVal(block_args[i + 1], type_id, body_arg.type, shape)
+                ctx[body_arg] = tv
+            end
         end
 
         # Set token from last block arg
@@ -277,21 +359,25 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     end
     results = encode_ForOp!(body_builder, cb, result_types, lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
+    # Restore local scope after nested block emission
+    restore_local_scope!(ctx, saved_scope)
+
     # Last result is the token
     ctx.token = results[end]
 
-    # Map user result values (excluding token)
-    for (i, result_var) in enumerate(op.result_vars)
-        if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            shape = extract_tile_shape(result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
-        end
+    # Map the ForOp result to its local SSA position
+    if n_user_results == 1 && length(results) > 1
+        type_id = result_types[1]
+        shape = extract_tile_shape(result_jltype)
+        ctx[LocalSSA(local_idx)] = CGVal(results[1], type_id, result_jltype, shape)
+    elseif n_user_results > 1
+        # For tuple results, store the first for now
+        type_id = result_types[1]
+        ctx[LocalSSA(local_idx)] = CGVal(results[1], type_id, result_jltype)
     end
 end
 
-function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
+function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, local_idx::Int)
     cb = ctx.cb
 
     # Get init values
@@ -304,37 +390,35 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from init values
+    # Determine result types from op.result_type
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
-        push!(result_types, type_id)
+    result_jltype = op.result_type
+    if result_jltype !== Nothing
+        if result_jltype <: Tuple
+            for T in result_jltype.parameters
+                push!(result_types, tile_type_for_julia!(ctx, T))
+            end
+        else
+            push!(result_types, tile_type_for_julia!(ctx, result_jltype))
+        end
     end
+    n_user_results = length(result_types)
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
-    # Number of user result types (excluding token)
-    n_user_results = length(op.result_vars)
+    # Save local scope before entering loop body
+    saved_scope = save_local_scope(ctx)
 
     # Emit LoopOp with callback-based region building
     body_builder = function(block_args)
-        # Map block arguments (carried values, last is token)
+        # Map ALL block arguments (carried values, last is token)
+        # Loop-invariant captured values may have more block args than user results,
+        # but all must be mapped so BreakOp can reference them.
         for (i, body_arg) in enumerate(op.body.args)
-            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
+            if i <= length(block_args) - 1  # -1 for token
                 shape = extract_tile_shape(body_arg.type)
-                ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
-            end
-        end
-
-        # Also map result_vars to block args so references inside loop body work
-        # e.g., if %2 is a phi that becomes result_var, references to %2 inside the
-        # loop body should resolve to the block argument value
-        for (i, result_var) in enumerate(op.result_vars)
-            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
-                result_type = ssatypes(ctx.target)[result_var.id]
-                shape = extract_tile_shape(result_type)
-                ctx[result_var] = CGVal(block_args[i], result_types[i], result_type, shape)
+                type_id = i <= length(result_types) - 1 ? result_types[i] : tile_type_for_julia!(ctx, body_arg.type)
+                ctx[body_arg] = CGVal(block_args[i], type_id, body_arg.type, shape)
             end
         end
 
@@ -356,21 +440,44 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
+    # Restore local scope after nested block emission
+    restore_local_scope!(ctx, saved_scope)
+
     # Last result is the token
     ctx.token = results[end]
 
-    # Map user result values (excluding token)
-    for (i, result_var) in enumerate(op.result_vars)
-        if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            shape = extract_tile_shape(result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
-        end
+    # Map the LoopOp result(s) to their local SSA position
+    if n_user_results >= 1 && length(results) > 0
+        store_multi_results!(ctx, local_idx, results[1:n_user_results], result_types[1:n_user_results], result_jltype)
     end
 end
 
-function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
+"""
+    store_multi_results!(ctx, local_idx, results, type_ids, result_jltype)
+
+Store multiple results from a control flow op for later extraction.
+"""
+function store_multi_results!(ctx::CodegenContext, local_idx::Int,
+                               results::Vector{Value}, type_ids::Vector{TypeId},
+                               @nospecialize(result_jltype))
+    cgvals = CGVal[]
+    for (i, (v, tid)) in enumerate(zip(results, type_ids))
+        elem_type = if result_jltype <: Tuple && i <= length(result_jltype.parameters)
+            result_jltype.parameters[i]
+        else
+            Any
+        end
+        shape = extract_tile_shape(elem_type)
+        push!(cgvals, CGVal(v, tid, elem_type, shape))
+    end
+    ctx.multi_results[local_idx] = cgvals
+    # Also store first element for single-value access
+    if !isempty(cgvals)
+        ctx[LocalSSA(local_idx)] = cgvals[1]
+    end
+end
+
+function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, local_idx::Int)
     cb = ctx.cb
 
     # Get init values
@@ -383,51 +490,50 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from result_vars
+    # Determine result types from op.result_type
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
-        push!(result_types, type_id)
+    result_jltype = op.result_type
+    if result_jltype !== Nothing
+        if result_jltype <: Tuple
+            for T in result_jltype.parameters
+                push!(result_types, tile_type_for_julia!(ctx, T))
+            end
+        else
+            push!(result_types, tile_type_for_julia!(ctx, result_jltype))
+        end
     end
+    n_user_results = length(result_types)
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
-    # Number of user result types (excluding token)
-    n_user_results = length(op.result_vars)
+    # Save local scope before entering loop body
+    saved_scope = save_local_scope(ctx)
 
     # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
     # Emitted as: loop { before_stmts; if(cond) { after_stmts; continue } else { break } }
     body_builder = function(block_args)
-        # Map block arguments for the "before" region (carried values, last is token)
+        # Map ALL block arguments for the "before" region (carried values, last is token)
+        # Loop-invariant captured values may have more block args than user results,
+        # but all must be mapped so operations can reference them.
         for (i, before_arg) in enumerate(op.before.args)
-            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
+            if i <= length(block_args) - 1  # -1 for token
                 shape = extract_tile_shape(before_arg.type)
-                ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
-            end
-        end
-
-        # Also map result_vars to block args
-        for (i, result_var) in enumerate(op.result_vars)
-            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
-                result_type = ssatypes(ctx.target)[result_var.id]
-                shape = extract_tile_shape(result_type)
-                ctx[result_var] = CGVal(block_args[i], result_types[i], result_type, shape)
+                type_id = i <= length(result_types) - 1 ? result_types[i] : tile_type_for_julia!(ctx, before_arg.type)
+                ctx[before_arg] = CGVal(block_args[i], type_id, before_arg.type, shape)
             end
         end
 
         # Set token from last block arg
         ctx.token = block_args[end]
 
-        # Emit "before" region statements (condition computation)
-        code_stmts = code(ctx.target)
-        types = ssatypes(ctx.target)
-        for item in op.before.body
-            if item isa Statement
-                emit_statement!(ctx, item.expr, item.idx, item.type)
-            elseif item isa ControlFlowOp
-                emit_control_flow_op!(ctx, item)
+        # Emit "before" region using the new ops-based block emission
+        # But we need to emit ops without the terminator (ConditionOp)
+        for (local_i, before_op) in enumerate(op.before.ops)
+            if before_op.expr isa ControlFlowOp
+                emit_control_flow_op!(ctx, before_op.expr, local_i)
+            else
+                emit_statement!(ctx, before_op.expr, local_i, before_op.type)
             end
         end
 
@@ -438,26 +544,29 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && error("Cannot resolve WhileOp condition: $(cond_op.condition)")
 
+        # Save scope and token for inner IfOp branches
+        # Both branches must start with the same token (the one after "before" operations)
+        before_scope = save_local_scope(ctx)
+        token_before_if = ctx.token
+
         # Create if-then-else: if condition { after_region; continue } else { break }
         then_body = function(_)
-            # Map "after" region block args to the values from ConditionOp.args
+            # Map ALL "after" region block args to the corresponding loop block_args.
+            # ConditionOp.args passes all block args to the after region (MLIR semantics).
             for (i, after_arg) in enumerate(op.after.args)
-                if i <= length(cond_op.args)
-                    # The after args receive from condition args
-                    # For now, map them to the same block_args (they should be the same values)
-                    if i <= length(block_args) - 1 && i <= n_user_results
-                        shape = extract_tile_shape(after_arg.type)
-                        ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
-                    end
+                if i <= length(block_args) - 1  # -1 for token
+                    shape = extract_tile_shape(after_arg.type)
+                    type_id = i <= length(result_types) - 1 ? result_types[i] : tile_type_for_julia!(ctx, after_arg.type)
+                    ctx[after_arg] = CGVal(block_args[i], type_id, after_arg.type, shape)
                 end
             end
 
-            # Emit "after" region statements (loop body)
-            for item in op.after.body
-                if item isa Statement
-                    emit_statement!(ctx, item.expr, item.idx, item.type)
-                elseif item isa ControlFlowOp
-                    emit_control_flow_op!(ctx, item)
+            # Emit "after" region operations (loop body)
+            for (local_i, after_op) in enumerate(op.after.ops)
+                if after_op.expr isa ControlFlowOp
+                    emit_control_flow_op!(ctx, after_op.expr, local_i)
+                else
+                    emit_statement!(ctx, after_op.expr, local_i, after_op.type)
                 end
             end
 
@@ -474,6 +583,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         end
 
         else_body = function(_)
+            # Restore scope and token for else branch (must match pre-if state)
+            restore_local_scope!(ctx, before_scope)
+            ctx.token = token_before_if
+
             # Break with ConditionOp args (become loop results)
             break_operands = Value[]
             for arg in cond_op.args
@@ -504,17 +617,17 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
+    # Restore local scope after nested block emission
+    restore_local_scope!(ctx, saved_scope)
+
     # Last result is the token
     ctx.token = results[end]
 
-    # Map user result values (excluding token)
-    for (i, result_var) in enumerate(op.result_vars)
-        if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            shape = extract_tile_shape(result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
-        end
+    # Map the WhileOp results to their local SSA positions
+    # Store all results for later extraction
+    if n_user_results >= 1 && length(results) > 0
+        # Store results vector for tuple extraction (keyed by LocalSSA id)
+        store_multi_results!(ctx, local_idx, results[1:n_user_results], result_types[1:n_user_results], result_jltype)
     end
 end
 
@@ -575,33 +688,49 @@ end
 =============================================================================#
 
 """
-    emit_statement!(ctx, stmt, idx, result_type)
+    emit_statement!(ctx, stmt, local_idx, result_type)
 
-Emit bytecode for a single SSA statement.
+Emit bytecode for a single statement.
+Uses local SSA index (position in ops array) for value mapping.
 """
-function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @nospecialize(result_type))
+function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), local_idx::Int, @nospecialize(result_type))
     if stmt isa ReturnNode
         emit_return!(ctx, stmt)
     elseif stmt isa Expr
         tv = emit_expr!(ctx, stmt, result_type)
         if tv !== nothing
-            ctx[SSAValue(idx)] = tv
+            ctx[LocalSSA(local_idx)] = tv
         end
     elseif stmt isa GlobalRef
-        # Function references resolved when used
+        # GlobalRefs can be function references or constant values
+        # Store them as ghost values so they're available for constant extraction
+        tv = emit_value!(ctx, stmt)
+        if tv !== nothing
+            ctx[LocalSSA(local_idx)] = tv
+        end
     elseif stmt isa QuoteNode
         tv = emit_constant!(ctx, stmt.value, result_type)
         if tv !== nothing
-            ctx[SSAValue(idx)] = tv
+            ctx[LocalSSA(local_idx)] = tv
         end
     elseif stmt isa SlotNumber
         slot_tv = ctx[stmt]
         if slot_tv !== nothing
-            ctx[SSAValue(idx)] = slot_tv
+            ctx[LocalSSA(local_idx)] = slot_tv
         end
     elseif stmt isa PiNode
-        # PiNode is a type narrowing assertion - handled via extract_constant
-        # No bytecode emission needed
+        # PiNode is a type narrowing assertion - store the ghost value for later references
+        tv = emit_value!(ctx, stmt)
+        if tv !== nothing
+            ctx[LocalSSA(local_idx)] = tv
+        end
+    elseif stmt isa LocalSSA
+        # LocalSSA reference: copy the value from the referenced position
+        # Used for single-result extraction from control flow ops
+        ref_tv = ctx[stmt]
+        if ref_tv !== nothing
+            ctx[LocalSSA(local_idx)] = ref_tv
+        end
     elseif stmt === nothing
         # No-op
     else
@@ -636,7 +765,15 @@ end
 
 Emit/resolve a value reference to a CGVal using multiple dispatch.
 """
+function emit_value!(ctx::CodegenContext, ssa::LocalSSA)
+    # LocalSSA refers to a value in the current block's ops array
+    tv = ctx[ssa]
+    tv !== nothing && return tv
+    error("LocalSSA($(ssa.id)) not found in context")
+end
+
 function emit_value!(ctx::CodegenContext, ssa::SSAValue)
+    # SSAValue may still appear in expressions that reference original IR
     # First try to get from context (already processed)
     tv = ctx[ssa]
     tv !== nothing && return tv
@@ -803,6 +940,21 @@ Emit bytecode for a function call.
 function emit_call!(ctx::CodegenContext, expr::Expr, @nospecialize(result_type))
     args = expr.args
     func = resolve_function(ctx, args[1])
+
+    # Handle multi-result extraction pattern: getfield(LocalSSA(n), index)
+    # This is used for extracting individual results from control flow ops
+    if func === Base.getfield && length(args) >= 3
+        obj = args[2]
+        idx = args[3]
+        if obj isa LocalSSA && haskey(ctx.multi_results, obj.id)
+            # Extract from stored multi-results
+            results = ctx.multi_results[obj.id]
+            field_idx = idx isa Int ? idx : (idx isa QuoteNode ? idx.value : nothing)
+            if field_idx isa Int && 1 <= field_idx <= length(results)
+                return results[field_idx]
+            end
+        end
+    end
 
     call_args = args[2:end]
     result = emit_intrinsic!(ctx, func, call_args, result_type)

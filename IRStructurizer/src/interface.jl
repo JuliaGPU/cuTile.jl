@@ -87,14 +87,15 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     has_control_flow = any(s -> s isa GotoNode || s isa GotoIfNot, stmts)
 
     if !has_control_flow
-        # Straight-line code - no substitutions needed
+        # Straight-line code - use push_op! to build ops directly
         new_entry = Block(1)
         for i in 1:n
             stmt = stmts[i]
             if stmt isa ReturnNode
-                new_entry.terminator = stmt
+                # Convert terminator refs to LocalSSA
+                new_entry.terminator = convert_terminator_to_local_ssa(stmt, new_entry.ssa_map)
             elseif !(stmt isa GotoNode || stmt isa GotoIfNot)
-                push!(new_entry.body, Statement(i, stmt, types[i]))
+                push_op!(new_entry, i, stmt, types[i])
             end
         end
         sci.entry = new_entry
@@ -107,7 +108,7 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     # Build control tree using SPIRV.jl-style graph contraction
     ctree = ControlTree(cfg)
 
-    # Convert control tree to structured IR (substitutions applied inline)
+    # Convert control tree to structured IR (builds ops directly)
     sci.entry = control_tree_to_structured_ir(ctree, code, blocks)
 
     # Upgrade loop patterns (optional)

@@ -109,6 +109,10 @@ mutable struct CodegenContext
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
+    # Multi-result control flow ops: LocalSSA id -> vector of CGVals
+    # Used when a control flow op produces a tuple (multiple results)
+    multi_results::Dict{Int, Vector{CGVal}}
+
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
     arg_types::Dict{Int, Type}
@@ -132,6 +136,7 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
+        Dict{Int, Vector{CGVal}}(),
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
@@ -151,6 +156,11 @@ function Base.getindex(ctx::CodegenContext, ssa::SSAValue)
     get(ctx.values, ssa.id, nothing)
 end
 
+function Base.getindex(ctx::CodegenContext, ssa::LocalSSA)
+    # LocalSSA uses negative ids to distinguish from SSAValue
+    get(ctx.values, -ssa.id, nothing)
+end
+
 function Base.getindex(ctx::CodegenContext, arg::Argument)
     get(ctx.args, arg.n, nothing)
 end
@@ -161,6 +171,11 @@ end
 
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, ssa::SSAValue)
     ctx.values[ssa.id] = tv
+end
+
+function Base.setindex!(ctx::CodegenContext, tv::CGVal, ssa::LocalSSA)
+    # LocalSSA uses negative ids to distinguish from SSAValue
+    ctx.values[-ssa.id] = tv
 end
 
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, arg::Argument)

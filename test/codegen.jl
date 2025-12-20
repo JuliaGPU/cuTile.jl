@@ -198,8 +198,8 @@ end
         end
         # Verify it can be restructured (this tests the IR layer)
         structured = ct.code_structured(ternary_func, Tuple{Int32})
-        # Check that we have an IfOp in the structured IR
-        has_ifop = any(item -> item isa ct.IfOp, structured.entry.body)
+        # Check that we have an IfOp in the structured IR (now in ops array)
+        has_ifop = any(op -> op.expr isa ct.IfOp, structured.entry.ops)
         @test has_ifop
     end
 
@@ -213,8 +213,8 @@ end
             end
         end
         structured = ct.code_structured(multi_return_func, Tuple{Int32})
-        # Terminating if-else becomes an IfOp
-        has_ifop = any(item -> item isa ct.IfOp, structured.entry.body)
+        # Terminating if-else becomes an IfOp (now in ops array)
+        has_ifop = any(op -> op.expr isa ct.IfOp, structured.entry.ops)
         @test has_ifop
     end
 

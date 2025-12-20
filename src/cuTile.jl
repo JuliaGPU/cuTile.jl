@@ -2,7 +2,8 @@ module cuTile
 
 using IRStructurizer
 using IRStructurizer: Block, BlockArg, IfOp, ForOp, WhileOp, LoopOp, YieldOp,
-                      ContinueOp, BreakOp, ConditionOp, ControlFlowOp, Statement
+                      ContinueOp, BreakOp, ConditionOp, ControlFlowOp, Statement,
+                      LocalSSA, Operation
 
 using CUDA: CuModule, CuFunction, cudacall, device, capability
 

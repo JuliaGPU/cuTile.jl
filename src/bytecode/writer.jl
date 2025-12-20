@@ -180,10 +180,60 @@ function with_region(f::Function, cb::CodeBuilder, arg_type_ids::Vector{TypeId})
     block_body = cb.buf
     block_num_ops = cb.num_ops
 
-    # Restore parent state (including next_value_id - region values are ephemeral)
+    # Restore parent state (buffer and num_ops only by default)
     cb.buf = parent_buf
     cb.num_ops = parent_num_ops
-    cb.next_value_id = parent_next_value_id
+
+    # Encode: num_ops, then block body
+    encode_varint!(cb.buf, block_num_ops)
+    append!(cb.buf, block_body)
+
+    return block_args
+end
+
+"""
+    with_scoped_region(f, cb, arg_type_ids) -> Vector{Value}
+
+Like with_region, but restores next_value_id after the region.
+Use for loop bodies where values are region-local (not visible outside).
+"""
+function with_scoped_region(f::Function, cb::CodeBuilder, arg_type_ids::Vector{TypeId})
+    # Number of blocks in region (always 1)
+    push!(cb.buf, 0x01)
+
+    # Number of block arguments
+    encode_varint!(cb.buf, length(arg_type_ids))
+
+    # Encode block argument types
+    for tid in arg_type_ids
+        encode_typeid!(cb.buf, tid)
+    end
+
+    # Save current state
+    parent_buf = cb.buf
+    parent_num_ops = cb.num_ops
+    parent_next_value_id = cb.next_value_id
+
+    # Create block arguments (allocates value IDs starting from parent_next_value_id)
+    block_args = make_block_args!(cb, length(arg_type_ids))
+
+    # Create fresh buffer for block body
+    cb.buf = UInt8[]
+    cb.num_ops = 0
+
+    # Execute the callback to populate the block
+    f(block_args)
+
+    # Capture block body
+    block_body = cb.buf
+    block_num_ops = cb.num_ops
+
+    # Restore parent state including next_value_id
+    # For scoped regions, values inside are region-local and don't affect global numbering.
+    # After the region, next available ID is right after the block arguments.
+    cb.buf = parent_buf
+    cb.num_ops = parent_num_ops
+    cb.next_value_id = parent_next_value_id + length(arg_type_ids)
 
     # Encode: num_ops, then block body
     encode_varint!(cb.buf, block_num_ops)

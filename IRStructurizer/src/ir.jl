@@ -16,6 +16,25 @@ struct BlockArg
 end
 
 #=============================================================================
+ Local SSA References (block-local SSA numbering)
+=============================================================================#
+
+"""
+    LocalSSA
+
+Reference to a value defined by an operation in the same block.
+The id is the 1-indexed position in the containing block's ops array.
+"""
+struct LocalSSA
+    id::Int  # 1-indexed position in block's ops array
+end
+
+function Base.show(io::IO, ssa::LocalSSA)
+    print(io, "LocalSSA(", ssa.id, ")")
+end
+
+
+#=============================================================================
  IR Values - references to SSA values or block arguments
 =============================================================================#
 
@@ -149,48 +168,109 @@ end
 # Forward declaration for Block (needed for mutual recursion)
 abstract type ControlFlowOp end
 
-"""
-    BlockItem
+#=============================================================================
+ Operation - unified representation for block-local SSA
+=============================================================================#
 
-Union type for items in a block's body.
-Can be either a Statement or a structured control flow operation.
 """
-const BlockItem = Union{Statement, ControlFlowOp}
+    Operation
+
+A unified operation in structured IR. Position in the block's ops array
+determines its local SSA id. Can contain either an expression (from original
+IR) or a control flow operation.
+
+Fields:
+- `expr`: The expression or control flow op
+- `type`: Result type (Nothing if no result)
+"""
+struct Operation
+    expr::Any     # Expr, ControlFlowOp, or simple value
+    type::Type    # Result type (Nothing if no result)
+end
+
+function Base.show(io::IO, op::Operation)
+    if op.expr isa ControlFlowOp
+        print(io, "Operation(", typeof(op.expr).name.name, ", ", op.type, ")")
+    else
+        print(io, "Operation(", op.expr, ", ", op.type, ")")
+    end
+end
 
 """
     Block
 
-A basic block containing statements and potentially nested control flow.
-Statements are self-contained Statement objects with expressions and types.
-Body items are interleaved - Statements and control flow ops can appear in any order.
+A basic block containing operations and potentially nested control flow.
+Operations are stored in the ops array - position determines local SSA id.
 """
 mutable struct Block
     id::Int
     args::Vector{BlockArg}           # Block arguments (for loop carried values)
-    body::Vector{BlockItem}          # Interleaved Statements and control flow ops
+    ops::Vector{Operation}           # Position = local SSA id (1-indexed)
     terminator::Terminator           # ReturnNode, ContinueOp, YieldOp, BreakOp, or nothing
+
+    # SSA mapping: original SSA idx -> local position (for incremental construction)
+    ssa_map::Dict{Int, Int}
 end
 
-Block(id::Int) = Block(id, BlockArg[], BlockItem[], nothing)
+Block(id::Int) = Block(id, BlockArg[], Operation[], nothing, Dict{Int, Int}())
 
 function Base.show(io::IO, block::Block)
     print(io, "Block(id=", block.id)
     if !isempty(block.args)
         print(io, ", args=", length(block.args))
     end
-    n_stmts = count(x -> x isa Statement, block.body)
-    n_ops = count(x -> x isa ControlFlowOp, block.body)
-    print(io, ", stmts=", n_stmts)
-    if n_ops > 0
-        print(io, ", ops=", n_ops)
-    end
+    n_stmts = count(x -> !(x.expr isa ControlFlowOp), block.ops)
+    n_cfops = count(x -> x.expr isa ControlFlowOp, block.ops)
+    print(io, ", ops=", length(block.ops))
     print(io, ")")
 end
 
-# Iteration protocol for Block
-Base.iterate(block::Block, state=1) = state > length(block.body) ? nothing : (block.body[state], state + 1)
-Base.length(block::Block) = length(block.body)
-Base.eltype(::Type{Block}) = BlockItem
+# Iteration protocol for Block - iterate over ops
+function Base.iterate(block::Block, state=1)
+    state > length(block.ops) ? nothing : (block.ops[state], state + 1)
+end
+function Base.length(block::Block)
+    length(block.ops)
+end
+Base.eltype(::Type{Block}) = Operation
+
+"""
+    push_op!(block::Block, ssa_idx::Int, expr, type) -> Int
+
+Push an operation to a block with SSA index tracking.
+Returns the local position (1-indexed) of the new operation.
+The ssa_idx is recorded in ssa_map for later reference resolution.
+"""
+function push_op!(block::Block, ssa_idx::Int, expr, @nospecialize(type))
+    # Convert any SSAValue references in expr to LocalSSA
+    new_expr = convert_to_local_ssa(expr, block.ssa_map)
+    result_type = type isa Type ? type : typeof(type)
+    push!(block.ops, Operation(new_expr, result_type))
+    local_pos = length(block.ops)
+    block.ssa_map[ssa_idx] = local_pos
+    return local_pos
+end
+
+"""
+    push_extraction!(block::Block, ssa_idx::Int, cfop_pos::Int, element_idx::Int, type)
+
+Push an extraction statement for a control flow op result.
+Used when a PhiNode references the result of an IfOp/LoopOp.
+"""
+function push_extraction!(block::Block, ssa_idx::Int, cfop_pos::Int, element_idx::Int, @nospecialize(type))
+    if element_idx == 0
+        # Single result - no tuple extraction needed
+        expr = LocalSSA(cfop_pos)
+    else
+        # Multiple results - extract from tuple
+        expr = Expr(:call, GlobalRef(Base, :getfield), LocalSSA(cfop_pos), element_idx)
+    end
+    result_type = type isa Type ? type : typeof(type)
+    push!(block.ops, Operation(expr, result_type))
+    local_pos = length(block.ops)
+    block.ssa_map[ssa_idx] = local_pos
+    return local_pos
+end
 
 """
     IfOp <: ControlFlowOp
@@ -295,6 +375,53 @@ function Base.show(io::IO, op::WhileOp)
 end
 
 #=============================================================================
+ Convert ControlFlowOp References
+=============================================================================#
+
+"""
+    convert_cfop_refs(cfop::ControlFlowOp, ssa_map::Dict{Int,Int}) -> ControlFlowOp
+
+Convert SSAValue references in a control flow operation to LocalSSA.
+Does NOT recurse into nested blocks (they have their own ssa_map).
+"""
+function convert_cfop_refs(op::IfOp, ssa_map::Dict{Int,Int})
+    new_condition = convert_to_local_ssa(op.condition, ssa_map)
+    IfOp(new_condition, op.then_block, op.else_block, op.result_type)
+end
+
+function convert_cfop_refs(op::ForOp, ssa_map::Dict{Int,Int})
+    new_lower = convert_to_local_ssa(op.lower, ssa_map)
+    new_upper = convert_to_local_ssa(op.upper, ssa_map)
+    new_step = convert_to_local_ssa(op.step, ssa_map)
+    new_init = [convert_to_local_ssa(v, ssa_map) for v in op.init_values]
+    ForOp(new_lower, new_upper, new_step, op.iv_arg, new_init, op.body, op.result_type)
+end
+
+function convert_cfop_refs(op::LoopOp, ssa_map::Dict{Int,Int})
+    new_init = [convert_to_local_ssa(v, ssa_map) for v in op.init_values]
+    LoopOp(new_init, op.body, op.result_type)
+end
+
+function convert_cfop_refs(op::WhileOp, ssa_map::Dict{Int,Int})
+    new_init = [convert_to_local_ssa(v, ssa_map) for v in op.init_values]
+    WhileOp(op.before, op.after, new_init, op.result_type)
+end
+
+"""
+    push_cfop!(block::Block, cfop::ControlFlowOp) -> Int
+
+Push a control flow operation to a block.
+Returns the local position (1-indexed) of the new operation.
+The cfop's condition/values are converted to LocalSSA using the block's ssa_map.
+"""
+function push_cfop!(block::Block, cfop::ControlFlowOp)
+    # Convert the cfop's values using block's ssa_map
+    new_cfop = convert_cfop_refs(cfop, block.ssa_map)
+    push!(block.ops, Operation(new_cfop, get_result_type(new_cfop)))
+    return length(block.ops)
+end
+
+#=============================================================================
  StructuredCodeInfo - the structured IR for a function
 =============================================================================#
 
@@ -334,8 +461,8 @@ function StructuredCodeInfo(code::CodeInfo)
         if stmt isa ReturnNode
             entry.terminator = stmt
         else
-            # Include ALL statements as Statement objects (no substitutions at entry level)
-            push!(entry.body, Statement(i, stmt, types[i]))
+            # Include ALL statements (no substitutions at entry level for trivial functions)
+            push_op!(entry, i, stmt, types[i])
         end
     end
 
@@ -349,21 +476,21 @@ end
 """
     substitute_block!(block::Block, subs::Substitutions)
 
-Apply SSA substitutions to all statements in a block and nested control flow.
-Modifies the block in-place by replacing Statement objects with substituted versions.
+Apply SSA substitutions to all operations in a block and nested control flow.
+Modifies the block in-place by replacing Operation expressions with substituted versions.
 """
 function substitute_block!(block::Block, subs::Substitutions)
     isempty(subs) && return  # No substitutions to apply
 
-    # Substitute statements and recurse into nested control flow
-    for (i, item) in enumerate(block.body)
-        if item isa Statement
-            new_expr = substitute_ssa(item.expr, subs)
-            if new_expr !== item.expr
-                block.body[i] = Statement(item.idx, new_expr, item.type)
-            end
+    # Substitute operations and recurse into nested control flow
+    for (i, op) in enumerate(block.ops)
+        if op.expr isa ControlFlowOp
+            substitute_control_flow!(op.expr, subs)
         else
-            substitute_control_flow!(item, subs)
+            new_expr = substitute_ssa(op.expr, subs)
+            if new_expr !== op.expr
+                block.ops[i] = Operation(new_expr, op.type)
+            end
         end
     end
 
@@ -384,14 +511,28 @@ function substitute_control_flow!(op::IfOp, subs::Substitutions)
 end
 
 function substitute_control_flow!(op::ForOp, subs::Substitutions)
+    # Substitute init_values
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
+    # Substitute lower/upper/step bounds
+    # These are already part of the block's ops, so they should be substituted there
     substitute_block!(op.body, subs)
 end
 
 function substitute_control_flow!(op::LoopOp, subs::Substitutions)
+    # Substitute init_values
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.body, subs)
 end
 
 function substitute_control_flow!(op::WhileOp, subs::Substitutions)
+    # Substitute init_values
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.before, subs)
     substitute_block!(op.after, subs)
 end
@@ -437,6 +578,310 @@ function substitute_terminator(term::Nothing, subs::Substitutions)
 end
 
 #=============================================================================
+ Capture Outer Scope References
+=============================================================================#
+
+"""
+    collect_ssa_refs(value) -> Set{Int}
+
+Collect all SSAValue.id references in a value (recursively for expressions).
+"""
+function collect_ssa_refs(value::SSAValue)
+    Set{Int}([value.id])
+end
+
+function collect_ssa_refs(value::Expr)
+    refs = Set{Int}()
+    for arg in value.args
+        union!(refs, collect_ssa_refs(arg))
+    end
+    refs
+end
+
+function collect_ssa_refs(value::PiNode)
+    collect_ssa_refs(value.val)
+end
+
+function collect_ssa_refs(value)
+    Set{Int}()  # Constants, BlockArgs, Arguments, etc.
+end
+
+"""
+    collect_block_ssa_refs(block::Block) -> Set{Int}
+
+Collect all SSAValue.id references used in a block and its nested control flow.
+"""
+function collect_block_ssa_refs(block::Block)
+    refs = Set{Int}()
+
+    for op in block.ops
+        if op.expr isa ControlFlowOp
+            union!(refs, collect_cfop_ssa_refs(op.expr))
+        else
+            union!(refs, collect_ssa_refs(op.expr))
+        end
+    end
+
+    if block.terminator !== nothing
+        union!(refs, collect_terminator_ssa_refs(block.terminator))
+    end
+
+    refs
+end
+
+function collect_cfop_ssa_refs(op::IfOp)
+    refs = collect_ssa_refs(op.condition)
+    union!(refs, collect_block_ssa_refs(op.then_block))
+    union!(refs, collect_block_ssa_refs(op.else_block))
+    refs
+end
+
+function collect_cfop_ssa_refs(op::ForOp)
+    refs = collect_ssa_refs(op.lower)
+    union!(refs, collect_ssa_refs(op.upper))
+    union!(refs, collect_ssa_refs(op.step))
+    for v in op.init_values
+        union!(refs, collect_ssa_refs(v))
+    end
+    union!(refs, collect_block_ssa_refs(op.body))
+    refs
+end
+
+function collect_cfop_ssa_refs(op::LoopOp)
+    refs = Set{Int}()
+    for v in op.init_values
+        union!(refs, collect_ssa_refs(v))
+    end
+    union!(refs, collect_block_ssa_refs(op.body))
+    refs
+end
+
+function collect_cfop_ssa_refs(op::WhileOp)
+    refs = Set{Int}()
+    for v in op.init_values
+        union!(refs, collect_ssa_refs(v))
+    end
+    union!(refs, collect_block_ssa_refs(op.before))
+    union!(refs, collect_block_ssa_refs(op.after))
+    refs
+end
+
+function collect_terminator_ssa_refs(term::ContinueOp)
+    refs = Set{Int}()
+    for v in term.values
+        union!(refs, collect_ssa_refs(v))
+    end
+    refs
+end
+
+function collect_terminator_ssa_refs(term::BreakOp)
+    refs = Set{Int}()
+    for v in term.values
+        union!(refs, collect_ssa_refs(v))
+    end
+    refs
+end
+
+function collect_terminator_ssa_refs(term::ConditionOp)
+    refs = collect_ssa_refs(term.condition)
+    for v in term.args
+        union!(refs, collect_ssa_refs(v))
+    end
+    refs
+end
+
+function collect_terminator_ssa_refs(term::YieldOp)
+    refs = Set{Int}()
+    for v in term.values
+        union!(refs, collect_ssa_refs(v))
+    end
+    refs
+end
+
+function collect_terminator_ssa_refs(term::ReturnNode)
+    isdefined(term, :val) ? collect_ssa_refs(term.val) : Set{Int}()
+end
+
+function collect_terminator_ssa_refs(::Nothing)
+    Set{Int}()
+end
+
+"""
+    get_defined_ssas(block::Block) -> Set{Int}
+
+Get all original SSA indices defined within a block and its nested control flow.
+Uses the block's ssa_map for tracking which original indices are defined here.
+"""
+function get_defined_ssas(block::Block)
+    defined = Set{Int}(keys(block.ssa_map))
+    # Also check nested control flow ops
+    for op in block.ops
+        if op.expr isa ControlFlowOp
+            union!(defined, get_cfop_defined_ssas(op.expr))
+        end
+    end
+    defined
+end
+
+function get_cfop_defined_ssas(op::IfOp)
+    union(get_defined_ssas(op.then_block), get_defined_ssas(op.else_block))
+end
+
+function get_cfop_defined_ssas(op::ForOp)
+    get_defined_ssas(op.body)
+end
+
+function get_cfop_defined_ssas(op::LoopOp)
+    get_defined_ssas(op.body)
+end
+
+function get_cfop_defined_ssas(op::WhileOp)
+    union(get_defined_ssas(op.before), get_defined_ssas(op.after))
+end
+
+"""
+    capture_outer_refs!(block::Block, code::Vector{Any}, types::Vector{Any}) -> (Vector{IRValue}, Substitutions)
+
+Identify SSAValue references to outer scope values and create block arguments for them.
+Returns the init_values to add and substitutions to apply.
+"""
+function capture_outer_refs!(block::Block, code::Vector{Any}, types::Vector{Any})
+    # Collect all SSA refs used in the block
+    used_refs = collect_block_ssa_refs(block)
+
+    # Subtract SSAs defined within this block
+    defined = get_defined_ssas(block)
+    outer_refs = setdiff(used_refs, defined)
+
+    isempty(outer_refs) && return (IRValue[], Substitutions())
+
+    # Sort for deterministic ordering
+    outer_refs_sorted = sort!(collect(outer_refs))
+
+    # Create block args and substitutions for each outer ref
+    init_values = IRValue[]
+    subs = Substitutions()
+    next_arg_idx = length(block.args) + 1
+
+    for ssa_id in outer_refs_sorted
+        # Get the type from the original code
+        ref_type = ssa_id <= length(types) ? types[ssa_id] : Any
+        if ref_type isa Core.Const
+            ref_type = typeof(ref_type.val)
+        elseif ref_type isa Core.PartialStruct
+            ref_type = ref_type.typ
+        end
+
+        # Create block arg
+        arg = BlockArg(next_arg_idx, ref_type)
+        push!(block.args, arg)
+
+        # Add to init values
+        push!(init_values, SSAValue(ssa_id))
+
+        # Create substitution
+        subs[ssa_id] = arg
+
+        next_arg_idx += 1
+    end
+
+    # Apply substitutions to the block
+    substitute_block!(block, subs)
+
+    return (init_values, subs)
+end
+
+#=============================================================================
+ Body to Ops Conversion (Statement → Operation with LocalSSA)
+=============================================================================#
+
+"""
+    SSAToLocalMap
+
+Mapping from original CodeInfo SSA indices to local SSA positions within a block.
+"""
+const SSAToLocalMap = Dict{Int, Int}
+
+"""
+    convert_to_local_ssa(value, ssa_map::SSAToLocalMap)
+
+Convert SSAValue references to LocalSSA references using the mapping.
+BlockArgs and other values pass through unchanged.
+"""
+function convert_to_local_ssa(value::SSAValue, ssa_map::SSAToLocalMap)
+    if haskey(ssa_map, value.id)
+        return LocalSSA(ssa_map[value.id])
+    else
+        # SSAValue not in this block - might be from outer scope, keep as-is
+        return value
+    end
+end
+
+function convert_to_local_ssa(value::Expr, ssa_map::SSAToLocalMap)
+    new_args = Any[convert_to_local_ssa(a, ssa_map) for a in value.args]
+    return Expr(value.head, new_args...)
+end
+
+function convert_to_local_ssa(value::PiNode, ssa_map::SSAToLocalMap)
+    return PiNode(convert_to_local_ssa(value.val, ssa_map), value.typ)
+end
+
+function convert_to_local_ssa(value, ssa_map::SSAToLocalMap)
+    # BlockArg, Argument, LocalSSA, constants, etc. pass through unchanged
+    return value
+end
+
+"""
+    convert_terminator_to_local_ssa(term, ssa_map::SSAToLocalMap)
+
+Convert SSAValue references in a terminator to LocalSSA.
+"""
+function convert_terminator_to_local_ssa(term::ContinueOp, ssa_map::SSAToLocalMap)
+    new_values = [convert_to_local_ssa(v, ssa_map) for v in term.values]
+    return ContinueOp(new_values)
+end
+
+function convert_terminator_to_local_ssa(term::BreakOp, ssa_map::SSAToLocalMap)
+    new_values = [convert_to_local_ssa(v, ssa_map) for v in term.values]
+    return BreakOp(new_values)
+end
+
+function convert_terminator_to_local_ssa(term::ConditionOp, ssa_map::SSAToLocalMap)
+    new_cond = convert_to_local_ssa(term.condition, ssa_map)
+    new_args = [convert_to_local_ssa(v, ssa_map) for v in term.args]
+    return ConditionOp(new_cond, new_args)
+end
+
+function convert_terminator_to_local_ssa(term::YieldOp, ssa_map::SSAToLocalMap)
+    new_values = [convert_to_local_ssa(v, ssa_map) for v in term.values]
+    return YieldOp(new_values)
+end
+
+function convert_terminator_to_local_ssa(term::ReturnNode, ssa_map::SSAToLocalMap)
+    if isdefined(term, :val)
+        new_val = convert_to_local_ssa(term.val, ssa_map)
+        if new_val !== term.val
+            return ReturnNode(new_val)
+        end
+    end
+    return term
+end
+
+function convert_terminator_to_local_ssa(term::Nothing, ssa_map::SSAToLocalMap)
+    return nothing
+end
+
+"""
+    get_result_type(op::ControlFlowOp) -> Type
+
+Get the result type for a control flow operation.
+"""
+get_result_type(op::IfOp) = op.result_type
+get_result_type(op::ForOp) = op.result_type
+get_result_type(op::LoopOp) = op.result_type
+get_result_type(op::WhileOp) = op.result_type
+
+#=============================================================================
  Iteration Utilities
 =============================================================================#
 
@@ -447,9 +892,9 @@ Recursively iterate over all blocks, calling f on each.
 """
 function each_block(f, block::Block)
     f(block)
-    for item in block.body
-        if item isa ControlFlowOp
-            each_block_in_op(f, item)
+    for op in block.ops
+        if op.expr isa ControlFlowOp
+            each_block_in_op(f, op.expr)
         end
     end
 end
@@ -475,14 +920,14 @@ end
 """
     each_stmt(f, block::Block)
 
-Recursively iterate over all statements, calling f on each Statement.
+Recursively iterate over all operations, calling f on each non-ControlFlowOp Operation.
 """
 function each_stmt(f, block::Block)
-    for item in block.body
-        if item isa Statement
-            f(item)
+    for op in block.ops
+        if op.expr isa ControlFlowOp
+            each_stmt_in_op(f, op.expr)
         else
-            each_stmt_in_op(f, item)
+            f(op)
         end
     end
 end
@@ -510,28 +955,53 @@ end
 =============================================================================#
 
 """
+    defines(block::Block, ssa::LocalSSA) -> Bool
+
+Check if a block defines a local SSA value (i.e., the ops array has that index).
+"""
+function defines(block::Block, ssa::LocalSSA)
+    return 1 <= ssa.id <= length(block.ops)
+end
+
+"""
     defines(block::Block, ssa::SSAValue) -> Bool
 
-Check if a block defines an SSA value (i.e., contains a Statement that produces it).
-Searches nested blocks recursively.
+Check if a block defines an SSA value. For the new ops-based format,
+this always returns false since we use LocalSSA instead.
+Kept for compatibility during pattern matching.
 """
 function defines(block::Block, ssa::SSAValue)
-    for item in block.body
-        if item isa Statement && item.idx == ssa.id
-            return true
-        elseif item isa IfOp
-            defines(item.then_block, ssa) && return true
-            defines(item.else_block, ssa) && return true
-        elseif item isa LoopOp
-            defines(item.body, ssa) && return true
-        elseif item isa ForOp
-            defines(item.body, ssa) && return true
-        elseif item isa WhileOp
-            defines(item.before, ssa) && return true
-            defines(item.after, ssa) && return true
+    # In the new format with ops, we don't use SSAValue indices
+    # This is only called during pattern matching which still uses SSAValue
+    # For now, check if any operation references this SSA
+    for (i, op) in enumerate(block.ops)
+        if !(op.expr isa ControlFlowOp)
+            # Check if expr references this SSA (it shouldn't after conversion)
+            if _expr_defines_ssa(op.expr, ssa.id)
+                return true
+            end
+        else
+            cf = op.expr
+            if cf isa IfOp
+                defines(cf.then_block, ssa) && return true
+                defines(cf.else_block, ssa) && return true
+            elseif cf isa LoopOp
+                defines(cf.body, ssa) && return true
+            elseif cf isa ForOp
+                defines(cf.body, ssa) && return true
+            elseif cf isa WhileOp
+                defines(cf.before, ssa) && return true
+                defines(cf.after, ssa) && return true
+            end
         end
     end
     return false
+end
+
+# Helper to check if an expression could define an SSA value
+# This is a heuristic for backward compatibility
+function _expr_defines_ssa(expr, ssa_id::Int)
+    return false  # In the new format, expressions don't have SSA indices
 end
 
 #=============================================================================
@@ -551,16 +1021,20 @@ function compute_used_ssas(block::Block)
 end
 
 function _scan_uses!(used::BitSet, block::Block)
-    for item in block.body
-        if item isa Statement
-            _scan_expr_uses!(used, item.expr)
+    for op in block.ops
+        if op.expr isa ControlFlowOp
+            _scan_control_flow_uses!(used, op.expr)
         else
-            _scan_control_flow_uses!(used, item)
+            _scan_expr_uses!(used, op.expr)
         end
     end
     if block.terminator !== nothing
         _scan_terminator_uses!(used, block.terminator)
     end
+end
+
+function _scan_expr_uses!(used::BitSet, v::LocalSSA)
+    push!(used, v.id)
 end
 
 function _scan_expr_uses!(used::BitSet, v::SSAValue)
@@ -698,6 +1172,10 @@ function print_colored(p::IRPrinter, s, color::Symbol)
 end
 
 # Print an IR value (no special coloring, like Julia's code_typed)
+function print_value(p::IRPrinter, v::LocalSSA)
+    print(p.io, "%", v.id)
+end
+
 function print_value(p::IRPrinter, v::SSAValue)
     print(p.io, "%", v.id)
 end
@@ -733,6 +1211,9 @@ function print_value(p::IRPrinter, v)
 end
 
 # String versions for places that need strings (e.g., join)
+function format_value(p::IRPrinter, v::LocalSSA)
+    string("%", v.id)
+end
 function format_value(p::IRPrinter, v::SSAValue)
     string("%", v.id)
 end
@@ -788,7 +1269,7 @@ function print_result_type(p::IRPrinter, result_type::Type)
     print_colored(p, format_type(result_type), :cyan)
 end
 
-# Print a statement
+# Print a statement (deprecated, use print_op for new code)
 function print_stmt(p::IRPrinter, stmt::Statement; prefix::String="│  ")
     print_indent(p)
     print_colored(p, prefix, :light_black)
@@ -802,6 +1283,23 @@ function print_stmt(p::IRPrinter, stmt::Statement; prefix::String="│  ")
     end
     print_expr(p, stmt.expr)
     print_type_annotation(p, stmt.idx, stmt.type)
+    println(p.io)
+end
+
+# Print an operation with local SSA index
+function print_op(p::IRPrinter, local_idx::Int, op::Operation; prefix::String="│  ")
+    print_indent(p)
+    print_colored(p, prefix, :light_black)
+
+    # Only show %N = when the value is used (like Julia's code_typed)
+    is_used = local_idx in p.used
+    if is_used
+        print(p.io, "%", local_idx, " = ")
+    else
+        print(p.io, "     ")  # Padding to align with used values
+    end
+    print_expr(p, op.expr)
+    print_type_annotation(p, local_idx, op.type)
     println(p.io)
 end
 
@@ -1035,16 +1533,17 @@ function print_terminator(p::IRPrinter, ::Nothing; prefix::String="└──")
     # No terminator
 end
 
-# Print a block's contents (statements, nested ops, terminator)
+# Print a block's contents (operations, nested ops, terminator)
 function print_block_body(p::IRPrinter, block::Block)
     # Collect all items to print to determine which is last
     items = []
 
-    for item in block.body
-        if item isa Statement
-            push!(items, (:stmt, item))
+    for (idx, op) in enumerate(block.ops)
+        if op.expr isa ControlFlowOp
+            push!(items, (:nested, op.expr))
         else
-            push!(items, (:nested, item))
+            # Create a pseudo-statement for printing with local SSA index
+            push!(items, (:stmt, idx, op))
         end
     end
     if block.terminator !== nothing
@@ -1055,7 +1554,7 @@ function print_block_body(p::IRPrinter, block::Block)
         is_last = (i == length(items))
         if item[1] == :stmt
             prefix = is_last ? "└──" : "│  "
-            print_stmt(p, item[2]; prefix=prefix)
+            print_op(p, item[2], item[3]; prefix=prefix)
         elseif item[1] == :nested
             print_control_flow(p, item[2]; is_last=is_last)
         else  # :term
@@ -1223,5 +1722,6 @@ end
 
 # Keep the simple show method for compact display
 function Base.show(io::IO, sci::StructuredCodeInfo)
-    print(io, "StructuredCodeInfo(", length(sci.code.code), " stmts, entry=Block#", sci.entry.id, ")")
+    n_ops = length(sci.entry.ops)
+    print(io, "StructuredCodeInfo(", n_ops, " ops, entry=Block#", sci.entry.id, ")")
 end
