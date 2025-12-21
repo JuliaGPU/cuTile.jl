@@ -217,13 +217,21 @@ Base.eltype(::Type{Block}) = BlockItem
 
 Structured if-then-else with nested blocks.
 Both branches must yield values of the same types.
+
+Like loops, IfOp captures outer scope values as BlockArgs for uniform handling.
+The init_values are passed to both then_block and else_block as their args.
 """
 struct IfOp <: ControlFlowOp
     condition::IRValue               # SSAValue or BlockArg for the condition
+    init_values::Vector{IRValue}     # Captured outer values (passed to both blocks as args)
     then_block::Block
     else_block::Block
     result_vars::Vector{SSAValue}    # SSA values that receive the yielded results
 end
+
+# Convenience constructor for empty init_values (backwards compatibility)
+IfOp(condition, then_block, else_block, result_vars) =
+    IfOp(condition, IRValue[], then_block, else_block, result_vars)
 
 function Base.show(io::IO, op::IfOp)
     print(io, "IfOp(cond=", op.condition,
