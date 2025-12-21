@@ -904,7 +904,7 @@ end
         # The bug: store uses (group_bid, group_bid) instead of (group_bid, loopIdx)
         spec = ct.ArraySpec{2}(16, true)
         spec1d = ct.ArraySpec{1}(16, true)
-        @test_broken @filecheck begin
+        @test @filecheck begin
             check"CHECK-LABEL: entry"
             check"CHECK: for %loopIdx in"
             check"CHECK: loop iter_values"

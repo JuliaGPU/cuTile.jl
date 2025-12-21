@@ -292,6 +292,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
 
     # Emit ForOp with callback-based region building
     body_builder = function(block_args)
+        # Save outer block_args to avoid collision with nested control flow
+        saved_block_args = copy(ctx.block_args)
+
         # Block args layout: [iv, carried..., token]
 
         # Map the induction variable
@@ -317,6 +320,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
         ctx.token = block_args[end]
 
         emit_block!(ctx, op.body)
+
+        # Restore outer block_args
+        empty!(ctx.block_args)
+        merge!(ctx.block_args, saved_block_args)
     end
     results = encode_ForOp!(body_builder, cb, result_types, lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
@@ -360,6 +367,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
 
     # Emit LoopOp with callback-based region building
     body_builder = function(block_args)
+        # Save outer block_args to avoid collision with nested control flow
+        saved_block_args = copy(ctx.block_args)
+
         # Map block arguments (carried values, last is token)
         for (i, body_arg) in enumerate(op.body.args)
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
@@ -393,6 +403,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
             fallback_operands[end] = ctx.token
             encode_ContinueOp!(ctx.cb, fallback_operands)
         end
+
+        # Restore outer block_args
+        empty!(ctx.block_args)
+        merge!(ctx.block_args, saved_block_args)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
@@ -438,6 +452,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
     # Emitted as: loop { before_stmts; if(cond) { after_stmts; continue } else { break } }
     body_builder = function(block_args)
+        # Save outer block_args to avoid collision with nested control flow
+        saved_block_args = copy(ctx.block_args)
+
         # Map block arguments for the "before" region (carried values, last is token)
         for (i, before_arg) in enumerate(op.before.args)
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
@@ -557,6 +574,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         fallback_operands = copy(block_args)
         fallback_operands[end] = ctx.token
         encode_ContinueOp!(ctx.cb, fallback_operands)
+
+        # Restore outer block_args
+        empty!(ctx.block_args)
+        merge!(ctx.block_args, saved_block_args)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
