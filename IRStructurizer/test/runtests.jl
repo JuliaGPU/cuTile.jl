@@ -2,7 +2,8 @@ using Test
 
 using IRStructurizer
 using IRStructurizer: Block, IfOp, ForOp, WhileOp, LoopOp, YieldOp, ContinueOp, BreakOp,
-                      ConditionOp, ControlFlowOp, Statement, validate_scf
+                      ConditionOp, ControlFlowOp, Statement, validate_scf,
+                      check_global_ssa_refs
 
 @testset "IRStructurizer" verbose=true begin
 
@@ -707,9 +708,16 @@ end
     #
     # Expected behavior (after fix):
     #   %19 = Base.===(%arg1, %arg4)::Bool  <- %5 captured as BlockArg
-    #
-    # For now, we just verify structurization completes. The full fix will come
-    # with LocalSSAValue support and proper capture during construction.
+
+    # The check_global_ssa_refs function detects global SSAValue references
+    # inside nested blocks. Currently swap_loop has several such references.
+    # After the local SSA refactoring, this count should be 0.
+    ssa_ref_count = check_global_ssa_refs(sci)
+    @test ssa_ref_count > 0  # Known bug: global SSAValues in nested blocks
+
+    # Once the fix is complete, this test should be updated to:
+    # @test ssa_ref_count == 0
+    # check_global_ssa_refs(sci; strict=true)  # Should not throw
 end
 
 end  # regression
