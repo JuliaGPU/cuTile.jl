@@ -683,10 +683,11 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
         collect_block_statements!(body_block, blocks[idx], code)
     end
 
-    # Merge current block's ssa_map with scope for capture_outer_refs
-    full_scope = merge(scope, block.ssa_map)
-    # Capture outer scope SSAValue references (convert to LocalSSA using scope)
-    outer_init_values, _ = capture_outer_refs!(body_block, full_scope, types)
+    # IMPORTANT: Only use block.ssa_map, not the full scope chain.
+    # LocalSSA positions must reference the IMMEDIATE parent block.
+    # SSAs from grandparent or earlier blocks should already be captured
+    # as BlockArgs by the parent block.
+    outer_init_values, _ = capture_outer_refs!(body_block, block.ssa_map, types)
 
     # Compute result type from block args
     result_type = compute_result_type(body_block.args)

@@ -311,7 +311,7 @@ it produces a tuple type.
 Init_values capture outer scope values that are used within the branches.
 The then_block and else_block have corresponding block_args.
 """
-struct IfOp <: ControlFlowOp
+mutable struct IfOp <: ControlFlowOp
     condition::IRValue               # SSAValue or BlockArg for the condition
     init_values::Vector{IRValue}     # Captured outer values (LocalSSA refs to parent)
     then_block::Block                # Block args for captured values
@@ -340,7 +340,7 @@ Used when loop bounds can be determined (e.g., from range iteration).
 The op itself can be used as an IRValue. Result type is computed from
 the loop-carried values (excluding IV which is internal to the loop).
 """
-struct ForOp <: ControlFlowOp
+mutable struct ForOp <: ControlFlowOp
     lower::IRValue                   # Lower bound
     upper::IRValue                   # Upper bound (exclusive)
     step::IRValue                    # Step value
@@ -474,6 +474,24 @@ function remap_cfop(op::IfOp, remap::BlockArgRemap)
     IfOp(new_condition, new_init, op.then_block, op.else_block, op.result_type)
 end
 
+function remap_cfop(op::LoopOp, remap::BlockArgRemap)
+    new_init = [remap_block_args(v, remap) for v in op.init_values]
+    LoopOp(new_init, op.body, op.result_type)
+end
+
+function remap_cfop(op::WhileOp, remap::BlockArgRemap)
+    new_init = [remap_block_args(v, remap) for v in op.init_values]
+    WhileOp(op.before, op.after, new_init, op.result_type)
+end
+
+function remap_cfop(op::ForOp, remap::BlockArgRemap)
+    new_lower = remap_block_args(op.lower, remap)
+    new_upper = remap_block_args(op.upper, remap)
+    new_step = remap_block_args(op.step, remap)
+    new_init = [remap_block_args(v, remap) for v in op.init_values]
+    ForOp(new_lower, new_upper, new_step, op.induction_var, new_init, op.body, op.result_type)
+end
+
 # Default: no remapping for other ControlFlowOps
 remap_cfop(op, remap::BlockArgRemap) = op
 
@@ -576,17 +594,25 @@ end
 Apply SSA substitutions to a control flow operation and its nested blocks.
 """
 function substitute_control_flow!(op::IfOp, subs::Substitutions)
+    # Substitute condition
+    op.condition = substitute_ssa(op.condition, subs)
+    # Substitute init_values
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.then_block, subs)
     substitute_block!(op.else_block, subs)
 end
 
 function substitute_control_flow!(op::ForOp, subs::Substitutions)
+    # Substitute lower/upper/step bounds
+    op.lower = substitute_ssa(op.lower, subs)
+    op.upper = substitute_ssa(op.upper, subs)
+    op.step = substitute_ssa(op.step, subs)
     # Substitute init_values
     for (i, v) in enumerate(op.init_values)
         op.init_values[i] = substitute_ssa(v, subs)
     end
-    # Substitute lower/upper/step bounds
-    # These are already part of the block's ops, so they should be substituted there
     substitute_block!(op.body, subs)
 end
 
@@ -847,18 +873,21 @@ function capture_outer_refs!(block::Block, scope_ssa_map::Dict{Int,Int}, types::
             ref_type = ref_type.typ
         end
 
-        # Create block arg
+        # Create block arg - always create so the block body can reference it
         arg = BlockArg(next_arg_idx, ref_type)
         push!(block.args, arg)
 
-        # Add to init values - use LocalSSA referencing the scope's ops
+        # Add to init values:
+        # - If SSA is in immediate parent's scope, use LocalSSA
+        # - Otherwise, use SSAValue and let the parent's capture phase substitute it later
         if haskey(scope_ssa_map, ssa_id)
             push!(init_values, LocalSSA(scope_ssa_map[ssa_id]))
         else
-            error("Outer SSA reference %$ssa_id not found in scope's ssa_map")
+            # SSAValue for ancestor block to substitute during its capture phase
+            push!(init_values, SSAValue(ssa_id))
         end
 
-        # Create substitution
+        # Create substitution for block body
         subs[ssa_id] = arg
 
         next_arg_idx += 1
@@ -902,10 +931,6 @@ function capture_if_outer_refs!(then_block::Block, else_block::Block, scope_ssa_
     next_arg_idx = 1  # IfOp blocks start with no args
 
     for ssa_id in outer_refs_sorted
-        # Skip SSAValues not in scope - they'll be handled by parent substitutions
-        # (e.g., PhiNode refs inside loops that get substituted with BlockArgs)
-        haskey(scope_ssa_map, ssa_id) || continue
-
         # Get the type from the original code
         ref_type = ssa_id <= length(types) ? types[ssa_id] : Any
         if ref_type isa Core.Const
@@ -915,12 +940,20 @@ function capture_if_outer_refs!(then_block::Block, else_block::Block, scope_ssa_
         end
 
         # Create block arg for both blocks (same ID and type)
+        # Always create so nested code can reference the value
         arg = BlockArg(next_arg_idx, ref_type)
         push!(then_block.args, arg)
         push!(else_block.args, arg)
 
-        # Add to init values - use LocalSSA referencing the scope's ops
-        push!(init_values, LocalSSA(scope_ssa_map[ssa_id]))
+        # Add to init values:
+        # - If SSA is in immediate parent's scope, use LocalSSA
+        # - Otherwise, use SSAValue and let ancestor's capture phase substitute later
+        if haskey(scope_ssa_map, ssa_id)
+            push!(init_values, LocalSSA(scope_ssa_map[ssa_id]))
+        else
+            # SSAValue for ancestor block to substitute during its capture phase
+            push!(init_values, SSAValue(ssa_id))
+        end
 
         # Create substitution for both blocks
         then_subs[ssa_id] = arg

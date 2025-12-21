@@ -340,6 +340,14 @@ function try_upgrade_to_while(loop::LoopOp)
                 new_arg = BlockArg(length(after.args) + 1, localssa_type)
                 push!(after.args, new_arg)
                 blockarg_remap[then_arg.id] = new_arg
+            elseif init_val isa SSAValue
+                # SSAValue from outer scope - pass through ConditionOp
+                # These come from capture_if_outer_refs! when the SSA is not in
+                # the immediate parent's scope (needs to be substituted by ancestor)
+                push!(condition_args, init_val)
+                new_arg = BlockArg(length(after.args) + 1, then_arg.type)
+                push!(after.args, new_arg)
+                blockarg_remap[then_arg.id] = new_arg
             end
         end
     end
