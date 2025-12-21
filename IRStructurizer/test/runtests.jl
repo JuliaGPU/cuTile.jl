@@ -660,6 +660,58 @@ end
     @test sci.entry.terminator isa Core.ReturnNode
 end
 
+@testset "swap_loop phi references" begin
+    # Regression test for phi-referencing-phi bug
+    # When x and y are swapped in a loop, the IR has phi nodes that reference
+    # other phi nodes. The current substitution pass may not handle this correctly,
+    # leaving global SSAValues in nested blocks that should be BlockArgs.
+    function swap_loop(n::Int)
+        x, y = 1, 2
+        for i in 1:n
+            x, y = y, x
+        end
+        return x
+    end
+
+    sci = code_structured(swap_loop, Tuple{Int})
+    @test sci isa StructuredCodeInfo
+    validate_scf(sci)
+
+    # Find the WhileOp in the structure
+    function find_while_op(block)
+        for item in block.body
+            if item isa WhileOp
+                return item
+            elseif item isa IfOp
+                result = find_while_op(item.then_block)
+                result !== nothing && return result
+                result = find_while_op(item.else_block)
+                result !== nothing && return result
+            elseif item isa Union{ForOp, LoopOp}
+                result = find_while_op(item.body)
+                result !== nothing && return result
+            end
+        end
+        return nothing
+    end
+
+    while_op = find_while_op(sci.entry)
+    @test while_op !== nothing
+
+    # BUG: The before block references SSAValue(%5) which is defined outside the loop
+    # but not captured as a BlockArg. After the fix, all external references should
+    # be BlockArgs, not raw SSAValues.
+    #
+    # Current behavior (broken):
+    #   %19 = Base.===(%arg1, %5)::Bool   <- %5 is not a BlockArg!
+    #
+    # Expected behavior (after fix):
+    #   %19 = Base.===(%arg1, %arg4)::Bool  <- %5 captured as BlockArg
+    #
+    # For now, we just verify structurization completes. The full fix will come
+    # with LocalSSAValue support and proper capture during construction.
+end
+
 end  # regression
 
 end  # @testset "IRStructurizer"
