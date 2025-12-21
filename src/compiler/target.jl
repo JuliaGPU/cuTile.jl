@@ -109,6 +109,10 @@ mutable struct CodegenContext
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
+    # LocalSSAValue support (for future local SSA numbering)
+    local_values::Dict{Tuple{UInt, Int}, CGVal}  # (block_key, local_idx) -> CGVal
+    current_block::Union{Block, Nothing}         # Current block being emitted
+
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
     arg_types::Dict{Int, Type}
@@ -132,6 +136,8 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
+        Dict{Tuple{UInt, Int}, CGVal}(),
+        nothing,
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
@@ -177,6 +183,18 @@ end
 
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, block_arg::BlockArg)
     ctx.block_args[block_arg.id] = tv
+end
+
+function Base.getindex(ctx::CodegenContext, local_ssa::LocalSSAValue)
+    ctx.current_block === nothing && return nothing
+    block_key = objectid(ctx.current_block)
+    get(ctx.local_values, (block_key, local_ssa.id), nothing)
+end
+
+function Base.setindex!(ctx::CodegenContext, tv::CGVal, local_ssa::LocalSSAValue)
+    ctx.current_block === nothing && error("Cannot set LocalSSAValue without current_block")
+    block_key = objectid(ctx.current_block)
+    ctx.local_values[(block_key, local_ssa.id)] = tv
 end
 
 #=============================================================================

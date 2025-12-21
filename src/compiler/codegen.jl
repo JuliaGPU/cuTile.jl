@@ -173,12 +173,23 @@ end
 Emit bytecode for a structured IR block.
 """
 function emit_block!(ctx::CodegenContext, block::Block)
+    # Track current block for LocalSSAValue resolution
+    prev_block = ctx.current_block
+    ctx.current_block = block
+    block_key = objectid(block)
+
     # Emit body items (interleaved statements and control flow ops)
-    for item in block.body
+    for (local_idx, item) in enumerate(block.body)
         if item isa Statement
             emit_statement!(ctx, item.expr, item.idx, item.type)
+            # Also populate local_values for future LocalSSAValue support
+            tv = ctx[SSAValue(item.idx)]
+            if tv !== nothing
+                ctx.local_values[(block_key, local_idx)] = tv
+            end
         elseif item isa ControlFlowOp
             emit_control_flow_op!(ctx, item)
+            # TODO: When control flow ops become expressions, store their results here
         else
             error("Unexpected item type in block body: $(typeof(item))")
         end
@@ -188,6 +199,9 @@ function emit_block!(ctx::CodegenContext, block::Block)
     if block.terminator !== nothing
         emit_terminator!(ctx, block.terminator)
     end
+
+    # Restore previous block
+    ctx.current_block = prev_block
 end
 
 """
@@ -662,6 +676,7 @@ end
 emit_value!(ctx::CodegenContext, arg::Argument) = ctx[arg]
 emit_value!(ctx::CodegenContext, slot::SlotNumber) = ctx[slot]
 emit_value!(ctx::CodegenContext, block_arg::BlockArg) = ctx[block_arg]
+emit_value!(ctx::CodegenContext, local_ssa::LocalSSAValue) = ctx[local_ssa]
 
 function emit_value!(ctx::CodegenContext, val::Integer)
     type_id = tile_type_for_julia!(ctx, Int32)
