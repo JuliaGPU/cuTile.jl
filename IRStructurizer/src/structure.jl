@@ -549,7 +549,70 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         body.terminator = ContinueOp(substituted_carried)
     end
 
-    return LoopOp(init_values, body, result_vars)
+    # Capture outer refs: SSAValues in the body that are not phi nodes
+    # These need to become BlockArgs with corresponding init_values
+    loop_op = LoopOp(init_values, body, result_vars)
+    capture_outer_refs_in_loop!(loop_op, types)
+
+    return loop_op
+end
+
+"""
+    capture_outer_refs_in_loop!(loop::LoopOp, types)
+
+Capture outer SSAValue references in a LoopOp body as BlockArgs.
+Any SSAValue in the body that is not a phi node (result_var) and not
+defined inside the loop body needs to be captured as a BlockArg.
+"""
+function capture_outer_refs_in_loop!(loop::LoopOp, types)
+    # Build the "defined" set:
+    # 1. phi SSAValues (result_vars) are already BlockArgs
+    # 2. SSAs defined by statements inside the loop body
+    defined = Set{Int}(rv.id for rv in loop.result_vars)
+    collect_defined_ssas!(defined, loop.body)
+
+    # Collect outer refs recursively from the body
+    outer_refs = collect_outer_refs(loop.body, defined; recursive=true)
+
+    isempty(outer_refs) && return
+
+    # For each outer ref, add a BlockArg and init_value
+    n_existing = length(loop.body.args)
+    outer_subs = Substitutions()
+
+    for (i, ref) in enumerate(outer_refs)
+        ref_type = types[ref.id]
+        new_arg = BlockArg(n_existing + i, ref_type)
+        push!(loop.body.args, new_arg)
+        push!(loop.init_values, ref)
+        outer_subs[ref.id] = new_arg
+    end
+
+    # Apply substitution for outer refs to the body
+    substitute_block!(loop.body, outer_subs)
+end
+
+"""
+    collect_defined_ssas!(defined::Set{Int}, block::Block)
+
+Collect all SSA indices defined by statements in the block (recursively).
+"""
+function collect_defined_ssas!(defined::Set{Int}, block::Block)
+    for item in block.body
+        if item isa Statement
+            push!(defined, item.idx)
+        elseif item isa IfOp
+            collect_defined_ssas!(defined, item.then_block)
+            collect_defined_ssas!(defined, item.else_block)
+        elseif item isa LoopOp
+            collect_defined_ssas!(defined, item.body)
+        elseif item isa ForOp
+            collect_defined_ssas!(defined, item.body)
+        elseif item isa WhileOp
+            collect_defined_ssas!(defined, item.before)
+            collect_defined_ssas!(defined, item.after)
+        end
+    end
 end
 
 #=============================================================================
@@ -580,9 +643,12 @@ end
 
 Compute the SSA→BlockArg substitutions for a loop.
 Maps each phi node SSA index to its corresponding block argument.
+
+Note: body.args may have more entries than result_vars due to outer captures.
+The first N args correspond to result_vars, additional args are outer captures.
 """
 function compute_loop_subs(loop::LoopOp)
-    @assert length(loop.result_vars) == length(loop.body.args) "Mismatch between result_vars and body.args"
+    @assert length(loop.result_vars) <= length(loop.body.args) "Not enough body.args for result_vars"
     subs = Substitutions()
     for (i, result_var) in enumerate(loop.result_vars)
         subs[result_var.id] = loop.body.args[i]

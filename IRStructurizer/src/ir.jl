@@ -552,7 +552,7 @@ function defines(block::Block, ssa::SSAValue)
 end
 
 """
-    collect_outer_refs(block::Block, defined::Set{Int}) -> Vector{SSAValue}
+    collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=false) -> Vector{SSAValue}
 
 Collect all SSAValue references in the block that are NOT in the defined set.
 These are "outer" references that need to be captured as BlockArgs.
@@ -560,19 +560,24 @@ These are "outer" references that need to be captured as BlockArgs.
 The defined set should contain SSA indices that are available in the current scope
 (e.g., from the parent block's statements or control flow op results).
 
+If recursive=false (default): Only collects from direct statements and the terminator.
 Does NOT recurse into nested control flow ops - those will have their own capture pass.
-Only collects from direct statements and the terminator.
+
+If recursive=true: Also collects from nested control flow ops' blocks.
+Use this when the outer op needs to know ALL outer refs in its entire subtree.
 """
-function collect_outer_refs(block::Block, defined::Set{Int})
+function collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=false)
     outer_refs = SSAValue[]
     seen = Set{Int}()
 
-    # Collect from block body (statements only, not nested ops)
+    # Collect from block body
     for item in block.body
         if item isa Statement
             collect_ssa_refs!(outer_refs, seen, item.expr, defined)
+        elseif recursive
+            # Recurse into nested control flow ops
+            collect_control_flow_refs!(outer_refs, seen, item, defined)
         end
-        # Note: nested ControlFlowOps are not traversed here - they capture their own outer refs
     end
 
     # Collect from terminator
@@ -581,6 +586,57 @@ function collect_outer_refs(block::Block, defined::Set{Int})
     end
 
     return outer_refs
+end
+
+"""
+    collect_control_flow_refs!(refs, seen, op, defined)
+
+Collect SSAValue references from a control flow op's nested blocks.
+"""
+function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::IfOp, defined::Set{Int})
+    collect_ssa_refs!(refs, seen, op.condition, defined)
+    collect_block_refs!(refs, seen, op.then_block, defined)
+    collect_block_refs!(refs, seen, op.else_block, defined)
+end
+
+function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::LoopOp, defined::Set{Int})
+    collect_block_refs!(refs, seen, op.body, defined)
+end
+
+function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::ForOp, defined::Set{Int})
+    collect_ssa_refs!(refs, seen, op.lower, defined)
+    collect_ssa_refs!(refs, seen, op.upper, defined)
+    collect_ssa_refs!(refs, seen, op.step, defined)
+    for v in op.init_values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+    collect_block_refs!(refs, seen, op.body, defined)
+end
+
+function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::WhileOp, defined::Set{Int})
+    for v in op.init_values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+    collect_block_refs!(refs, seen, op.before, defined)
+    collect_block_refs!(refs, seen, op.after, defined)
+end
+
+"""
+    collect_block_refs!(refs, seen, block, defined)
+
+Recursively collect SSAValue references from a block.
+"""
+function collect_block_refs!(refs::Vector{SSAValue}, seen::Set{Int}, block::Block, defined::Set{Int})
+    for item in block.body
+        if item isa Statement
+            collect_ssa_refs!(refs, seen, item.expr, defined)
+        else
+            collect_control_flow_refs!(refs, seen, item, defined)
+        end
+    end
+    if block.terminator !== nothing
+        collect_terminator_refs!(refs, seen, block.terminator, defined)
+    end
 end
 
 """
