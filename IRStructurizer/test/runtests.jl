@@ -469,7 +469,8 @@ end  # ForOp detection
     # MLIR-style two-region structure: before (condition) and after (body)
     # Condition is in the ConditionOp terminator of the before region
     @test while_op.before.terminator isa ConditionOp
-    @test while_op.before.terminator.condition isa Core.SSAValue
+    # Condition is now LocalSSAValue (referencing position in before region)
+    @test while_op.before.terminator.condition isa LocalSSAValue
 
     # No loop-carried values (flag is just re-read each iteration)
     @test isempty(while_op.init_values)
@@ -717,20 +718,12 @@ end
     # Expected behavior (after fix):
     #   %19 = Base.===(%arg1, %arg4)::Bool  <- %5 captured as BlockArg
 
-    # The phi-referencing-phi bug (where carried values reference other header phis)
-    # has been fixed - phi references like %17, %18 are correctly substituted to
-    # BlockArg(2), BlockArg(3) in the ContinueOp.
-    #
-    # However, there are still global SSAValue references for:
-    # 1. Inner phis like %24, %25 (should become LocalSSAValue)
-    # 2. Outer scope values like %5 (should be captured as BlockArg)
-    # These require additional work beyond the current fix.
+    # All SSAValue references have been converted:
+    # 1. Outer scope values are captured as BlockArgs
+    # 2. Inner block SSAValues are converted to LocalSSAValue
     ssa_ref_count = check_global_ssa_refs(sci)
-    @test ssa_ref_count > 0  # Expected: inner phis and outer scope refs remain
-
-    # Once full local SSA refactoring is complete:
-    # @test ssa_ref_count == 0
-    # check_global_ssa_refs(sci; strict=true)  # Should not throw
+    @test ssa_ref_count == 0
+    check_global_ssa_refs(sci; strict=true)  # Should not throw
 end
 
 end  # regression

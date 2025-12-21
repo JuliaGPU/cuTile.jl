@@ -458,9 +458,18 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         ctx.token = block_args[end]
 
         # Emit "before" region statements (condition computation)
-        for item in op.before.body
+        # Track current block for LocalSSAValue resolution
+        prev_block = ctx.current_block
+        ctx.current_block = op.before
+        before_block_key = objectid(op.before)
+        for (local_idx, item) in enumerate(op.before.body)
             if item isa Statement
                 emit_statement!(ctx, item.expr, item.idx, item.type)
+                # Also populate local_values for LocalSSAValue support
+                tv = ctx[SSAValue(item.idx)]
+                if tv !== nothing
+                    ctx.local_values[(before_block_key, local_idx)] = tv
+                end
             elseif item isa ControlFlowOp
                 emit_control_flow_op!(ctx, item)
             end
@@ -472,6 +481,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
 
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && error("Cannot resolve WhileOp condition: $(cond_op.condition)")
+
+        # Restore prev_block before entering nested regions
+        ctx.current_block = prev_block
 
         # Create if-then-else: if condition { after_region; continue } else { break }
         then_body = function(_)
@@ -488,13 +500,22 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
             end
 
             # Emit "after" region statements (loop body)
-            for item in op.after.body
+            # Track current block for LocalSSAValue resolution
+            ctx.current_block = op.after
+            after_block_key = objectid(op.after)
+            for (local_idx, item) in enumerate(op.after.body)
                 if item isa Statement
                     emit_statement!(ctx, item.expr, item.idx, item.type)
+                    # Also populate local_values for LocalSSAValue support
+                    tv = ctx[SSAValue(item.idx)]
+                    if tv !== nothing
+                        ctx.local_values[(after_block_key, local_idx)] = tv
+                    end
                 elseif item isa ControlFlowOp
                     emit_control_flow_op!(ctx, item)
                 end
             end
+            ctx.current_block = prev_block  # Restore after processing after region
 
             # Emit continue with yield values from after region
             continue_operands = Value[]
@@ -618,6 +639,10 @@ function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @no
         emit_return!(ctx, stmt)
     elseif stmt isa Expr
         tv = emit_expr!(ctx, stmt, result_type)
+        if tv === nothing
+            # If emit_expr! returns nothing, try emit_value! for ghost values like tuples
+            tv = emit_value!(ctx, stmt)
+        end
         if tv !== nothing
             ctx[SSAValue(idx)] = tv
         end
@@ -634,8 +659,11 @@ function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @no
             ctx[SSAValue(idx)] = slot_tv
         end
     elseif stmt isa PiNode
-        # PiNode is a type narrowing assertion - handled via extract_constant
-        # No bytecode emission needed
+        # PiNode is a type narrowing assertion - store the resolved value for LocalSSAValue lookup
+        tv = emit_value!(ctx, stmt)
+        if tv !== nothing
+            ctx[SSAValue(idx)] = tv
+        end
     elseif stmt === nothing
         # No-op
     else

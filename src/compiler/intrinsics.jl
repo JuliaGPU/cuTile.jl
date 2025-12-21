@@ -954,9 +954,33 @@ function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos
         # Single value
         tv = emit_value!(ctx, index_arg)
         tv.v !== nothing && push!(index_vals, tv.v)
+    elseif index_arg isa LocalSSAValue
+        # LocalSSAValue - look up the statement in the current block
+        if ctx.current_block !== nothing
+            pos = index_arg.id
+            if pos >= 1 && pos <= length(ctx.current_block.body)
+                item = ctx.current_block.body[pos]
+                if item isa Statement
+                    tuple_stmt = item.expr
+                    if tuple_stmt isa Expr && tuple_stmt.head === :call
+                        callee = tuple_stmt.args[1]
+                        if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
+                            for elem_arg in tuple_stmt.args[2:end]
+                                tv = emit_value!(ctx, elem_arg)
+                                tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
+                            end
+                            return index_vals
+                        end
+                    end
+                end
+            end
+        end
+        # Fallback: try to emit the LocalSSAValue directly
+        tv = emit_value!(ctx, index_arg)
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
     else
         tv = emit_value!(ctx, index_arg)
-        tv.v !== nothing && push!(index_vals, tv.v)
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
     end
 
     return index_vals

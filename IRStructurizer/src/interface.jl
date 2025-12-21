@@ -1,6 +1,6 @@
 # public API
 
-export code_structured, structurize!, StructuredCodeInfo
+export code_structured, structurize!, StructuredCodeInfo, LocalSSAValue
 
 """
     code_structured(f, argtypes; validate=true, loop_patterning=true, kwargs...) -> StructuredCodeInfo
@@ -115,6 +115,9 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     if loop_patterning
         apply_loop_patterns!(sci.entry)
     end
+
+    # Phase 3: Convert inner SSAValues to LocalSSAValues
+    convert_to_local_ssa!(sci.entry)
 
     return sci
 end
