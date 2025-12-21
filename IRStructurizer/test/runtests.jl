@@ -567,7 +567,15 @@ end  # loop patterning
         end
         return false
     end
-    @test has_if_op(loop_op.body)
+    # Handle both LoopOp (body) and WhileOp (after)
+    loop_body = if loop_op isa WhileOp
+        loop_op.after
+    elseif loop_op isa LoopOp
+        loop_op.body
+    else
+        loop_op.body
+    end
+    @test has_if_op(loop_body)
 end
 
 @testset "loop inside if" begin

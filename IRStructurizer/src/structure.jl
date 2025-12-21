@@ -191,8 +191,9 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     then_block = tree_to_block(then_tree, code, blocks, block_id)
     else_block = tree_to_block(else_tree, code, blocks, block_id)
 
-    # Create IfOp
+    # Create IfOp and capture outer refs
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+    capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
     push!(block.body, if_op)
 end
 
@@ -230,7 +231,9 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     else_block = Block(block_id[])
     block_id[] += 1
 
+    # Create IfOp and capture outer refs
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+    capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
     push!(block.body, if_op)
 end
 
@@ -267,6 +270,7 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         then_block = tree_to_block(then_tree, code, blocks, block_id)
         else_block = tree_to_block(else_tree, code, blocks, block_id)
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+        capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
         push!(block.body, if_op)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
@@ -274,6 +278,7 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         else_block = Block(block_id[])
         block_id[] += 1
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+        capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
         push!(block.body, if_op)
     end
 end
@@ -590,6 +595,60 @@ function capture_outer_refs_in_loop!(loop::LoopOp, types)
 
     # Apply substitution for outer refs to the body
     substitute_block!(loop.body, outer_subs)
+end
+
+"""
+    capture_outer_refs_in_if!(if_op::IfOp, parent_block::Block, types)
+
+Capture outer SSAValue references in an IfOp's then/else blocks as BlockArgs.
+The "defined" set is built from SSAs defined in the parent block before the IfOp.
+"""
+function capture_outer_refs_in_if!(if_op::IfOp, parent_block::Block, types)
+    # Build the "defined" set from parent block's statements (before the IfOp)
+    defined = Set{Int}()
+    for item in parent_block.body
+        if item isa Statement
+            push!(defined, item.idx)
+        end
+        # Stop before we hit this IfOp (it hasn't been added yet, but check for safety)
+    end
+
+    # Also include SSAs defined inside the then/else blocks themselves
+    collect_defined_ssas!(defined, if_op.then_block)
+    collect_defined_ssas!(defined, if_op.else_block)
+
+    # Collect outer refs from both blocks
+    outer_refs = SSAValue[]
+    seen = Set{Int}()
+    for ref in collect_outer_refs(if_op.then_block, defined; recursive=true)
+        if ref.id ∉ seen
+            push!(outer_refs, ref)
+            push!(seen, ref.id)
+        end
+    end
+    for ref in collect_outer_refs(if_op.else_block, defined; recursive=true)
+        if ref.id ∉ seen
+            push!(outer_refs, ref)
+            push!(seen, ref.id)
+        end
+    end
+
+    isempty(outer_refs) && return
+
+    # Add BlockArgs to both then_block and else_block
+    outer_subs = Substitutions()
+    for (i, ref) in enumerate(outer_refs)
+        ref_type = types[ref.id]
+        new_arg = BlockArg(i, ref_type)
+        push!(if_op.then_block.args, new_arg)
+        push!(if_op.else_block.args, new_arg)
+        push!(if_op.init_values, ref)
+        outer_subs[ref.id] = new_arg
+    end
+
+    # Apply substitution to both blocks
+    substitute_block!(if_op.then_block, outer_subs)
+    substitute_block!(if_op.else_block, outer_subs)
 end
 
 """
