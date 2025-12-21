@@ -709,13 +709,18 @@ end
     # Expected behavior (after fix):
     #   %19 = Base.===(%arg1, %arg4)::Bool  <- %5 captured as BlockArg
 
-    # The check_global_ssa_refs function detects global SSAValue references
-    # inside nested blocks. Currently swap_loop has several such references.
-    # After the local SSA refactoring, this count should be 0.
+    # The phi-referencing-phi bug (where carried values reference other header phis)
+    # has been fixed - phi references like %17, %18 are correctly substituted to
+    # BlockArg(2), BlockArg(3) in the ContinueOp.
+    #
+    # However, there are still global SSAValue references for:
+    # 1. Inner phis like %24, %25 (should become LocalSSAValue)
+    # 2. Outer scope values like %5 (should be captured as BlockArg)
+    # These require additional work beyond the current fix.
     ssa_ref_count = check_global_ssa_refs(sci)
-    @test ssa_ref_count > 0  # Known bug: global SSAValues in nested blocks
+    @test ssa_ref_count > 0  # Expected: inner phis and outer scope refs remain
 
-    # Once the fix is complete, this test should be updated to:
+    # Once full local SSA refactoring is complete:
     # @test ssa_ref_count == 0
     # check_global_ssa_refs(sci; strict=true)  # Should not throw
 end

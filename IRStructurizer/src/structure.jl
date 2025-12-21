@@ -488,9 +488,25 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
     end
 
+    # IMPORTANT: Compute phi→BlockArg substitutions BEFORE creating ContinueOp.
+    # This fixes the phi-referencing-phi bug where carried_values contain SSAValues
+    # that reference other phi nodes (which should be BlockArgs at this point).
+    subs = Substitutions()
+    for (i, result_var) in enumerate(result_vars)
+        subs[result_var.id] = block_args[i]
+    end
+
+    # Apply substitutions to carried values
+    substituted_carried = [substitute_ssa(v, subs) for v in carried_values]
+
+    # Apply substitutions to header statements already in body
+    substitute_block!(body, subs)
+
     # Create the conditional structure inside the loop body
     if condition !== nothing
         cond_value = convert_phi_value(condition)
+        # Also substitute the condition if it references a phi
+        cond_value = substitute_ssa(cond_value, subs)
 
         then_block = Block(block_id[])
         block_id[] += 1
@@ -502,8 +518,10 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(then_block, child, code, blocks, block_id)
             end
         end
-        # Raw carried values (no substitution yet)
-        then_block.terminator = ContinueOp(carried_values)
+        # Apply substitutions to then_block (body statements might reference phi nodes)
+        substitute_block!(then_block, subs)
+        # Substituted carried values (phi refs → BlockArg refs)
+        then_block.terminator = ContinueOp(substituted_carried)
 
         else_block = Block(block_id[])
         block_id[] += 1
@@ -524,7 +542,11 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(body, child, code, blocks, block_id)
             end
         end
-        body.terminator = ContinueOp(carried_values)
+        # Apply substitutions to body (child statements might reference phi nodes)
+        # Note: substitute_block! was already called on header statements, but
+        # this call will handle the children that were added after
+        substitute_block!(body, subs)
+        body.terminator = ContinueOp(substituted_carried)
     end
 
     return LoopOp(init_values, body, result_vars)
