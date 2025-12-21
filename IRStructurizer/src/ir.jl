@@ -551,6 +551,121 @@ function defines(block::Block, ssa::SSAValue)
     return false
 end
 
+"""
+    collect_outer_refs(block::Block, defined::Set{Int}) -> Vector{SSAValue}
+
+Collect all SSAValue references in the block that are NOT in the defined set.
+These are "outer" references that need to be captured as BlockArgs.
+
+The defined set should contain SSA indices that are available in the current scope
+(e.g., from the parent block's statements or control flow op results).
+
+Does NOT recurse into nested control flow ops - those will have their own capture pass.
+Only collects from direct statements and the terminator.
+"""
+function collect_outer_refs(block::Block, defined::Set{Int})
+    outer_refs = SSAValue[]
+    seen = Set{Int}()
+
+    # Collect from block body (statements only, not nested ops)
+    for item in block.body
+        if item isa Statement
+            collect_ssa_refs!(outer_refs, seen, item.expr, defined)
+        end
+        # Note: nested ControlFlowOps are not traversed here - they capture their own outer refs
+    end
+
+    # Collect from terminator
+    if block.terminator !== nothing
+        collect_terminator_refs!(outer_refs, seen, block.terminator, defined)
+    end
+
+    return outer_refs
+end
+
+"""
+    collect_ssa_refs!(refs, seen, value, defined)
+
+Collect SSAValue references from a value that are not in the defined set.
+Adds to refs and marks in seen to avoid duplicates.
+"""
+function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::SSAValue, defined::Set{Int})
+    if value.id ∉ defined && value.id ∉ seen
+        push!(refs, value)
+        push!(seen, value.id)
+    end
+end
+
+function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::Expr, defined::Set{Int})
+    for arg in value.args
+        collect_ssa_refs!(refs, seen, arg, defined)
+    end
+end
+
+function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::PiNode, defined::Set{Int})
+    collect_ssa_refs!(refs, seen, value.val, defined)
+end
+
+function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::PhiNode, defined::Set{Int})
+    for i in eachindex(value.values)
+        if isassigned(value.values, i)
+            collect_ssa_refs!(refs, seen, value.values[i], defined)
+        end
+    end
+end
+
+# Base cases: other value types don't contain SSAValue references
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::BlockArg, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::LocalSSAValue, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Argument, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::SlotNumber, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::GlobalRef, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::QuoteNode, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Nothing, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Number, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Symbol, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Type, ::Set{Int}) = nothing
+collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, _, ::Set{Int}) = nothing  # Fallback
+
+"""
+    collect_terminator_refs!(refs, seen, term, defined)
+
+Collect SSAValue references from a terminator that are not in the defined set.
+"""
+function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::YieldOp, defined::Set{Int})
+    for v in term.values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+end
+
+function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::ContinueOp, defined::Set{Int})
+    for v in term.values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+end
+
+function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::BreakOp, defined::Set{Int})
+    for v in term.values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+end
+
+function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::ConditionOp, defined::Set{Int})
+    collect_ssa_refs!(refs, seen, term.condition, defined)
+    for v in term.args
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+end
+
+function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::ReturnNode, defined::Set{Int})
+    if isdefined(term, :val)
+        collect_ssa_refs!(refs, seen, term.val, defined)
+    end
+end
+
+function collect_terminator_refs!(::Vector{SSAValue}, ::Set{Int}, ::Nothing, ::Set{Int})
+end
+
 #=============================================================================
  Pretty Printing (Julia CodeInfo-style with colors)
 =============================================================================#
