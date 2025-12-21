@@ -897,4 +897,41 @@ end
             end
         end
     end
+
+    @testset "nested spinloop uses correct loop index (regression test)" begin
+        # This test catches a bug where nested while loops inside for loops
+        # shadow the for loop's induction variable, causing incorrect indexing.
+        # The bug: store uses (group_bid, group_bid) instead of (group_bid, loopIdx)
+        spec = ct.ArraySpec{2}(16, true)
+        spec1d = ct.ArraySpec{1}(16, true)
+        @test_broken @filecheck begin
+            check"CHECK-LABEL: entry"
+            check"CHECK: for %loopIdx in"
+            check"CHECK: loop iter_values"
+            # The store MUST use loopIdx for the column index, not the spinloop result
+            check"CHECK: store_view_tko{{.*}}[%iterArg{{[0-9]+}}, %loopIdx]"
+            code_tile(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
+                           Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
+                bid_m = ct.bid(0)
+                group_bid_m = bid_m % Int32(GROUP_SIZE_M[])
+
+                j = Int32(0)
+                while j < num_iters
+                    # Nested spinloop - this must not shadow loopIdx
+                    while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
+                                       memory_order=ct.MemoryOrder.Acquire) == Int32(1)
+                    end
+
+                    val = ct.full((1, TILE_N[]), 1.0f0, Float32)
+                    ct.store(DB, (group_bid_m, j), val)
+
+                    ct.atomic_xchg(Locks, group_bid_m, Int32(0);
+                                  memory_order=ct.MemoryOrder.Release)
+
+                    j += Int32(1)
+                end
+                return
+            end
+        end
+    end
 end
