@@ -262,12 +262,11 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types
+    # Determine result types from body.args (which parallels result_vars)
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
-        @debug "ForOp result_var $result_var: type=$result_type, type_id=$type_id"
+    for body_arg in op.body.args
+        type_id = tile_type_for_julia!(ctx, body_arg.type)
+        @debug "ForOp body_arg: type=$(body_arg.type), type_id=$type_id"
         push!(result_types, type_id)
     end
     # Add token type as additional result (for memory ordering)
@@ -306,12 +305,11 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     ctx.token = results[end]
 
     # Map user result values (excluding token)
-    for (i, result_var) in enumerate(op.result_vars)
+    for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, op.body.args))
         if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            shape = extract_tile_shape(result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
+            type_id = tile_type_for_julia!(ctx, body_arg.type)
+            shape = extract_tile_shape(body_arg.type)
+            ctx[result_var] = CGVal(results[i], type_id, body_arg.type, shape)
         end
     end
 end
@@ -329,18 +327,17 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from init values
+    # Determine result types from body.args (which parallels result_vars)
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
+    for body_arg in op.body.args
+        type_id = tile_type_for_julia!(ctx, body_arg.type)
         push!(result_types, type_id)
     end
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(op.result_vars)
+    n_user_results = length(op.body.args)
 
     # Emit LoopOp with callback-based region building
     body_builder = function(block_args)
@@ -355,11 +352,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
         # Also map result_vars to block args so references inside loop body work
         # e.g., if %2 is a phi that becomes result_var, references to %2 inside the
         # loop body should resolve to the block argument value
-        for (i, result_var) in enumerate(op.result_vars)
+        for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, op.body.args))
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
-                result_type = ssatypes(ctx.target)[result_var.id]
-                shape = extract_tile_shape(result_type)
-                ctx[result_var] = CGVal(block_args[i], result_types[i], result_type, shape)
+                shape = extract_tile_shape(body_arg.type)
+                ctx[result_var] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
             end
         end
 
@@ -385,12 +381,11 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     ctx.token = results[end]
 
     # Map user result values (excluding token)
-    for (i, result_var) in enumerate(op.result_vars)
+    for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, op.body.args))
         if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            shape = extract_tile_shape(result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
+            type_id = tile_type_for_julia!(ctx, body_arg.type)
+            shape = extract_tile_shape(body_arg.type)
+            ctx[result_var] = CGVal(results[i], type_id, body_arg.type, shape)
         end
     end
 end
@@ -408,18 +403,17 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from result_vars
+    # Determine result types from before.args (which parallels result_vars)
     result_types = TypeId[]
-    for result_var in op.result_vars
-        result_type = ssatypes(ctx.target)[result_var.id]
-        type_id = tile_type_for_julia!(ctx, result_type)
+    for before_arg in op.before.args
+        type_id = tile_type_for_julia!(ctx, before_arg.type)
         push!(result_types, type_id)
     end
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(op.result_vars)
+    n_user_results = length(op.before.args)
 
     # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
@@ -434,11 +428,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         end
 
         # Also map result_vars to block args
-        for (i, result_var) in enumerate(op.result_vars)
+        for (i, (result_var, before_arg)) in enumerate(zip(op.result_vars, op.before.args))
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
-                result_type = ssatypes(ctx.target)[result_var.id]
-                shape = extract_tile_shape(result_type)
-                ctx[result_var] = CGVal(block_args[i], result_types[i], result_type, shape)
+                shape = extract_tile_shape(before_arg.type)
+                ctx[result_var] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
             end
         end
 
@@ -531,12 +524,11 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     ctx.token = results[end]
 
     # Map user result values (excluding token)
-    for (i, result_var) in enumerate(op.result_vars)
+    for (i, (result_var, before_arg)) in enumerate(zip(op.result_vars, op.before.args))
         if i <= length(results) - 1  # Exclude token
-            result_type = ssatypes(ctx.target)[result_var.id]
-            type_id = tile_type_for_julia!(ctx, result_type)
-            shape = extract_tile_shape(result_type)
-            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
+            type_id = tile_type_for_julia!(ctx, before_arg.type)
+            shape = extract_tile_shape(before_arg.type)
+            ctx[result_var] = CGVal(results[i], type_id, before_arg.type, shape)
         end
     end
 end
