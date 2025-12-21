@@ -67,16 +67,22 @@ function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
 end
 
 """
-    is_loop_invariant(val, block::Block) -> Bool
+    is_loop_invariant(val, block::Block; result_vars::Vector{SSAValue}=SSAValue[]) -> Bool
 
 Check if a value is loop-invariant (not defined inside the loop body).
-- BlockArgs are loop-variant (they're loop-carried values)
+- BlockArgs for phi values (indices 1..len(result_vars)) are loop-variant
+- BlockArgs for outer captures (indices > len(result_vars)) are loop-invariant
 - SSAValues are loop-invariant if no Statement in the body defines them
 - Constants and Arguments are always loop-invariant
 """
-function is_loop_invariant(val, block::Block)
-    # BlockArgs are loop-carried values - not invariant
-    val isa BlockArg && return false
+function is_loop_invariant(val, block::Block; result_vars::Vector{SSAValue}=SSAValue[])
+    # BlockArgs: phi values are variant, outer captures are invariant
+    if val isa BlockArg
+        # If no result_vars provided, conservatively treat all BlockArgs as variant
+        isempty(result_vars) && return false
+        # BlockArgs beyond result_vars count are outer captures (invariant)
+        return val.id > length(result_vars)
+    end
 
     # SSAValues: check if defined in the loop body (including nested blocks)
     if val isa SSAValue
@@ -178,7 +184,14 @@ function try_upgrade_to_for(loop::LoopOp)
     # After substitution, the IV should be a BlockArg
     iv_arg = cond_stmt.expr.args[2]
     iv_arg isa BlockArg || return nothing
-    upper_bound = cond_stmt.expr.args[3]
+    upper_bound_raw = cond_stmt.expr.args[3]
+
+    # If upper_bound is a BlockArg (from outer capture), resolve to original SSAValue
+    upper_bound = if upper_bound_raw isa BlockArg && upper_bound_raw.id <= length(loop.init_values)
+        loop.init_values[upper_bound_raw.id]
+    else
+        upper_bound_raw
+    end
 
     # Find which index this BlockArg corresponds to
     iv_idx = findfirst(==(iv_arg), loop.body.args)
@@ -193,13 +206,20 @@ function try_upgrade_to_for(loop::LoopOp)
     # Find the step: add_int(iv_arg, step)
     step_stmt = find_add_int_for_iv(loop.body, iv_arg)
     step_stmt === nothing && return nothing
-    step = step_stmt.expr.args[3]
+    step_raw = step_stmt.expr.args[3]
+
+    # If step is a BlockArg (from outer capture), resolve to original SSAValue
+    step = if step_raw isa BlockArg && step_raw.id <= length(loop.init_values)
+        loop.init_values[step_raw.id]
+    else
+        step_raw
+    end
 
     # Verify upper_bound and step are loop-invariant
-    is_loop_invariant(upper_bound, loop.body) || return nothing
-    is_loop_invariant(step, loop.body) || return nothing
+    is_loop_invariant(upper_bound, loop.body; result_vars=loop.result_vars) || return nothing
+    is_loop_invariant(step, loop.body; result_vars=loop.result_vars) || return nothing
 
-    # Separate non-IV carried values
+    # Separate non-IV carried values (from result_vars)
     other_result_vars = SSAValue[]
     other_init_values = IRValue[]
     for (j, rv) in enumerate(loop.result_vars)
@@ -207,6 +227,12 @@ function try_upgrade_to_for(loop::LoopOp)
             push!(other_result_vars, rv)
             push!(other_init_values, loop.init_values[j])
         end
+    end
+
+    # Add outer captures (init_values beyond result_vars)
+    # These are invariant values captured from outside the loop
+    for j in (length(loop.result_vars)+1):length(loop.init_values)
+        push!(other_init_values, loop.init_values[j])
     end
 
     # Rebuild body block without condition structure
@@ -248,6 +274,13 @@ function try_upgrade_to_for(loop::LoopOp)
             end
         end
     end
+
+    # Add outer captures unchanged - they need to be yielded back to match init_values
+    # Outer captures are body.args beyond the result_vars count
+    for j in (length(other_result_vars)+1):length(new_body.args)
+        push!(yield_values, new_body.args[j])
+    end
+
     new_body.terminator = ContinueOp(yield_values)
 
     return ForOp(lower_bound, upper_bound, step, iv_ssa, iv_arg,
@@ -291,6 +324,11 @@ function try_upgrade_to_while(loop::LoopOp)
     condition_args = IRValue[]
     if condition_ifop.else_block.terminator isa BreakOp
         condition_args = copy(condition_ifop.else_block.terminator.values)
+        # Add outer captures unchanged - they need to be passed through
+        # Outer captures are before.args beyond the result_vars count
+        for j in (length(loop.result_vars)+1):length(before.args)
+            push!(condition_args, before.args[j])
+        end
     elseif !isempty(before.args)
         # Default: forward the block args
         condition_args = [arg for arg in before.args]
@@ -315,6 +353,13 @@ function try_upgrade_to_while(loop::LoopOp)
     if condition_ifop.then_block.terminator isa ContinueOp
         yield_values = copy(condition_ifop.then_block.terminator.values)
     end
+
+    # Add outer captures unchanged - they need to be yielded back to match init_values
+    # Outer captures are after.args beyond the result_vars count
+    for j in (length(loop.result_vars)+1):length(after.args)
+        push!(yield_values, after.args[j])
+    end
+
     after.terminator = YieldOp(yield_values)
 
     return WhileOp(before, after, loop.init_values, loop.result_vars)

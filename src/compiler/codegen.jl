@@ -300,12 +300,17 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
         ctx[op.iv_arg] = iv_tv
         ctx[op.iv_ssa] = iv_tv
 
-        # Map carried values (body.args only contains carried values, not IV)
+        # Map carried values (body.args contains carried values + outer captures)
+        # result_vars only contains phi SSAs (not outer captures), so we need to
+        # check the index before mapping to result_vars
         for (i, body_arg) in enumerate(op.body.args)
             shape = extract_tile_shape(body_arg.type)
             tv = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
             ctx[body_arg] = tv
-            ctx[op.result_vars[i]] = tv
+            # Only map to result_vars if within bounds (outer captures don't have result_vars)
+            if i <= length(op.result_vars)
+                ctx[op.result_vars[i]] = tv
+            end
         end
 
         # Set token from last block arg
