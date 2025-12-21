@@ -107,9 +107,8 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     # Build control tree using SPIRV.jl-style graph contraction
     ctree = ControlTree(cfg)
 
-    # Phase 1: Convert control tree to structured IR and apply substitutions
+    # Phase 1: Convert control tree to structured IR (with inline SSA substitutions)
     sci.entry = control_tree_to_structured_ir(ctree, code, blocks)
-    apply_loop_substitutions!(sci.entry)
 
     # Phase 2: Upgrade loop patterns (optional)
     if loop_patterning
