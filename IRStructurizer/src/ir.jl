@@ -394,21 +394,36 @@ end
     substitute_control_flow!(op::ControlFlowOp, subs::Substitutions)
 
 Apply SSA substitutions to a control flow operation and its nested blocks.
+Also substitutes init_values, conditions, and other operands.
 """
 function substitute_control_flow!(op::IfOp, subs::Substitutions)
+    # Substitute init_values (captured outer refs)
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.then_block, subs)
     substitute_block!(op.else_block, subs)
 end
 
 function substitute_control_flow!(op::ForOp, subs::Substitutions)
+    # Note: lower, upper, step are immutable, would need reconstruction to substitute
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.body, subs)
 end
 
 function substitute_control_flow!(op::LoopOp, subs::Substitutions)
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.body, subs)
 end
 
 function substitute_control_flow!(op::WhileOp, subs::Substitutions)
+    for (i, v) in enumerate(op.init_values)
+        op.init_values[i] = substitute_ssa(v, subs)
+    end
     substitute_block!(op.before, subs)
     substitute_block!(op.after, subs)
 end
@@ -595,11 +610,17 @@ Collect SSAValue references from a control flow op's nested blocks.
 """
 function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::IfOp, defined::Set{Int})
     collect_ssa_refs!(refs, seen, op.condition, defined)
+    for v in op.init_values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
     collect_block_refs!(refs, seen, op.then_block, defined)
     collect_block_refs!(refs, seen, op.else_block, defined)
 end
 
 function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::LoopOp, defined::Set{Int})
+    for v in op.init_values
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
     collect_block_refs!(refs, seen, op.body, defined)
 end
 
