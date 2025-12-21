@@ -16,6 +16,26 @@ struct BlockArg
 end
 
 #=============================================================================
+ Local SSA Values (block-local references)
+=============================================================================#
+
+"""
+    LocalSSAValue
+
+Reference to a value defined by an operation in the same block.
+The id is the 1-indexed position in the containing block's ops array.
+
+This type will replace global SSAValue references inside structured blocks
+once the local SSA refactoring is complete. For now, it coexists with
+global SSAValue references during the migration.
+"""
+struct LocalSSAValue
+    id::Int
+end
+
+Base.show(io::IO, v::LocalSSAValue) = print(io, "\$", v.id)
+
+#=============================================================================
  IR Values - references to SSA values or block arguments
 =============================================================================#
 
