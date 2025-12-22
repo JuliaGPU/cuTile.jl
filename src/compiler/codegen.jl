@@ -209,29 +209,24 @@ end
     emit_control_flow_op!(ctx, op::ControlFlowOp, parent_result_type)
 
 Emit bytecode for a structured control flow operation.
-The parent_result_type comes from the parent block's types vector.
+Uses multiple dispatch on the concrete ControlFlowOp type.
 """
-function emit_control_flow_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(parent_result_type))
-    if op.head == :if
-        emit_if_op!(ctx, op, parent_result_type)
-    elseif op.head == :for
-        emit_for_op!(ctx, op, parent_result_type)
-    elseif op.head == :loop
-        emit_loop_op!(ctx, op, parent_result_type)
-    elseif op.head == :while
-        emit_while_op!(ctx, op, parent_result_type)
-    else
-        error("Unknown control flow op head: $(op.head)")
-    end
-end
+emit_control_flow_op!(ctx::CodegenContext, op::IfOp, @nospecialize(result_type)) =
+    emit_if_op!(ctx, op, result_type)
+emit_control_flow_op!(ctx::CodegenContext, op::ForOp, @nospecialize(result_type)) =
+    emit_for_op!(ctx, op, result_type)
+emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(result_type)) =
+    emit_while_op!(ctx, op, result_type)
+emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(result_type)) =
+    emit_loop_op!(ctx, op, result_type)
 
-function emit_if_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(parent_result_type))
+function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_type))
     cb = ctx.cb
-    then_blk = op.regions[:then]::Block
-    else_blk = op.regions[:else]::Block
+    then_blk = op.then_region::Block
+    else_blk = op.else_region::Block
 
     # Get condition value
-    cond_tv = emit_value!(ctx, op.operands.condition)
+    cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
 
     # Determine result types from parent_result_type
@@ -285,16 +280,16 @@ function emit_if_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(paren
     end
 end
 
-function emit_for_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(parent_result_type))
+function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_result_type))
     cb = ctx.cb
     tt = ctx.tt
-    body_blk = op.regions[:body]::Block
+    body_blk = op.body::Block
 
     # Get bounds values
-    lower_tv = emit_value!(ctx, op.operands.lower)
-    upper_tv = emit_value!(ctx, op.operands.upper)
-    step_tv = emit_value!(ctx, op.operands.step)
-    iv_arg = op.operands.iv_arg
+    lower_tv = emit_value!(ctx, op.lower)
+    upper_tv = emit_value!(ctx, op.upper)
+    step_tv = emit_value!(ctx, op.step)
+    iv_arg = op.iv_arg
 
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         error("Cannot resolve ForOp bounds")
@@ -374,9 +369,9 @@ function emit_for_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(pare
     end
 end
 
-function emit_loop_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(parent_result_type))
+function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_result_type))
     cb = ctx.cb
-    body_blk = op.regions[:body]::Block
+    body_blk = op.body::Block
 
     # Get init values
     init_values = Value[]
@@ -456,10 +451,10 @@ function emit_loop_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(par
     end
 end
 
-function emit_while_op!(ctx::CodegenContext, op::ControlFlowOp, @nospecialize(parent_result_type))
+function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_result_type))
     cb = ctx.cb
-    before_blk = op.regions[:before]::Block
-    after_blk = op.regions[:after]::Block
+    before_blk = op.before::Block
+    after_blk = op.after::Block
 
     # Get init values
     init_values = Value[]

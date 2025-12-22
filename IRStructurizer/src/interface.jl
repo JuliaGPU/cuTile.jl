@@ -1,6 +1,9 @@
 # public API
 
 export code_structured, structurize!, StructuredCodeInfo, LocalSSAValue
+export ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp
+export Block, BlockArg
+export YieldOp, ContinueOp, BreakOp, ConditionOp
 
 """
     code_structured(f, argtypes; validate=true, loop_patterning=true, kwargs...) -> StructuredCodeInfo

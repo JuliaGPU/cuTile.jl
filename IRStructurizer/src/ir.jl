@@ -267,42 +267,98 @@ Base.eltype(::Type{PartialBlock}) = PartialBlockItem
  Final Types (Block / ControlFlowOp) - Output of Phase 5
 =============================================================================#
 
-"""
-    ControlFlowOp
+#=============================================================================
+ Final Control Flow Types
+ These are the immutable types output by finalize_ir!.
+ Each has direct field access instead of head::Symbol + operands::NamedTuple.
+=============================================================================#
 
-Final immutable control flow operation. Output of finalize_ir!.
-Uses head::Symbol for type discrimination (:if, :for, :while, :loop).
-
-Unlike PartialControlFlowOp, this has no result_vars (not needed after finalization).
 """
-struct ControlFlowOp
-    head::Symbol
-    regions::Dict{Symbol, Any}  # Values are Block (forward reference)
+    IfOp
+
+Structured if-then-else operation.
+Regions are Block (forward reference, typed as Any).
+"""
+struct IfOp
+    condition::IRValue
+    then_region::Any    # Block (forward reference)
+    else_region::Any    # Block
     init_values::Vector{IRValue}
-    operands::NamedTuple
 end
 
-function Base.show(io::IO, op::ControlFlowOp)
-    print(io, "ControlFlowOp(:", op.head)
-    print(io, ", regions=[", join(keys(op.regions), ", "), "]")
+function Base.show(io::IO, op::IfOp)
+    print(io, "IfOp(")
     if !isempty(op.init_values)
-        print(io, ", init=", length(op.init_values))
+        print(io, "init=", length(op.init_values))
     end
     print(io, ")")
 end
 
-# Accessors for ControlFlowOp (same as PartialControlFlowOp)
-condition(op::ControlFlowOp) = op.head == :if ? op.operands.condition : error("no condition for :$(op.head)")
-lower(op::ControlFlowOp) = op.head == :for ? op.operands.lower : error("no lower for :$(op.head)")
-upper(op::ControlFlowOp) = op.head == :for ? op.operands.upper : error("no upper for :$(op.head)")
-step(op::ControlFlowOp) = op.head == :for ? op.operands.step : error("no step for :$(op.head)")
-iv_arg(op::ControlFlowOp) = op.head == :for ? op.operands.iv_arg : error("no iv_arg for :$(op.head)")
+"""
+    ForOp
 
-then_block(op::ControlFlowOp) = get(op.regions, :then, nothing)
-else_block(op::ControlFlowOp) = get(op.regions, :else, nothing)
-body_block(op::ControlFlowOp) = get(op.regions, :body, nothing)
-before_block(op::ControlFlowOp) = get(op.regions, :before, nothing)
-after_block(op::ControlFlowOp) = get(op.regions, :after, nothing)
+Counted for-loop with lower/upper/step bounds.
+"""
+struct ForOp
+    lower::IRValue
+    upper::IRValue
+    step::IRValue
+    iv_arg::BlockArg
+    body::Any           # Block (forward reference)
+    init_values::Vector{IRValue}
+end
+
+function Base.show(io::IO, op::ForOp)
+    print(io, "ForOp(")
+    if !isempty(op.init_values)
+        print(io, "init=", length(op.init_values))
+    end
+    print(io, ")")
+end
+
+"""
+    WhileOp
+
+MLIR-style while loop with before (condition) and after (body) regions.
+"""
+struct WhileOp
+    before::Any     # Block (forward reference), ends with ConditionOp
+    after::Any      # Block
+    init_values::Vector{IRValue}
+end
+
+function Base.show(io::IO, op::WhileOp)
+    print(io, "WhileOp(")
+    if !isempty(op.init_values)
+        print(io, "init=", length(op.init_values))
+    end
+    print(io, ")")
+end
+
+"""
+    LoopOp
+
+General loop with dynamic exit via BreakOp/ContinueOp.
+"""
+struct LoopOp
+    body::Any       # Block (forward reference)
+    init_values::Vector{IRValue}
+end
+
+function Base.show(io::IO, op::LoopOp)
+    print(io, "LoopOp(")
+    if !isempty(op.init_values)
+        print(io, "init=", length(op.init_values))
+    end
+    print(io, ")")
+end
+
+"""
+    ControlFlowOp
+
+Union of all control flow operation types.
+"""
+const ControlFlowOp = Union{IfOp, ForOp, WhileOp, LoopOp}
 
 """
     BlockItem
@@ -933,22 +989,46 @@ end
 
 Convert a PartialControlFlowOp to a final ControlFlowOp by:
 1. Converting all nested regions from PartialBlock to Block
-2. Dropping result_vars (not needed after finalization)
+2. Constructing the appropriate concrete type (IfOp, ForOp, WhileOp, LoopOp)
 """
 function finalize_control_flow_op(op::PartialControlFlowOp)::ControlFlowOp
     # Convert all regions
-    final_regions = Dict{Symbol, Any}()
+    regions = Dict{Symbol, Block}()
     for (name, region) in op.regions
-        final_regions[name] = finalize_ir(region::PartialBlock)
+        regions[name] = finalize_ir(region::PartialBlock)
     end
 
-    # Create final ControlFlowOp without result_vars
-    return ControlFlowOp(
-        op.head,
-        final_regions,
-        copy(op.init_values),
-        op.operands
-    )
+    init_values = copy(op.init_values)
+
+    # Construct the appropriate concrete type
+    if op.head == :if
+        return IfOp(
+            op.operands.condition,
+            regions[:then],
+            regions[:else],
+            init_values
+        )
+    elseif op.head == :for
+        return ForOp(
+            op.operands.lower,
+            op.operands.upper,
+            op.operands.step,
+            op.operands.iv_arg,
+            regions[:body],
+            init_values
+        )
+    elseif op.head == :while
+        return WhileOp(
+            regions[:before],
+            regions[:after],
+            init_values
+        )
+    else  # :loop
+        return LoopOp(
+            regions[:body],
+            init_values
+        )
+    end
 end
 
 #=============================================================================

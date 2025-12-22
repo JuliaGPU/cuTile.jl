@@ -176,22 +176,53 @@ function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
     return count
 end
 
-function count_ssavalues_in_op(op::ControlFlowOp; is_entry::Bool=false)
+function count_ssavalues_in_op(op::IfOp; is_entry::Bool=false)
     count = 0
-    # Only count operands and init_values if op is nested (not at entry level)
     if !is_entry
-        # Count SSAValues in operands
-        for v in values(op.operands)
-            count += count_ssavalues_in_value(v)
-        end
+        count += count_ssavalues_in_value(op.condition)
         for v in op.init_values
             count += count_ssavalues_in_value(v)
         end
     end
-    # Recurse into all regions
-    for (_, region) in op.regions
-        count += count_ssavalues_in_nested(region)
+    count += count_ssavalues_in_nested(op.then_region)
+    count += count_ssavalues_in_nested(op.else_region)
+    return count
+end
+
+function count_ssavalues_in_op(op::ForOp; is_entry::Bool=false)
+    count = 0
+    if !is_entry
+        count += count_ssavalues_in_value(op.lower)
+        count += count_ssavalues_in_value(op.upper)
+        count += count_ssavalues_in_value(op.step)
+        for v in op.init_values
+            count += count_ssavalues_in_value(v)
+        end
     end
+    count += count_ssavalues_in_nested(op.body)
+    return count
+end
+
+function count_ssavalues_in_op(op::WhileOp; is_entry::Bool=false)
+    count = 0
+    if !is_entry
+        for v in op.init_values
+            count += count_ssavalues_in_value(v)
+        end
+    end
+    count += count_ssavalues_in_nested(op.before)
+    count += count_ssavalues_in_nested(op.after)
+    return count
+end
+
+function count_ssavalues_in_op(op::LoopOp; is_entry::Bool=false)
+    count = 0
+    if !is_entry
+        for v in op.init_values
+            count += count_ssavalues_in_value(v)
+        end
+    end
+    count += count_ssavalues_in_nested(op.body)
     return count
 end
 
