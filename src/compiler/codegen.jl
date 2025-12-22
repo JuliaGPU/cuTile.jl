@@ -168,11 +168,11 @@ end
 =============================================================================#
 
 """
-    emit_block!(ctx, block::Block)
+    emit_block!(ctx, block::PartialBlock)
 
 Emit bytecode for a structured IR block.
 """
-function emit_block!(ctx::CodegenContext, block::Block)
+function emit_block!(ctx::CodegenContext, block::PartialBlock)
     # Track current block for LocalSSAValue resolution
     prev_block = ctx.current_block
     ctx.current_block = block
@@ -187,7 +187,7 @@ function emit_block!(ctx::CodegenContext, block::Block)
             if tv !== nothing
                 ctx.local_values[(block_key, local_idx)] = tv
             end
-        elseif item isa ControlFlowOp
+        elseif item isa PartialControlFlowOp
             emit_control_flow_op!(ctx, item)
             # TODO: When control flow ops become expressions, store their results here
         else
@@ -205,15 +205,31 @@ function emit_block!(ctx::CodegenContext, block::Block)
 end
 
 """
-    emit_control_flow_op!(ctx, op::ControlFlowOp)
+    emit_control_flow_op!(ctx, op::PartialControlFlowOp)
 
 Emit bytecode for a structured control flow operation.
 """
-function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
+function emit_control_flow_op!(ctx::CodegenContext, op::PartialControlFlowOp)
+    if op.head == :if
+        emit_if_op!(ctx, op)
+    elseif op.head == :for
+        emit_for_op!(ctx, op)
+    elseif op.head == :loop
+        emit_loop_op!(ctx, op)
+    elseif op.head == :while
+        emit_while_op!(ctx, op)
+    else
+        error("Unknown control flow op head: $(op.head)")
+    end
+end
+
+function emit_if_op!(ctx::CodegenContext, op::PartialControlFlowOp)
     cb = ctx.cb
+    then_blk = op.regions[:then]::PartialBlock
+    else_blk = op.regions[:else]::PartialBlock
 
     # Get condition value
-    cond_tv = emit_value!(ctx, op.condition)
+    cond_tv = emit_value!(ctx, op.operands.condition)
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
 
     # Determine result types from the result_vars
@@ -233,11 +249,11 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
     # Each branch will yield its final token via emit_terminator!
     then_body = function(_)
         ctx.token = token_before  # Reset to pre-branch token
-        emit_block!(ctx, op.then_block)
+        emit_block!(ctx, then_blk)
     end
     else_body = function(_)
         ctx.token = token_before  # Reset to pre-branch token
-        emit_block!(ctx, op.else_block)
+        emit_block!(ctx, else_blk)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
@@ -254,14 +270,16 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
     end
 end
 
-function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
+function emit_for_op!(ctx::CodegenContext, op::PartialControlFlowOp)
     cb = ctx.cb
     tt = ctx.tt
+    body_blk = op.regions[:body]::PartialBlock
 
     # Get bounds values
-    lower_tv = emit_value!(ctx, op.lower)
-    upper_tv = emit_value!(ctx, op.upper)
-    step_tv = emit_value!(ctx, op.step)
+    lower_tv = emit_value!(ctx, op.operands.lower)
+    upper_tv = emit_value!(ctx, op.operands.upper)
+    step_tv = emit_value!(ctx, op.operands.step)
+    iv_arg = op.operands.iv_arg
 
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         error("Cannot resolve ForOp bounds")
@@ -278,7 +296,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
 
     # Determine result types from body.args (which parallels result_vars)
     result_types = TypeId[]
-    for body_arg in op.body.args
+    for body_arg in body_blk.args
         type_id = tile_type_for_julia!(ctx, body_arg.type)
         @debug "ForOp body_arg: type=$(body_arg.type), type_id=$type_id"
         push!(result_types, type_id)
@@ -300,13 +318,12 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
         # Map the induction variable
         iv_type = tile_type!(tt, I32(tt), Int[])
         iv_tv = CGVal(block_args[1], iv_type, Int32)
-        ctx[op.iv_arg] = iv_tv
-        ctx[op.iv_ssa] = iv_tv
+        ctx[iv_arg] = iv_tv
 
         # Map carried values (body.args contains carried values + outer captures)
         # result_vars only contains phi SSAs (not outer captures), so we need to
         # check the index before mapping to result_vars
-        for (i, body_arg) in enumerate(op.body.args)
+        for (i, body_arg) in enumerate(body_blk.args)
             shape = extract_tile_shape(body_arg.type)
             tv = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
             ctx[body_arg] = tv
@@ -319,7 +336,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
         # Set token from last block arg
         ctx.token = block_args[end]
 
-        emit_block!(ctx, op.body)
+        emit_block!(ctx, body_blk)
 
         # Restore outer block_args
         empty!(ctx.block_args)
@@ -331,7 +348,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     ctx.token = results[end]
 
     # Map user result values (excluding token)
-    for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, op.body.args))
+    for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, body_blk.args))
         if i <= length(results) - 1  # Exclude token
             type_id = tile_type_for_julia!(ctx, body_arg.type)
             shape = extract_tile_shape(body_arg.type)
@@ -340,8 +357,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
     end
 end
 
-function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
+function emit_loop_op!(ctx::CodegenContext, op::PartialControlFlowOp)
     cb = ctx.cb
+    body_blk = op.regions[:body]::PartialBlock
 
     # Get init values
     init_values = Value[]
@@ -355,7 +373,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
 
     # Determine result types from body.args (which parallels result_vars)
     result_types = TypeId[]
-    for body_arg in op.body.args
+    for body_arg in body_blk.args
         type_id = tile_type_for_julia!(ctx, body_arg.type)
         push!(result_types, type_id)
     end
@@ -363,7 +381,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(op.body.args)
+    n_user_results = length(body_blk.args)
 
     # Emit LoopOp with callback-based region building
     body_builder = function(block_args)
@@ -371,7 +389,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
         saved_block_args = copy(ctx.block_args)
 
         # Map block arguments (carried values, last is token)
-        for (i, body_arg) in enumerate(op.body.args)
+        for (i, body_arg) in enumerate(body_blk.args)
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
                 shape = extract_tile_shape(body_arg.type)
                 ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
@@ -381,7 +399,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
         # Also map result_vars to block args so references inside loop body work
         # e.g., if %2 is a phi that becomes result_var, references to %2 inside the
         # loop body should resolve to the block argument value
-        for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, op.body.args))
+        for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, body_blk.args))
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
                 shape = extract_tile_shape(body_arg.type)
                 ctx[result_var] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
@@ -391,13 +409,13 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
         # Set token from last block arg
         ctx.token = block_args[end]
 
-        emit_block!(ctx, op.body)
+        emit_block!(ctx, body_blk)
 
         # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
         # in all branches), the if is NOT a terminator. We need an explicit terminator
         # after the if. Add an unreachable ContinueOp as fallback terminator.
         # This is only reached if the if doesn't cover all paths (which it should).
-        if op.body.terminator === nothing
+        if body_blk.terminator === nothing
             # Include token in fallback continue
             fallback_operands = copy(block_args)
             fallback_operands[end] = ctx.token
@@ -414,7 +432,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     ctx.token = results[end]
 
     # Map user result values (excluding token)
-    for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, op.body.args))
+    for (i, (result_var, body_arg)) in enumerate(zip(op.result_vars, body_blk.args))
         if i <= length(results) - 1  # Exclude token
             type_id = tile_type_for_julia!(ctx, body_arg.type)
             shape = extract_tile_shape(body_arg.type)
@@ -423,8 +441,10 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
     end
 end
 
-function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
+function emit_while_op!(ctx::CodegenContext, op::PartialControlFlowOp)
     cb = ctx.cb
+    before_blk = op.regions[:before]::PartialBlock
+    after_blk = op.regions[:after]::PartialBlock
 
     # Get init values
     init_values = Value[]
@@ -438,7 +458,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
 
     # Determine result types from before.args (which parallels result_vars)
     result_types = TypeId[]
-    for before_arg in op.before.args
+    for before_arg in before_blk.args
         type_id = tile_type_for_julia!(ctx, before_arg.type)
         push!(result_types, type_id)
     end
@@ -446,7 +466,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(op.before.args)
+    n_user_results = length(before_blk.args)
 
     # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
@@ -456,7 +476,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         saved_block_args = copy(ctx.block_args)
 
         # Map block arguments for the "before" region (carried values, last is token)
-        for (i, before_arg) in enumerate(op.before.args)
+        for (i, before_arg) in enumerate(before_blk.args)
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
                 shape = extract_tile_shape(before_arg.type)
                 ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
@@ -464,7 +484,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         end
 
         # Also map result_vars to block args
-        for (i, (result_var, before_arg)) in enumerate(zip(op.result_vars, op.before.args))
+        for (i, (result_var, before_arg)) in enumerate(zip(op.result_vars, before_blk.args))
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
                 shape = extract_tile_shape(before_arg.type)
                 ctx[result_var] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
@@ -477,9 +497,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         # Emit "before" region statements (condition computation)
         # Track current block for LocalSSAValue resolution
         prev_block = ctx.current_block
-        ctx.current_block = op.before
-        before_block_key = objectid(op.before)
-        for (local_idx, item) in enumerate(op.before.body)
+        ctx.current_block = before_blk
+        before_block_key = objectid(before_blk)
+        for (local_idx, item) in enumerate(before_blk.body)
             if item isa Statement
                 emit_statement!(ctx, item.expr, item.idx, item.type)
                 # Also populate local_values for LocalSSAValue support
@@ -487,13 +507,13 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
                 if tv !== nothing
                     ctx.local_values[(before_block_key, local_idx)] = tv
                 end
-            elseif item isa ControlFlowOp
+            elseif item isa PartialControlFlowOp
                 emit_control_flow_op!(ctx, item)
             end
         end
 
         # Get condition from ConditionOp terminator
-        cond_op = op.before.terminator
+        cond_op = before_blk.terminator
         cond_op isa ConditionOp || error("WhileOp before region must end with ConditionOp")
 
         cond_tv = emit_value!(ctx, cond_op.condition)
@@ -505,7 +525,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
         # Create if-then-else: if condition { after_region; continue } else { break }
         then_body = function(_)
             # Map "after" region block args to the values from ConditionOp.args
-            for (i, after_arg) in enumerate(op.after.args)
+            for (i, after_arg) in enumerate(after_blk.args)
                 if i <= length(cond_op.args)
                     # The after args receive from condition args
                     # For now, map them to the same block_args (they should be the same values)
@@ -518,9 +538,9 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
 
             # Emit "after" region statements (loop body)
             # Track current block for LocalSSAValue resolution
-            ctx.current_block = op.after
-            after_block_key = objectid(op.after)
-            for (local_idx, item) in enumerate(op.after.body)
+            ctx.current_block = after_blk
+            after_block_key = objectid(after_blk)
+            for (local_idx, item) in enumerate(after_blk.body)
                 if item isa Statement
                     emit_statement!(ctx, item.expr, item.idx, item.type)
                     # Also populate local_values for LocalSSAValue support
@@ -528,7 +548,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
                     if tv !== nothing
                         ctx.local_values[(after_block_key, local_idx)] = tv
                     end
-                elseif item isa ControlFlowOp
+                elseif item isa PartialControlFlowOp
                     emit_control_flow_op!(ctx, item)
                 end
             end
@@ -536,8 +556,8 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
 
             # Emit continue with yield values from after region
             continue_operands = Value[]
-            if op.after.terminator isa YieldOp
-                for val in op.after.terminator.values
+            if after_blk.terminator isa YieldOp
+                for val in after_blk.terminator.values
                     tv = emit_value!(ctx, val)
                     tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
                 end
@@ -585,7 +605,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::WhileOp)
     ctx.token = results[end]
 
     # Map user result values (excluding token)
-    for (i, (result_var, before_arg)) in enumerate(zip(op.result_vars, op.before.args))
+    for (i, (result_var, before_arg)) in enumerate(zip(op.result_vars, before_blk.args))
         if i <= length(results) - 1  # Exclude token
             type_id = tile_type_for_julia!(ctx, before_arg.type)
             shape = extract_tile_shape(before_arg.type)

@@ -1,9 +1,15 @@
 using Test
 
 using IRStructurizer
-using IRStructurizer: Block, IfOp, ForOp, WhileOp, LoopOp, YieldOp, ContinueOp, BreakOp,
-                      ConditionOp, ControlFlowOp, Statement, validate_scf,
-                      check_global_ssa_refs
+using IRStructurizer: Block, YieldOp, ContinueOp, BreakOp, ConditionOp, Statement, validate_scf,
+                      check_global_ssa_refs, PartialBlock, PartialControlFlowOp
+
+# Helper to check if block contains a control flow op with given head
+is_if(item) = item isa PartialControlFlowOp && item.head == :if
+is_for(item) = item isa PartialControlFlowOp && item.head == :for
+is_while(item) = item isa PartialControlFlowOp && item.head == :while
+is_loop(item) = item isa PartialControlFlowOp && item.head == :loop
+is_control_flow(item) = item isa PartialControlFlowOp
 
 @testset "IRStructurizer" verbose=true begin
 
@@ -19,14 +25,14 @@ using IRStructurizer: Block, IfOp, ForOp, WhileOp, LoopOp, YieldOp, ContinueOp, 
 
     # Create flat, then structurize
     sci = StructuredCodeInfo(ci)
-    @test !any(item -> item isa IfOp, sci.entry.body)
+    @test !any(is_if, sci.entry.body)
 
     structurize!(sci)
-    @test any(item -> item isa IfOp, sci.entry.body)
+    @test any(is_if, sci.entry.body)
 
     # code_structured does both steps
     sci2 = code_structured(g, Tuple{Int})
-    @test any(item -> item isa IfOp, sci2.entry.body)
+    @test any(is_if, sci2.entry.body)
 end
 
 @testset "validation: UnstructuredControlFlowError" begin
@@ -52,7 +58,7 @@ end
 end
 
 @testset "loop_patterning kwarg" begin
-    # Test that loop_patterning=false produces LoopOp instead of ForOp
+    # Test that loop_patterning=false produces :loop instead of :for
     function count_loop(n::Int)
         i = 0
         while i < n
@@ -61,17 +67,17 @@ end
         return i
     end
 
-    # With patterning (default): ForOp
+    # With patterning (default): :for
     sci_with = code_structured(count_loop, Tuple{Int}; loop_patterning=true)
-    loop_op_with = filter(item -> item isa ControlFlowOp, sci_with.entry.body)
+    loop_op_with = filter(is_control_flow, sci_with.entry.body)
     @test !isempty(loop_op_with)
-    @test loop_op_with[1] isa ForOp
+    @test is_for(loop_op_with[1])
 
-    # Without patterning: LoopOp
+    # Without patterning: :loop
     sci_without = code_structured(count_loop, Tuple{Int}; loop_patterning=false)
-    loop_op_without = filter(item -> item isa ControlFlowOp, sci_without.entry.body)
+    loop_op_without = filter(is_control_flow, sci_without.entry.body)
     @test !isempty(loop_op_without)
-    @test loop_op_without[1] isa LoopOp
+    @test is_loop(loop_op_without[1])
 end
 
 @testset "display output format" begin
@@ -145,19 +151,21 @@ end
     # Entry: comparison stmt, then IfOp
     @test length(sci.entry.body) == 2
     @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa IfOp
+    @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
+    then_blk = if_op.regions[:then]
+    else_blk = if_op.regions[:else]
 
     # Then branch: one stmt (addition), then return
-    @test length(if_op.then_block.body) == 1
-    @test if_op.then_block.body[1] isa Statement
-    @test if_op.then_block.terminator isa Core.ReturnNode
+    @test length(then_blk.body) == 1
+    @test then_blk.body[1] isa Statement
+    @test then_blk.terminator isa Core.ReturnNode
 
     # Else branch: one stmt (subtraction), then return
-    @test length(if_op.else_block.body) == 1
-    @test if_op.else_block.body[1] isa Statement
-    @test if_op.else_block.terminator isa Core.ReturnNode
+    @test length(else_blk.body) == 1
+    @test else_blk.body[1] isa Statement
+    @test else_blk.terminator isa Core.ReturnNode
 end
 
 @testset "if-then-else: bool condition (no comparison)" begin
@@ -169,23 +177,25 @@ end
 
     # Entry: exactly one IfOp, no statements
     @test length(sci.entry.body) == 1
-    @test sci.entry.body[1] isa IfOp
+    @test sci.entry.body[1] |> is_if
 
     if_op = sci.entry.body[1]
+    then_blk = if_op.regions[:then]
+    else_blk = if_op.regions[:else]
 
     # Condition is the first argument (the Bool)
-    @test if_op.condition isa Core.Argument
-    @test if_op.condition.n == 2  # arg 1 is #self#
+    @test if_op.operands.condition isa Core.Argument
+    @test if_op.operands.condition.n == 2  # arg 1 is #self#
 
     # Then branch: empty body, returns constant 1
-    @test isempty(if_op.then_block.body)
-    @test if_op.then_block.terminator isa Core.ReturnNode
-    @test if_op.then_block.terminator.val == 1
+    @test isempty(then_blk.body)
+    @test then_blk.terminator isa Core.ReturnNode
+    @test then_blk.terminator.val == 1
 
     # Else branch: empty body, returns constant 2
-    @test isempty(if_op.else_block.body)
-    @test if_op.else_block.terminator isa Core.ReturnNode
-    @test if_op.else_block.terminator.val == 2
+    @test isempty(else_blk.body)
+    @test else_blk.terminator isa Core.ReturnNode
+    @test else_blk.terminator.val == 2
 end
 
 @testset "if-then-else: with comparison" begin
@@ -198,17 +208,19 @@ end
     # Entry: one stmt (comparison), then IfOp
     @test length(sci.entry.body) == 2
     @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa IfOp
+    @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
+    then_blk = if_op.regions[:then]
+    else_blk = if_op.regions[:else]
 
-    # Condition references the comparison result
-    @test if_op.condition isa Core.SSAValue
-    @test if_op.condition.id == sci.entry.body[1].idx
+    # Condition references the comparison result (LocalSSAValue after Phase 4 conversion)
+    @test if_op.operands.condition isa LocalSSAValue
+    @test if_op.operands.condition.id == 1  # Position 1 in block body
 
     # Both branches terminate with return
-    @test if_op.then_block.terminator isa Core.ReturnNode
-    @test if_op.else_block.terminator isa Core.ReturnNode
+    @test then_blk.terminator isa Core.ReturnNode
+    @test else_blk.terminator isa Core.ReturnNode
 end
 
 @testset "termination: early return pattern" begin
@@ -226,13 +238,15 @@ end
     # Entry: [comparison_stmt, IfOp]
     @test length(sci.entry.body) == 2
     @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa IfOp
+    @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
+    then_blk = if_op.regions[:then]
+    else_blk = if_op.regions[:else]
 
     # Both branches terminate with return
-    @test if_op.then_block.terminator isa Core.ReturnNode
-    @test if_op.else_block.terminator isa Core.ReturnNode
+    @test then_blk.terminator isa Core.ReturnNode
+    @test else_blk.terminator isa Core.ReturnNode
 end
 
 end  # acyclic regions
@@ -253,7 +267,7 @@ end  # acyclic regions
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = filter(item -> item |> is_loop, sci.entry.body)
     @test length(loop_ops) == 1
 end
 
@@ -270,13 +284,13 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = filter(item -> item |> is_loop, sci.entry.body)
     @test length(loop_ops) == 1
 
     loop_op = loop_ops[1]
 
     # LoopOp body should contain the conditional structure
-    @test loop_op.body isa Block
+    @test loop_op.regions[:body] isa PartialBlock
 end
 
 @testset "loop with body statements" begin
@@ -292,7 +306,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = filter(item -> item |> is_loop, sci.entry.body)
     @test length(loop_ops) == 1
 end
 
@@ -316,24 +330,24 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have outer LoopOp
-    outer_loops = filter(item -> item isa LoopOp, sci.entry.body)
+    outer_loops = filter(item -> item |> is_loop, sci.entry.body)
     @test length(outer_loops) == 1
 
     # Find inner loop in outer loop's body
     outer_loop = outer_loops[1]
-    function find_nested_loops(block::Block)
-        loops = LoopOp[]
+    function find_nested_loops(block::PartialBlock)
+        loops = PartialControlFlowOp[]
         for item in block.body
-            if item isa LoopOp
+            if item |> is_loop
                 push!(loops, item)
-            elseif item isa IfOp
-                append!(loops, find_nested_loops(item.then_block))
-                append!(loops, find_nested_loops(item.else_block))
+            elseif item |> is_if
+                append!(loops, find_nested_loops(item.regions[:then]))
+                append!(loops, find_nested_loops(item.regions[:else]))
             end
         end
         return loops
     end
-    inner_loops = find_nested_loops(outer_loop.body)
+    inner_loops = find_nested_loops(outer_loop.regions[:body])
     @test length(inner_loops) == 1
 end
 
@@ -365,18 +379,19 @@ end  # CFG analysis
     @test sci isa StructuredCodeInfo
 
     # Should produce ForOp
-    for_ops = filter(item -> item isa ForOp, sci.entry.body)
+    for_ops = filter(item -> item |> is_for, sci.entry.body)
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
+    for_body = for_op.regions[:body]
 
     # Bounds: 0 to n, step 1
-    @test for_op.lower == 0
-    @test for_op.upper isa Core.Argument
-    @test for_op.step == 1
+    @test for_op.operands.lower == 0
+    @test for_op.operands.upper isa Core.Argument
+    @test for_op.operands.step == 1
 
     # Body terminates with ContinueOp
-    @test for_op.body.terminator isa ContinueOp
+    @test for_body.terminator isa ContinueOp
 end
 
 @testset "bounded counter with accumulator" begin
@@ -395,13 +410,14 @@ end
     @test sci isa StructuredCodeInfo
 
     # Should produce ForOp
-    for_ops = filter(item -> item isa ForOp, sci.entry.body)
+    for_ops = filter(item -> item |> is_for, sci.entry.body)
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
+    for_body = for_op.regions[:body]
 
-    # Body has block args: [accumulator] (IV is stored separately in for_op.iv_arg)
-    @test length(for_op.body.args) == 1
+    # Body has block args: [accumulator] (IV is stored separately in for_op.operands.iv_arg)
+    @test length(for_body.args) == 1
 
     # Loop produces one result (the final accumulator value)
     @test length(for_op.result_vars) == 1
@@ -429,19 +445,21 @@ end
     # Entry: [init_stmt, outer_ForOp]
     @test length(sci.entry.body) == 2
     @test sci.entry.body[1] isa Statement
-    @test sci.entry.body[2] isa ForOp
+    @test sci.entry.body[2] |> is_for
 
     outer_loop = sci.entry.body[2]
+    outer_body = outer_loop.regions[:body]
 
     # Outer body: [init_stmt, inner_ForOp]
-    @test length(outer_loop.body.body) == 2
-    @test outer_loop.body.body[1] isa Statement
-    @test outer_loop.body.body[2] isa ForOp
+    @test length(outer_body.body) == 2
+    @test outer_body.body[1] isa Statement
+    @test outer_body.body[2] |> is_for
 
-    inner_loop = outer_loop.body.body[2]
+    inner_loop = outer_body.body[2]
+    inner_body = inner_loop.regions[:body]
 
     # Inner loop has its own structure
-    @test inner_loop.body.terminator isa ContinueOp
+    @test inner_body.terminator isa ContinueOp
 end
 
 end  # ForOp detection
@@ -462,26 +480,28 @@ end  # ForOp detection
 
     # Entry: [WhileOp] - no setup statements
     @test length(sci.entry.body) == 1
-    @test sci.entry.body[1] isa WhileOp
+    @test sci.entry.body[1] |> is_while
 
     while_op = sci.entry.body[1]
+    before_blk = while_op.regions[:before]
+    after_blk = while_op.regions[:after]
 
     # MLIR-style two-region structure: before (condition) and after (body)
     # Condition is in the ConditionOp terminator of the before region
-    @test while_op.before.terminator isa ConditionOp
+    @test before_blk.terminator isa ConditionOp
     # Condition is now LocalSSAValue (referencing position in before region)
-    @test while_op.before.terminator.condition isa LocalSSAValue
+    @test before_blk.terminator.condition isa LocalSSAValue
 
     # No loop-carried values (flag is just re-read each iteration)
     @test isempty(while_op.init_values)
-    @test isempty(while_op.before.args)
+    @test isempty(before_blk.args)
 
     # Before region has the condition computation statements
-    @test !isempty(while_op.before.body)
-    @test all(item isa Statement for item in while_op.before.body)
+    @test !isempty(before_blk.body)
+    @test all(item isa Statement for item in before_blk.body)
 
     # After region terminates with YieldOp
-    @test while_op.after.terminator isa YieldOp
+    @test after_blk.terminator isa YieldOp
 end
 
 @testset "decrementing loop (non-ForOp pattern)" begin
@@ -499,8 +519,8 @@ end
     # Entry should have items, last is a loop op
     @test !isempty(sci.entry.body)
     loop_op = sci.entry.body[end]
-    # Could be ForOp, WhileOp, or LoopOp depending on pattern detection
-    @test loop_op isa Union{ForOp, WhileOp, LoopOp}
+    # Could be :for, :while, or :loop depending on pattern detection
+    @test is_for(loop_op) || is_while(loop_op) || is_loop(loop_op)
 end
 
 end  # WhileOp detection
@@ -523,7 +543,7 @@ end  # WhileOp detection
     @test sci isa StructuredCodeInfo
 
     # With loop_patterning=false, should be LoopOp
-    loop_ops = filter(item -> item isa LoopOp, sci.entry.body)
+    loop_ops = filter(item -> item |> is_loop, sci.entry.body)
     @test length(loop_ops) == 1
 end
 
@@ -555,26 +575,26 @@ end  # loop patterning
     @test sci isa StructuredCodeInfo
 
     # Should have a loop op in entry
-    loop_ops = filter(item -> item isa Union{ForOp, WhileOp, LoopOp}, sci.entry.body)
+    loop_ops = filter(item -> is_for(item) || is_while(item) || is_loop(item), sci.entry.body)
     @test !isempty(loop_ops)
 
     # The loop body should contain an IfOp
     loop_op = loop_ops[1]
-    function has_if_op(block::Block)
+    function has_if_op(block::PartialBlock)
         for item in block.body
-            if item isa IfOp
+            if item |> is_if
                 return true
             end
         end
         return false
     end
     # Handle both LoopOp (body) and WhileOp (after)
-    loop_body = if loop_op isa WhileOp
-        loop_op.after
-    elseif loop_op isa LoopOp
-        loop_op.body
+    loop_body = if loop_op |> is_while
+        loop_op.regions[:after]
+    elseif loop_op |> is_loop
+        loop_op.regions[:body]
     else
-        loop_op.body
+        loop_op.regions[:body]
     end
     @test has_if_op(loop_body)
 end
@@ -597,21 +617,22 @@ end
     @test sci isa StructuredCodeInfo
 
     # Should have IfOp in entry
-    if_ops = filter(item -> item isa IfOp, sci.entry.body)
+    if_ops = filter(item -> item |> is_if, sci.entry.body)
     @test !isempty(if_ops)
 
     if_op = if_ops[1]
+    then_blk = if_op.regions[:then]
 
     # Then branch should contain a loop
-    function has_loop_op(block::Block)
+    function has_loop_op(block::PartialBlock)
         for item in block.body
-            if item isa Union{ForOp, WhileOp, LoopOp}
+            if is_for(item) || is_while(item) || is_loop(item)
                 return true
             end
         end
         return false
     end
-    @test has_loop_op(if_op.then_block)
+    @test has_loop_op(then_blk)
 end
 
 end  # nested control flow
@@ -688,17 +709,17 @@ end
     validate_scf(sci)
 
     # Find the WhileOp in the structure
-    function find_while_op(block)
+    function find_while_op(block::PartialBlock)
         for item in block.body
-            if item isa WhileOp
+            if item |> is_while
                 return item
-            elseif item isa IfOp
-                result = find_while_op(item.then_block)
+            elseif item |> is_if
+                result = find_while_op(item.regions[:then])
                 result !== nothing && return result
-                result = find_while_op(item.else_block)
+                result = find_while_op(item.regions[:else])
                 result !== nothing && return result
-            elseif item isa Union{ForOp, LoopOp}
-                result = find_while_op(item.body)
+            elseif is_for(item) || is_loop(item)
+                result = find_while_op(item.regions[:body])
                 result !== nothing && return result
             end
         end

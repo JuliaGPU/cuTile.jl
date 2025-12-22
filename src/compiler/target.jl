@@ -111,7 +111,7 @@ mutable struct CodegenContext
 
     # LocalSSAValue support (for future local SSA numbering)
     local_values::Dict{Tuple{UInt, Int}, CGVal}  # (block_key, local_idx) -> CGVal
-    current_block::Union{Block, Nothing}         # Current block being emitted
+    current_block::Union{PartialBlock, Nothing}  # Current block being emitted
 
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}

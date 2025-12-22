@@ -72,7 +72,7 @@ function check_global_ssa_refs(sci::StructuredCodeInfo; strict::Bool=false)
     check_global_ssa_refs(sci.entry; strict, is_entry=true)
 end
 
-function check_global_ssa_refs(block::Block; strict::Bool=false, is_entry::Bool=false)
+function check_global_ssa_refs(block::PartialBlock; strict::Bool=false, is_entry::Bool=false)
     count = count_ssavalues_in_nested(block; is_entry)
     if count > 0
         msg = "Block has $count global SSAValue references in nested structures"
@@ -86,14 +86,14 @@ function check_global_ssa_refs(block::Block; strict::Bool=false, is_entry::Bool=
 end
 
 """
-    count_ssavalues_in_nested(block::Block; is_entry::Bool=false) -> Int
+    count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false) -> Int
 
 Count SSAValue references inside nested control flow structures.
 SSAValues in the entry block are allowed (they reference the original CodeInfo),
-but SSAValues inside nested blocks (IfOp, ForOp, etc.) should have been
+but SSAValues inside nested blocks (if/for/etc.) should have been
 converted to LocalSSAValue or BlockArg.
 """
-function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
+function count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false)
     count = 0
 
     for item in block.body
@@ -117,57 +117,22 @@ function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
     return count
 end
 
-function count_ssavalues_in_op(op::IfOp; is_entry::Bool=false)
+function count_ssavalues_in_op(op::PartialControlFlowOp; is_entry::Bool=false)
     count = 0
-    # Only count condition and init_values if op is nested (not at entry level)
+    # Only count operands and init_values if op is nested (not at entry level)
     if !is_entry
-        count += count_ssavalues_in_value(op.condition)
+        # Count SSAValues in operands
+        for v in values(op.operands)
+            count += count_ssavalues_in_value(v)
+        end
         for v in op.init_values
             count += count_ssavalues_in_value(v)
         end
     end
-    count += count_ssavalues_in_nested(op.then_block)
-    count += count_ssavalues_in_nested(op.else_block)
-    return count
-end
-
-function count_ssavalues_in_op(op::ForOp; is_entry::Bool=false)
-    count = 0
-    # Only count bounds and init_values if op is nested (not at entry level)
-    if !is_entry
-        count += count_ssavalues_in_value(op.lower)
-        count += count_ssavalues_in_value(op.upper)
-        count += count_ssavalues_in_value(op.step)
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
+    # Recurse into all regions
+    for (_, region) in op.regions
+        count += count_ssavalues_in_nested(region)
     end
-    count += count_ssavalues_in_nested(op.body)
-    return count
-end
-
-function count_ssavalues_in_op(op::LoopOp; is_entry::Bool=false)
-    count = 0
-    # Only count init_values if op is nested (not at entry level)
-    if !is_entry
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    count += count_ssavalues_in_nested(op.body)
-    return count
-end
-
-function count_ssavalues_in_op(op::WhileOp; is_entry::Bool=false)
-    count = 0
-    # Only count init_values if op is nested (not at entry level)
-    if !is_entry
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    count += count_ssavalues_in_nested(op.before)
-    count += count_ssavalues_in_nested(op.after)
     return count
 end
 
@@ -248,7 +213,7 @@ count_ssavalues_in_value(_) = 0
 
 """
     validate_ssa_ordering(sci::StructuredCodeInfo) -> Bool
-    validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}()) -> Bool
+    validate_ssa_ordering(block::PartialBlock; defined::Set{Int}=Set{Int}()) -> Bool
 
 Validate that every SSAValue reference in block items has been defined earlier
 in the block or is a BlockArg. This catches the phi-referencing-phi bug where
@@ -261,7 +226,7 @@ function validate_ssa_ordering(sci::StructuredCodeInfo)
     validate_ssa_ordering(sci.entry; defined=Set{Int}())
 end
 
-function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
+function validate_ssa_ordering(block::PartialBlock; defined::Set{Int}=Set{Int}())
     # BlockArgs are available from the start
     # (They reference external values, not SSA indices in this block)
 
@@ -287,59 +252,22 @@ function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
     return true
 end
 
-function validate_control_flow_op_ordering(op::IfOp, defined::Set{Int}, args::Vector{BlockArg})
-    check_ssa_refs_defined(op.condition, defined, args, nothing)
-    # Nested blocks start fresh but inherit defined from parent
-    validate_ssa_ordering(op.then_block; defined=copy(defined))
-    validate_ssa_ordering(op.else_block; defined=copy(defined))
-end
-
-function validate_control_flow_op_ordering(op::ForOp, defined::Set{Int}, args::Vector{BlockArg})
-    check_ssa_refs_defined(op.lower, defined, args, nothing)
-    check_ssa_refs_defined(op.upper, defined, args, nothing)
-    check_ssa_refs_defined(op.step, defined, args, nothing)
+function validate_control_flow_op_ordering(op::PartialControlFlowOp, defined::Set{Int}, args::Vector{BlockArg})
+    # Check operands
+    for v in values(op.operands)
+        check_ssa_refs_defined(v, defined, args, nothing)
+    end
+    # Check init_values
     for v in op.init_values
         check_ssa_refs_defined(v, defined, args, nothing)
     end
-    # Body starts fresh with its own args
-    validate_ssa_ordering(op.body; defined=Set{Int}())
-end
-
-function validate_control_flow_op_ordering(op::LoopOp, defined::Set{Int}, args::Vector{BlockArg})
-    for v in op.init_values
-        check_ssa_refs_defined(v, defined, args, nothing)
-    end
-    validate_ssa_ordering(op.body; defined=Set{Int}())
-end
-
-function validate_control_flow_op_ordering(op::WhileOp, defined::Set{Int}, args::Vector{BlockArg})
-    for v in op.init_values
-        check_ssa_refs_defined(v, defined, args, nothing)
-    end
-    validate_ssa_ordering(op.before; defined=Set{Int}())
-    validate_ssa_ordering(op.after; defined=Set{Int}())
-end
-
-function add_result_vars_to_defined!(op::IfOp, defined::Set{Int})
-    for rv in op.result_vars
-        push!(defined, rv.id)
+    # Recurse into all regions - each region starts fresh
+    for (_, region) in op.regions
+        validate_ssa_ordering(region; defined=Set{Int}())
     end
 end
 
-function add_result_vars_to_defined!(op::ForOp, defined::Set{Int})
-    push!(defined, op.iv_ssa.id)
-    for rv in op.result_vars
-        push!(defined, rv.id)
-    end
-end
-
-function add_result_vars_to_defined!(op::LoopOp, defined::Set{Int})
-    for rv in op.result_vars
-        push!(defined, rv.id)
-    end
-end
-
-function add_result_vars_to_defined!(op::WhileOp, defined::Set{Int})
+function add_result_vars_to_defined!(op::PartialControlFlowOp, defined::Set{Int})
     for rv in op.result_vars
         push!(defined, rv.id)
     end

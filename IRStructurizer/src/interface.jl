@@ -90,7 +90,7 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
 
     if !has_control_flow
         # Straight-line code - no substitutions needed
-        new_entry = Block(1)
+        new_entry = PartialBlock(1)
         for i in 1:n
             stmt = stmts[i]
             if stmt isa ReturnNode
