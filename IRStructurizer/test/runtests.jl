@@ -1,19 +1,16 @@
 using Test
 
 using IRStructurizer
-using IRStructurizer: Block, ControlFlowOp, YieldOp, ContinueOp, BreakOp, ConditionOp, Statement,
+using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
+                      YieldOp, ContinueOp, BreakOp, ConditionOp, Statement,
                       validate_scf, check_global_ssa_refs, PartialBlock, PartialControlFlowOp
 
 # Helper to check if block contains a control flow op with given head
-# Works with both PartialControlFlowOp (during construction) and ControlFlowOp (final)
-is_if(item) = (item isa ControlFlowOp && item.head == :if) ||
-              (item isa PartialControlFlowOp && item.head == :if)
-is_for(item) = (item isa ControlFlowOp && item.head == :for) ||
-               (item isa PartialControlFlowOp && item.head == :for)
-is_while(item) = (item isa ControlFlowOp && item.head == :while) ||
-                 (item isa PartialControlFlowOp && item.head == :while)
-is_loop(item) = (item isa ControlFlowOp && item.head == :loop) ||
-                (item isa PartialControlFlowOp && item.head == :loop)
+# Works with both PartialControlFlowOp (during construction) and concrete types (final)
+is_if(item) = item isa IfOp || (item isa PartialControlFlowOp && item.head == :if)
+is_for(item) = item isa ForOp || (item isa PartialControlFlowOp && item.head == :for)
+is_while(item) = item isa WhileOp || (item isa PartialControlFlowOp && item.head == :while)
+is_loop(item) = item isa LoopOp || (item isa PartialControlFlowOp && item.head == :loop)
 is_control_flow(item) = item isa ControlFlowOp || item isa PartialControlFlowOp
 
 # Helper to check if item is an expression (not a control flow op)
@@ -163,8 +160,8 @@ end
     @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
-    then_blk = if_op.regions[:then]::Block
-    else_blk = if_op.regions[:else]::Block
+    then_blk = if_op.then_region::Block
+    else_blk = if_op.else_region::Block
 
     # Then branch: one expr (addition), then return
     @test length(then_blk.body) == 1
@@ -189,12 +186,12 @@ end
     @test sci.entry.body[1] |> is_if
 
     if_op = sci.entry.body[1]
-    then_blk = if_op.regions[:then]::Block
-    else_blk = if_op.regions[:else]::Block
+    then_blk = if_op.then_region::Block
+    else_blk = if_op.else_region::Block
 
     # Condition is the first argument (the Bool)
-    @test if_op.operands.condition isa Core.Argument
-    @test if_op.operands.condition.n == 2  # arg 1 is #self#
+    @test if_op.condition isa Core.Argument
+    @test if_op.condition.n == 2  # arg 1 is #self#
 
     # Then branch: empty body, returns constant 1
     @test isempty(then_blk.body)
@@ -220,12 +217,12 @@ end
     @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
-    then_blk = if_op.regions[:then]
-    else_blk = if_op.regions[:else]
+    then_blk = if_op.then_region
+    else_blk = if_op.else_region
 
     # Condition references the comparison result (LocalSSAValue after Phase 4 conversion)
-    @test if_op.operands.condition isa LocalSSAValue
-    @test if_op.operands.condition.id == 1  # Position 1 in block body
+    @test if_op.condition isa LocalSSAValue
+    @test if_op.condition.id == 1  # Position 1 in block body
 
     # Both branches terminate with return
     @test then_blk.terminator isa Core.ReturnNode
@@ -250,8 +247,8 @@ end
     @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
-    then_blk = if_op.regions[:then]
-    else_blk = if_op.regions[:else]
+    then_blk = if_op.then_region
+    else_blk = if_op.else_region
 
     # Both branches terminate with return
     @test then_blk.terminator isa Core.ReturnNode
@@ -299,7 +296,7 @@ end
     loop_op = loop_ops[1]
 
     # LoopOp body should contain the conditional structure
-    @test loop_op.regions[:body] isa Block
+    @test loop_op.body isa Block
 end
 
 @testset "loop with body statements" begin
@@ -349,14 +346,14 @@ end
         for item in block.body
             if item |> is_loop
                 push!(loops, item)
-            elseif item |> is_if
-                append!(loops, find_nested_loops(item.regions[:then]))
-                append!(loops, find_nested_loops(item.regions[:else]))
+            elseif item isa IfOp
+                append!(loops, find_nested_loops(item.then_region))
+                append!(loops, find_nested_loops(item.else_region))
             end
         end
         return loops
     end
-    inner_loops = find_nested_loops(outer_loop.regions[:body])
+    inner_loops = find_nested_loops(outer_loop.body)
     @test length(inner_loops) == 1
 end
 
@@ -392,12 +389,12 @@ end  # CFG analysis
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
-    for_body = for_op.regions[:body]
+    for_body = for_op.body
 
     # Bounds: 0 to n, step 1
-    @test for_op.operands.lower == 0
-    @test for_op.operands.upper isa Core.Argument
-    @test for_op.operands.step == 1
+    @test for_op.lower == 0
+    @test for_op.upper isa Core.Argument
+    @test for_op.step == 1
 
     # Body terminates with ContinueOp
     @test for_body.terminator isa ContinueOp
@@ -423,9 +420,9 @@ end
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
-    for_body = for_op.regions[:body]
+    for_body = for_op.body
 
-    # Body has block args: [accumulator] (IV is stored separately in for_op.operands.iv_arg)
+    # Body has block args: [accumulator] (IV is stored separately in for_op.iv_arg)
     @test length(for_body.args) == 1
 
     # Loop produces one result (the final accumulator value)
@@ -458,7 +455,7 @@ end
     @test sci.entry.body[2] |> is_for
 
     outer_loop = sci.entry.body[2]
-    outer_body = outer_loop.regions[:body]
+    outer_body = outer_loop.body
 
     # Outer body: [init_expr, inner_ForOp]
     @test length(outer_body.body) == 2
@@ -466,7 +463,7 @@ end
     @test outer_body.body[2] |> is_for
 
     inner_loop = outer_body.body[2]
-    inner_body = inner_loop.regions[:body]
+    inner_body = inner_loop.body
 
     # Inner loop has its own structure
     @test inner_body.terminator isa ContinueOp
@@ -493,8 +490,8 @@ end  # ForOp detection
     @test sci.entry.body[1] |> is_while
 
     while_op = sci.entry.body[1]
-    before_blk = while_op.regions[:before]
-    after_blk = while_op.regions[:after]
+    before_blk = while_op.before
+    after_blk = while_op.after
 
     # MLIR-style two-region structure: before (condition) and after (body)
     # Condition is in the ConditionOp terminator of the before region
@@ -599,12 +596,12 @@ end  # loop patterning
         return false
     end
     # Handle both LoopOp (body) and WhileOp (after)
-    loop_body = if loop_op |> is_while
-        loop_op.regions[:after]
-    elseif loop_op |> is_loop
-        loop_op.regions[:body]
+    loop_body = if loop_op isa WhileOp
+        loop_op.after
+    elseif loop_op isa LoopOp
+        loop_op.body
     else
-        loop_op.regions[:body]
+        loop_op.body  # ForOp
     end
     @test has_if_op(loop_body)
 end
@@ -631,7 +628,7 @@ end
     @test !isempty(if_ops)
 
     if_op = if_ops[1]
-    then_blk = if_op.regions[:then]
+    then_blk = if_op.then_region
 
     # Then branch should contain a loop
     function has_loop_op(block::Block)
@@ -720,15 +717,15 @@ end
     # Find the WhileOp in the structure
     function find_while_op(block::Block)
         for item in block.body
-            if item |> is_while
+            if item isa WhileOp
                 return item
-            elseif item |> is_if
-                result = find_while_op(item.regions[:then])
+            elseif item isa IfOp
+                result = find_while_op(item.then_region)
                 result !== nothing && return result
-                result = find_while_op(item.regions[:else])
+                result = find_while_op(item.else_region)
                 result !== nothing && return result
-            elseif is_for(item) || is_loop(item)
-                result = find_while_op(item.regions[:body])
+            elseif item isa ForOp || item isa LoopOp
+                result = find_while_op(item.body)
                 result !== nothing && return result
             end
         end

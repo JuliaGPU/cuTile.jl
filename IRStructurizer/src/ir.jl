@@ -589,15 +589,19 @@ Calls f with (index, expr, type) for each expression in the body.
 function each_stmt(f, block::Block)
     for (i, (expr, typ)) in enumerate(zip(block.body, block.types))
         if expr isa ControlFlowOp
-            for (_, region) in expr.regions
-                each_stmt(f, region)
-            end
+            each_stmt_in_op(f, expr)
         else
             # For final Block, we call with a pseudo-Statement-like object
             f((idx=i, expr=expr, type=typ))
         end
     end
 end
+
+# Helper to iterate over regions in concrete ControlFlowOp types
+each_stmt_in_op(f, op::IfOp) = (each_stmt(f, op.then_region); each_stmt(f, op.else_region))
+each_stmt_in_op(f, op::ForOp) = each_stmt(f, op.body)
+each_stmt_in_op(f, op::WhileOp) = (each_stmt(f, op.before); each_stmt(f, op.after))
+each_stmt_in_op(f, op::LoopOp) = each_stmt(f, op.body)
 
 """
     each_block(f, block::Block)
@@ -608,12 +612,16 @@ function each_block(f, block::Block)
     f(block)
     for expr in block.body
         if expr isa ControlFlowOp
-            for (_, region) in expr.regions
-                each_block(f, region)
-            end
+            each_block_in_op(f, expr)
         end
     end
 end
+
+# Helper to iterate over blocks in concrete ControlFlowOp types
+each_block_in_op(f, op::IfOp) = (each_block(f, op.then_region); each_block(f, op.else_region))
+each_block_in_op(f, op::ForOp) = each_block(f, op.body)
+each_block_in_op(f, op::WhileOp) = (each_block(f, op.before); each_block(f, op.after))
+each_block_in_op(f, op::LoopOp) = each_block(f, op.body)
 
 #=============================================================================
  Block Queries
@@ -1161,23 +1169,38 @@ function _scan_uses!(used::BitSet, block::Block)
     end
 end
 
-function _scan_control_flow_uses!(used::BitSet, op::ControlFlowOp)
-    # Scan operands
-    if op.head == :if
-        _scan_expr_uses!(used, op.operands.condition)
-    elseif op.head == :for
-        _scan_expr_uses!(used, op.operands.lower)
-        _scan_expr_uses!(used, op.operands.upper)
-        _scan_expr_uses!(used, op.operands.step)
-    end
-    # Scan init_values
+function _scan_control_flow_uses!(used::BitSet, op::IfOp)
+    _scan_expr_uses!(used, op.condition)
     for v in op.init_values
         _scan_expr_uses!(used, v)
     end
-    # Recursively scan regions
-    for (_, region) in op.regions
-        _scan_uses!(used, region)
+    _scan_uses!(used, op.then_region)
+    _scan_uses!(used, op.else_region)
+end
+
+function _scan_control_flow_uses!(used::BitSet, op::ForOp)
+    _scan_expr_uses!(used, op.lower)
+    _scan_expr_uses!(used, op.upper)
+    _scan_expr_uses!(used, op.step)
+    for v in op.init_values
+        _scan_expr_uses!(used, v)
     end
+    _scan_uses!(used, op.body)
+end
+
+function _scan_control_flow_uses!(used::BitSet, op::WhileOp)
+    for v in op.init_values
+        _scan_expr_uses!(used, v)
+    end
+    _scan_uses!(used, op.before)
+    _scan_uses!(used, op.after)
+end
+
+function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
+    for v in op.init_values
+        _scan_expr_uses!(used, v)
+    end
+    _scan_uses!(used, op.body)
 end
 
 """
@@ -1828,22 +1851,13 @@ function print_block_body(p::IRPrinter, block::Block)
     end
 end
 
-# Print ControlFlowOp (final type, dispatches on head)
-function print_control_flow(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
-    if op.head == :if
-        print_if_op_final(p, op; is_last=is_last)
-    elseif op.head == :for
-        print_for_op_final(p, op; is_last=is_last)
-    elseif op.head == :while
-        print_while_op_final(p, op; is_last=is_last)
-    elseif op.head == :loop
-        print_loop_op_final(p, op; is_last=is_last)
-    else
-        error("Unknown op head: $(op.head)")
-    end
-end
+# Print ControlFlowOp (final type, dispatches via multiple dispatch)
+print_control_flow(p::IRPrinter, op::IfOp; is_last::Bool=false) = print_if_op_final(p, op; is_last)
+print_control_flow(p::IRPrinter, op::ForOp; is_last::Bool=false) = print_for_op_final(p, op; is_last)
+print_control_flow(p::IRPrinter, op::WhileOp; is_last::Bool=false) = print_while_op_final(p, op; is_last)
+print_control_flow(p::IRPrinter, op::LoopOp; is_last::Bool=false) = print_loop_op_final(p, op; is_last)
 
-function print_if_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
+function print_if_op_final(p::IRPrinter, op::IfOp; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1852,11 +1866,11 @@ function print_if_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
     print(p.io, " ")
 
     print(p.io, "if ")
-    print_value(p, op.operands.condition)
+    print_value(p, op.condition)
     println(p.io)
 
-    then_blk = op.regions[:then]::Block
-    else_blk = op.regions[:else]::Block
+    then_blk = op.then_region::Block
+    else_blk = op.else_region::Block
 
     then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
     print_block_body(then_p, then_blk)
@@ -1872,7 +1886,7 @@ function print_if_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
     println(p.io, "end")
 end
 
-function print_for_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
+function print_for_op_final(p::IRPrinter, op::ForOp; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1880,15 +1894,15 @@ function print_for_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    body = op.regions[:body]::Block
+    body = op.body::Block
 
     print_colored(p, "for", :yellow)
-    print(p.io, " %arg", op.operands.iv_arg.id, " = ")
-    print_value(p, op.operands.lower)
+    print(p.io, " %arg", op.iv_arg.id, " = ")
+    print_value(p, op.lower)
     print(p.io, ":")
-    print_value(p, op.operands.step)
+    print_value(p, op.step)
     print(p.io, ":")
-    print_value(p, op.operands.upper)
+    print_value(p, op.upper)
 
     if !isempty(body.args)
         print_iter_args(p, body.args, op.init_values)
@@ -1904,7 +1918,7 @@ function print_for_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false
     println(p.io, "end")
 end
 
-function print_loop_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
+function print_loop_op_final(p::IRPrinter, op::LoopOp; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1912,7 +1926,7 @@ function print_loop_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=fals
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    body = op.regions[:body]::Block
+    body = op.body::Block
 
     print_colored(p, "loop", :yellow)
     print_iter_args(p, body.args, op.init_values)
@@ -1926,7 +1940,7 @@ function print_loop_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=fals
     println(p.io, "end")
 end
 
-function print_while_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=false)
+function print_while_op_final(p::IRPrinter, op::WhileOp; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1934,8 +1948,8 @@ function print_while_op_final(p::IRPrinter, op::ControlFlowOp; is_last::Bool=fal
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    before = op.regions[:before]::Block
-    after = op.regions[:after]::Block
+    before = op.before::Block
+    after = op.after::Block
 
     print_colored(p, "while", :yellow)
     print_iter_args(p, before.args, op.init_values)
