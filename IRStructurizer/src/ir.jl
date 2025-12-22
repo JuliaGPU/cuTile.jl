@@ -40,9 +40,9 @@ LocalSSAValue(id::Int) = LocalSSAValue(id, 1)
 
 function Base.show(io::IO, v::LocalSSAValue)
     if v.result_idx == 1
-        print(io, "\$", v.id)
+        print(io, "%", v.id)
     else
-        print(io, "\$", v.id, "#", v.result_idx)
+        print(io, "%", v.id, "#", v.result_idx)
     end
 end
 
@@ -1221,6 +1221,83 @@ function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
     _scan_uses!(used, op.body)
 end
 
+# Compute which LocalSSAValue positions are used (for final Block)
+# NOTE: This only scans the immediate block, not nested regions, because
+# LocalSSAValue positions are block-local (different blocks have their own
+# position indices starting from 1).
+function compute_local_used(block::Block)
+    local_used = BitSet()
+    # Scan direct expressions (not recursing into ControlFlowOps)
+    for expr in block.body
+        if !(expr isa ControlFlowOp)
+            _scan_expr_local_uses!(local_used, expr)
+        end
+    end
+    # Scan terminator
+    if block.terminator !== nothing
+        _scan_terminator_local_uses!(local_used, block.terminator)
+    end
+    return local_used
+end
+
+function _scan_expr_local_uses!(local_used::BitSet, v::LocalSSAValue)
+    push!(local_used, v.id)
+end
+
+function _scan_expr_local_uses!(local_used::BitSet, v::Expr)
+    for arg in v.args
+        _scan_expr_local_uses!(local_used, arg)
+    end
+end
+
+function _scan_expr_local_uses!(local_used::BitSet, v::PhiNode)
+    for val in v.values
+        _scan_expr_local_uses!(local_used, val)
+    end
+end
+
+function _scan_expr_local_uses!(local_used::BitSet, v::PiNode)
+    _scan_expr_local_uses!(local_used, v.val)
+end
+
+function _scan_expr_local_uses!(local_used::BitSet, v)
+    # Other values don't reference LocalSSAValue
+end
+
+function _scan_terminator_local_uses!(local_used::BitSet, term::ReturnNode)
+    if isdefined(term, :val)
+        _scan_expr_local_uses!(local_used, term.val)
+    end
+end
+
+function _scan_terminator_local_uses!(local_used::BitSet, term::YieldOp)
+    for v in term.values
+        _scan_expr_local_uses!(local_used, v)
+    end
+end
+
+function _scan_terminator_local_uses!(local_used::BitSet, term::ContinueOp)
+    for v in term.values
+        _scan_expr_local_uses!(local_used, v)
+    end
+end
+
+function _scan_terminator_local_uses!(local_used::BitSet, term::BreakOp)
+    for v in term.values
+        _scan_expr_local_uses!(local_used, v)
+    end
+end
+
+function _scan_terminator_local_uses!(local_used::BitSet, term::ConditionOp)
+    _scan_expr_local_uses!(local_used, term.condition)
+    for v in term.args
+        _scan_expr_local_uses!(local_used, v)
+    end
+end
+
+function _scan_terminator_local_uses!(local_used::BitSet, ::Nothing)
+end
+
 """
     IRPrinter
 
@@ -1234,24 +1311,32 @@ mutable struct IRPrinter
     line_prefix::String    # Prefix for continuation lines (│, spaces)
     is_last_stmt::Bool     # Whether current stmt is last in block
     used::BitSet           # Which SSA values are used (for type coloring)
+    local_used::BitSet     # Which LocalSSAValue positions are used (for final blocks)
     color::Bool            # Whether to use colors
 end
 
 function IRPrinter(io::IO, code::CodeInfo, entry::PartialBlock)
     used = compute_used_ssas(entry)
     color = get(io, :color, false)::Bool
-    IRPrinter(io, code, 0, "", false, used, color)
+    IRPrinter(io, code, 0, "", false, used, BitSet(), color)
 end
 
 function IRPrinter(io::IO, code::CodeInfo, entry::Block)
     used = compute_used_ssas(entry)
+    local_used = compute_local_used(entry)
     color = get(io, :color, false)::Bool
-    IRPrinter(io, code, 0, "", false, used, color)
+    IRPrinter(io, code, 0, "", false, used, local_used, color)
 end
 
 function indent(p::IRPrinter, n::Int=1)
     new_prefix = p.line_prefix * "    "  # 4 spaces per indent level
-    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.color)
+    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.local_used, p.color)
+end
+
+# Create a child printer for a nested Block with fresh local_used
+function child_printer(p::IRPrinter, nested_block::Block, cont_prefix::String)
+    nested_local_used = compute_local_used(nested_block)
+    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, nested_local_used, p.color)
 end
 
 function print_indent(p::IRPrinter)
@@ -1278,7 +1363,10 @@ function print_value(p::IRPrinter, v::BlockArg)
 end
 
 function print_value(p::IRPrinter, v::LocalSSAValue)
-    print(p.io, "\$", v.id)
+    print(p.io, "%", v.id)
+    if v.result_idx > 1
+        print(p.io, "#", v.result_idx)
+    end
 end
 
 function print_value(p::IRPrinter, v::Argument)
@@ -1315,7 +1403,11 @@ function format_value(p::IRPrinter, v::BlockArg)
     string("%arg", v.id)
 end
 function format_value(p::IRPrinter, v::LocalSSAValue)
-    string("\$", v.id)
+    if v.result_idx == 1
+        string("%", v.id)
+    else
+        string("%", v.id, "#", v.result_idx)
+    end
 end
 function format_value(p::IRPrinter, v::Argument)
     if v.n <= length(p.code.slotnames)
@@ -1827,10 +1919,10 @@ function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String=
     print(p.io, " ")
 
     # For final Block, we use position index instead of SSA index
-    # Type color depends on whether the value is used
-    is_used = idx in p.used
+    # Type color depends on whether the LocalSSAValue position is used
+    is_used = idx in p.local_used
     if is_used
-        print(p.io, "\$", idx, " = ")
+        print(p.io, "%", idx, " = ")
     end
     print_expr(p, expr)
 
@@ -1845,7 +1937,7 @@ function print_block_body(p::IRPrinter, block::Block)
     items = []
     for (i, (expr, typ)) in enumerate(zip(block.body, block.types))
         if expr isa ControlFlowOp
-            push!(items, (:nested, expr, typ))
+            push!(items, (:nested, i, expr, typ))
         else
             push!(items, (:expr, i, expr, typ))
         end
@@ -1860,7 +1952,7 @@ function print_block_body(p::IRPrinter, block::Block)
             prefix = is_last ? "└──" : "│  "
             print_expr_with_type(p, item[2], item[3], item[4]; prefix=prefix)
         elseif item[1] == :nested
-            print_control_flow(p, item[2]; is_last=is_last)
+            print_control_flow(p, item[3], item[2]; is_last=is_last)
         else  # :term
             print_terminator(p, item[2]; prefix="└──")
         end
@@ -1868,12 +1960,12 @@ function print_block_body(p::IRPrinter, block::Block)
 end
 
 # Print ControlFlowOp (final type, dispatches via multiple dispatch)
-print_control_flow(p::IRPrinter, op::IfOp; is_last::Bool=false) = print_if_op_final(p, op; is_last)
-print_control_flow(p::IRPrinter, op::ForOp; is_last::Bool=false) = print_for_op_final(p, op; is_last)
-print_control_flow(p::IRPrinter, op::WhileOp; is_last::Bool=false) = print_while_op_final(p, op; is_last)
-print_control_flow(p::IRPrinter, op::LoopOp; is_last::Bool=false) = print_loop_op_final(p, op; is_last)
+print_control_flow(p::IRPrinter, op::IfOp, pos::Int; is_last::Bool=false) = print_if_op_final(p, op, pos; is_last)
+print_control_flow(p::IRPrinter, op::ForOp, pos::Int; is_last::Bool=false) = print_for_op_final(p, op, pos; is_last)
+print_control_flow(p::IRPrinter, op::WhileOp, pos::Int; is_last::Bool=false) = print_while_op_final(p, op, pos; is_last)
+print_control_flow(p::IRPrinter, op::LoopOp, pos::Int; is_last::Bool=false) = print_loop_op_final(p, op, pos; is_last)
 
-function print_if_op_final(p::IRPrinter, op::IfOp; is_last::Bool=false)
+function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1881,28 +1973,31 @@ function print_if_op_final(p::IRPrinter, op::IfOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
+    # Show assignment if this position is used
+    if pos in p.local_used
+        print(p.io, "%", pos, " = ")
+    end
+
     print(p.io, "if ")
     print_value(p, op.condition)
     println(p.io)
 
-    then_blk = op.then_region
-    else_blk = op.else_region
-
-    then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(then_p, then_blk)
+    then_p = child_printer(p, op.then_region, cont_prefix)
+    print_block_body(then_p, op.then_region)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "else")
 
-    print_block_body(then_p, else_blk)
+    else_p = child_printer(p, op.else_region, cont_prefix)
+    print_block_body(else_p, op.else_region)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "end")
 end
 
-function print_for_op_final(p::IRPrinter, op::ForOp; is_last::Bool=false)
+function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1910,7 +2005,10 @@ function print_for_op_final(p::IRPrinter, op::ForOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    body = op.body
+    # Show assignment if this position is used
+    if pos in p.local_used
+        print(p.io, "%", pos, " = ")
+    end
 
     print_colored(p, "for", :yellow)
     print(p.io, " %arg", op.iv_arg.id, " = ")
@@ -1920,21 +2018,21 @@ function print_for_op_final(p::IRPrinter, op::ForOp; is_last::Bool=false)
     print(p.io, ":")
     print_value(p, op.upper)
 
-    if !isempty(body.args)
-        print_iter_args(p, body.args, op.init_values)
+    if !isempty(op.body.args)
+        print_iter_args(p, op.body.args, op.init_values)
     end
 
     println(p.io)
 
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(body_p, body)
+    body_p = child_printer(p, op.body, cont_prefix)
+    print_block_body(body_p, op.body)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "end")
 end
 
-function print_loop_op_final(p::IRPrinter, op::LoopOp; is_last::Bool=false)
+function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1942,21 +2040,24 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    body = op.body
+    # Show assignment if this position is used
+    if pos in p.local_used
+        print(p.io, "%", pos, " = ")
+    end
 
     print_colored(p, "loop", :yellow)
-    print_iter_args(p, body.args, op.init_values)
+    print_iter_args(p, op.body.args, op.init_values)
     println(p.io)
 
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(body_p, body)
+    body_p = child_printer(p, op.body, cont_prefix)
+    print_block_body(body_p, op.body)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "end")
 end
 
-function print_while_op_final(p::IRPrinter, op::WhileOp; is_last::Bool=false)
+function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int; is_last::Bool=false)
     prefix = is_last ? "└──" : "├──"
     cont_prefix = is_last ? "    " : "│   "
 
@@ -1964,22 +2065,24 @@ function print_while_op_final(p::IRPrinter, op::WhileOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    before = op.before
-    after = op.after
+    # Show assignment if this position is used
+    if pos in p.local_used
+        print(p.io, "%", pos, " = ")
+    end
 
     print_colored(p, "while", :yellow)
-    print_iter_args(p, before.args, op.init_values)
+    print_iter_args(p, op.before.args, op.init_values)
     println(p.io, " {")
 
-    before_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(before_p, before)
+    before_p = child_printer(p, op.before, cont_prefix)
+    print_block_body(before_p, op.before)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "} do {")
 
-    after_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(after_p, after)
+    after_p = child_printer(p, op.after, cont_prefix)
+    print_block_body(after_p, op.after)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
