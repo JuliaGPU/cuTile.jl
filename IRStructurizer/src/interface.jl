@@ -61,19 +61,20 @@ end
     structurize!(sci::StructuredCodeInfo; loop_patterning=true) -> StructuredCodeInfo
 
 Convert unstructured control flow in `sci` to structured control flow operations
-(IfOp, ForOp, WhileOp, LoopOp) in-place.
+(ControlFlowOp with head :if, :for, :while, :loop) in-place.
 
 This transforms GotoNode and GotoIfNot statements into nested structured ops
 that can be traversed hierarchically.
 
-Four-phase approach:
+Five-phase approach:
 1. Build structure (pure SSAValues, no BlockArgs)
 2. Create BlockArgs and substitute SSA→BlockArg
-3. Upgrade loop patterns (ForOp/WhileOp) if enabled
+3. Upgrade loop patterns (:for/:while) if enabled
 4. Convert to LocalSSAValues
+5. Finalize IR (flatten PartialBlock/PartialControlFlowOp → Block/ControlFlowOp)
 
-When `loop_patterning=true` (default), loops are classified as ForOp (bounded counters)
-or WhileOp (condition-based). When `false`, all loops become LoopOp.
+When `loop_patterning=true` (default), loops are classified as :for (bounded counters)
+or :while (condition-based). When `false`, all loops remain as :loop.
 
 Returns `sci` for convenience (allows chaining).
 """
@@ -99,7 +100,10 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
                 push!(new_entry.body, Statement(i, stmt, types[i]))
             end
         end
-        sci.entry = new_entry
+        # Phase 4: Convert to LocalSSAValues
+        convert_to_local_ssa!(new_entry)
+        # Phase 5: Finalize IR
+        sci.entry = finalize_ir(new_entry)
         return sci
     end
 
@@ -110,18 +114,21 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     ctree = ControlTree(cfg)
 
     # Phase 1: Build structure (pure SSAValues, no BlockArgs)
-    sci.entry = control_tree_to_structured_ir(ctree, code, blocks)
+    partial_entry = control_tree_to_structured_ir(ctree, code, blocks)
 
     # Phase 2: Create BlockArgs and substitute SSA→BlockArg
-    apply_block_args!(sci.entry, types)
+    apply_block_args!(partial_entry, types)
 
     # Phase 3: Upgrade loop patterns (optional)
     if loop_patterning
-        apply_loop_patterns!(sci.entry)
+        apply_loop_patterns!(partial_entry)
     end
 
     # Phase 4: Convert to LocalSSAValues
-    convert_to_local_ssa!(sci.entry)
+    convert_to_local_ssa!(partial_entry)
+
+    # Phase 5: Finalize IR (PartialBlock → Block)
+    sci.entry = finalize_ir(partial_entry)
 
     return sci
 end

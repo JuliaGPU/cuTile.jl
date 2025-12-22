@@ -109,9 +109,10 @@ mutable struct CodegenContext
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
-    # LocalSSAValue support (for future local SSA numbering)
+    # LocalSSAValue support (for local SSA numbering)
     local_values::Dict{Tuple{UInt, Int}, CGVal}  # (block_key, local_idx) -> CGVal
-    current_block::Union{PartialBlock, Nothing}  # Current block being emitted
+    current_block::Union{PartialBlock, Block, Nothing}  # Current block being emitted
+    local_values_current::Union{CGVal, Nothing}  # Most recently emitted value (for tracking)
 
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
@@ -138,6 +139,7 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         Dict{Int, CGVal}(),
         Dict{Tuple{UInt, Int}, CGVal}(),
         nothing,
+        nothing,  # local_values_current
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),

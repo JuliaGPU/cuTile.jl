@@ -953,24 +953,24 @@ function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos
         end
         # Single value
         tv = emit_value!(ctx, index_arg)
-        tv.v !== nothing && push!(index_vals, tv.v)
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
     elseif index_arg isa LocalSSAValue
-        # LocalSSAValue - look up the statement in the current block
+        # LocalSSAValue - look up the expression in the current block
         if ctx.current_block !== nothing
             pos = index_arg.id
             if pos >= 1 && pos <= length(ctx.current_block.body)
-                item = ctx.current_block.body[pos]
-                if item isa Statement
-                    tuple_stmt = item.expr
-                    if tuple_stmt isa Expr && tuple_stmt.head === :call
-                        callee = tuple_stmt.args[1]
-                        if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
-                            for elem_arg in tuple_stmt.args[2:end]
-                                tv = emit_value!(ctx, elem_arg)
-                                tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
-                            end
-                            return index_vals
+                # In final Block, body items are expressions directly (not Statement wrappers)
+                expr = ctx.current_block.body[pos]
+                # Handle Statement wrapper for PartialBlock compatibility
+                tuple_expr = expr isa Statement ? expr.expr : expr
+                if tuple_expr isa Expr && tuple_expr.head === :call
+                    callee = tuple_expr.args[1]
+                    if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
+                        for elem_arg in tuple_expr.args[2:end]
+                            tv = emit_value!(ctx, elem_arg)
+                            tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
                         end
+                        return index_vals
                     end
                 end
             end

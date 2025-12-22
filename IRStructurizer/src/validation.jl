@@ -20,22 +20,25 @@ end
     validate_scf(sci::StructuredCodeInfo) -> Bool
 
 Validate that all control flow in the original CodeInfo has been properly
-converted to structured control flow operations (IfOp, LoopOp, ForOp).
+converted to structured control flow operations (ControlFlowOp).
 
 Throws `UnstructuredControlFlowError` if unstructured control flow remains.
 Returns `true` if all control flow is properly structured.
 
-The invariant is simple: no Statement in any `block.body` should contain
-a `GotoNode` or `GotoIfNot` expression - those should have been replaced by
+The invariant is simple: no expression in any `block.body` should be a
+`GotoNode` or `GotoIfNot` - those should have been replaced by
 structured ops that the visitor descends into.
 """
 function validate_scf(sci::StructuredCodeInfo)
     unstructured = Int[]
 
     # Walk all blocks and check that no statement is unstructured control flow
-    each_stmt(sci.entry) do stmt::Statement
-        if stmt.expr isa GotoNode || stmt.expr isa GotoIfNot
-            push!(unstructured, stmt.idx)
+    each_stmt(sci.entry) do stmt
+        # stmt is either a Statement (PartialBlock) or a NamedTuple (Block)
+        expr = stmt isa Statement ? stmt.expr : stmt.expr
+        idx = stmt isa Statement ? stmt.idx : stmt.idx
+        if expr isa GotoNode || expr isa GotoIfNot
+            push!(unstructured, idx)
         end
     end
 
@@ -85,6 +88,19 @@ function check_global_ssa_refs(block::PartialBlock; strict::Bool=false, is_entry
     return count
 end
 
+function check_global_ssa_refs(block::Block; strict::Bool=false, is_entry::Bool=false)
+    count = count_ssavalues_in_nested(block; is_entry)
+    if count > 0
+        msg = "Block has $count global SSAValue references in nested structures"
+        if strict
+            error(msg)
+        else
+            @warn msg
+        end
+    end
+    return count
+end
+
 """
     count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false) -> Int
 
@@ -118,6 +134,49 @@ function count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false)
 end
 
 function count_ssavalues_in_op(op::PartialControlFlowOp; is_entry::Bool=false)
+    count = 0
+    # Only count operands and init_values if op is nested (not at entry level)
+    if !is_entry
+        # Count SSAValues in operands
+        for v in values(op.operands)
+            count += count_ssavalues_in_value(v)
+        end
+        for v in op.init_values
+            count += count_ssavalues_in_value(v)
+        end
+    end
+    # Recurse into all regions
+    for (_, region) in op.regions
+        count += count_ssavalues_in_nested(region)
+    end
+    return count
+end
+
+# Final Block/ControlFlowOp versions
+function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
+    count = 0
+
+    for (expr, _) in zip(block.body, block.types)
+        if expr isa ControlFlowOp
+            # Control flow op - check nested blocks
+            count += count_ssavalues_in_op(expr; is_entry)
+        else
+            if !is_entry
+                # Inside nested block, count SSAValues in the expression
+                count += count_ssavalues_in_value(expr)
+            end
+        end
+    end
+
+    # Check terminator (except in entry block)
+    if !is_entry && block.terminator !== nothing
+        count += count_ssavalues_in_terminator(block.terminator)
+    end
+
+    return count
+end
+
+function count_ssavalues_in_op(op::ControlFlowOp; is_entry::Bool=false)
     count = 0
     # Only count operands and init_values if op is nested (not at entry level)
     if !is_entry
