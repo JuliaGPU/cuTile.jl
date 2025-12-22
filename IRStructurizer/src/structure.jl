@@ -529,6 +529,7 @@ end
     collect_defined_ssas!(defined::Set{Int}, block::Block)
 
 Collect all SSA indices defined by statements in the block (recursively).
+Also includes result_vars from loops (phi nodes define SSAValues).
 """
 function collect_defined_ssas!(defined::Set{Int}, block::Block)
     for item in block.body
@@ -538,10 +539,22 @@ function collect_defined_ssas!(defined::Set{Int}, block::Block)
             collect_defined_ssas!(defined, item.then_block)
             collect_defined_ssas!(defined, item.else_block)
         elseif item isa LoopOp
+            # Phi nodes (result_vars) define SSAValues
+            for rv in item.result_vars
+                push!(defined, rv.id)
+            end
             collect_defined_ssas!(defined, item.body)
         elseif item isa ForOp
+            # ForOp.iv_ssa defines the induction variable
+            push!(defined, item.iv_ssa.id)
+            for rv in item.result_vars
+                push!(defined, rv.id)
+            end
             collect_defined_ssas!(defined, item.body)
         elseif item isa WhileOp
+            for rv in item.result_vars
+                push!(defined, rv.id)
+            end
             collect_defined_ssas!(defined, item.before)
             collect_defined_ssas!(defined, item.after)
         end
@@ -657,17 +670,19 @@ function process_if_block_args!(if_op::IfOp, types, parent_defined::Set{Int}, pa
     collect_defined_ssas!(then_defined, if_op.then_block)
     collect_defined_ssas!(else_defined, if_op.else_block)
 
-    # 1. Collect outer refs from both blocks
+    # 1. Collect outer refs from both blocks, filtering out refs already captured by parents.
+    # Use recursive=true to find all refs, but skip refs that are in parent_subs since those
+    # have already been captured by an enclosing scope.
     outer_refs = SSAValue[]
     seen = Set{Int}()
     for ref in collect_outer_refs(if_op.then_block, then_defined; recursive=true)
-        if ref.id ∉ seen
+        if ref.id ∉ seen && !haskey(parent_subs, ref.id)
             push!(outer_refs, ref)
             push!(seen, ref.id)
         end
     end
     for ref in collect_outer_refs(if_op.else_block, else_defined; recursive=true)
-        if ref.id ∉ seen
+        if ref.id ∉ seen && !haskey(parent_subs, ref.id)
             push!(outer_refs, ref)
             push!(seen, ref.id)
         end

@@ -945,7 +945,7 @@ end
         # Correct:      loop iter_values(%arg9 = %iterArg0, ...)
         spec = ct.ArraySpec{2}(16, true)
         spec1d = ct.ArraySpec{1}(16, true)
-        @test_broken begin
+        @test begin
             tir = code_tile(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                                Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(0)
