@@ -191,9 +191,8 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     then_block = tree_to_block(then_tree, code, blocks, block_id)
     else_block = tree_to_block(else_tree, code, blocks, block_id)
 
-    # Create IfOp and capture outer refs
+    # Create IfOp - no outer capture yet, Phase 2 will handle it
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-    capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
     push!(block.body, if_op)
 end
 
@@ -231,9 +230,8 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     else_block = Block(block_id[])
     block_id[] += 1
 
-    # Create IfOp and capture outer refs
+    # Create IfOp - no outer capture yet, Phase 2 will handle it
     if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-    capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
     push!(block.body, if_op)
 end
 
@@ -270,7 +268,6 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         then_block = tree_to_block(then_tree, code, blocks, block_id)
         else_block = tree_to_block(else_tree, code, blocks, block_id)
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-        capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
         push!(block.body, if_op)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
@@ -278,7 +275,6 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         else_block = Block(block_id[])
         block_id[] += 1
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
-        capture_outer_refs_in_if!(if_op, block, code.ssavaluetypes)
         push!(block.body, if_op)
     end
 end
@@ -412,8 +408,8 @@ end
 """
     build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> LoopOp
 
-Build a LoopOp for Phase 1. No substitutions applied yet.
-Pattern detection and substitution happens in Phase 2.
+Build a LoopOp for Phase 1. Pure structure building - no BlockArgs or substitutions.
+BlockArg creation and SSA→BlockArg substitution happens in Phase 2 (apply_block_args!).
 """
 function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     stmts = code.code
@@ -426,10 +422,9 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
 
     # Find phi nodes in header - these become loop-carried values and results
-    init_values = IRValue[]
-    carried_values = IRValue[]
-    block_args = BlockArg[]
-    result_vars = SSAValue[]
+    init_values = IRValue[]      # Entry values for each phi
+    carried_values = IRValue[]   # Loop-back values for each phi (SSAValues)
+    result_vars = SSAValue[]     # SSA indices of phi nodes
 
     for si in header_block.range
         stmt = stmts[si]
@@ -464,16 +459,13 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
 
             entry_val !== nothing && push!(init_values, entry_val)
             carried_val !== nothing && push!(carried_values, carried_val)
-
-            phi_type = types[si]
-            push!(block_args, BlockArg(length(block_args) + 1, phi_type))
         end
     end
 
-    # Build loop body block
+    # Build loop body block (no BlockArgs yet - Phase 2 will add them)
     body = Block(block_id[])
     block_id[] += 1
-    body.args = block_args
+    # body.args stays empty - Phase 2 will populate it
 
     # Find the condition for loop exit
     condition = nothing
@@ -485,7 +477,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
     end
 
-    # Collect header statements (excluding phi nodes and control flow) - NO SUBSTITUTION
+    # Collect header statements (excluding phi nodes and control flow)
     for si in header_block.range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
@@ -493,25 +485,9 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
     end
 
-    # IMPORTANT: Compute phi→BlockArg substitutions BEFORE creating ContinueOp.
-    # This fixes the phi-referencing-phi bug where carried_values contain SSAValues
-    # that reference other phi nodes (which should be BlockArgs at this point).
-    subs = Substitutions()
-    for (i, result_var) in enumerate(result_vars)
-        subs[result_var.id] = block_args[i]
-    end
-
-    # Apply substitutions to carried values
-    substituted_carried = [substitute_ssa(v, subs) for v in carried_values]
-
-    # Apply substitutions to header statements already in body
-    substitute_block!(body, subs)
-
     # Create the conditional structure inside the loop body
     if condition !== nothing
         cond_value = convert_phi_value(condition)
-        # Also substitute the condition if it references a phi
-        cond_value = substitute_ssa(cond_value, subs)
 
         then_block = Block(block_id[])
         block_id[] += 1
@@ -523,19 +499,13 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(then_block, child, code, blocks, block_id)
             end
         end
-        # Apply substitutions to then_block (body statements might reference phi nodes)
-        substitute_block!(then_block, subs)
-        # Substituted carried values (phi refs → BlockArg refs)
-        then_block.terminator = ContinueOp(substituted_carried)
+        # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
+        then_block.terminator = ContinueOp(copy(carried_values))
 
         else_block = Block(block_id[])
         block_id[] += 1
-        # Block args are the references for break
-        result_values = IRValue[]
-        for arg in block_args
-            push!(result_values, arg)
-        end
-        else_block.terminator = BreakOp(result_values)
+        # BreakOp with result_vars (SSAValues) - Phase 2 will substitute to BlockArgs
+        else_block.terminator = BreakOp(IRValue[rv for rv in result_vars])
 
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
         push!(body.body, if_op)
@@ -547,108 +517,12 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(body, child, code, blocks, block_id)
             end
         end
-        # Apply substitutions to body (child statements might reference phi nodes)
-        # Note: substitute_block! was already called on header statements, but
-        # this call will handle the children that were added after
-        substitute_block!(body, subs)
-        body.terminator = ContinueOp(substituted_carried)
+        # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
+        body.terminator = ContinueOp(copy(carried_values))
     end
 
-    # Capture outer refs: SSAValues in the body that are not phi nodes
-    # These need to become BlockArgs with corresponding init_values
-    loop_op = LoopOp(init_values, body, result_vars)
-    capture_outer_refs_in_loop!(loop_op, types)
-
-    return loop_op
-end
-
-"""
-    capture_outer_refs_in_loop!(loop::LoopOp, types)
-
-Capture outer SSAValue references in a LoopOp body as BlockArgs.
-Any SSAValue in the body that is not a phi node (result_var) and not
-defined inside the loop body needs to be captured as a BlockArg.
-"""
-function capture_outer_refs_in_loop!(loop::LoopOp, types)
-    # Build the "defined" set:
-    # 1. phi SSAValues (result_vars) are already BlockArgs
-    # 2. SSAs defined by statements inside the loop body
-    defined = Set{Int}(rv.id for rv in loop.result_vars)
-    collect_defined_ssas!(defined, loop.body)
-
-    # Collect outer refs recursively from the body
-    outer_refs = collect_outer_refs(loop.body, defined; recursive=true)
-
-    isempty(outer_refs) && return
-
-    # For each outer ref, add a BlockArg and init_value
-    n_existing = length(loop.body.args)
-    outer_subs = Substitutions()
-
-    for (i, ref) in enumerate(outer_refs)
-        ref_type = types[ref.id]
-        new_arg = BlockArg(n_existing + i, ref_type)
-        push!(loop.body.args, new_arg)
-        push!(loop.init_values, ref)
-        outer_subs[ref.id] = new_arg
-    end
-
-    # Apply substitution for outer refs to the body
-    substitute_block!(loop.body, outer_subs)
-end
-
-"""
-    capture_outer_refs_in_if!(if_op::IfOp, parent_block::Block, types)
-
-Capture outer SSAValue references in an IfOp's then/else blocks as BlockArgs.
-The "defined" set is built from SSAs defined in the parent block before the IfOp.
-"""
-function capture_outer_refs_in_if!(if_op::IfOp, parent_block::Block, types)
-    # Build the "defined" set from parent block's statements (before the IfOp)
-    defined = Set{Int}()
-    for item in parent_block.body
-        if item isa Statement
-            push!(defined, item.idx)
-        end
-        # Stop before we hit this IfOp (it hasn't been added yet, but check for safety)
-    end
-
-    # Also include SSAs defined inside the then/else blocks themselves
-    collect_defined_ssas!(defined, if_op.then_block)
-    collect_defined_ssas!(defined, if_op.else_block)
-
-    # Collect outer refs from both blocks
-    outer_refs = SSAValue[]
-    seen = Set{Int}()
-    for ref in collect_outer_refs(if_op.then_block, defined; recursive=true)
-        if ref.id ∉ seen
-            push!(outer_refs, ref)
-            push!(seen, ref.id)
-        end
-    end
-    for ref in collect_outer_refs(if_op.else_block, defined; recursive=true)
-        if ref.id ∉ seen
-            push!(outer_refs, ref)
-            push!(seen, ref.id)
-        end
-    end
-
-    isempty(outer_refs) && return
-
-    # Add BlockArgs to both then_block and else_block
-    outer_subs = Substitutions()
-    for (i, ref) in enumerate(outer_refs)
-        ref_type = types[ref.id]
-        new_arg = BlockArg(i, ref_type)
-        push!(if_op.then_block.args, new_arg)
-        push!(if_op.else_block.args, new_arg)
-        push!(if_op.init_values, ref)
-        outer_subs[ref.id] = new_arg
-    end
-
-    # Apply substitution to both blocks
-    substitute_block!(if_op.then_block, outer_subs)
-    substitute_block!(if_op.else_block, outer_subs)
+    # Create LoopOp - no outer capture yet, Phase 2 will handle it
+    return LoopOp(init_values, body, result_vars)
 end
 
 """
@@ -672,4 +546,157 @@ function collect_defined_ssas!(defined::Set{Int}, block::Block)
             collect_defined_ssas!(defined, item.after)
         end
     end
+end
+
+#=============================================================================
+ Phase 2: Apply Block Arguments
+=============================================================================#
+
+"""
+    apply_block_args!(block::Block, types, defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
+
+Single pass that creates BlockArgs and substitutes SSAValue references.
+
+Phase 2 of structurization - called after control_tree_to_structured_ir.
+For each LoopOp: creates BlockArgs for phi nodes (result_vars) and outer captures.
+For each IfOp: creates BlockArgs for outer captures.
+Substitutes SSAValue → BlockArg references throughout.
+
+The parent_subs parameter carries substitutions from outer scopes, so nested
+control flow ops can convert SSAValues to the correct BlockArgs.
+"""
+function apply_block_args!(block::Block, types, defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
+    # Track what's defined at this level
+    defined = copy(defined)
+    for item in block.body
+        if item isa Statement
+            push!(defined, item.idx)
+        end
+    end
+
+    # Process each control flow op
+    for item in block.body
+        if item isa LoopOp
+            process_loop_block_args!(item, types, defined, parent_subs)
+        elseif item isa IfOp
+            process_if_block_args!(item, types, defined, parent_subs)
+        end
+    end
+end
+
+"""
+    process_loop_block_args!(loop::LoopOp, types, parent_defined::Set{Int}, parent_subs::Substitutions)
+
+Create BlockArgs for a LoopOp and substitute SSAValue references.
+
+1. Create BlockArgs for phi nodes (from result_vars)
+2. Collect outer refs (SSAValues not defined in loop or as phi)
+3. Create BlockArgs for outer captures
+4. Apply parent substitutions to init_values (so nested loops get parent's BlockArgs)
+5. Substitute all SSAValue → BlockArg in body
+6. Recurse into nested blocks
+"""
+function process_loop_block_args!(loop::LoopOp, types, parent_defined::Set{Int}, parent_subs::Substitutions)
+    subs = Substitutions()
+
+    # 1. Create BlockArgs for phi nodes (from result_vars)
+    for (i, result_var) in enumerate(loop.result_vars)
+        phi_type = types[result_var.id]
+        new_arg = BlockArg(i, phi_type)
+        push!(loop.body.args, new_arg)
+        subs[result_var.id] = new_arg
+    end
+
+    # 2. Collect outer refs (SSAValues not defined in loop body or as phi)
+    loop_defined = Set{Int}(rv.id for rv in loop.result_vars)
+    collect_defined_ssas!(loop_defined, loop.body)
+    outer_refs = collect_outer_refs(loop.body, loop_defined; recursive=true)
+
+    # 3. Create BlockArgs for outer captures
+    n_existing = length(loop.body.args)
+    for (i, ref) in enumerate(outer_refs)
+        ref_type = types[ref.id]
+        new_arg = BlockArg(n_existing + i, ref_type)
+        push!(loop.body.args, new_arg)
+        push!(loop.init_values, ref)
+        subs[ref.id] = new_arg
+    end
+
+    # 4. Apply parent substitutions to init_values
+    # This converts SSAValues to parent's BlockArgs for nested control flow
+    for (j, v) in enumerate(loop.init_values)
+        loop.init_values[j] = substitute_ssa(v, parent_subs)
+    end
+
+    # 5. Substitute all SSAValue → BlockArg in body (shallow - don't recurse into nested ops)
+    substitute_block_shallow!(loop.body, subs)
+
+    # 6. Recurse into nested blocks, passing merged substitutions
+    # Merge parent subs with this loop's subs so nested ops can access both
+    merged_subs = merge(parent_subs, subs)
+    nested_defined = Set{Int}(rv.id for rv in loop.result_vars)
+    collect_defined_ssas!(nested_defined, loop.body)
+    apply_block_args!(loop.body, types, nested_defined, merged_subs)
+end
+
+"""
+    process_if_block_args!(if_op::IfOp, types, parent_defined::Set{Int}, parent_subs::Substitutions)
+
+Create BlockArgs for an IfOp and substitute SSAValue references.
+
+1. Collect outer refs from both blocks
+2. Create matching BlockArgs in both blocks
+3. Apply parent substitutions to init_values
+4. Substitute SSAValue → BlockArg in both blocks
+5. Recurse into nested blocks
+"""
+function process_if_block_args!(if_op::IfOp, types, parent_defined::Set{Int}, parent_subs::Substitutions)
+    # Build combined defined set from parent + what's defined in each branch
+    then_defined = copy(parent_defined)
+    else_defined = copy(parent_defined)
+    collect_defined_ssas!(then_defined, if_op.then_block)
+    collect_defined_ssas!(else_defined, if_op.else_block)
+
+    # 1. Collect outer refs from both blocks
+    outer_refs = SSAValue[]
+    seen = Set{Int}()
+    for ref in collect_outer_refs(if_op.then_block, then_defined; recursive=true)
+        if ref.id ∉ seen
+            push!(outer_refs, ref)
+            push!(seen, ref.id)
+        end
+    end
+    for ref in collect_outer_refs(if_op.else_block, else_defined; recursive=true)
+        if ref.id ∉ seen
+            push!(outer_refs, ref)
+            push!(seen, ref.id)
+        end
+    end
+
+    subs = Substitutions()
+    if !isempty(outer_refs)
+        # 2. Create matching BlockArgs in both blocks
+        for (i, ref) in enumerate(outer_refs)
+            ref_type = types[ref.id]
+            new_arg = BlockArg(i, ref_type)
+            push!(if_op.then_block.args, new_arg)
+            push!(if_op.else_block.args, new_arg)
+            push!(if_op.init_values, ref)
+            subs[ref.id] = new_arg
+        end
+
+        # 3. Apply parent substitutions to init_values
+        for (j, v) in enumerate(if_op.init_values)
+            if_op.init_values[j] = substitute_ssa(v, parent_subs)
+        end
+
+        # 4. Substitute SSAValue → BlockArg in both blocks (shallow - don't recurse into nested ops)
+        substitute_block_shallow!(if_op.then_block, subs)
+        substitute_block_shallow!(if_op.else_block, subs)
+    end
+
+    # 5. Recurse into nested blocks, passing merged substitutions
+    merged_subs = merge(parent_subs, subs)
+    apply_block_args!(if_op.then_block, types, then_defined, merged_subs)
+    apply_block_args!(if_op.else_block, types, else_defined, merged_subs)
 end

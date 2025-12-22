@@ -391,6 +391,50 @@ function substitute_block!(block::Block, subs::Substitutions)
 end
 
 """
+    substitute_block_shallow!(block::Block, subs::Substitutions)
+
+Apply SSA substitutions within a block, recursing into IfOps (same scope) but NOT into LoopOps.
+Used by apply_block_args! to let each LoopOp handle its own substitution separately.
+
+Substitutes:
+- Statement expressions
+- LoopOp init_values (outer scope references)
+- Block terminators
+- IfOp contents (since they're part of the same scope, not a new binding context)
+
+Does NOT recurse into LoopOps - each LoopOp handles its own substitution via apply_block_args!.
+"""
+function substitute_block_shallow!(block::Block, subs::Substitutions)
+    isempty(subs) && return  # No substitutions to apply
+
+    for (i, item) in enumerate(block.body)
+        if item isa Statement
+            new_expr = substitute_ssa(item.expr, subs)
+            if new_expr !== item.expr
+                block.body[i] = Statement(item.idx, new_expr, item.type)
+            end
+        elseif item isa LoopOp
+            # Only substitute init_values (which are in parent scope)
+            # The body is handled by recursion in apply_block_args!
+            for (j, v) in enumerate(item.init_values)
+                item.init_values[j] = substitute_ssa(v, subs)
+            end
+        elseif item isa IfOp
+            # IfOps are part of the same scope - recurse into them
+            # (This includes the ContinueOp/BreakOp inside loop condition IfOps)
+            substitute_block_shallow!(item.then_block, subs)
+            substitute_block_shallow!(item.else_block, subs)
+        # ForOp and WhileOp are created in Phase 3, not present in Phase 2
+        end
+    end
+
+    # Substitute terminator
+    if block.terminator !== nothing
+        block.terminator = substitute_terminator(block.terminator, subs)
+    end
+end
+
+"""
     substitute_control_flow!(op::ControlFlowOp, subs::Substitutions)
 
 Apply SSA substitutions to a control flow operation and its nested blocks.
