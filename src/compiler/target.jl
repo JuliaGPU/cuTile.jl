@@ -110,7 +110,8 @@ mutable struct CodegenContext
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
     # LocalSSAValue support (for local SSA numbering)
-    local_values::Dict{Tuple{UInt, Int}, CGVal}  # (block_key, local_idx) -> CGVal
+    # Key is (block_key, local_idx, result_idx) to support multi-result ops
+    local_values::Dict{Tuple{UInt, Int, Int}, CGVal}  # (block_key, local_idx, result_idx) -> CGVal
     current_block::Union{PartialBlock, Block, Nothing}  # Current block being emitted
     local_values_current::Union{CGVal, Nothing}  # Most recently emitted value (for tracking)
 
@@ -137,7 +138,7 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        Dict{Tuple{UInt, Int}, CGVal}(),
+        Dict{Tuple{UInt, Int, Int}, CGVal}(),
         nothing,
         nothing,  # local_values_current
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
@@ -190,13 +191,13 @@ end
 function Base.getindex(ctx::CodegenContext, local_ssa::LocalSSAValue)
     ctx.current_block === nothing && return nothing
     block_key = objectid(ctx.current_block)
-    get(ctx.local_values, (block_key, local_ssa.id), nothing)
+    get(ctx.local_values, (block_key, local_ssa.id, local_ssa.result_idx), nothing)
 end
 
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, local_ssa::LocalSSAValue)
     ctx.current_block === nothing && error("Cannot set LocalSSAValue without current_block")
     block_key = objectid(ctx.current_block)
-    ctx.local_values[(block_key, local_ssa.id)] = tv
+    ctx.local_values[(block_key, local_ssa.id, local_ssa.result_idx)] = tv
 end
 
 #=============================================================================

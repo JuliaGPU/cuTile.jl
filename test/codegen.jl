@@ -975,11 +975,10 @@ end
         end
     end
 
-    # Bug: Multiple loop results resolve to same value
-    # See BUG.md for full analysis
-    @testset "Multiple loop results" begin
-        # This tests that a while loop with multiple iter_args correctly generates
+    @testset "Multiple loop results (regression test)" begin
+        # Regression test: A while loop with multiple iter_args must generate
         # different result indices (%for#0, %for#1, etc.) for each result.
+        # Previously, all loop results resolved to %for#0, causing incorrect code.
         TILE_M = 32
         TILE_N = 1024
 
@@ -987,10 +986,16 @@ end
         spec2d = ct.ArraySpec{2}(128, true, (0, 4), (32, 32))
         spec1d = ct.ArraySpec{1}(128, true, (0,), (32,))
 
-        @test_broken begin
-            tir = code_tile(Tuple{ct.TileArray{Float32, 2, spec2d}, ct.TileArray{Float32, 2, spec2d},
-                                  ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
-                                  ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
+        @test @filecheck begin
+            check"CHECK-LABEL: entry"
+            # The for loop should have multiple results
+            check"CHECK: for %loopIdx in"
+            # We should see both %for#0 and %for#1 used (not the same one twice)
+            check"CHECK: reduce %for#1"
+            check"CHECK: reduce %for#0"
+            code_tile(Tuple{ct.TileArray{Float32, 2, spec2d}, ct.TileArray{Float32, 2, spec2d},
+                           ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
+                           ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
                 bid_n = ct.bid(0)
                 num_tiles = ct.num_tiles(DW, 0, (_TILE_M[], _TILE_N[]))
 
@@ -1010,15 +1015,6 @@ end
                 ct.store(FINAL_DB, bid_n, sum_db)
                 return
             end
-            tir_str = string(tir)
-
-            # The two reduce operations should use different for loop results.
-            # Working: %reduce = reduce %for#1 ... and %reduce_8 = reduce %for#0 ...
-            # Broken: Both use %for#0
-            # Check that the pattern "%for#0.*%for#0" does not appear (both reductions using same result)
-            reduce_matches = collect(eachmatch(r"reduce %for#(\d+)", tir_str))
-            length(reduce_matches) >= 2 &&
-                reduce_matches[1].captures[1] != reduce_matches[2].captures[1]
         end
     end
 end

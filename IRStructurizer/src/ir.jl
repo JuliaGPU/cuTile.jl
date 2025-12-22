@@ -24,6 +24,8 @@ end
 
 Reference to a value defined by an operation in the same block.
 The id is the 1-indexed position in the containing block's ops array.
+For operations that produce multiple results (e.g., loops with multiple
+iter_args), result_idx specifies which result (1-indexed, default 1).
 
 This type will replace global SSAValue references inside structured blocks
 once the local SSA refactoring is complete. For now, it coexists with
@@ -31,9 +33,18 @@ global SSAValue references during the migration.
 """
 struct LocalSSAValue
     id::Int
+    result_idx::Int  # 1-indexed, which result from multi-result ops
 end
 
-Base.show(io::IO, v::LocalSSAValue) = print(io, "\$", v.id)
+LocalSSAValue(id::Int) = LocalSSAValue(id, 1)
+
+function Base.show(io::IO, v::LocalSSAValue)
+    if v.result_idx == 1
+        print(io, "\$", v.id)
+    else
+        print(io, "\$", v.id, "#", v.result_idx)
+    end
+end
 
 #=============================================================================
  IR Values - references to SSA values or block arguments
@@ -793,20 +804,25 @@ end
  Local SSA Conversion (SSAValue → LocalSSAValue within blocks)
 =============================================================================#
 
+# Type alias for SSA to LocalSSA mapping: SSA id -> (block position, result index)
+const SSAToLocalMap = Dict{Int, Tuple{Int, Int}}
+
 """
-    convert_ssa_in_value(value, idx_to_pos::Dict{Int, Int})
+    convert_ssa_in_value(value, idx_to_pos::SSAToLocalMap)
 
 Convert SSAValue references in a value to LocalSSAValue where applicable.
 Returns the converted value (or original if no conversion needed).
+The mapping tracks (block_position, result_index) for multi-result ops.
 """
-function convert_ssa_in_value(value::SSAValue, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_value(value::SSAValue, idx_to_pos::SSAToLocalMap)
     if haskey(idx_to_pos, value.id)
-        return LocalSSAValue(idx_to_pos[value.id])
+        pos, result_idx = idx_to_pos[value.id]
+        return LocalSSAValue(pos, result_idx)
     end
     return value
 end
 
-function convert_ssa_in_value(value::Expr, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_value(value::Expr, idx_to_pos::SSAToLocalMap)
     new_args = Any[convert_ssa_in_value(a, idx_to_pos) for a in value.args]
     # Only create new Expr if something changed
     if new_args != value.args
@@ -815,7 +831,7 @@ function convert_ssa_in_value(value::Expr, idx_to_pos::Dict{Int, Int})
     return value
 end
 
-function convert_ssa_in_value(value::PiNode, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_value(value::PiNode, idx_to_pos::SSAToLocalMap)
     new_val = convert_ssa_in_value(value.val, idx_to_pos)
     if new_val !== value.val
         return PiNode(new_val, value.typ)
@@ -823,7 +839,7 @@ function convert_ssa_in_value(value::PiNode, idx_to_pos::Dict{Int, Int})
     return value
 end
 
-function convert_ssa_in_value(value::PhiNode, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_value(value::PhiNode, idx_to_pos::SSAToLocalMap)
     new_values = Vector{Any}(undef, length(value.values))
     changed = false
     for i in eachindex(value.values)
@@ -842,45 +858,45 @@ function convert_ssa_in_value(value::PhiNode, idx_to_pos::Dict{Int, Int})
 end
 
 # Base cases: values that don't contain SSAValue references
-convert_ssa_in_value(value::LocalSSAValue, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::BlockArg, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::Argument, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::SlotNumber, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::GlobalRef, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::QuoteNode, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::Nothing, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::Number, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::Symbol, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value::Type, ::Dict{Int, Int}) = value
-convert_ssa_in_value(value, ::Dict{Int, Int}) = value  # Fallback
+convert_ssa_in_value(value::LocalSSAValue, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::BlockArg, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::Argument, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::SlotNumber, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::GlobalRef, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::QuoteNode, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::Nothing, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::Number, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::Symbol, ::SSAToLocalMap) = value
+convert_ssa_in_value(value::Type, ::SSAToLocalMap) = value
+convert_ssa_in_value(value, ::SSAToLocalMap) = value  # Fallback
 
 """
     convert_ssa_in_terminator(term, idx_to_pos)
 
 Convert SSAValue references in a terminator to LocalSSAValue where applicable.
 """
-function convert_ssa_in_terminator(term::ContinueOp, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_terminator(term::ContinueOp, idx_to_pos::SSAToLocalMap)
     new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
     return ContinueOp(new_values)
 end
 
-function convert_ssa_in_terminator(term::BreakOp, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_terminator(term::BreakOp, idx_to_pos::SSAToLocalMap)
     new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
     return BreakOp(new_values)
 end
 
-function convert_ssa_in_terminator(term::YieldOp, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_terminator(term::YieldOp, idx_to_pos::SSAToLocalMap)
     new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
     return YieldOp(new_values)
 end
 
-function convert_ssa_in_terminator(term::ConditionOp, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_terminator(term::ConditionOp, idx_to_pos::SSAToLocalMap)
     new_cond = convert_ssa_in_value(term.condition, idx_to_pos)
     new_args = [convert_ssa_in_value(v, idx_to_pos) for v in term.args]
     return ConditionOp(new_cond, new_args)
 end
 
-function convert_ssa_in_terminator(term::ReturnNode, idx_to_pos::Dict{Int, Int})
+function convert_ssa_in_terminator(term::ReturnNode, idx_to_pos::SSAToLocalMap)
     if isdefined(term, :val)
         new_val = convert_ssa_in_value(term.val, idx_to_pos)
         if new_val !== term.val
@@ -890,7 +906,7 @@ function convert_ssa_in_terminator(term::ReturnNode, idx_to_pos::Dict{Int, Int})
     return term
 end
 
-function convert_ssa_in_terminator(term::Nothing, ::Dict{Int, Int})
+function convert_ssa_in_terminator(term::Nothing, ::SSAToLocalMap)
     return nothing
 end
 
@@ -898,19 +914,21 @@ end
     convert_to_local_ssa!(block::PartialBlock)
 
 Convert SSAValue references within a block to LocalSSAValue references.
+Properly tracks result indices for multi-result operations (e.g., loops with
+multiple iter_args produce multiple results, each needing a distinct index).
 """
 function convert_to_local_ssa!(block::PartialBlock)
-    # Build mapping: Statement.idx → position in block.body
-    # Also include PartialControlFlowOp result_vars (loop-produced values map to loop position)
-    idx_to_pos = Dict{Int, Int}()
+    # Build mapping: Statement.idx → (position in block.body, result_index)
+    # For control flow ops with multiple results, each result_var gets its own result_index
+    idx_to_pos = SSAToLocalMap()
     for (pos, item) in enumerate(block.body)
         if item isa Statement
-            idx_to_pos[item.idx] = pos
+            idx_to_pos[item.idx] = (pos, 1)  # Statements produce single values
         elseif item isa PartialControlFlowOp
-            # Control flow ops produce values through result_vars (e.g., loop-carried values)
-            # All result_vars map to this position since the op produces them
-            for rv in item.result_vars
-                idx_to_pos[rv.id] = pos
+            # Control flow ops produce values through result_vars
+            # Each result_var gets a distinct result_index (1-indexed)
+            for (result_idx, rv) in enumerate(item.result_vars)
+                idx_to_pos[rv.id] = (pos, result_idx)
             end
         end
     end
@@ -933,7 +951,7 @@ function convert_to_local_ssa!(block::PartialBlock)
     end
 end
 
-function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_pos::Dict{Int, Int})
+function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_pos::SSAToLocalMap)
     # Convert init_values using parent's mapping
     for (i, v) in enumerate(op.init_values)
         op.init_values[i] = convert_ssa_in_value(v, parent_idx_to_pos)
@@ -1869,8 +1887,8 @@ function print_if_op_final(p::IRPrinter, op::IfOp; is_last::Bool=false)
     print_value(p, op.condition)
     println(p.io)
 
-    then_blk = op.then_region::Block
-    else_blk = op.else_region::Block
+    then_blk = op.then_region
+    else_blk = op.else_region
 
     then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
     print_block_body(then_p, then_blk)
@@ -1894,7 +1912,7 @@ function print_for_op_final(p::IRPrinter, op::ForOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    body = op.body::Block
+    body = op.body
 
     print_colored(p, "for", :yellow)
     print(p.io, " %arg", op.iv_arg.id, " = ")
@@ -1926,7 +1944,7 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    body = op.body::Block
+    body = op.body
 
     print_colored(p, "loop", :yellow)
     print_iter_args(p, body.args, op.init_values)
@@ -1948,8 +1966,8 @@ function print_while_op_final(p::IRPrinter, op::WhileOp; is_last::Bool=false)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    before = op.before::Block
-    after = op.after::Block
+    before = op.before
+    after = op.after
 
     print_colored(p, "while", :yellow)
     print_iter_args(p, before.args, op.init_values)

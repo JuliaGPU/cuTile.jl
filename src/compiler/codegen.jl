@@ -191,7 +191,7 @@ function emit_block!(ctx::CodegenContext, block::Block)
             # Populate local_values for LocalSSAValue support
             tv = ctx.local_values_current
             if tv !== nothing
-                ctx.local_values[(block_key, local_idx)] = tv
+                ctx.local_values[(block_key, local_idx, 1)] = tv
             end
         end
     end
@@ -222,8 +222,8 @@ emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(result_type
 
 function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_type))
     cb = ctx.cb
-    then_blk = op.then_region::Block
-    else_blk = op.else_region::Block
+    then_blk = op.then_region
+    else_blk = op.else_region
 
     # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
@@ -270,12 +270,9 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
     block_key = objectid(ctx.current_block)
     local_idx = findfirst(==(op), ctx.current_block.body)
     if local_idx !== nothing && n_user_results > 0
-        if n_user_results == 1
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], result_types[1], julia_result_types[1])
-        else
-            # Multiple results - store as tuple-like value (first result for now)
-            # TODO: Handle multi-value results properly
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], result_types[1], julia_result_types[1])
+        # Store each result with its result index
+        for i in 1:n_user_results
+            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], result_types[i], julia_result_types[i])
         end
     end
 end
@@ -283,7 +280,7 @@ end
 function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_result_type))
     cb = ctx.cb
     tt = ctx.tt
-    body_blk = op.body::Block
+    body_blk = op.body
 
     # Get bounds values
     lower_tv = emit_value!(ctx, op.lower)
@@ -355,23 +352,18 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     block_key = objectid(ctx.current_block)
     local_idx = findfirst(==(op), ctx.current_block.body)
     if local_idx !== nothing && n_user_results > 0
-        if n_user_results == 1
-            type_id = tile_type_for_julia!(ctx, body_blk.args[1].type)
-            shape = extract_tile_shape(body_blk.args[1].type)
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], type_id, body_blk.args[1].type, shape)
-        else
-            # Multiple results - store first result for now
-            # TODO: Handle multi-value results properly
-            type_id = tile_type_for_julia!(ctx, body_blk.args[1].type)
-            shape = extract_tile_shape(body_blk.args[1].type)
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], type_id, body_blk.args[1].type, shape)
+        # Store each result with its result index
+        for i in 1:n_user_results
+            type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
+            shape = extract_tile_shape(body_blk.args[i].type)
+            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
         end
     end
 end
 
 function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_result_type))
     cb = ctx.cb
-    body_blk = op.body::Block
+    body_blk = op.body
 
     # Get init values
     init_values = Value[]
@@ -437,24 +429,19 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     block_key = objectid(ctx.current_block)
     local_idx = findfirst(==(op), ctx.current_block.body)
     if local_idx !== nothing && n_user_results > 0
-        if n_user_results == 1
-            type_id = tile_type_for_julia!(ctx, body_blk.args[1].type)
-            shape = extract_tile_shape(body_blk.args[1].type)
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], type_id, body_blk.args[1].type, shape)
-        else
-            # Multiple results - store first result for now
-            # TODO: Handle multi-value results properly
-            type_id = tile_type_for_julia!(ctx, body_blk.args[1].type)
-            shape = extract_tile_shape(body_blk.args[1].type)
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], type_id, body_blk.args[1].type, shape)
+        # Store each result with its result index
+        for i in 1:n_user_results
+            type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
+            shape = extract_tile_shape(body_blk.args[i].type)
+            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
         end
     end
 end
 
 function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_result_type))
     cb = ctx.cb
-    before_blk = op.before::Block
-    after_blk = op.after::Block
+    before_blk = op.before
+    after_blk = op.after
 
     # Get init values
     init_values = Value[]
@@ -509,7 +496,7 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
                 # Also populate local_values for LocalSSAValue support
                 tv = ctx.local_values_current
                 if tv !== nothing
-                    ctx.local_values[(before_block_key, local_idx)] = tv
+                    ctx.local_values[(before_block_key, local_idx, 1)] = tv
                 end
             end
         end
@@ -550,7 +537,7 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
                     # Also populate local_values for LocalSSAValue support
                     tv = ctx.local_values_current
                     if tv !== nothing
-                        ctx.local_values[(after_block_key, local_idx)] = tv
+                        ctx.local_values[(after_block_key, local_idx, 1)] = tv
                     end
                 end
             end
@@ -610,16 +597,11 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     block_key = objectid(ctx.current_block)
     local_idx = findfirst(==(op), ctx.current_block.body)
     if local_idx !== nothing && n_user_results > 0
-        if n_user_results == 1
-            type_id = tile_type_for_julia!(ctx, before_blk.args[1].type)
-            shape = extract_tile_shape(before_blk.args[1].type)
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], type_id, before_blk.args[1].type, shape)
-        else
-            # Multiple results - store first result for now
-            # TODO: Handle multi-value results properly
-            type_id = tile_type_for_julia!(ctx, before_blk.args[1].type)
-            shape = extract_tile_shape(before_blk.args[1].type)
-            ctx.local_values[(block_key, local_idx)] = CGVal(results[1], type_id, before_blk.args[1].type, shape)
+        # Store each result with its result index
+        for i in 1:n_user_results
+            type_id = tile_type_for_julia!(ctx, before_blk.args[i].type)
+            shape = extract_tile_shape(before_blk.args[i].type)
+            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], type_id, before_blk.args[i].type, shape)
         end
     end
 end

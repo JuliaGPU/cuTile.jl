@@ -160,8 +160,8 @@ end
     @test sci.entry.body[2] |> is_if
 
     if_op = sci.entry.body[2]
-    then_blk = if_op.then_region::Block
-    else_blk = if_op.else_region::Block
+    then_blk = if_op.then_region
+    else_blk = if_op.else_region
 
     # Then branch: one expr (addition), then return
     @test length(then_blk.body) == 1
@@ -186,8 +186,8 @@ end
     @test sci.entry.body[1] |> is_if
 
     if_op = sci.entry.body[1]
-    then_blk = if_op.then_region::Block
-    else_blk = if_op.else_region::Block
+    then_blk = if_op.then_region
+    else_blk = if_op.else_region
 
     # Condition is the first argument (the Bool)
     @test if_op.condition isa Core.Argument
