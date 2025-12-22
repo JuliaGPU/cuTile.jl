@@ -109,9 +109,6 @@ mutable struct CodegenContext
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
-    # Current block being emitted (for expression lookups, e.g., tuple decomposition)
-    current_block::Union{Block, Nothing}
-
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
     arg_types::Dict{Int, Type}
@@ -138,7 +135,6 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        nothing,  # current_block
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),

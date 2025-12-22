@@ -244,11 +244,13 @@ Returns a `Tile{T, Shape}` where T is the pointer element type and Shape
 is the compile-time constant shape tuple.
 """
 # Internal function with shape as type parameter for proper type inference
-@noinline function _load(ptr::Ptr{T}, index, ::Val{shape}) where {T, shape}
+# Note: For Ptr, we also use variadic indices for consistency
+@noinline function _load(ptr::Ptr{T}, ::Val{shape}, indices...) where {T, shape}
     Tile{T, shape}()
 end
-# Public API - inline wrapper that captures shape as type parameter
-@inline load(ptr::Ptr{T}, index, shape::NTuple{N, Int}) where {T, N} = _load(ptr, index, Val(shape))
+# Public API - inline wrapper that captures shape and splats indices
+@inline load(ptr::Ptr{T}, index, shape::NTuple{N, Int}) where {T, N} = _load(ptr, Val(shape), index...)
+@inline load(ptr::Ptr{T}, index::Integer, shape::NTuple{N, Int}) where {T, N} = _load(ptr, Val(shape), index)
 
 """
     store(ptr, index, tile::Tile) -> Nothing
@@ -256,12 +258,14 @@ end
 Store a tile to a pointer at the given index.
 In kernel code, this is compiled to StoreViewTkoOp.
 """
-@noinline function store(ptr::Ptr{T}, index, tile::Tile{T}) where T
-    # donotdelete prevents the optimizer from eliminating this call
-    # even though it has no observable effects in Julia
-    Base.donotdelete(ptr, index, tile)
+# Internal function with variadic indices for SROA
+@noinline function _store(ptr::Ptr{T}, tile::Tile{T}, indices...) where T
+    Base.donotdelete(ptr, tile, indices...)
     nothing
 end
+# Public API - inline wrapper that splats indices
+@inline store(ptr::Ptr{T}, index, tile::Tile{T}) where T = _store(ptr, tile, index...)
+@inline store(ptr::Ptr{T}, index::Integer, tile::Tile{T}) where T = _store(ptr, tile, index)
 
 # TileArray overloads - these are intercepted by the compiler
 # The compiler extracts ptr/sizes/strides from the destructured TileArray
@@ -292,40 +296,46 @@ tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
 ```
 """
 # Internal function with shape as type parameter for proper type inference
-# padding_mode is passed as a positional arg so codegen can extract it
-@noinline function _load(arr::TileArray{T, N}, index, ::Val{shape}, padding_mode::Int) where {T, N, shape}
-    Base.donotdelete(arr, index, padding_mode)
+# Indices are variadic at the end so Julia can SROA the tuple
+@noinline function _load(arr::TileArray{T, N}, ::Val{shape}, padding_mode::Int, indices...) where {T, N, shape}
+    Base.donotdelete(arr, indices..., padding_mode)
     Tile{T, shape}()
 end
-# Public API - inline wrapper that captures shape as type parameter
+# Public API - inline wrapper that captures shape and splats indices
 @inline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
-    _load(arr, index, Val(shape), padding_mode)
+    _load(arr, Val(shape), padding_mode, index...)
+end
+
+# Single index (scalar) - no splatting needed
+@inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{M, Int};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
+    _load(arr, Val(shape), padding_mode, index)
 end
 
 # Load with Constant shape tuple (1D) - extracts value from Constant type parameter
 @inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V}};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, V}
-    _load(arr, index, Val((V,)), padding_mode)
+    _load(arr, Val((V,)), padding_mode, index...)
 end
 
 # Load with Constant shape tuple (2D)
 @inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V1}, Constant{Int, V2}};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, V1, V2}
-    _load(arr, index, Val((V1, V2)), padding_mode)
+    _load(arr, Val((V1, V2)), padding_mode, index...)
 end
 
 # Load with Constant shape tuple (3D)
 @inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V1}, Constant{Int, V2}, Constant{Int, V3}};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, V1, V2, V3}
-    _load(arr, index, Val((V1, V2, V3)), padding_mode)
+    _load(arr, Val((V1, V2, V3)), padding_mode, index...)
 end
 
 # Keyword argument version for ct.load(arr; index=..., shape=..., padding_mode=...)
 @inline function load(arr::TileArray{T, N}; index, shape,
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     shape_val = _extract_shape(shape)
-    _load(arr, index, Val(shape_val), padding_mode)
+    _load(arr, Val(shape_val), padding_mode, index...)
 end
 
 # Helper to extract compile-time shape from various tuple types
@@ -339,14 +349,25 @@ end
 
 Store a tile to a TileArray at the given index.
 """
-@noinline function store(arr::TileArray{T, N}, index, tile::Tile{T}) where {T, N}
-    Base.donotdelete(arr, index, tile)
+# Internal function with variadic indices at the end for SROA
+@noinline function _store(arr::TileArray{T, N}, tile::Tile{T}, indices...) where {T, N}
+    Base.donotdelete(arr, tile, indices...)
     nothing
+end
+
+# Public API - inline wrapper that splats indices
+@inline function store(arr::TileArray{T, N}, index, tile::Tile{T}) where {T, N}
+    _store(arr, tile, index...)
+end
+
+# Single index (scalar) - no splatting needed
+@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T}) where {T, N}
+    _store(arr, tile, index)
 end
 
 # Keyword argument version for ct.store(arr; index=..., tile=...)
 @inline function store(arr::TileArray{T, N}; index, tile::Tile{T}) where {T, N}
-    store(arr, index, tile)
+    _store(arr, tile, index...)
 end
 
 #=============================================================================

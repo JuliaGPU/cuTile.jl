@@ -194,10 +194,6 @@ SSA indices are assigned sequentially using ctx.next_ssa_idx counter.
 For control flow ops, indices are assigned AFTER nested regions (DFS order).
 """
 function emit_block!(ctx::CodegenContext, block::Block)
-    # Track current block for expression lookups (e.g., tuple decomposition)
-    prev_block = ctx.current_block
-    ctx.current_block = block
-
     # Emit body items (interleaved expressions and control flow ops)
     for (expr, result_type) in zip(block.body, block.types)
         if expr isa ControlFlowOp
@@ -217,9 +213,6 @@ function emit_block!(ctx::CodegenContext, block::Block)
     if block.terminator !== nothing
         emit_terminator!(ctx, block.terminator)
     end
-
-    # Restore previous block
-    ctx.current_block = prev_block
 end
 
 """
@@ -579,10 +572,6 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
                 end
             end
 
-            # Set current_block to after_blk for expression lookups (e.g., tuple decomposition)
-            prev_block = ctx.current_block
-            ctx.current_block = after_blk
-
             # Emit "after" region body ONLY (not terminator) - continues from where "before" left off
             # The terminator (YieldOp) is handled below as ContinueOp
             for (expr, result_type) in zip(after_blk.body, after_blk.types)
@@ -595,9 +584,6 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
                     emit_statement!(ctx, expr, ssa_idx, result_type)
                 end
             end
-
-            # Restore previous block (before_blk) for terminator emission
-            ctx.current_block = prev_block
 
             # Emit ContinueOp with yield values from after region
             # (In structured IR, after ends with YieldOp; in Tile IR, we need ContinueOp)

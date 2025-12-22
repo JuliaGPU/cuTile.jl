@@ -43,7 +43,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(_load), args, @nospeciali
     emit_load!(ctx, args, result_type)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(store), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_store), args, @nospecialize(result_type))
     emit_store!(ctx, args, result_type)
     nothing
 end
@@ -538,10 +538,11 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
         elem_type = extract_pointer_elem_type(tv.jltype)
     end
 
-    # Parse shape from Val{shape} argument
+    # New argument order: arr, Val(shape), padding_mode, indices...
+    # Parse shape from Val{shape} argument (args[2])
     tile_shape = Int[16]  # Default
-    if length(args) >= 3
-        shape = get_constant(ctx, args[3])
+    if length(args) >= 2
+        shape = get_constant(ctx, args[2])
         if shape isa Tuple
             tile_shape = collect(Int, shape)
         end
@@ -549,18 +550,22 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
 
     ndim = length(tile_shape)
 
-    # Parse padding_mode from args[4] (default: PaddingMode.Undetermined = 0)
+    # Parse padding_mode from args[3] (default: PaddingMode.Undetermined = 0)
     padding_mode_int = 0  # Default: Undetermined
-    if length(args) >= 4
-        pm = get_constant(ctx, args[4])
+    if length(args) >= 3
+        pm = get_constant(ctx, args[3])
         if pm isa Integer
             padding_mode_int = Int(pm)
         end
     end
     padding_value = padding_mode_to_padding_value(padding_mode_int)
 
-    # Parse index argument
-    index_vals = extract_index_values(ctx, args, 2, ndim)
+    # Extract indices directly from args[4:end] (no tuple decomposition needed!)
+    index_vals = Value[]
+    for i in 4:length(args)
+        tv = emit_value!(ctx, args[i])
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
+    end
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
@@ -632,8 +637,9 @@ function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(re
         elem_type = extract_pointer_elem_type(tv.jltype)
     end
 
-    # Get tile value and shape
-    tile_tv = emit_value!(ctx, args[3])
+    # New argument order: arr, tile, indices...
+    # Get tile value and shape (args[2])
+    tile_tv = emit_value!(ctx, args[2])
     tile_tv === nothing && error("store() requires a tile argument")
     tile_shape = tile_tv.shape
     isempty(tile_shape) && error("Cannot determine tile shape for store()")
@@ -641,8 +647,12 @@ function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(re
     dtype = julia_to_tile_dtype!(tt, elem_type)
     ndim = length(tile_shape)
 
-    # Parse index argument
-    index_vals = extract_index_values(ctx, args, 2, ndim)
+    # Extract indices directly from args[3:end] (no tuple decomposition needed!)
+    index_vals = Value[]
+    for i in 3:length(args)
+        tv = emit_value!(ctx, args[i])
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
+    end
 
     # TensorView type - use static strides where known from ArraySpec
     tv_shape = fill(DYNAMIC_SHAPE, ndim)
@@ -932,78 +942,6 @@ function extract_tile_shape(@nospecialize(T))
         end
     end
     Int[]
-end
-
-"""
-    find_defining_expr(block::Block, ssa_idx::Int) -> Union{Any, Nothing}
-
-Find the expression in block.body that defines SSAValue(ssa_idx).
-SSA indices are assigned as follows:
-- Statements (non-ControlFlowOp items): always 1 SSA result
-- ControlFlowOps: 0 results if types[i]===Nothing, else count from types[i]
-"""
-function find_defining_expr(block::Block, ssa_idx::Int)
-    current_ssa = 0
-    for (expr, result_type) in zip(block.body, block.types)
-        # Count results for this item
-        # Statements always produce 1 result (even if Julia type is Nothing)
-        # ControlFlowOps produce 0 results if types entry is Nothing
-        n_results = if expr isa ControlFlowOp
-            if result_type === Nothing
-                0
-            elseif result_type isa Vector
-                length(result_type)
-            else
-                1
-            end
-        else
-            # Statements always have 1 SSA result
-            1
-        end
-
-        if n_results > 0
-            # This item produces results at indices (current_ssa+1) to (current_ssa+n_results)
-            if ssa_idx >= current_ssa + 1 && ssa_idx <= current_ssa + n_results
-                return expr
-            end
-            current_ssa += n_results
-        end
-    end
-    return nothing
-end
-
-function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos::Int, ndim::Int)
-    index_vals = Value[]
-    length(args) < idx_pos && return index_vals
-
-    index_arg = args[idx_pos]
-    if index_arg isa SSAValue
-        # After finalization, SSAValue indices are LOCAL to the current block.
-        # SSA indices are assigned sequentially to items that produce results,
-        # skipping 0-result ops (like WhileOp with Nothing result).
-        if ctx.current_block !== nothing
-            expr = find_defining_expr(ctx.current_block, index_arg.id)
-            if expr isa Expr && expr.head === :call
-                callee = expr.args[1]
-                if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
-                    for elem_arg in expr.args[2:end]
-                        tv = emit_value!(ctx, elem_arg)
-                        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
-                    end
-                    return index_vals
-                end
-            end
-        end
-
-        # Single value (not a tuple)
-        tv = emit_value!(ctx, index_arg)
-        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
-    else
-        tv = emit_value!(ctx, index_arg)
-        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
-    end
-
-    return index_vals
 end
 
 function get_size_stride_vals(ctx::CodegenContext, arg_idx, is_tilearray::Bool, ndim::Int,
