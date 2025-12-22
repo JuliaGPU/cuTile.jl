@@ -934,4 +934,44 @@ end
             end
         end
     end
+
+    @testset "nested spinloop captures correct outer variable (regression test)" begin
+        # This test catches a bug where nested while loops inside for loops
+        # capture the for loop's induction variable instead of the correct outer variable.
+        # The bug: spinloop uses loopIdx for atomic_cas instead of group_bid_m, causing hangs.
+        #
+        # The inner loop should capture %iterArg0 (group_bid_m), NOT %loopIdx.
+        # Bug produces: loop iter_values(%arg9 = %loopIdx, ...)
+        # Correct:      loop iter_values(%arg9 = %iterArg0, ...)
+        spec = ct.ArraySpec{2}(16, true)
+        spec1d = ct.ArraySpec{1}(16, true)
+        @test_broken begin
+            tir = code_tile(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
+                               Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
+                bid_m = ct.bid(0)
+                group_bid_m = bid_m % Int32(GROUP_SIZE_M[])
+
+                j = Int32(0)
+                while j < num_iters
+                    # Spinloop should use group_bid_m for the lock, not j
+                    while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
+                                       memory_order=ct.MemoryOrder.Acquire) == Int32(1)
+                    end
+
+                    val = ct.full((1, TILE_N[]), 1.0f0, Float32)
+                    ct.store(DB, (group_bid_m, j), val)
+
+                    ct.atomic_xchg(Locks, group_bid_m, Int32(0);
+                                  memory_order=ct.MemoryOrder.Release)
+
+                    j += Int32(1)
+                end
+                return
+            end
+            tir_str = string(tir)
+            # The inner loop must NOT capture %loopIdx - it should capture %iterArg0
+            # Bug: "loop iter_values(%arg9 = %loopIdx"
+            !occursin(r"loop iter_values\([^)]*= %loopIdx", tir_str)
+        end
+    end
 end
