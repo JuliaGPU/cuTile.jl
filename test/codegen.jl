@@ -974,4 +974,51 @@ end
             !occursin(r"loop iter_values\([^)]*= %loopIdx", tir_str)
         end
     end
+
+    # Bug: Multiple loop results resolve to same value
+    # See BUG.md for full analysis
+    @testset "Multiple loop results" begin
+        # This tests that a while loop with multiple iter_args correctly generates
+        # different result indices (%for#0, %for#1, etc.) for each result.
+        TILE_M = 32
+        TILE_N = 1024
+
+        # Use ArraySpec with shape_div_by to match real CuArray behavior
+        spec2d = ct.ArraySpec{2}(128, true, (0, 4), (32, 32))
+        spec1d = ct.ArraySpec{1}(128, true, (0,), (32,))
+
+        @test_broken begin
+            tir = code_tile(Tuple{ct.TileArray{Float32, 2, spec2d}, ct.TileArray{Float32, 2, spec2d},
+                                  ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
+                                  ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
+                bid_n = ct.bid(0)
+                num_tiles = ct.num_tiles(DW, 0, (_TILE_M[], _TILE_N[]))
+
+                dw = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
+                db = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
+                i = Int32(0)
+                while i < num_tiles
+                    dw = dw .+ ct.load(DW, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    db = db .+ ct.load(DB, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    i += Int32(1)
+                end
+
+                sum_dw = ct.reduce_sum(dw, 0)
+                sum_db = ct.reduce_sum(db, 0)
+
+                ct.store(FINAL_DW, bid_n, sum_dw)
+                ct.store(FINAL_DB, bid_n, sum_db)
+                return
+            end
+            tir_str = string(tir)
+
+            # The two reduce operations should use different for loop results.
+            # Working: %reduce = reduce %for#1 ... and %reduce_8 = reduce %for#0 ...
+            # Broken: Both use %for#0
+            # Check that the pattern "%for#0.*%for#0" does not appear (both reductions using same result)
+            reduce_matches = collect(eachmatch(r"reduce %for#(\d+)", tir_str))
+            length(reduce_matches) >= 2 &&
+                reduce_matches[1].captures[1] != reduce_matches[2].captures[1]
+        end
+    end
 end
