@@ -157,6 +157,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     sci = StructuredCodeInfo(target.ci)
     structurize!(sci)
 
+    # Initialize SSA counter (each block has local indices starting at 1)
+    ctx.next_ssa_idx = 1
+
     # Emit the structured IR
     emit_block!(ctx, sci.entry)
 
@@ -168,31 +171,45 @@ end
 =============================================================================#
 
 """
+    result_count(T) -> Int
+
+Compute the number of results from a Block.types entry.
+Block.types contains:
+- For Statement: Julia type → 1 result
+- For ControlFlowOp with 0 results: Nothing → 0 results
+- For ControlFlowOp with 1 result: SSAValue → 1 result
+- For ControlFlowOp with N results: Vector{SSAValue} → N results
+"""
+function result_count(@nospecialize(T))
+    T === Nothing && return 0
+    T isa Vector && return length(T)  # Vector{SSAValue} for multi-result ops
+    return 1  # SSAValue or Julia type
+end
+
+"""
     emit_block!(ctx, block::Block)
 
 Emit bytecode for a structured IR block.
+SSA indices are assigned sequentially using ctx.next_ssa_idx counter.
+For control flow ops, indices are assigned AFTER nested regions (DFS order).
 """
 function emit_block!(ctx::CodegenContext, block::Block)
-    # Track current block for LocalSSAValue resolution
+    # Track current block for expression lookups (e.g., tuple decomposition)
     prev_block = ctx.current_block
     ctx.current_block = block
-    block_key = objectid(block)
 
     # Emit body items (interleaved expressions and control flow ops)
-    for (local_idx, (expr, result_type)) in enumerate(zip(block.body, block.types))
+    for (expr, result_type) in zip(block.body, block.types)
         if expr isa ControlFlowOp
-            emit_control_flow_op!(ctx, expr, result_type)
-            # Store control flow op result at local position for LocalSSAValue resolution
-            # Result is already stored by emit_control_flow_op!, but we need a placeholder
-            # if the op produces no results (Nothing type)
+            # For control flow ops, nested regions are emitted first (in the callbacks),
+            # then result indices are assigned. The emit function handles this internally.
+            n_results = result_count(result_type)
+            emit_control_flow_op!(ctx, expr, result_type, n_results)
         else
-            # Regular expression
-            emit_statement!(ctx, expr, local_idx, result_type)
-            # Populate local_values for LocalSSAValue support
-            tv = ctx.local_values_current
-            if tv !== nothing
-                ctx.local_values[(block_key, local_idx, 1)] = tv
-            end
+            # Regular expression - assign result at current index, then increment
+            ssa_idx = ctx.next_ssa_idx
+            ctx.next_ssa_idx += 1
+            emit_statement!(ctx, expr, ssa_idx, result_type)
         end
     end
 
@@ -206,21 +223,22 @@ function emit_block!(ctx::CodegenContext, block::Block)
 end
 
 """
-    emit_control_flow_op!(ctx, op::ControlFlowOp, parent_result_type)
+    emit_control_flow_op!(ctx, op::ControlFlowOp, result_type, n_results)
 
 Emit bytecode for a structured control flow operation.
 Uses multiple dispatch on the concrete ControlFlowOp type.
+Results are stored at indices assigned AFTER nested regions (DFS order).
 """
-emit_control_flow_op!(ctx::CodegenContext, op::IfOp, @nospecialize(result_type)) =
-    emit_if_op!(ctx, op, result_type)
-emit_control_flow_op!(ctx::CodegenContext, op::ForOp, @nospecialize(result_type)) =
-    emit_for_op!(ctx, op, result_type)
-emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(result_type)) =
-    emit_while_op!(ctx, op, result_type)
-emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(result_type)) =
-    emit_loop_op!(ctx, op, result_type)
+emit_control_flow_op!(ctx::CodegenContext, op::IfOp, @nospecialize(result_type), n_results::Int) =
+    emit_if_op!(ctx, op, result_type, n_results)
+emit_control_flow_op!(ctx::CodegenContext, op::ForOp, @nospecialize(result_type), n_results::Int) =
+    emit_for_op!(ctx, op, result_type, n_results)
+emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(result_type), n_results::Int) =
+    emit_while_op!(ctx, op, result_type, n_results)
+emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(result_type), n_results::Int) =
+    emit_loop_op!(ctx, op, result_type, n_results)
 
-function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_type))
+function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_type), n_results::Int)
     cb = ctx.cb
     then_blk = op.then_region
     else_blk = op.else_region
@@ -252,32 +270,61 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
     token_before = ctx.token
 
     # Emit IfOp with callback-based region building
-    # Each branch will yield its final token via emit_terminator!
+    # Nested regions are emitted in the callbacks, each with their own local SSA namespace
     then_body = function(_)
+        # Save outer context
+        saved_values = copy(ctx.values)
+        saved_next_ssa_idx = ctx.next_ssa_idx
+        saved_block_args = copy(ctx.block_args)
+
+        # Reset for nested block
+        empty!(ctx.values)
+        ctx.next_ssa_idx = 1
         ctx.token = token_before  # Reset to pre-branch token
+
         emit_block!(ctx, then_blk)
+
+        # Restore outer context
+        empty!(ctx.values)
+        merge!(ctx.values, saved_values)
+        ctx.next_ssa_idx = saved_next_ssa_idx
+        empty!(ctx.block_args)
+        merge!(ctx.block_args, saved_block_args)
     end
     else_body = function(_)
+        # Save outer context
+        saved_values = copy(ctx.values)
+        saved_next_ssa_idx = ctx.next_ssa_idx
+        saved_block_args = copy(ctx.block_args)
+
+        # Reset for nested block
+        empty!(ctx.values)
+        ctx.next_ssa_idx = 1
         ctx.token = token_before  # Reset to pre-branch token
+
         emit_block!(ctx, else_blk)
+
+        # Restore outer context
+        empty!(ctx.values)
+        merge!(ctx.values, saved_values)
+        ctx.next_ssa_idx = saved_next_ssa_idx
+        empty!(ctx.block_args)
+        merge!(ctx.block_args, saved_block_args)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
     # Last result is the merged token from both branches
     ctx.token = results[end]
 
-    # Store result at current local position for LocalSSAValue resolution
-    block_key = objectid(ctx.current_block)
-    local_idx = findfirst(==(op), ctx.current_block.body)
-    if local_idx !== nothing && n_user_results > 0
-        # Store each result with its result index
-        for i in 1:n_user_results
-            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], result_types[i], julia_result_types[i])
-        end
+    # Assign SSA indices for results AFTER nested regions (DFS order)
+    base_idx = ctx.next_ssa_idx
+    ctx.next_ssa_idx += n_results
+    for i in 1:n_user_results
+        ctx.values[base_idx + i - 1] = CGVal(results[i], result_types[i], julia_result_types[i])
     end
 end
 
-function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_result_type))
+function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_result_type), n_results::Int)
     cb = ctx.cb
     tt = ctx.tt
     body_blk = op.body
@@ -305,20 +352,25 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     result_types = TypeId[]
     for body_arg in body_blk.args
         type_id = tile_type_for_julia!(ctx, body_arg.type)
-        @debug "ForOp body_arg: type=$(body_arg.type), type_id=$type_id"
         push!(result_types, type_id)
     end
     # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
-    @debug "ForOp result_types: $result_types ($(length(result_types)) types)"
 
     # Number of user result types (excluding token)
     n_user_results = length(body_blk.args)
 
     # Emit ForOp with callback-based region building
+    # Body is emitted in the callback, assigning SSA indices for body items
     body_builder = function(block_args)
-        # Save outer block_args to avoid collision with nested control flow
+        # Save outer context (each nested block has its own local SSA namespace)
         saved_block_args = copy(ctx.block_args)
+        saved_values = copy(ctx.values)
+        saved_next_ssa_idx = ctx.next_ssa_idx
+
+        # Reset for nested block
+        empty!(ctx.values)
+        ctx.next_ssa_idx = 1
 
         # Block args layout: [iv, carried..., token]
 
@@ -339,29 +391,29 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
 
         emit_block!(ctx, body_blk)
 
-        # Restore outer block_args
+        # Restore outer context
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
+        empty!(ctx.values)
+        merge!(ctx.values, saved_values)
+        ctx.next_ssa_idx = saved_next_ssa_idx
     end
     results = encode_ForOp!(body_builder, cb, result_types, lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
     # Last result is the token
     ctx.token = results[end]
 
-    # Store result at current local position for LocalSSAValue resolution
-    block_key = objectid(ctx.current_block)
-    local_idx = findfirst(==(op), ctx.current_block.body)
-    if local_idx !== nothing && n_user_results > 0
-        # Store each result with its result index
-        for i in 1:n_user_results
-            type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
-            shape = extract_tile_shape(body_blk.args[i].type)
-            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
-        end
+    # Assign SSA indices for results AFTER nested region (DFS order)
+    base_idx = ctx.next_ssa_idx
+    ctx.next_ssa_idx += n_results
+    for i in 1:n_user_results
+        type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
+        shape = extract_tile_shape(body_blk.args[i].type)
+        ctx.values[base_idx + i - 1] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
     end
 end
 
-function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_result_type))
+function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_result_type), n_results::Int)
     cb = ctx.cb
     body_blk = op.body
 
@@ -388,9 +440,16 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     n_user_results = length(body_blk.args)
 
     # Emit LoopOp with callback-based region building
+    # Body is emitted in the callback, assigning SSA indices for body items
     body_builder = function(block_args)
-        # Save outer block_args to avoid collision with nested control flow
+        # Save outer context (each nested block has its own local SSA namespace)
         saved_block_args = copy(ctx.block_args)
+        saved_values = copy(ctx.values)
+        saved_next_ssa_idx = ctx.next_ssa_idx
+
+        # Reset for nested block
+        empty!(ctx.values)
+        ctx.next_ssa_idx = 1
 
         # Map block arguments (carried values, last is token)
         for (i, body_arg) in enumerate(body_blk.args)
@@ -416,29 +475,29 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
             encode_ContinueOp!(ctx.cb, fallback_operands)
         end
 
-        # Restore outer block_args
+        # Restore outer context
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
+        empty!(ctx.values)
+        merge!(ctx.values, saved_values)
+        ctx.next_ssa_idx = saved_next_ssa_idx
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
     # Last result is the token
     ctx.token = results[end]
 
-    # Store result at current local position for LocalSSAValue resolution
-    block_key = objectid(ctx.current_block)
-    local_idx = findfirst(==(op), ctx.current_block.body)
-    if local_idx !== nothing && n_user_results > 0
-        # Store each result with its result index
-        for i in 1:n_user_results
-            type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
-            shape = extract_tile_shape(body_blk.args[i].type)
-            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
-        end
+    # Assign SSA indices for results AFTER nested region (DFS order)
+    base_idx = ctx.next_ssa_idx
+    ctx.next_ssa_idx += n_results
+    for i in 1:n_user_results
+        type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
+        shape = extract_tile_shape(body_blk.args[i].type)
+        ctx.values[base_idx + i - 1] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
     end
 end
 
-function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_result_type))
+function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_result_type), n_results::Int)
     cb = ctx.cb
     before_blk = op.before
     after_blk = op.after
@@ -468,9 +527,16 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
     # Emitted as: loop { before_stmts; if(cond) { after_stmts; continue } else { break } }
+    # Nested regions are emitted in the callbacks, assigning SSA indices
     body_builder = function(block_args)
-        # Save outer block_args to avoid collision with nested control flow
+        # Save outer context (each nested block has its own local SSA namespace)
         saved_block_args = copy(ctx.block_args)
+        saved_values = copy(ctx.values)
+        saved_next_ssa_idx = ctx.next_ssa_idx
+
+        # Reset for nested block
+        empty!(ctx.values)
+        ctx.next_ssa_idx = 1
 
         # Map block arguments for the "before" region (carried values, last is token)
         for (i, before_arg) in enumerate(before_blk.args)
@@ -483,67 +549,58 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         # Set token from last block arg
         ctx.token = block_args[end]
 
-        # Emit "before" region statements (condition computation)
-        # Track current block for LocalSSAValue resolution
-        prev_block = ctx.current_block
-        ctx.current_block = before_blk
-        before_block_key = objectid(before_blk)
-        for (local_idx, (expr, expr_type)) in enumerate(zip(before_blk.body, before_blk.types))
-            if expr isa ControlFlowOp
-                emit_control_flow_op!(ctx, expr, expr_type)
-            else
-                emit_statement!(ctx, expr, local_idx, expr_type)
-                # Also populate local_values for LocalSSAValue support
-                tv = ctx.local_values_current
-                if tv !== nothing
-                    ctx.local_values[(before_block_key, local_idx, 1)] = tv
-                end
-            end
-        end
+        # Emit "before" region using emit_block! (handles SSA counter correctly)
+        emit_block!(ctx, before_blk)
 
-        # Get condition from ConditionOp terminator
+        # Get condition from ConditionOp terminator (already emitted by emit_block!)
         cond_op = before_blk.terminator
         cond_op isa ConditionOp || error("WhileOp before region must end with ConditionOp")
 
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && error("Cannot resolve WhileOp condition: $(cond_op.condition)")
 
-        # Restore prev_block before entering nested regions
-        ctx.current_block = prev_block
-
         # Create if-then-else: if condition { after_region; continue } else { break }
         then_body = function(_)
+            # Don't reset context - "before" and "after" regions share the same Tile IR
+            # loop body region and should have continuous SSA indices.
             # Map "after" region block args to the values from ConditionOp.args
+            # (which are values computed in "before")
             for (i, after_arg) in enumerate(after_blk.args)
                 if i <= length(cond_op.args)
-                    # The after args receive from condition args
-                    # For now, map them to the same block_args (they should be the same values)
-                    if i <= length(block_args) - 1 && i <= n_user_results
+                    # Map after.args to the actual values from cond_op.args
+                    tv = emit_value!(ctx, cond_op.args[i])
+                    if tv !== nothing
+                        ctx[after_arg] = tv
+                    elseif i <= length(block_args) - 1 && i <= n_user_results
+                        # Fallback to block_args
                         shape = extract_tile_shape(after_arg.type)
                         ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
                     end
                 end
             end
 
-            # Emit "after" region statements (loop body)
-            # Track current block for LocalSSAValue resolution
+            # Set current_block to after_blk for expression lookups (e.g., tuple decomposition)
+            prev_block = ctx.current_block
             ctx.current_block = after_blk
-            after_block_key = objectid(after_blk)
-            for (local_idx, (expr, expr_type)) in enumerate(zip(after_blk.body, after_blk.types))
+
+            # Emit "after" region body ONLY (not terminator) - continues from where "before" left off
+            # The terminator (YieldOp) is handled below as ContinueOp
+            for (expr, result_type) in zip(after_blk.body, after_blk.types)
                 if expr isa ControlFlowOp
-                    emit_control_flow_op!(ctx, expr, expr_type)
+                    n_results = result_count(result_type)
+                    emit_control_flow_op!(ctx, expr, result_type, n_results)
                 else
-                    emit_statement!(ctx, expr, local_idx, expr_type)
-                    # Also populate local_values for LocalSSAValue support
-                    tv = ctx.local_values_current
-                    if tv !== nothing
-                        ctx.local_values[(after_block_key, local_idx, 1)] = tv
-                    end
+                    ssa_idx = ctx.next_ssa_idx
+                    ctx.next_ssa_idx += 1
+                    emit_statement!(ctx, expr, ssa_idx, result_type)
                 end
             end
-            ctx.current_block = prev_block  # Restore after processing after region
 
-            # Emit continue with yield values from after region
+            # Restore previous block (before_blk) for terminator emission
+            ctx.current_block = prev_block
+
+            # Emit ContinueOp with yield values from after region
+            # (In structured IR, after ends with YieldOp; in Tile IR, we need ContinueOp)
             continue_operands = Value[]
             if after_blk.terminator isa YieldOp
                 for val in after_blk.terminator.values
@@ -556,6 +613,8 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         end
 
         else_body = function(_)
+            # Don't reset context - else_body doesn't emit its own block,
+            # it just emits break using values from the "before" region
             # Break with ConditionOp args (become loop results)
             break_operands = Value[]
             for arg in cond_op.args
@@ -584,25 +643,25 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         fallback_operands[end] = ctx.token
         encode_ContinueOp!(ctx.cb, fallback_operands)
 
-        # Restore outer block_args
+        # Restore outer context
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
+        empty!(ctx.values)
+        merge!(ctx.values, saved_values)
+        ctx.next_ssa_idx = saved_next_ssa_idx
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
     # Last result is the token
     ctx.token = results[end]
 
-    # Store result at current local position for LocalSSAValue resolution
-    block_key = objectid(ctx.current_block)
-    local_idx = findfirst(==(op), ctx.current_block.body)
-    if local_idx !== nothing && n_user_results > 0
-        # Store each result with its result index
-        for i in 1:n_user_results
-            type_id = tile_type_for_julia!(ctx, before_blk.args[i].type)
-            shape = extract_tile_shape(before_blk.args[i].type)
-            ctx.local_values[(block_key, local_idx, i)] = CGVal(results[i], type_id, before_blk.args[i].type, shape)
-        end
+    # Assign SSA indices for results AFTER nested regions (DFS order)
+    base_idx = ctx.next_ssa_idx
+    ctx.next_ssa_idx += n_results
+    for i in 1:n_user_results
+        type_id = tile_type_for_julia!(ctx, before_blk.args[i].type)
+        shape = extract_tile_shape(before_blk.args[i].type)
+        ctx.values[base_idx + i - 1] = CGVal(results[i], type_id, before_blk.args[i].type, shape)
     end
 end
 
@@ -657,18 +716,22 @@ function emit_terminator!(ctx::CodegenContext, ::Nothing)
     # No terminator, nothing to emit
 end
 
+function emit_terminator!(ctx::CodegenContext, ::ConditionOp)
+    # ConditionOp is handled specially by emit_while_op!, not emitted as a terminator
+end
+
 
 #=============================================================================
  Statement Emission
 =============================================================================#
 
 """
-    emit_statement!(ctx, stmt, idx, result_type)
+    emit_statement!(ctx, stmt, ssa_idx, result_type)
 
 Emit bytecode for a single SSA statement.
-The idx is the local position index within the current block.
+The ssa_idx is the SSAValue index to store the result at.
 """
-function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @nospecialize(result_type))
+function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), ssa_idx::Int, @nospecialize(result_type))
     tv = nothing
     if stmt isa ReturnNode
         emit_return!(ctx, stmt)
@@ -679,7 +742,6 @@ function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @no
             tv = emit_value!(ctx, stmt)
         end
     elseif stmt isa GlobalRef
-        # GlobalRefs may be constant values that need to be resolvable via LocalSSAValue
         tv = emit_value!(ctx, stmt)
     elseif stmt isa QuoteNode
         tv = emit_constant!(ctx, stmt.value, result_type)
@@ -694,8 +756,10 @@ function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), idx::Int, @no
         @warn "Unhandled statement type" typeof(stmt) stmt
     end
 
-    # Track current value for LocalSSAValue lookup
-    ctx.local_values_current = tv
+    # Store result at SSAValue index
+    if tv !== nothing
+        ctx.values[ssa_idx] = tv
+    end
 end
 
 """
@@ -729,14 +793,16 @@ function emit_value!(ctx::CodegenContext, ssa::SSAValue)
     # First try to get from context (already processed)
     tv = ctx[ssa]
     tv !== nothing && return tv
-    # Otherwise follow the SSA chain to the defining statement
-    stmt = code(ctx.target)[ssa.id]
+    # For block-local SSAs (id > code length), they must be in ctx.values
+    code_stmts = code(ctx.target)
+    ssa.id <= length(code_stmts) || error("Block-local SSAValue %$(ssa.id) not found in context")
+    # Follow the SSA chain to the defining statement in CodeInfo
+    stmt = code_stmts[ssa.id]
     emit_value!(ctx, stmt)
 end
 emit_value!(ctx::CodegenContext, arg::Argument) = ctx[arg]
 emit_value!(ctx::CodegenContext, slot::SlotNumber) = ctx[slot]
 emit_value!(ctx::CodegenContext, block_arg::BlockArg) = ctx[block_arg]
-emit_value!(ctx::CodegenContext, local_ssa::LocalSSAValue) = ctx[local_ssa]
 
 function emit_value!(ctx::CodegenContext, val::Integer)
     type_id = tile_type_for_julia!(ctx, Int32)

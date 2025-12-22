@@ -16,37 +16,6 @@ struct BlockArg
 end
 
 #=============================================================================
- Local SSA Values (block-local references)
-=============================================================================#
-
-"""
-    LocalSSAValue
-
-Reference to a value defined by an operation in the same block.
-The id is the 1-indexed position in the containing block's ops array.
-For operations that produce multiple results (e.g., loops with multiple
-iter_args), result_idx specifies which result (1-indexed, default 1).
-
-This type will replace global SSAValue references inside structured blocks
-once the local SSA refactoring is complete. For now, it coexists with
-global SSAValue references during the migration.
-"""
-struct LocalSSAValue
-    id::Int
-    result_idx::Int  # 1-indexed, which result from multi-result ops
-end
-
-LocalSSAValue(id::Int) = LocalSSAValue(id, 1)
-
-function Base.show(io::IO, v::LocalSSAValue)
-    if v.result_idx == 1
-        print(io, "%", v.id)
-    else
-        print(io, "%", v.id, "#", v.result_idx)
-    end
-end
-
-#=============================================================================
  IR Values - references to SSA values or block arguments
 =============================================================================#
 
@@ -750,7 +719,6 @@ end
 
 # Base cases: other value types don't contain SSAValue references
 collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::BlockArg, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::LocalSSAValue, ::Set{Int}) = nothing
 collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Argument, ::Set{Int}) = nothing
 collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::SlotNumber, ::Set{Int}) = nothing
 collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::GlobalRef, ::Set{Int}) = nothing
@@ -801,23 +769,23 @@ function collect_terminator_refs!(::Vector{SSAValue}, ::Set{Int}, ::Nothing, ::S
 end
 
 #=============================================================================
- Local SSA Conversion (SSAValue → LocalSSAValue within blocks)
+ Local SSA Conversion (positive SSAValue → negative SSAValue within blocks)
 =============================================================================#
 
-# Type alias for SSA to LocalSSA mapping: SSA id -> (block position, result index)
-const SSAToLocalMap = Dict{Int, Tuple{Int, Int}}
+# Type alias for SSA to local SSA mapping: original SSA id -> negative SSA id
+const SSAToLocalMap = Dict{Int, Int}
 
 """
-    convert_ssa_in_value(value, idx_to_pos::SSAToLocalMap)
+    convert_ssa_in_value(value, idx_to_local::SSAToLocalMap)
 
-Convert SSAValue references in a value to LocalSSAValue where applicable.
+Convert SSAValue references in a value to negative SSAValue indices where applicable.
 Returns the converted value (or original if no conversion needed).
-The mapping tracks (block_position, result_index) for multi-result ops.
+Negative SSAValue indices represent block-local values and will be converted to
+positive global indices during finalization.
 """
-function convert_ssa_in_value(value::SSAValue, idx_to_pos::SSAToLocalMap)
-    if haskey(idx_to_pos, value.id)
-        pos, result_idx = idx_to_pos[value.id]
-        return LocalSSAValue(pos, result_idx)
+function convert_ssa_in_value(value::SSAValue, idx_to_local::SSAToLocalMap)
+    if haskey(idx_to_local, value.id)
+        return SSAValue(idx_to_local[value.id])
     end
     return value
 end
@@ -858,7 +826,6 @@ function convert_ssa_in_value(value::PhiNode, idx_to_pos::SSAToLocalMap)
 end
 
 # Base cases: values that don't contain SSAValue references
-convert_ssa_in_value(value::LocalSSAValue, ::SSAToLocalMap) = value
 convert_ssa_in_value(value::BlockArg, ::SSAToLocalMap) = value
 convert_ssa_in_value(value::Argument, ::SSAToLocalMap) = value
 convert_ssa_in_value(value::SlotNumber, ::SSAToLocalMap) = value
@@ -871,9 +838,9 @@ convert_ssa_in_value(value::Type, ::SSAToLocalMap) = value
 convert_ssa_in_value(value, ::SSAToLocalMap) = value  # Fallback
 
 """
-    convert_ssa_in_terminator(term, idx_to_pos)
+    convert_ssa_in_terminator(term, idx_to_local)
 
-Convert SSAValue references in a terminator to LocalSSAValue where applicable.
+Convert SSAValue references in a terminator to negative SSAValue indices.
 """
 function convert_ssa_in_terminator(term::ContinueOp, idx_to_pos::SSAToLocalMap)
     new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
@@ -913,22 +880,26 @@ end
 """
     convert_to_local_ssa!(block::PartialBlock)
 
-Convert SSAValue references within a block to LocalSSAValue references.
-Properly tracks result indices for multi-result operations (e.g., loops with
-multiple iter_args produce multiple results, each needing a distinct index).
+Convert SSAValue references within a block to negative SSAValue indices.
+Each statement and control flow op result gets a unique negative index.
+These negative indices are block-local and will be converted to positive
+global indices during finalization.
 """
 function convert_to_local_ssa!(block::PartialBlock)
-    # Build mapping: Statement.idx → (position in block.body, result_index)
-    # For control flow ops with multiple results, each result_var gets its own result_index
-    idx_to_pos = SSAToLocalMap()
-    for (pos, item) in enumerate(block.body)
+    # Build mapping: Statement.idx → unique negative index
+    # Each result gets its own unique negative index (no result_idx needed)
+    idx_to_local = SSAToLocalMap()
+    counter = 0
+    for item in block.body
         if item isa Statement
-            idx_to_pos[item.idx] = (pos, 1)  # Statements produce single values
+            counter -= 1
+            idx_to_local[item.idx] = counter
         elseif item isa PartialControlFlowOp
             # Control flow ops produce values through result_vars
-            # Each result_var gets a distinct result_index (1-indexed)
-            for (result_idx, rv) in enumerate(item.result_vars)
-                idx_to_pos[rv.id] = (pos, result_idx)
+            # Each result_var gets its own unique negative index
+            for rv in item.result_vars
+                counter -= 1
+                idx_to_local[rv.id] = counter
             end
         end
     end
@@ -936,35 +907,35 @@ function convert_to_local_ssa!(block::PartialBlock)
     # Convert SSAValues in statements
     for (i, item) in enumerate(block.body)
         if item isa Statement
-            new_expr = convert_ssa_in_value(item.expr, idx_to_pos)
+            new_expr = convert_ssa_in_value(item.expr, idx_to_local)
             if new_expr !== item.expr
                 block.body[i] = Statement(item.idx, new_expr, item.type)
             end
         elseif item isa PartialControlFlowOp
-            convert_to_local_ssa_in_op!(item, idx_to_pos)
+            convert_to_local_ssa_in_op!(item, idx_to_local)
         end
     end
 
     # Convert SSAValues in terminator
     if block.terminator !== nothing
-        block.terminator = convert_ssa_in_terminator(block.terminator, idx_to_pos)
+        block.terminator = convert_ssa_in_terminator(block.terminator, idx_to_local)
     end
 end
 
-function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_pos::SSAToLocalMap)
+function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_local::SSAToLocalMap)
     # Convert init_values using parent's mapping
     for (i, v) in enumerate(op.init_values)
-        op.init_values[i] = convert_ssa_in_value(v, parent_idx_to_pos)
+        op.init_values[i] = convert_ssa_in_value(v, parent_idx_to_local)
     end
 
     # For :for ops, convert operands (lower, upper, step)
     if op.head == :for
-        new_lower = convert_ssa_in_value(op.operands.lower, parent_idx_to_pos)
-        new_upper = convert_ssa_in_value(op.operands.upper, parent_idx_to_pos)
-        new_step = convert_ssa_in_value(op.operands.step, parent_idx_to_pos)
+        new_lower = convert_ssa_in_value(op.operands.lower, parent_idx_to_local)
+        new_upper = convert_ssa_in_value(op.operands.upper, parent_idx_to_local)
+        new_step = convert_ssa_in_value(op.operands.step, parent_idx_to_local)
         op.operands = (lower=new_lower, upper=new_upper, step=new_step, iv_arg=op.operands.iv_arg)
     elseif op.head == :if
-        new_cond = convert_ssa_in_value(op.operands.condition, parent_idx_to_pos)
+        new_cond = convert_ssa_in_value(op.operands.condition, parent_idx_to_local)
         op.operands = (condition=new_cond,)
     end
 
@@ -979,66 +950,132 @@ end
 =============================================================================#
 
 """
-    finalize_ir(block::PartialBlock) -> Block
+    negate_negative_ssa(value)
+
+Convert negative SSAValue indices to positive local indices.
+SSAValue(-n) → SSAValue(n). Positive indices are left unchanged.
+Each block has its own local SSA namespace.
+"""
+negate_negative_ssa(v::SSAValue) = v.id < 0 ? SSAValue(-v.id) : v
+
+function negate_negative_ssa(v::Expr)
+    new_args = Any[negate_negative_ssa(a) for a in v.args]
+    new_args != v.args ? Expr(v.head, new_args...) : v
+end
+
+function negate_negative_ssa(v::PiNode)
+    new_val = negate_negative_ssa(v.val)
+    new_val !== v.val ? PiNode(new_val, v.typ) : v
+end
+
+negate_negative_ssa(v::Any) = v
+
+function negate_terminator_ssa(term::YieldOp)
+    new_values = [negate_negative_ssa(v) for v in term.values]
+    new_values != term.values ? YieldOp(new_values) : term
+end
+
+function negate_terminator_ssa(term::ContinueOp)
+    new_values = [negate_negative_ssa(v) for v in term.values]
+    new_values != term.values ? ContinueOp(new_values) : term
+end
+
+function negate_terminator_ssa(term::BreakOp)
+    new_values = [negate_negative_ssa(v) for v in term.values]
+    new_values != term.values ? BreakOp(new_values) : term
+end
+
+function negate_terminator_ssa(term::ConditionOp)
+    new_cond = negate_negative_ssa(term.condition)
+    new_args = [negate_negative_ssa(v) for v in term.args]
+    (new_cond !== term.condition || new_args != term.args) ?
+        ConditionOp(new_cond, new_args) : term
+end
+
+function negate_terminator_ssa(term::ReturnNode)
+    if isdefined(term, :val)
+        new_val = negate_negative_ssa(term.val)
+        new_val !== term.val ? ReturnNode(new_val) : term
+    else
+        term
+    end
+end
+
+negate_terminator_ssa(term::Nothing) = term
+
+"""
+    finalize_ir(block::PartialBlock, code_length::Int) -> Block
 
 Convert a PartialBlock to a final Block by:
-1. Flattening Statement wrappers to (expr, type) pairs in body/types vectors
-2. Converting PartialControlFlowOp to ControlFlowOp (dropping result_vars)
-3. Recursively processing all nested regions
+1. Converting negative SSAValue to positive local SSAValue (per-block)
+2. Flattening Statement wrappers to (expr, type) pairs in body/types vectors
+3. Converting PartialControlFlowOp to ControlFlowOp (dropping result_vars)
+4. Recursively processing all nested regions
+
+The code_length parameter is unused but kept for API compatibility.
+SSA indices are local to each block: body[i] defines SSAValue(i).
 """
-function finalize_ir(block::PartialBlock)::Block
+function finalize_ir(block::PartialBlock, ::Int)::Block
+    finalize_block(block)
+end
+
+function finalize_block(block::PartialBlock)::Block
     body = Any[]
     types = Any[]
 
     for item in block.body
         if item isa Statement
-            push!(body, item.expr)
+            push!(body, negate_negative_ssa(item.expr))
             push!(types, item.type)
         elseif item isa PartialControlFlowOp
             push!(body, finalize_control_flow_op(item))
-            # For control flow ops, store the result types (Tuple if multiple)
+            # Store result type info for codegen
+            # For single result: store the SSAValue for type lookup in CodeInfo
+            # For multiple results: store Vector{SSAValue}
             if isempty(item.result_vars)
                 push!(types, Nothing)
             elseif length(item.result_vars) == 1
-                push!(types, item.result_vars[1])  # Store SSAValue for reference
+                push!(types, item.result_vars[1])  # Original SSAValue for type lookup
             else
-                push!(types, item.result_vars)  # Store Vector{SSAValue}
+                push!(types, item.result_vars)  # Vector{SSAValue}
             end
         end
     end
 
-    return Block(copy(block.args), body, types, block.terminator)
+    terminator = block.terminator === nothing ? nothing :
+        negate_terminator_ssa(block.terminator)
+
+    return Block(copy(block.args), body, types, terminator)
 end
 
 """
     finalize_control_flow_op(op::PartialControlFlowOp) -> ControlFlowOp
 
-Convert a PartialControlFlowOp to a final ControlFlowOp by:
-1. Converting all nested regions from PartialBlock to Block
-2. Constructing the appropriate concrete type (IfOp, ForOp, WhileOp, LoopOp)
+Convert a PartialControlFlowOp to a final ControlFlowOp.
+Nested regions are finalized recursively with their own local SSA namespaces.
 """
 function finalize_control_flow_op(op::PartialControlFlowOp)::ControlFlowOp
-    # Convert all regions
+    # Convert all regions (each has its own local SSA namespace)
     regions = Dict{Symbol, Block}()
     for (name, region) in op.regions
-        regions[name] = finalize_ir(region::PartialBlock)
+        regions[name] = finalize_block(region::PartialBlock)
     end
 
-    init_values = copy(op.init_values)
+    init_values = [negate_negative_ssa(v) for v in op.init_values]
 
-    # Construct the appropriate concrete type
+    # Construct the appropriate concrete type with converted operands
     if op.head == :if
         return IfOp(
-            op.operands.condition,
+            negate_negative_ssa(op.operands.condition),
             regions[:then],
             regions[:else],
             init_values
         )
     elseif op.head == :for
         return ForOp(
-            op.operands.lower,
-            op.operands.upper,
-            op.operands.step,
+            negate_negative_ssa(op.operands.lower),
+            negate_negative_ssa(op.operands.upper),
+            negate_negative_ssa(op.operands.step),
             op.operands.iv_arg,
             regions[:body],
             init_values
@@ -1063,11 +1100,6 @@ end
 
 function _scan_expr_uses!(used::BitSet, v::SSAValue)
     push!(used, v.id)
-end
-
-function _scan_expr_uses!(used::BitSet, v::LocalSSAValue)
-    # LocalSSAValue references block positions, not original SSA indices
-    # They can't be tracked in the same BitSet - just skip
 end
 
 function _scan_expr_uses!(used::BitSet, v::Expr)
@@ -1221,93 +1253,32 @@ function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
     _scan_uses!(used, op.body)
 end
 
-# Compute which LocalSSAValue positions are used (for final Block)
-# NOTE: This only scans the immediate block, not nested regions, because
-# LocalSSAValue positions are block-local (different blocks have their own
-# position indices starting from 1).
-function compute_local_used(block::Block)
-    local_used = BitSet()
+# Compute which SSAValue indices are used in a Block (for pretty printing)
+function compute_block_used(block::Block)
+    used = BitSet()
     for expr in block.body
         if expr isa IfOp
-            _scan_expr_local_uses!(local_used, expr.condition)
+            _scan_expr_uses!(used, expr.condition)
         elseif expr isa ForOp
-            _scan_expr_local_uses!(local_used, expr.lower)
-            _scan_expr_local_uses!(local_used, expr.upper)
-            _scan_expr_local_uses!(local_used, expr.step)
+            _scan_expr_uses!(used, expr.lower)
+            _scan_expr_uses!(used, expr.upper)
+            _scan_expr_uses!(used, expr.step)
             for v in expr.init_values
-                _scan_expr_local_uses!(local_used, v)
+                _scan_expr_uses!(used, v)
             end
         elseif expr isa LoopOp || expr isa WhileOp
             for v in expr.init_values
-                _scan_expr_local_uses!(local_used, v)
+                _scan_expr_uses!(used, v)
             end
         else
-            _scan_expr_local_uses!(local_used, expr)
+            _scan_expr_uses!(used, expr)
         end
     end
     # Scan terminator
     if block.terminator !== nothing
-        _scan_terminator_local_uses!(local_used, block.terminator)
+        _scan_terminator_uses!(used, block.terminator)
     end
-    return local_used
-end
-
-function _scan_expr_local_uses!(local_used::BitSet, v::LocalSSAValue)
-    push!(local_used, v.id)
-end
-
-function _scan_expr_local_uses!(local_used::BitSet, v::Expr)
-    for arg in v.args
-        _scan_expr_local_uses!(local_used, arg)
-    end
-end
-
-function _scan_expr_local_uses!(local_used::BitSet, v::PhiNode)
-    for val in v.values
-        _scan_expr_local_uses!(local_used, val)
-    end
-end
-
-function _scan_expr_local_uses!(local_used::BitSet, v::PiNode)
-    _scan_expr_local_uses!(local_used, v.val)
-end
-
-function _scan_expr_local_uses!(local_used::BitSet, v)
-    # Other values don't reference LocalSSAValue
-end
-
-function _scan_terminator_local_uses!(local_used::BitSet, term::ReturnNode)
-    if isdefined(term, :val)
-        _scan_expr_local_uses!(local_used, term.val)
-    end
-end
-
-function _scan_terminator_local_uses!(local_used::BitSet, term::YieldOp)
-    for v in term.values
-        _scan_expr_local_uses!(local_used, v)
-    end
-end
-
-function _scan_terminator_local_uses!(local_used::BitSet, term::ContinueOp)
-    for v in term.values
-        _scan_expr_local_uses!(local_used, v)
-    end
-end
-
-function _scan_terminator_local_uses!(local_used::BitSet, term::BreakOp)
-    for v in term.values
-        _scan_expr_local_uses!(local_used, v)
-    end
-end
-
-function _scan_terminator_local_uses!(local_used::BitSet, term::ConditionOp)
-    _scan_expr_local_uses!(local_used, term.condition)
-    for v in term.args
-        _scan_expr_local_uses!(local_used, v)
-    end
-end
-
-function _scan_terminator_local_uses!(local_used::BitSet, ::Nothing)
+    return used
 end
 
 """
@@ -1323,7 +1294,7 @@ mutable struct IRPrinter
     line_prefix::String    # Prefix for continuation lines (│, spaces)
     is_last_stmt::Bool     # Whether current stmt is last in block
     used::BitSet           # Which SSA values are used (for type coloring)
-    local_used::BitSet     # Which LocalSSAValue positions are used (for final blocks)
+    block_used::BitSet     # Which SSA values are used in current block (for nested blocks)
     max_idx_width::Int     # Max width of "%N = " for alignment (like Julia's SSA printer)
     color::Bool            # Whether to use colors
 end
@@ -1336,23 +1307,23 @@ end
 
 function IRPrinter(io::IO, code::CodeInfo, entry::Block)
     used = compute_used_ssas(entry)
-    local_used = compute_local_used(entry)
+    block_used = compute_block_used(entry)
     # Compute max index width for alignment: "%N = " where N is the max index
     max_idx_width = ndigits(length(entry.body)) + 4  # % + digits + space + = + space
     color = get(io, :color, false)::Bool
-    IRPrinter(io, code, 0, "", false, used, local_used, max_idx_width, color)
+    IRPrinter(io, code, 0, "", false, used, block_used, max_idx_width, color)
 end
 
 function indent(p::IRPrinter, n::Int=1)
     new_prefix = p.line_prefix * "    "  # 4 spaces per indent level
-    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.local_used, p.max_idx_width, p.color)
+    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.block_used, p.max_idx_width, p.color)
 end
 
-# Create a child printer for a nested Block with fresh local_used and max_idx_width
+# Create a child printer for a nested Block with fresh block_used and max_idx_width
 function child_printer(p::IRPrinter, nested_block::Block, cont_prefix::String)
-    nested_local_used = compute_local_used(nested_block)
+    nested_block_used = compute_block_used(nested_block)
     nested_max_idx_width = ndigits(length(nested_block.body)) + 4
-    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, nested_local_used, nested_max_idx_width, p.color)
+    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, nested_block_used, nested_max_idx_width, p.color)
 end
 
 # Print region header: "├ label(%arg1::Type):" (regions always use ├, closing is on last line of content)
@@ -1395,13 +1366,6 @@ function print_value(p::IRPrinter, v::BlockArg)
     print(p.io, "%arg", v.id)
 end
 
-function print_value(p::IRPrinter, v::LocalSSAValue)
-    print(p.io, "%", v.id)
-    if v.result_idx > 1
-        print(p.io, "#", v.result_idx)
-    end
-end
-
 function print_value(p::IRPrinter, v::Argument)
     # Use slot names if available from CodeInfo
     if v.n <= length(p.code.slotnames)
@@ -1434,13 +1398,6 @@ function format_value(p::IRPrinter, v::SSAValue)
 end
 function format_value(p::IRPrinter, v::BlockArg)
     string("%arg", v.id)
-end
-function format_value(p::IRPrinter, v::LocalSSAValue)
-    if v.result_idx == 1
-        string("%", v.id)
-    else
-        string("%", v.id, "#", v.result_idx)
-    end
 end
 function format_value(p::IRPrinter, v::Argument)
     if v.n <= length(p.code.slotnames)
@@ -1906,7 +1863,7 @@ function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String=
 
     # For final Block, we use position index instead of SSA index
     # Type color: cyan if used, grey if unused (matches Julia's SSA IR printer)
-    is_used = idx in p.local_used
+    is_used = idx in p.block_used
     if is_used
         idx_s = string(idx)
         pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
@@ -2017,7 +1974,7 @@ function print_expr_with_type_closing(p::IRPrinter, idx::Int, expr, typ; cascade
     print_colored(p, closing_prefix, :light_black)
 
     # Type color: cyan if used, grey if unused (matches Julia's SSA IR printer)
-    is_used = idx in p.local_used
+    is_used = idx in p.block_used
     if is_used
         idx_s = string(idx)
         pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
@@ -2097,7 +2054,7 @@ function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int; is_last::Bool=false
     print(p.io, " ")
 
     # Show assignment if this position is used
-    if pos in p.local_used
+    if pos in p.block_used
         print(p.io, "%", pos, " = ")
     end
 
@@ -2132,7 +2089,7 @@ function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int; is_last::Bool=fal
     print(p.io, " ")
 
     # Show assignment if this position is used
-    if pos in p.local_used
+    if pos in p.block_used
         print(p.io, "%", pos, " = ")
     end
 
@@ -2168,7 +2125,7 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int; is_last::Bool=f
     print(p.io, " ")
 
     # Show assignment if this position is used
-    if pos in p.local_used
+    if pos in p.block_used
         print(p.io, "%", pos, " = ")
     end
 
@@ -2194,7 +2151,7 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int; is_last::Bool
     print(p.io, " ")
 
     # Show assignment if this position is used
-    if pos in p.local_used
+    if pos in p.block_used
         print(p.io, "%", pos, " = ")
     end
 

@@ -1,6 +1,6 @@
 # public API
 
-export code_structured, structurize!, StructuredCodeInfo, LocalSSAValue
+export code_structured, structurize!, StructuredCodeInfo
 export ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp
 export Block, BlockArg
 export YieldOp, ContinueOp, BreakOp, ConditionOp
@@ -73,8 +73,8 @@ Five-phase approach:
 1. Build structure (pure SSAValues, no BlockArgs)
 2. Create BlockArgs and substitute SSA→BlockArg
 3. Upgrade loop patterns (:for/:while) if enabled
-4. Convert to LocalSSAValues
-5. Finalize IR (flatten PartialBlock/PartialControlFlowOp → Block/ControlFlowOp)
+4. Convert to local SSA (negative indices for block-local values)
+5. Finalize IR (convert negative→positive indices, flatten PartialBlock→Block)
 
 When `loop_patterning=true` (default), loops are classified as :for (bounded counters)
 or :while (condition-based). When `false`, all loops remain as :loop.
@@ -103,10 +103,10 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
                 push!(new_entry.body, Statement(i, stmt, types[i]))
             end
         end
-        # Phase 4: Convert to LocalSSAValues
+        # Phase 4: Convert to local SSA (negative indices)
         convert_to_local_ssa!(new_entry)
-        # Phase 5: Finalize IR
-        sci.entry = finalize_ir(new_entry)
+        # Phase 5: Finalize IR (convert negative → positive global indices)
+        sci.entry = finalize_ir(new_entry, n)
         return sci
     end
 
@@ -127,11 +127,11 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
         apply_loop_patterns!(partial_entry)
     end
 
-    # Phase 4: Convert to LocalSSAValues
+    # Phase 4: Convert to local SSA (negative indices)
     convert_to_local_ssa!(partial_entry)
 
-    # Phase 5: Finalize IR (PartialBlock → Block)
-    sci.entry = finalize_ir(partial_entry)
+    # Phase 5: Finalize IR (convert negative → positive global indices)
+    sci.entry = finalize_ir(partial_entry, n)
 
     return sci
 end

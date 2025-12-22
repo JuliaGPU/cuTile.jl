@@ -4,6 +4,7 @@ using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp, Statement,
                       validate_scf, check_global_ssa_refs, PartialBlock, PartialControlFlowOp
+using Core: SSAValue
 
 # Helper to check if block contains a control flow op with given head
 # Works with both PartialControlFlowOp (during construction) and concrete types (final)
@@ -220,9 +221,9 @@ end
     then_blk = if_op.then_region
     else_blk = if_op.else_region
 
-    # Condition references the comparison result (LocalSSAValue after Phase 4 conversion)
-    @test if_op.condition isa LocalSSAValue
-    @test if_op.condition.id == 1  # Position 1 in block body
+    # Condition references the comparison result (SSAValue with local index after finalization)
+    @test if_op.condition isa SSAValue
+    @test if_op.condition.id > 0  # Positive local index after finalization
 
     # Both branches terminate with return
     @test then_blk.terminator isa Core.ReturnNode
@@ -496,8 +497,8 @@ end  # ForOp detection
     # MLIR-style two-region structure: before (condition) and after (body)
     # Condition is in the ConditionOp terminator of the before region
     @test before_blk.terminator isa ConditionOp
-    # Condition is now LocalSSAValue (referencing position in before region)
-    @test before_blk.terminator.condition isa LocalSSAValue
+    # Condition is SSAValue with global index (after finalization)
+    @test before_blk.terminator.condition isa SSAValue
 
     # No loop-carried values (flag is just re-read each iteration)
     @test isempty(while_op.init_values)
@@ -747,7 +748,7 @@ end
 
     # All SSAValue references have been converted:
     # 1. Outer scope values are captured as BlockArgs
-    # 2. Inner block SSAValues are converted to LocalSSAValue
+    # 2. Inner block values get unique global SSAValue indices after finalization
     ssa_ref_count = check_global_ssa_refs(sci)
     @test ssa_ref_count == 0
     check_global_ssa_refs(sci; strict=true)  # Should not throw

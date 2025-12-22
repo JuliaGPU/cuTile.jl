@@ -934,48 +934,68 @@ function extract_tile_shape(@nospecialize(T))
     Int[]
 end
 
+"""
+    find_defining_expr(block::Block, ssa_idx::Int) -> Union{Any, Nothing}
+
+Find the expression in block.body that defines SSAValue(ssa_idx).
+SSA indices are assigned as follows:
+- Statements (non-ControlFlowOp items): always 1 SSA result
+- ControlFlowOps: 0 results if types[i]===Nothing, else count from types[i]
+"""
+function find_defining_expr(block::Block, ssa_idx::Int)
+    current_ssa = 0
+    for (expr, result_type) in zip(block.body, block.types)
+        # Count results for this item
+        # Statements always produce 1 result (even if Julia type is Nothing)
+        # ControlFlowOps produce 0 results if types entry is Nothing
+        n_results = if expr isa ControlFlowOp
+            if result_type === Nothing
+                0
+            elseif result_type isa Vector
+                length(result_type)
+            else
+                1
+            end
+        else
+            # Statements always have 1 SSA result
+            1
+        end
+
+        if n_results > 0
+            # This item produces results at indices (current_ssa+1) to (current_ssa+n_results)
+            if ssa_idx >= current_ssa + 1 && ssa_idx <= current_ssa + n_results
+                return expr
+            end
+            current_ssa += n_results
+        end
+    end
+    return nothing
+end
+
 function extract_index_values(ctx::CodegenContext, args::AbstractVector, idx_pos::Int, ndim::Int)
     index_vals = Value[]
     length(args) < idx_pos && return index_vals
 
     index_arg = args[idx_pos]
     if index_arg isa SSAValue
-        tuple_stmt = code(ctx.target)[index_arg.id]
-        if tuple_stmt isa Expr && tuple_stmt.head === :call
-            callee = tuple_stmt.args[1]
-            if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
-                for elem_arg in tuple_stmt.args[2:end]
-                    tv = emit_value!(ctx, elem_arg)
-                    tv.v !== nothing && push!(index_vals, tv.v)
-                end
-                return index_vals
-            end
-        end
-        # Single value
-        tv = emit_value!(ctx, index_arg)
-        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
-    elseif index_arg isa LocalSSAValue
-        # LocalSSAValue - look up the expression in the current block
+        # After finalization, SSAValue indices are LOCAL to the current block.
+        # SSA indices are assigned sequentially to items that produce results,
+        # skipping 0-result ops (like WhileOp with Nothing result).
         if ctx.current_block !== nothing
-            pos = index_arg.id
-            if pos >= 1 && pos <= length(ctx.current_block.body)
-                # In final Block, body items are expressions directly (not Statement wrappers)
-                expr = ctx.current_block.body[pos]
-                # Handle Statement wrapper for PartialBlock compatibility
-                tuple_expr = expr isa Statement ? expr.expr : expr
-                if tuple_expr isa Expr && tuple_expr.head === :call
-                    callee = tuple_expr.args[1]
-                    if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
-                        for elem_arg in tuple_expr.args[2:end]
-                            tv = emit_value!(ctx, elem_arg)
-                            tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
-                        end
-                        return index_vals
+            expr = find_defining_expr(ctx.current_block, index_arg.id)
+            if expr isa Expr && expr.head === :call
+                callee = expr.args[1]
+                if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
+                    for elem_arg in expr.args[2:end]
+                        tv = emit_value!(ctx, elem_arg)
+                        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
                     end
+                    return index_vals
                 end
             end
         end
-        # Fallback: try to emit the LocalSSAValue directly
+
+        # Single value (not a tuple)
         tv = emit_value!(ctx, index_arg)
         tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
     else

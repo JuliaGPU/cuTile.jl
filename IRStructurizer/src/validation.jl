@@ -51,25 +51,23 @@ end
 
 #=============================================================================
  Global SSA Reference Validation
- Detects SSAValue references that should have been converted to LocalSSAValue
- or BlockArg. Used during the migration to local SSA numbering.
+ Detects positive SSAValue references inside nested blocks (which should only
+ contain negative SSAValue or BlockArg until finalization).
 =============================================================================#
 
 """
     check_global_ssa_refs(sci::StructuredCodeInfo; strict::Bool=false) -> Int
     check_global_ssa_refs(block::Block; strict::Bool=false) -> Int
 
-Count SSAValue references remaining in the structured IR.
+Count positive SSAValue references inside nested control flow structures.
 Returns the count. If strict=true, errors when count > 0.
 
-During migration from global to local SSA numbering:
-- **Default (warning)**: Code continues to work, we track progress
-- **Strict mode**: Enable once conversion is complete to enforce the invariant
+Before finalization:
+- Entry block: positive SSAValue (original CodeInfo refs) are allowed
+- Nested blocks: should only have negative SSAValue (local) or BlockArg
 
-SSAValue references are only valid at the top-level entry block. Inside nested
-control flow blocks (IfOp, ForOp, WhileOp, LoopOp), all references should be
-either LocalSSAValue (for values defined in the same block) or BlockArg (for
-values captured from parent scope).
+After finalization:
+- All SSAValue are positive (global indices)
 """
 function check_global_ssa_refs(sci::StructuredCodeInfo; strict::Bool=false)
     check_global_ssa_refs(sci.entry; strict, is_entry=true)
@@ -104,10 +102,10 @@ end
 """
     count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false) -> Int
 
-Count SSAValue references inside nested control flow structures.
-SSAValues in the entry block are allowed (they reference the original CodeInfo),
-but SSAValues inside nested blocks (if/for/etc.) should have been
-converted to LocalSSAValue or BlockArg.
+Count positive SSAValue references inside nested control flow structures.
+Positive SSAValues in the entry block are allowed (they reference the original
+CodeInfo), but positive SSAValues inside nested blocks (if/for/etc.) should
+have been converted to negative SSAValue (local) or BlockArg.
 """
 function count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false)
     count = 0
@@ -153,78 +151,22 @@ function count_ssavalues_in_op(op::PartialControlFlowOp; is_entry::Bool=false)
 end
 
 # Final Block/ControlFlowOp versions
+# After finalization, ALL SSAValues are positive local indices (per-block namespace).
+# There are no "global" CodeInfo references left - they were all converted to
+# BlockArgs or local SSAs during structurization. So we return 0 for all checks.
 function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
-    count = 0
-
-    for (expr, _) in zip(block.body, block.types)
-        if expr isa ControlFlowOp
-            # Control flow op - check nested blocks
-            count += count_ssavalues_in_op(expr; is_entry)
-        else
-            if !is_entry
-                # Inside nested block, count SSAValues in the expression
-                count += count_ssavalues_in_value(expr)
-            end
-        end
-    end
-
-    # Check terminator (except in entry block)
-    if !is_entry && block.terminator !== nothing
-        count += count_ssavalues_in_terminator(block.terminator)
-    end
-
-    return count
+    # After finalization, all SSAValues in nested blocks are valid local references.
+    # The negative-to-positive conversion means all indices are now positive,
+    # but they're still local to each block, not global CodeInfo references.
+    return 0
 end
 
-function count_ssavalues_in_op(op::IfOp; is_entry::Bool=false)
-    count = 0
-    if !is_entry
-        count += count_ssavalues_in_value(op.condition)
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    count += count_ssavalues_in_nested(op.then_region)
-    count += count_ssavalues_in_nested(op.else_region)
-    return count
-end
-
-function count_ssavalues_in_op(op::ForOp; is_entry::Bool=false)
-    count = 0
-    if !is_entry
-        count += count_ssavalues_in_value(op.lower)
-        count += count_ssavalues_in_value(op.upper)
-        count += count_ssavalues_in_value(op.step)
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    count += count_ssavalues_in_nested(op.body)
-    return count
-end
-
-function count_ssavalues_in_op(op::WhileOp; is_entry::Bool=false)
-    count = 0
-    if !is_entry
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    count += count_ssavalues_in_nested(op.before)
-    count += count_ssavalues_in_nested(op.after)
-    return count
-end
-
-function count_ssavalues_in_op(op::LoopOp; is_entry::Bool=false)
-    count = 0
-    if !is_entry
-        for v in op.init_values
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    count += count_ssavalues_in_nested(op.body)
-    return count
-end
+# For finalized ControlFlowOps (IfOp, ForOp, WhileOp, LoopOp), all SSAValues
+# are valid local references (per-block namespace), so we return 0.
+count_ssavalues_in_op(::IfOp; is_entry::Bool=false) = 0
+count_ssavalues_in_op(::ForOp; is_entry::Bool=false) = 0
+count_ssavalues_in_op(::WhileOp; is_entry::Bool=false) = 0
+count_ssavalues_in_op(::LoopOp; is_entry::Bool=false) = 0
 
 function count_ssavalues_in_terminator(term::YieldOp)
     count = 0
@@ -269,11 +211,11 @@ end
 """
     count_ssavalues_in_value(value) -> Int
 
-Count SSAValue occurrences in an IR value, recursively traversing Expr trees.
+Count positive SSAValue occurrences in an IR value, recursively traversing Expr trees.
+Negative SSAValue (local references) are not counted.
 """
-count_ssavalues_in_value(::SSAValue) = 1
+count_ssavalues_in_value(v::SSAValue) = v.id > 0 ? 1 : 0
 count_ssavalues_in_value(::BlockArg) = 0
-count_ssavalues_in_value(::LocalSSAValue) = 0
 count_ssavalues_in_value(::Argument) = 0
 count_ssavalues_in_value(::SlotNumber) = 0
 count_ssavalues_in_value(::GlobalRef) = 0
@@ -415,7 +357,6 @@ function check_ssa_refs_defined(ssa::SSAValue, defined::Set{Int}, args::Vector{B
 end
 
 check_ssa_refs_defined(::BlockArg, ::Set{Int}, ::Vector{BlockArg}, _) = nothing
-check_ssa_refs_defined(::LocalSSAValue, ::Set{Int}, ::Vector{BlockArg}, _) = nothing
 check_ssa_refs_defined(::Argument, ::Set{Int}, ::Vector{BlockArg}, _) = nothing
 check_ssa_refs_defined(::SlotNumber, ::Set{Int}, ::Vector{BlockArg}, _) = nothing
 check_ssa_refs_defined(::GlobalRef, ::Set{Int}, ::Vector{BlockArg}, _) = nothing

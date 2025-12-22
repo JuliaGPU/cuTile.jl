@@ -103,17 +103,14 @@ Holds all state during Tile IR code generation for a kernel function.
 Maps Julia SSA values to CGVals and manages bytecode emission.
 """
 mutable struct CodegenContext
-    # SSA value mappings
+    # SSA value mappings (all SSA indices are positive local indices after finalization)
     values::Dict{Int, CGVal}      # SSA id -> CGVal
     args::Dict{Int, CGVal}        # Argument index -> CGVal
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
-    # LocalSSAValue support (for local SSA numbering)
-    # Key is (block_key, local_idx, result_idx) to support multi-result ops
-    local_values::Dict{Tuple{UInt, Int, Int}, CGVal}  # (block_key, local_idx, result_idx) -> CGVal
-    current_block::Union{PartialBlock, Block, Nothing}  # Current block being emitted
-    local_values_current::Union{CGVal, Nothing}  # Most recently emitted value (for tracking)
+    # Current block being emitted (for expression lookups, e.g., tuple decomposition)
+    current_block::Union{Block, Nothing}
 
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
@@ -130,6 +127,9 @@ mutable struct CodegenContext
 
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
+
+    # SSA index counter (next index to assign during emission)
+    next_ssa_idx::Int
 end
 
 function CodegenContext(writer::BytecodeWriter, target::TileTarget)
@@ -138,9 +138,7 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        Dict{Tuple{UInt, Int, Int}, CGVal}(),
-        nothing,
-        nothing,  # local_values_current
+        nothing,  # current_block
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
@@ -148,7 +146,8 @@ function CodegenContext(writer::BytecodeWriter, target::TileTarget)
         target,
         nothing,
         nothing,
-        Dict{Type, TypeId}()
+        Dict{Type, TypeId}(),
+        0  # Will be set before emit_block!
     )
 end
 
@@ -186,18 +185,6 @@ end
 
 function Base.setindex!(ctx::CodegenContext, tv::CGVal, block_arg::BlockArg)
     ctx.block_args[block_arg.id] = tv
-end
-
-function Base.getindex(ctx::CodegenContext, local_ssa::LocalSSAValue)
-    ctx.current_block === nothing && return nothing
-    block_key = objectid(ctx.current_block)
-    get(ctx.local_values, (block_key, local_ssa.id, local_ssa.result_idx), nothing)
-end
-
-function Base.setindex!(ctx::CodegenContext, tv::CGVal, local_ssa::LocalSSAValue)
-    ctx.current_block === nothing && error("Cannot set LocalSSAValue without current_block")
-    block_key = objectid(ctx.current_block)
-    ctx.local_values[(block_key, local_ssa.id, local_ssa.result_idx)] = tv
 end
 
 #=============================================================================
