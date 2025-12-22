@@ -56,40 +56,38 @@ Convert a control tree to structured IR entry block.
 All loops become PartialControlFlowOp(:loop, ...) (no pattern matching yet, no substitutions).
 """
 function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
-    block_id = Ref(1)
-    entry_block = tree_to_block(ctree, code, blocks, block_id)
-    return entry_block
+    return tree_to_block(ctree, code, blocks)
 end
 
 """
-    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> PartialBlock
+    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}) -> PartialBlock
 
 Convert a control tree node to a PartialBlock. Creates Statement objects with raw expressions (no substitutions).
 """
-function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     idx = node_index(tree)
     rtype = region_type(tree)
     block = PartialBlock()
 
     if rtype == REGION_BLOCK
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks)
     elseif rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, block_id)
+        handle_if_then_else!(block, tree, code, blocks)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, block_id)
+        handle_if_then!(block, tree, code, blocks)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, block_id)
+        handle_termination!(block, tree, code, blocks)
     elseif rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, block_id)
+        handle_loop!(block, tree, code, blocks)
     elseif rtype == REGION_SELF_LOOP
-        handle_self_loop!(block, tree, code, blocks, block_id)
+        handle_self_loop!(block, tree, code, blocks)
     elseif rtype == REGION_PROPER
-        handle_proper_region!(block, tree, code, blocks, block_id)
+        handle_proper_region!(block, tree, code, blocks)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, block_id)
+        handle_switch!(block, tree, code, blocks)
     else
         # Fallback: collect statements
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks)
     end
 
     # Set terminator if not already set
@@ -103,11 +101,11 @@ end
 =============================================================================#
 
 """
-    handle_block_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_block_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_BLOCK - a linear sequence of blocks.
 """
-function handle_block_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_block_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     if isempty(children(tree))
         # Leaf node - collect statements from the block
         idx = node_index(tree)
@@ -119,50 +117,50 @@ function handle_block_region!(block::PartialBlock, tree::ControlTree, code::Code
         for child in children(tree)
             child_rtype = region_type(child)
             if child_rtype == REGION_BLOCK
-                handle_block_region!(block, child, code, blocks, block_id)
+                handle_block_region!(block, child, code, blocks)
             else
                 # Nested control flow - create appropriate op
-                handle_nested_region!(block, child, code, blocks, block_id)
+                handle_nested_region!(block, child, code, blocks)
             end
         end
     end
 end
 
 """
-    handle_nested_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_nested_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle a nested control flow region.
 """
-function handle_nested_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_nested_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     rtype = region_type(tree)
 
     if rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, block_id)
+        handle_if_then_else!(block, tree, code, blocks)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, block_id)
+        handle_if_then!(block, tree, code, blocks)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, block_id)
+        handle_termination!(block, tree, code, blocks)
     elseif rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, block_id)
+        handle_loop!(block, tree, code, blocks)
     elseif rtype == REGION_SELF_LOOP
-        handle_self_loop!(block, tree, code, blocks, block_id)
+        handle_self_loop!(block, tree, code, blocks)
     elseif rtype == REGION_PROPER
-        handle_proper_region!(block, tree, code, blocks, block_id)
+        handle_proper_region!(block, tree, code, blocks)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, block_id)
+        handle_switch!(block, tree, code, blocks)
     else
-        handle_block_region!(block, tree, code, blocks, block_id)
+        handle_block_region!(block, tree, code, blocks)
     end
 end
 
 """
-    handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_IF_THEN_ELSE.
 """
-function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     tree_children = children(tree)
-    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, block_id)
+    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -185,8 +183,8 @@ function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::Code
     then_tree = tree_children[2]
     else_tree = tree_children[3]
 
-    then_blk = tree_to_block(then_tree, code, blocks, block_id)
-    else_blk = tree_to_block(else_tree, code, blocks, block_id)
+    then_blk = tree_to_block(then_tree, code, blocks)
+    else_blk = tree_to_block(else_tree, code, blocks)
 
     # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
@@ -195,13 +193,13 @@ function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::Code
 end
 
 """
-    handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_IF_THEN.
 """
-function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     tree_children = children(tree)
-    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, block_id)
+    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -222,7 +220,7 @@ function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo,
 
     # Then block
     then_tree = tree_children[2]
-    then_blk = tree_to_block(then_tree, code, blocks, block_id)
+    then_blk = tree_to_block(then_tree, code, blocks)
 
     # Empty else block
     else_blk = PartialBlock()
@@ -234,13 +232,13 @@ function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo,
 end
 
 """
-    handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_TERMINATION - branches where some paths terminate.
 """
-function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     tree_children = children(tree)
-    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, block_id)
+    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -263,14 +261,14 @@ function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeI
     if length(tree_children) >= 3
         then_tree = tree_children[2]
         else_tree = tree_children[3]
-        then_blk = tree_to_block(then_tree, code, blocks, block_id)
-        else_blk = tree_to_block(else_tree, code, blocks, block_id)
+        then_blk = tree_to_block(then_tree, code, blocks)
+        else_blk = tree_to_block(else_tree, code, blocks)
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
         push!(block.body, if_op)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
-        then_blk = tree_to_block(then_tree, code, blocks, block_id)
+        then_blk = tree_to_block(then_tree, code, blocks)
         else_blk = PartialBlock()
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
@@ -279,22 +277,22 @@ function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeI
 end
 
 """
-    handle_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_WHILE_LOOP and REGION_NATURAL_LOOP.
 Phase 1: Always creates PartialControlFlowOp(:loop, ...) with metadata. Pattern matching happens in Phase 3.
 """
-function handle_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
-    loop_op = build_loop_op_phase1(tree, code, blocks, block_id)
+function handle_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
+    loop_op = build_loop_op_phase1(tree, code, blocks)
     push!(block.body, loop_op)
 end
 
 """
-    handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_SELF_LOOP.
 """
-function handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     idx = node_index(tree)
 
     body_blk = PartialBlock()
@@ -308,24 +306,24 @@ function handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInf
 end
 
 """
-    handle_proper_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_proper_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_PROPER - acyclic region not matching other patterns.
 """
-function handle_proper_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_proper_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     # Process as a sequence of blocks
-    handle_block_region!(block, tree, code, blocks, block_id)
+    handle_block_region!(block, tree, code, blocks)
 end
 
 """
-    handle_switch!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+    handle_switch!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Handle REGION_SWITCH.
 """
-function handle_switch!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function handle_switch!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     # For now, handle as a nested if-else chain
     # TODO: Implement proper switch handling if needed
-    handle_block_region!(block, tree, code, blocks, block_id)
+    handle_block_region!(block, tree, code, blocks)
 end
 
 #=============================================================================
@@ -404,12 +402,12 @@ end
 =============================================================================#
 
 """
-    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int}) -> PartialControlFlowOp
+    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}) -> PartialControlFlowOp
 
 Build a PartialControlFlowOp(:loop, ...) for Phase 1. Pure structure building - no BlockArgs or substitutions.
 BlockArg creation and SSA→BlockArg substitution happens in Phase 2 (apply_block_args!).
 """
-function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
+function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo})
     stmts = code.code
     types = code.ssavaluetypes
     header_idx = node_index(tree)
@@ -492,7 +490,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(then_blk, child, code, blocks, block_id)
+                handle_block_region!(then_blk, child, code, blocks)
             end
         end
         # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
@@ -510,7 +508,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(body, child, code, blocks, block_id)
+                handle_block_region!(body, child, code, blocks)
             end
         end
         # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
