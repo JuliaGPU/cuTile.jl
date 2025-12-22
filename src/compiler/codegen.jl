@@ -985,17 +985,6 @@ function resolve_function(ctx::CodegenContext, @nospecialize(ref))
             return getfield(stmt.mod, stmt.name)
         elseif stmt isa QuoteNode
             return stmt.value
-        elseif stmt isa Expr && stmt.head === :call
-            # Handle getproperty: Base.getproperty(obj, :name) -> obj.name
-            callee = stmt.args[1]
-            if callee isa GlobalRef && callee.mod === Base && callee.name === :getproperty
-                obj = resolve_function(ctx, stmt.args[2])
-                prop = stmt.args[3]
-                prop_name = prop isa QuoteNode ? prop.value : prop
-                if obj isa Module && prop_name isa Symbol
-                    return getfield(obj, prop_name)
-                end
-            end
         end
     end
     return ref

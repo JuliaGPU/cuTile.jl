@@ -8,9 +8,6 @@ emit_intrinsic!(ctx::CodegenContext, @nospecialize(func), args, @nospecialize(re
 # Skip tuple construction
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Core.tuple), args, @nospecialize(result_type)) = nothing
 
-# Skip getproperty (module.field access, resolved elsewhere)
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getproperty), args, @nospecialize(result_type)) = nothing
-
 # Skip isa type assertions (inserted by Julia during inlining)
 emit_intrinsic!(ctx::CodegenContext, ::typeof(isa), args, @nospecialize(result_type)) = nothing
 
