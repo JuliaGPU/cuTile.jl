@@ -216,22 +216,21 @@ A basic block with SSA metadata, used during IR construction (Phases 1-4).
 Same as Block but with explicit name to distinguish from final flattened Block.
 """
 mutable struct PartialBlock
-    id::Int
     args::Vector{BlockArg}
     body::Vector{PartialBlockItem}
     terminator::Terminator
 end
 
-PartialBlock(id::Int) = PartialBlock(id, BlockArg[], PartialBlockItem[], nothing)
+PartialBlock() = PartialBlock(BlockArg[], PartialBlockItem[], nothing)
 
 function Base.show(io::IO, block::PartialBlock)
-    print(io, "PartialBlock(id=", block.id)
+    print(io, "PartialBlock(")
     if !isempty(block.args)
-        print(io, ", args=", length(block.args))
+        print(io, "args=", length(block.args), ", ")
     end
     n_stmts = count(x -> x isa Statement, block.body)
     n_ops = count(x -> x isa PartialControlFlowOp, block.body)
-    print(io, ", stmts=", n_stmts)
+    print(io, "stmts=", n_stmts)
     if n_ops > 0
         print(io, ", ops=", n_ops)
     end
@@ -418,7 +417,7 @@ function StructuredCodeInfo(code::CodeInfo)
     types = code.ssavaluetypes
     n = length(stmts)
 
-    entry = PartialBlock(1)
+    entry = PartialBlock()
 
     for i in 1:n
         stmt = stmts[i]

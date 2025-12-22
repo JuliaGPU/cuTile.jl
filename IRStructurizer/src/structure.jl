@@ -69,10 +69,7 @@ Convert a control tree node to a PartialBlock. Creates Statement objects with ra
 function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     idx = node_index(tree)
     rtype = region_type(tree)
-    id = block_id[]
-    block_id[] += 1
-
-    block = PartialBlock(id)
+    block = PartialBlock()
 
     if rtype == REGION_BLOCK
         handle_block_region!(block, tree, code, blocks, block_id)
@@ -228,8 +225,7 @@ function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo,
     then_blk = tree_to_block(then_tree, code, blocks, block_id)
 
     # Empty else block
-    else_blk = PartialBlock(block_id[])
-    block_id[] += 1
+    else_blk = PartialBlock()
 
     # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
@@ -275,8 +271,7 @@ function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeI
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
         then_blk = tree_to_block(then_tree, code, blocks, block_id)
-        else_blk = PartialBlock(block_id[])
-        block_id[] += 1
+        else_blk = PartialBlock()
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
         push!(block.body, if_op)
@@ -302,8 +297,7 @@ Handle REGION_SELF_LOOP.
 function handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, block_id::Ref{Int})
     idx = node_index(tree)
 
-    body_blk = PartialBlock(block_id[])
-    block_id[] += 1
+    body_blk = PartialBlock()
 
     if 1 <= idx <= length(blocks)
         collect_block_statements!(body_blk, blocks[idx], code)
@@ -467,8 +461,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     end
 
     # Build loop body block (no BlockArgs yet - Phase 2 will add them)
-    body = PartialBlock(block_id[])
-    block_id[] += 1
+    body = PartialBlock()
     # body.args stays empty - Phase 2 will populate it
 
     # Find the condition for loop exit
@@ -493,8 +486,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     if condition !== nothing
         cond_value = convert_phi_value(condition)
 
-        then_blk = PartialBlock(block_id[])
-        block_id[] += 1
+        then_blk = PartialBlock()
 
         # Process loop body blocks (excluding header)
         for child in children(tree)
@@ -506,8 +498,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
         then_blk.terminator = ContinueOp(copy(carried_values))
 
-        else_blk = PartialBlock(block_id[])
-        block_id[] += 1
+        else_blk = PartialBlock()
         # BreakOp with result_vars (SSAValues) - Phase 2 will substitute to BlockArgs
         else_blk.terminator = BreakOp(IRValue[rv for rv in result_vars])
 

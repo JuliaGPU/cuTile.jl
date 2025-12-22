@@ -262,7 +262,7 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp)
 
     # Rebuild body block without condition structure
     then_blk = condition_ifop.regions[:then]::PartialBlock
-    new_body = PartialBlock(body.id)
+    new_body = PartialBlock()
     # Only include carried values, not IV
     new_body.args = [arg for arg in body.args if arg !== iv_arg]
 
@@ -334,7 +334,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp)
     else_blk = condition_ifop.regions[:else]::PartialBlock
 
     # Build "before" region: statements before the :if + ConditionOp
-    before = PartialBlock(body.id)
+    before = PartialBlock()
     before.args = copy(body.args)
 
     for item in body.body
@@ -364,7 +364,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp)
     before.terminator = ConditionOp(cond_val, condition_args)
 
     # Build "after" region: statements from the then_block + YieldOp
-    after = PartialBlock(body.id + 1000)
+    after = PartialBlock()
     for (i, arg) in enumerate(before.args)
         push!(after.args, BlockArg(i, arg.type))
     end
