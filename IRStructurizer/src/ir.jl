@@ -1399,13 +1399,12 @@ end
 function print_stmt(p::IRPrinter, stmt::Statement; prefix::String="│  ")
     print_indent(p)
     print_colored(p, prefix, :light_black)
+    print(p.io, " ")
 
     # Only show %N = when the value is used (like Julia's code_typed)
     is_used = stmt.idx in p.used
     if is_used
         print(p.io, "%", stmt.idx, " = ")
-    else
-        print(p.io, "     ")  # Padding to align with used values
     end
     print_expr(p, stmt.expr)
     print_type_annotation(p, stmt.idx, stmt.type)
@@ -1567,7 +1566,7 @@ end
 function print_terminator(p::IRPrinter, term::ReturnNode; prefix::String="└──")
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, "      return")  # Padding to align with %N =
+    print(p.io, " return")
     if isdefined(term, :val)
         print(p.io, " ")
         print_value(p, term.val)
@@ -1578,8 +1577,8 @@ end
 function print_terminator(p::IRPrinter, term::YieldOp; prefix::String="└──")
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, "      ")  # Padding to align with %N =
-    print_colored(p, "yield", :yellow)  # Structured keyword
+    print(p.io, " ")
+    print_colored(p, "yield", :yellow)
     if !isempty(term.values)
         print(p.io, " ")
         for (i, v) in enumerate(term.values)
@@ -1593,8 +1592,8 @@ end
 function print_terminator(p::IRPrinter, term::ContinueOp; prefix::String="└──")
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, "      ")  # Padding to align with %N =
-    print_colored(p, "continue", :yellow)  # Structured keyword
+    print(p.io, " ")
+    print_colored(p, "continue", :yellow)
     if !isempty(term.values)
         print(p.io, " ")
         for (i, v) in enumerate(term.values)
@@ -1608,8 +1607,8 @@ end
 function print_terminator(p::IRPrinter, term::BreakOp; prefix::String="└──")
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, "      ")  # Padding to align with %N =
-    print_colored(p, "break", :yellow)  # Structured keyword
+    print(p.io, " ")
+    print_colored(p, "break", :yellow)
     if !isempty(term.values)
         print(p.io, " ")
         for (i, v) in enumerate(term.values)
@@ -1623,7 +1622,7 @@ end
 function print_terminator(p::IRPrinter, term::ConditionOp; prefix::String="└──")
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, "      ")  # Padding to align with %N =
+    print(p.io, " ")
     print_colored(p, "condition", :yellow)
     print(p.io, "(")
     print_value(p, term.condition)
@@ -1825,14 +1824,13 @@ end
 function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String="│  ")
     print_indent(p)
     print_colored(p, prefix, :light_black)
+    print(p.io, " ")
 
     # For final Block, we use position index instead of SSA index
     # Type color depends on whether the value is used
     is_used = idx in p.used
     if is_used
         print(p.io, "\$", idx, " = ")
-    else
-        print(p.io, "     ")  # Padding to align
     end
     print_expr(p, expr)
 
