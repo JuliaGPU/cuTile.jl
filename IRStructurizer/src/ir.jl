@@ -150,6 +150,45 @@ end
 # (The actual types are defined below)
 
 #=============================================================================
+ Structurization Context
+=============================================================================#
+
+"""
+    StructurizationContext
+
+Context for IR construction (Phases 1-4). Holds metadata that shouldn't be part
+of the IR node types themselves:
+- ssavaluetypes: Julia types for each SSA value (from CodeInfo)
+- result_vars: Mapping from op identity to its result SSAValues
+
+Using objectid(op) as key allows PartialControlFlowOp to remain simple while
+still tracking which SSAValues each op produces.
+"""
+mutable struct StructurizationContext
+    ssavaluetypes::Any  # Vector of types (from CodeInfo.ssavaluetypes)
+    result_vars::Dict{UInt, Vector{SSAValue}}  # objectid(op) => result_vars
+end
+
+StructurizationContext(ssavaluetypes) =
+    StructurizationContext(ssavaluetypes, Dict{UInt, Vector{SSAValue}}())
+
+"""
+    get_result_vars(ctx::StructurizationContext, op) -> Vector{SSAValue}
+
+Get result_vars for an op, returning empty vector if not found.
+"""
+get_result_vars(ctx::StructurizationContext, op) =
+    get(ctx.result_vars, objectid(op), SSAValue[])
+
+"""
+    set_result_vars!(ctx::StructurizationContext, op, vars::Vector{SSAValue})
+
+Store result_vars for an op.
+"""
+set_result_vars!(ctx::StructurizationContext, op, vars::Vector{SSAValue}) =
+    ctx.result_vars[objectid(op)] = vars
+
+#=============================================================================
  Unified Control Flow (PartialControlFlowOp / PartialBlock)
 =============================================================================#
 
@@ -158,28 +197,28 @@ end
     PartialControlFlowOp
 
 Unified control flow operation with head::Symbol for type discrimination.
-Used during IR construction (Phases 1-4). Contains result_vars for SSA tracking.
+Used during IR construction (Phases 1-4).
 
 Heads:
 - :if - if-then-else, regions[:then] and regions[:else]
 - :loop - general loop, regions[:body]
 - :for - counted for loop, regions[:body], operands has lower/upper/step/iv_arg
 - :while - MLIR-style while, regions[:before] and regions[:after]
+
+Note: result_vars are stored in StructurizationContext, not on the op itself.
 """
 mutable struct PartialControlFlowOp
     head::Symbol
     regions::Dict{Symbol, Any}  # Values are PartialBlock (forward reference)
     init_values::Vector{IRValue}
     operands::NamedTuple
-    result_vars::Vector{SSAValue}
 end
 
 # Convenience constructor
 function PartialControlFlowOp(head::Symbol, regions::Dict{Symbol, <:Any};
                               init_values::Vector{IRValue}=IRValue[],
-                              operands::NamedTuple=NamedTuple(),
-                              result_vars::Vector{SSAValue}=SSAValue[])
-    PartialControlFlowOp(head, regions, init_values, operands, result_vars)
+                              operands::NamedTuple=NamedTuple())
+    PartialControlFlowOp(head, regions, init_values, operands)
 end
 
 function Base.show(io::IO, op::PartialControlFlowOp)
@@ -187,9 +226,6 @@ function Base.show(io::IO, op::PartialControlFlowOp)
     print(io, ", regions=[", join(keys(op.regions), ", "), "]")
     if !isempty(op.init_values)
         print(io, ", init=", length(op.init_values))
-    end
-    if !isempty(op.result_vars)
-        print(io, ", results=", length(op.result_vars))
     end
     print(io, ")")
 end
@@ -877,14 +913,14 @@ function convert_ssa_in_terminator(term::Nothing, ::SSAToLocalMap)
 end
 
 """
-    convert_to_local_ssa!(block::PartialBlock)
+    convert_to_local_ssa!(block::PartialBlock, ctx::StructurizationContext)
 
 Convert SSAValue references within a block to negative SSAValue indices.
 Each statement and control flow op result gets a unique negative index.
 These negative indices are block-local and will be converted to positive
 global indices during finalization.
 """
-function convert_to_local_ssa!(block::PartialBlock)
+function convert_to_local_ssa!(block::PartialBlock, ctx::StructurizationContext)
     # Build mapping: Statement.idx → unique negative index
     # Each result gets its own unique negative index (no result_idx needed)
     idx_to_local = SSAToLocalMap()
@@ -894,9 +930,9 @@ function convert_to_local_ssa!(block::PartialBlock)
             counter -= 1
             idx_to_local[item.idx] = counter
         elseif item isa PartialControlFlowOp
-            # Control flow ops produce values through result_vars
+            # Control flow ops produce values through result_vars (stored in context)
             # Each result_var gets its own unique negative index
-            for rv in item.result_vars
+            for rv in get_result_vars(ctx, item)
                 counter -= 1
                 idx_to_local[rv.id] = counter
             end
@@ -911,7 +947,7 @@ function convert_to_local_ssa!(block::PartialBlock)
                 block.body[i] = Statement(item.idx, new_expr, item.type)
             end
         elseif item isa PartialControlFlowOp
-            convert_to_local_ssa_in_op!(item, idx_to_local)
+            convert_to_local_ssa_in_op!(item, idx_to_local, ctx)
         end
     end
 
@@ -921,7 +957,8 @@ function convert_to_local_ssa!(block::PartialBlock)
     end
 end
 
-function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_local::SSAToLocalMap)
+function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_local::SSAToLocalMap,
+                                     ctx::StructurizationContext)
     # Convert init_values using parent's mapping
     for (i, v) in enumerate(op.init_values)
         op.init_values[i] = convert_ssa_in_value(v, parent_idx_to_local)
@@ -940,7 +977,7 @@ function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_loc
 
     # Recursively convert nested blocks
     for (_, region) in op.regions
-        convert_to_local_ssa!(region)
+        convert_to_local_ssa!(region, ctx)
     end
 end
 
@@ -1003,22 +1040,22 @@ end
 negate_terminator_ssa(term::Nothing) = term
 
 """
-    finalize_ir(block::PartialBlock, ssavaluetypes) -> Block
+    finalize_ir(block::PartialBlock, ctx::StructurizationContext) -> Block
 
 Convert a PartialBlock to a final Block by:
 1. Converting negative SSAValue to positive local SSAValue (per-block)
 2. Flattening Statement wrappers to (expr, type) pairs in body/types vectors
-3. Converting PartialControlFlowOp to ControlFlowOp (dropping result_vars)
-4. Resolving control flow op types to Julia types via ssavaluetypes
+3. Converting PartialControlFlowOp to ControlFlowOp
+4. Resolving control flow op types to Julia types via context
 5. Recursively processing all nested regions
 
 SSA indices are local to each block: body[i] defines SSAValue(i).
 """
-function finalize_ir(block::PartialBlock, ssavaluetypes)::Block
-    finalize_block(block, ssavaluetypes)
+function finalize_ir(block::PartialBlock, ctx::StructurizationContext)::Block
+    finalize_block(block, ctx)
 end
 
-function finalize_block(block::PartialBlock, ssavaluetypes)::Block
+function finalize_block(block::PartialBlock, ctx::StructurizationContext)::Block
     body = Any[]
     types = Any[]
 
@@ -1027,15 +1064,16 @@ function finalize_block(block::PartialBlock, ssavaluetypes)::Block
             push!(body, negate_negative_ssa(item.expr))
             push!(types, item.type)
         elseif item isa PartialControlFlowOp
-            push!(body, finalize_control_flow_op(item, ssavaluetypes))
+            push!(body, finalize_control_flow_op(item, ctx))
             # Store resolved Julia types for codegen
             # Resolve SSAValue references to actual Julia types
-            if isempty(item.result_vars)
+            result_vars = get_result_vars(ctx, item)
+            if isempty(result_vars)
                 push!(types, Nothing)
-            elseif length(item.result_vars) == 1
-                push!(types, ssavaluetypes[item.result_vars[1].id])
+            elseif length(result_vars) == 1
+                push!(types, ctx.ssavaluetypes[result_vars[1].id])
             else
-                push!(types, Tuple{(ssavaluetypes[rv.id] for rv in item.result_vars)...})
+                push!(types, Tuple{(ctx.ssavaluetypes[rv.id] for rv in result_vars)...})
             end
         end
     end
@@ -1047,16 +1085,16 @@ function finalize_block(block::PartialBlock, ssavaluetypes)::Block
 end
 
 """
-    finalize_control_flow_op(op::PartialControlFlowOp, ssavaluetypes) -> ControlFlowOp
+    finalize_control_flow_op(op::PartialControlFlowOp, ctx::StructurizationContext) -> ControlFlowOp
 
 Convert a PartialControlFlowOp to a final ControlFlowOp.
 Nested regions are finalized recursively with their own local SSA namespaces.
 """
-function finalize_control_flow_op(op::PartialControlFlowOp, ssavaluetypes)::ControlFlowOp
+function finalize_control_flow_op(op::PartialControlFlowOp, ctx::StructurizationContext)::ControlFlowOp
     # Convert all regions (each has its own local SSA namespace)
     regions = Dict{Symbol, Block}()
     for (name, region) in op.regions
-        regions[name] = finalize_block(region::PartialBlock, ssavaluetypes)
+        regions[name] = finalize_block(region::PartialBlock, ctx)
     end
 
     init_values = [negate_negative_ssa(v) for v in op.init_values]
@@ -1721,10 +1759,7 @@ function print_if_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=false
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
+    # Note: result_vars are stored in context, not on op, so we don't print them here
 
     print(p.io, "if ")
     print_value(p, op.operands.condition)
@@ -1755,10 +1790,7 @@ function print_for_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fals
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
+    # Note: result_vars are stored in context, not on op, so we don't print them here
 
     body = op.regions[:body]::PartialBlock
 
@@ -1792,10 +1824,7 @@ function print_loop_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fal
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
+    # Note: result_vars are stored in context, not on op, so we don't print them here
 
     body = op.regions[:body]::PartialBlock
 
@@ -1819,10 +1848,7 @@ function print_while_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fa
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    if !isempty(op.result_vars)
-        print_results(p, op.result_vars)
-        print(p.io, " = ")
-    end
+    # Note: result_vars are stored in context, not on op, so we don't print them here
 
     before = op.regions[:before]::PartialBlock
     after = op.regions[:after]::PartialBlock

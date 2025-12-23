@@ -4,6 +4,7 @@ export code_structured, structurize!, StructuredCodeInfo
 export ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp
 export Block, BlockArg
 export YieldOp, ContinueOp, BreakOp, ConditionOp
+export StructurizationContext
 
 """
     code_structured(f, argtypes; validate=true, loop_patterning=true, kwargs...) -> StructuredCodeInfo
@@ -89,6 +90,9 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
 
     n == 0 && return sci
 
+    # Create context for tracking metadata during construction
+    ctx = StructurizationContext(types)
+
     # Check if the code is straight-line (no control flow)
     has_control_flow = any(s -> s isa GotoNode || s isa GotoIfNot, stmts)
 
@@ -104,9 +108,9 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
             end
         end
         # Phase 4: Convert to local SSA (negative indices)
-        convert_to_local_ssa!(new_entry)
+        convert_to_local_ssa!(new_entry, ctx)
         # Phase 5: Finalize IR (convert negative → positive global indices)
-        sci.entry = finalize_ir(new_entry, types)
+        sci.entry = finalize_ir(new_entry, ctx)
         return sci
     end
 
@@ -117,21 +121,21 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     ctree = ControlTree(cfg)
 
     # Phase 1: Build structure (pure SSAValues, no BlockArgs)
-    partial_entry = control_tree_to_structured_ir(ctree, code, blocks)
+    partial_entry = control_tree_to_structured_ir(ctree, code, blocks, ctx)
 
     # Phase 2: Create BlockArgs and substitute SSA→BlockArg
-    apply_block_args!(partial_entry, types)
+    apply_block_args!(partial_entry, ctx)
 
     # Phase 3: Upgrade loop patterns (optional)
     if loop_patterning
-        apply_loop_patterns!(partial_entry)
+        apply_loop_patterns!(partial_entry, ctx)
     end
 
     # Phase 4: Convert to local SSA (negative indices)
-    convert_to_local_ssa!(partial_entry)
+    convert_to_local_ssa!(partial_entry, ctx)
 
     # Phase 5: Finalize IR (convert negative → positive global indices)
-    sci.entry = finalize_ir(partial_entry, types)
+    sci.entry = finalize_ir(partial_entry, ctx)
 
     return sci
 end

@@ -69,21 +69,19 @@ function find_add_int_for_iv(block::PartialBlock, iv_arg::BlockArg)
 end
 
 """
-    is_loop_invariant(val, block::PartialBlock; result_vars::Vector{SSAValue}=SSAValue[]) -> Bool
+    is_loop_invariant(val, block::PartialBlock, n_result_vars::Int) -> Bool
 
 Check if a value is loop-invariant (not defined inside the loop body).
-- BlockArgs for phi values (indices 1..len(result_vars)) are loop-variant
-- BlockArgs for outer captures (indices > len(result_vars)) are loop-invariant
+- BlockArgs for phi values (indices 1..n_result_vars) are loop-variant
+- BlockArgs for outer captures (indices > n_result_vars) are loop-invariant
 - SSAValues are loop-invariant if no Statement in the body defines them
 - Constants and Arguments are always loop-invariant
 """
-function is_loop_invariant(val, block::PartialBlock; result_vars::Vector{SSAValue}=SSAValue[])
+function is_loop_invariant(val, block::PartialBlock, n_result_vars::Int)
     # BlockArgs: phi values are variant, outer captures are invariant
     if val isa BlockArg
-        # If no result_vars provided, conservatively treat all BlockArgs as variant
-        isempty(result_vars) && return false
         # BlockArgs beyond result_vars count are outer captures (invariant)
-        return val.id > length(result_vars)
+        return val.id > n_result_vars
     end
 
     # SSAValues: check if defined in the loop body (including nested blocks)
@@ -132,53 +130,53 @@ end
 =============================================================================#
 
 """
-    apply_loop_patterns!(block::PartialBlock)
+    apply_loop_patterns!(block::PartialBlock, ctx::StructurizationContext)
 
 Upgrade :loop ops to :for/:while where patterns match.
 Modifies ops in-place by changing their head and operands.
 """
-function apply_loop_patterns!(block::PartialBlock)
+function apply_loop_patterns!(block::PartialBlock, ctx::StructurizationContext)
     for (i, item) in enumerate(block.body)
         if item isa PartialControlFlowOp
             if item.head == :loop
-                if try_upgrade_loop!(item)
+                if try_upgrade_loop!(item, ctx)
                     # Successfully upgraded, recurse into the modified op's regions
                     for (_, region) in item.regions
-                        apply_loop_patterns!(region)
+                        apply_loop_patterns!(region, ctx)
                     end
                 else
                     # Not upgraded, recurse into body
-                    apply_loop_patterns!(item.regions[:body])
+                    apply_loop_patterns!(item.regions[:body], ctx)
                 end
             elseif item.head == :if
-                apply_loop_patterns!(item.regions[:then])
-                apply_loop_patterns!(item.regions[:else])
+                apply_loop_patterns!(item.regions[:then], ctx)
+                apply_loop_patterns!(item.regions[:else], ctx)
             elseif item.head == :while
-                apply_loop_patterns!(item.regions[:before])
-                apply_loop_patterns!(item.regions[:after])
+                apply_loop_patterns!(item.regions[:before], ctx)
+                apply_loop_patterns!(item.regions[:after], ctx)
             elseif item.head == :for
-                apply_loop_patterns!(item.regions[:body])
+                apply_loop_patterns!(item.regions[:body], ctx)
             end
         end
     end
 end
 
 """
-    try_upgrade_loop!(loop::PartialControlFlowOp) -> Bool
+    try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext) -> Bool
 
 Try to upgrade a :loop op to :for or :while by modifying it in-place.
 Returns true if upgraded, false otherwise.
 """
-function try_upgrade_loop!(loop::PartialControlFlowOp)
+function try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
 
     # Try ForOp pattern first
-    if try_upgrade_to_for!(loop)
+    if try_upgrade_to_for!(loop, ctx)
         return true
     end
 
     # Try WhileOp pattern
-    if try_upgrade_to_while!(loop)
+    if try_upgrade_to_while!(loop, ctx)
         return true
     end
 
@@ -186,14 +184,15 @@ function try_upgrade_loop!(loop::PartialControlFlowOp)
 end
 
 """
-    try_upgrade_to_for!(loop::PartialControlFlowOp) -> Bool
+    try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext) -> Bool
 
 Try to upgrade a :loop op to :for by detecting the for-loop pattern.
 Modifies the op in-place. Returns true if upgraded.
 """
-function try_upgrade_to_for!(loop::PartialControlFlowOp)
+function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
     body = loop.regions[:body]::PartialBlock
+    result_vars = get_result_vars(ctx, loop)
 
     # Find the :if op in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
@@ -226,7 +225,7 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp)
 
     # Get lower bound from init_values
     iv_idx > length(loop.init_values) && return false
-    iv_idx > length(loop.result_vars) && return false
+    iv_idx > length(result_vars) && return false
     lower_bound = loop.init_values[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
@@ -242,13 +241,13 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp)
     end
 
     # Verify upper_bound and step are loop-invariant
-    is_loop_invariant(upper_bound, body; result_vars=loop.result_vars) || return false
-    is_loop_invariant(step, body; result_vars=loop.result_vars) || return false
+    is_loop_invariant(upper_bound, body, length(result_vars)) || return false
+    is_loop_invariant(step, body, length(result_vars)) || return false
 
     # Separate non-IV carried values (from result_vars)
     other_result_vars = SSAValue[]
     other_init_values = IRValue[]
-    for (j, rv) in enumerate(loop.result_vars)
+    for (j, rv) in enumerate(result_vars)
         if j != iv_idx && j <= length(loop.init_values)
             push!(other_result_vars, rv)
             push!(other_init_values, loop.init_values[j])
@@ -256,7 +255,7 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp)
     end
 
     # Add outer captures (init_values beyond result_vars)
-    for j in (length(loop.result_vars)+1):length(loop.init_values)
+    for j in (length(result_vars)+1):length(loop.init_values)
         push!(other_init_values, loop.init_values[j])
     end
 
@@ -307,13 +306,14 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp)
     loop.regions = Dict{Symbol,Any}(:body => new_body)
     loop.init_values = other_init_values
     loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
-    loop.result_vars = other_result_vars
+    # Update result_vars in context
+    set_result_vars!(ctx, loop, other_result_vars)
 
     return true
 end
 
 """
-    try_upgrade_to_while!(loop::PartialControlFlowOp) -> Bool
+    try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext) -> Bool
 
 Try to upgrade a :loop op to :while by detecting the while-loop pattern.
 Modifies the op in-place. Returns true if upgraded.
@@ -322,9 +322,10 @@ Creates MLIR-style scf.while with before/after regions:
 - before: condition computation, ends with ConditionOp
 - after: loop body, ends with YieldOp
 """
-function try_upgrade_to_while!(loop::PartialControlFlowOp)
+function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
     body = loop.regions[:body]::PartialBlock
+    result_vars = get_result_vars(ctx, loop)
 
     # Find the :if op in the loop body - its condition is the while condition
     condition_ifop = find_ifop(body)
@@ -353,7 +354,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp)
     if else_blk.terminator isa BreakOp
         condition_args = copy(else_blk.terminator.values)
         # Add outer captures unchanged
-        for j in (length(loop.result_vars)+1):length(before.args)
+        for j in (length(result_vars)+1):length(before.args)
             push!(condition_args, before.args[j])
         end
     elseif !isempty(before.args)
@@ -380,7 +381,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp)
     end
 
     # Add outer captures unchanged
-    for j in (length(loop.result_vars)+1):length(after.args)
+    for j in (length(result_vars)+1):length(after.args)
         push!(yield_values, after.args[j])
     end
 
@@ -389,7 +390,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp)
     # Modify the loop in-place to become :while
     loop.head = :while
     loop.regions = Dict{Symbol,Any}(:before => before, :after => after)
-    # init_values and result_vars stay the same
+    # init_values and result_vars stay the same (result_vars already in context)
 
     return true
 end
