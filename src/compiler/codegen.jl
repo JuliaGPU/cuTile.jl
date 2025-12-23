@@ -4,7 +4,7 @@
  Public API
 =============================================================================#
 
-export code_tile
+export code_tiled
 
 """
     emit_tileir(f, argtypes; name=nothing) -> Vector{UInt8}
@@ -35,12 +35,12 @@ function disassemble_tileir(bytecode::Vector{UInt8})::String
 end
 
 """
-    code_tile(f, argtypes; name=nothing) -> String
+    code_tiled(f, argtypes; name=nothing) -> String
 
 Return the CUDA Tile IR for a Julia function as a textual MLIR representation.
 Analogous to `code_typed` or `code_structured`.
 """
-function code_tile(@nospecialize(f), @nospecialize(argtypes);
+function code_tiled(@nospecialize(f), @nospecialize(argtypes);
                    name::Union{String, Nothing} = nothing)
     bytecode = emit_tileir(f, argtypes; name)
     disassemble_tileir(bytecode)
