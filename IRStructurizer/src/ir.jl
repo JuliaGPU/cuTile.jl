@@ -389,14 +389,11 @@ Base.eltype(::Type{Block}) = Any
 """
     derive_result_vars(op::PartialControlFlowOp) -> Vector{SSAValue}
 
-Derive result SSAValues from an op's terminator. Used for SSA index mapping
-in convert_to_local_ssa! during Phase 2 (before pattern upgrade).
+Derive result SSAValues from an op's terminator. Used for keying loop ops
+during Phase 1 structure building.
 
 - For :loop: BreakOp.values in body (kept as SSAValues, not substituted)
 - For :for/:while/:if: empty (these use iter_args count for results)
-
-Note: After the iter_args/captures refactor, :for/:while results are determined
-by len(iter_args), not by tracking original SSA indices.
 """
 function derive_result_vars(op::PartialControlFlowOp)
     if op.head == :loop
@@ -647,439 +644,20 @@ each_block_in_op(f, op::WhileOp) = (each_block(f, op.before); each_block(f, op.a
 each_block_in_op(f, op::LoopOp) = each_block(f, op.body)
 
 #=============================================================================
- Block Queries
+ IR Finalization (PartialControlFlowOp → ControlFlowOp, OrderedDict → Vector)
 =============================================================================#
-
-"""
-    collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=false) -> Vector{SSAValue}
-
-Collect all SSAValue references in the block that are NOT in the defined set.
-These are "outer" references that need to be captured as BlockArgs.
-
-The defined set should contain SSA indices that are available in the current scope
-(e.g., from the parent block's statements or control flow op results).
-
-If recursive=false (default): Only collects from direct statements and the terminator.
-Does NOT recurse into nested control flow ops - those will have their own capture pass.
-
-If recursive=true: Also collects from nested control flow ops' blocks.
-Use this when the outer op needs to know ALL outer refs in its entire subtree.
-"""
-function collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=false)
-    outer_refs = SSAValue[]
-    seen = Set{Int}()
-
-    # Collect from block body (pre-flattening uses OrderedDict)
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            if recursive
-                # Recurse into nested control flow ops
-                collect_control_flow_refs!(outer_refs, seen, item, defined)
-            end
-        else  # Statement
-            collect_ssa_refs!(outer_refs, seen, item, defined)
-        end
-    end
-
-    # Collect from terminator
-    if block.terminator !== nothing
-        collect_terminator_refs!(outer_refs, seen, block.terminator, defined)
-    end
-
-    return outer_refs
-end
-
-"""
-    collect_control_flow_refs!(refs, seen, op, defined)
-
-Collect SSAValue references from a control flow op's nested blocks.
-"""
-function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::PartialControlFlowOp, defined::Set{Int})
-    # Collect from operands
-    if op.head == :if
-        collect_ssa_refs!(refs, seen, op.operands.condition, defined)
-    elseif op.head == :for
-        collect_ssa_refs!(refs, seen, op.operands.lower, defined)
-        collect_ssa_refs!(refs, seen, op.operands.upper, defined)
-        collect_ssa_refs!(refs, seen, op.operands.step, defined)
-    end
-    # Collect from iter_args
-    for v in op.iter_args
-        collect_ssa_refs!(refs, seen, v, defined)
-    end
-    # Recurse into all regions
-    for (_, region) in op.regions
-        collect_block_refs!(refs, seen, region, defined)
-    end
-end
-
-"""
-    collect_block_refs!(refs, seen, block, defined)
-
-Recursively collect SSAValue references from a block.
-"""
-function collect_block_refs!(refs::Vector{SSAValue}, seen::Set{Int}, block::Block, defined::Set{Int})
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            collect_control_flow_refs!(refs, seen, item, defined)
-        else  # Statement
-            collect_ssa_refs!(refs, seen, item, defined)
-        end
-    end
-    if block.terminator !== nothing
-        collect_terminator_refs!(refs, seen, block.terminator, defined)
-    end
-end
-
-"""
-    collect_ssa_refs!(refs, seen, value, defined)
-
-Collect SSAValue references from a value that are not in the defined set.
-Adds to refs and marks in seen to avoid duplicates.
-"""
-function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::SSAValue, defined::Set{Int})
-    if value.id ∉ defined && value.id ∉ seen
-        push!(refs, value)
-        push!(seen, value.id)
-    end
-end
-
-function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::Expr, defined::Set{Int})
-    for arg in value.args
-        collect_ssa_refs!(refs, seen, arg, defined)
-    end
-end
-
-function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::PiNode, defined::Set{Int})
-    collect_ssa_refs!(refs, seen, value.val, defined)
-end
-
-function collect_ssa_refs!(refs::Vector{SSAValue}, seen::Set{Int}, value::PhiNode, defined::Set{Int})
-    for i in eachindex(value.values)
-        if isassigned(value.values, i)
-            collect_ssa_refs!(refs, seen, value.values[i], defined)
-        end
-    end
-end
-
-# Base cases: other value types don't contain SSAValue references
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::BlockArg, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Argument, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::SlotNumber, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::GlobalRef, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::QuoteNode, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Nothing, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Number, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Symbol, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, ::Type, ::Set{Int}) = nothing
-collect_ssa_refs!(::Vector{SSAValue}, ::Set{Int}, _, ::Set{Int}) = nothing  # Fallback
-
-"""
-    collect_terminator_refs!(refs, seen, term, defined)
-
-Collect SSAValue references from a terminator that are not in the defined set.
-"""
-function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::YieldOp, defined::Set{Int})
-    for v in term.values
-        collect_ssa_refs!(refs, seen, v, defined)
-    end
-end
-
-function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::ContinueOp, defined::Set{Int})
-    for v in term.values
-        collect_ssa_refs!(refs, seen, v, defined)
-    end
-end
-
-function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::BreakOp, defined::Set{Int})
-    for v in term.values
-        collect_ssa_refs!(refs, seen, v, defined)
-    end
-end
-
-function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::ConditionOp, defined::Set{Int})
-    collect_ssa_refs!(refs, seen, term.condition, defined)
-    for v in term.args
-        collect_ssa_refs!(refs, seen, v, defined)
-    end
-end
-
-function collect_terminator_refs!(refs::Vector{SSAValue}, seen::Set{Int}, term::ReturnNode, defined::Set{Int})
-    if isdefined(term, :val)
-        collect_ssa_refs!(refs, seen, term.val, defined)
-    end
-end
-
-function collect_terminator_refs!(::Vector{SSAValue}, ::Set{Int}, ::Nothing, ::Set{Int})
-end
-
-#=============================================================================
- Local SSA Conversion (positive SSAValue → negative SSAValue within blocks)
-=============================================================================#
-
-# Type alias for SSA to local SSA mapping: original SSA id -> negative SSA id
-const SSAToLocalMap = Dict{Int, Int}
-
-"""
-    convert_ssa_in_value(value, idx_to_local::SSAToLocalMap)
-
-Convert SSAValue references in a value to negative SSAValue indices where applicable.
-Returns the converted value (or original if no conversion needed).
-Negative SSAValue indices represent block-local values and will be converted to
-positive global indices during finalization.
-"""
-function convert_ssa_in_value(value::SSAValue, idx_to_local::SSAToLocalMap)
-    if haskey(idx_to_local, value.id)
-        return SSAValue(idx_to_local[value.id])
-    end
-    return value
-end
-
-function convert_ssa_in_value(value::Expr, idx_to_pos::SSAToLocalMap)
-    new_args = Any[convert_ssa_in_value(a, idx_to_pos) for a in value.args]
-    # Only create new Expr if something changed
-    if new_args != value.args
-        return Expr(value.head, new_args...)
-    end
-    return value
-end
-
-function convert_ssa_in_value(value::PiNode, idx_to_pos::SSAToLocalMap)
-    new_val = convert_ssa_in_value(value.val, idx_to_pos)
-    if new_val !== value.val
-        return PiNode(new_val, value.typ)
-    end
-    return value
-end
-
-function convert_ssa_in_value(value::PhiNode, idx_to_pos::SSAToLocalMap)
-    new_values = Vector{Any}(undef, length(value.values))
-    changed = false
-    for i in eachindex(value.values)
-        if isassigned(value.values, i)
-            new_val = convert_ssa_in_value(value.values[i], idx_to_pos)
-            new_values[i] = new_val
-            if new_val !== value.values[i]
-                changed = true
-            end
-        end
-    end
-    if changed
-        return PhiNode(value.edges, new_values)
-    end
-    return value
-end
-
-# Base cases: values that don't contain SSAValue references
-convert_ssa_in_value(value::BlockArg, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::Argument, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::SlotNumber, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::GlobalRef, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::QuoteNode, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::Nothing, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::Number, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::Symbol, ::SSAToLocalMap) = value
-convert_ssa_in_value(value::Type, ::SSAToLocalMap) = value
-convert_ssa_in_value(value, ::SSAToLocalMap) = value  # Fallback
-
-"""
-    convert_ssa_in_terminator(term, idx_to_local)
-
-Convert SSAValue references in a terminator to negative SSAValue indices.
-"""
-function convert_ssa_in_terminator(term::ContinueOp, idx_to_pos::SSAToLocalMap)
-    new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
-    return ContinueOp(new_values)
-end
-
-function convert_ssa_in_terminator(term::BreakOp, idx_to_pos::SSAToLocalMap)
-    new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
-    return BreakOp(new_values)
-end
-
-function convert_ssa_in_terminator(term::YieldOp, idx_to_pos::SSAToLocalMap)
-    new_values = [convert_ssa_in_value(v, idx_to_pos) for v in term.values]
-    return YieldOp(new_values)
-end
-
-function convert_ssa_in_terminator(term::ConditionOp, idx_to_pos::SSAToLocalMap)
-    new_cond = convert_ssa_in_value(term.condition, idx_to_pos)
-    new_args = [convert_ssa_in_value(v, idx_to_pos) for v in term.args]
-    return ConditionOp(new_cond, new_args)
-end
-
-function convert_ssa_in_terminator(term::ReturnNode, idx_to_pos::SSAToLocalMap)
-    if isdefined(term, :val)
-        new_val = convert_ssa_in_value(term.val, idx_to_pos)
-        if new_val !== term.val
-            return ReturnNode(new_val)
-        end
-    end
-    return term
-end
-
-function convert_ssa_in_terminator(term::Nothing, ::SSAToLocalMap)
-    return nothing
-end
-
-"""
-    convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
-
-Convert SSAValue references within a block to local SSAValue indices.
-Each statement and control flow op result gets a unique positive index (1, 2, 3, ...).
-These are block-local indices that correspond to positions in the flattened body.
-"""
-function convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
-    # Build mapping: original SSA idx → positive local index (1, 2, 3, ...)
-    # Each result gets its own unique index
-    idx_to_local = SSAToLocalMap()
-    counter = 0
-
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            # Control flow ops produce values - each gets a unique index
-            result_vars = derive_result_vars(item)
-            if !isempty(result_vars)
-                # :loop ops: use BreakOp values
-                for rv in result_vars
-                    counter += 1
-                    idx_to_local[rv.id] = counter
-                end
-            elseif item.head == :for
-                # :for ops: the IV phi was at idx, other phis are at idx+1, idx+2, ...
-                # Result indices are the non-IV phis (idx+1, idx+2, ..., idx+n_iter_args)
-                n_results = length(item.iter_args)
-                for i in 1:n_results
-                    counter += 1
-                    idx_to_local[idx + i] = counter
-                end
-            elseif item.head == :while
-                # :while ops: result indices are consecutive starting from idx
-                # (all phis are results, no IV is separated out)
-                n_results = length(item.iter_args)
-                for i in 0:(n_results-1)
-                    counter += 1
-                    idx_to_local[idx + i] = counter
-                end
-            end
-            # :if ops produce no results in the parent scope
-        else  # Statement
-            counter += 1
-            idx_to_local[idx] = counter
-        end
-    end
-
-    # Convert SSAValues in statements
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            convert_to_local_ssa_in_op!(item, idx_to_local, ctx)
-        else  # Statement
-            new_expr = convert_ssa_in_value(item, idx_to_local)
-            if new_expr !== item
-                block.body[idx] = new_expr
-            end
-        end
-    end
-
-    # Convert SSAValues in terminator
-    if block.terminator !== nothing
-        block.terminator = convert_ssa_in_terminator(block.terminator, idx_to_local)
-    end
-end
-
-function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_local::SSAToLocalMap,
-                                     ctx::StructurizationContext)
-    # Convert iter_args using parent's mapping
-    for (i, v) in enumerate(op.iter_args)
-        op.iter_args[i] = convert_ssa_in_value(v, parent_idx_to_local)
-    end
-
-    # For :for ops, convert operands (lower, upper, step)
-    if op.head == :for
-        new_lower = convert_ssa_in_value(op.operands.lower, parent_idx_to_local)
-        new_upper = convert_ssa_in_value(op.operands.upper, parent_idx_to_local)
-        new_step = convert_ssa_in_value(op.operands.step, parent_idx_to_local)
-        op.operands = (lower=new_lower, upper=new_upper, step=new_step, iv_arg=op.operands.iv_arg)
-    elseif op.head == :if
-        new_cond = convert_ssa_in_value(op.operands.condition, parent_idx_to_local)
-        op.operands = (condition=new_cond,)
-    end
-
-    # Recursively convert nested blocks
-    for (_, region) in op.regions
-        convert_to_local_ssa!(region, ctx)
-    end
-end
-
-#=============================================================================
- IR Finalization (PartialBlock/PartialControlFlowOp → Block/ControlFlowOp)
-=============================================================================#
-
-"""
-    negate_negative_ssa(value)
-
-Convert negative SSAValue indices to positive local indices.
-SSAValue(-n) → SSAValue(n). Positive indices are left unchanged.
-Each block has its own local SSA namespace.
-"""
-negate_negative_ssa(v::SSAValue) = v.id < 0 ? SSAValue(-v.id) : v
-
-function negate_negative_ssa(v::Expr)
-    new_args = Any[negate_negative_ssa(a) for a in v.args]
-    new_args != v.args ? Expr(v.head, new_args...) : v
-end
-
-function negate_negative_ssa(v::PiNode)
-    new_val = negate_negative_ssa(v.val)
-    new_val !== v.val ? PiNode(new_val, v.typ) : v
-end
-
-negate_negative_ssa(v::Any) = v
-
-function negate_terminator_ssa(term::YieldOp)
-    new_values = [negate_negative_ssa(v) for v in term.values]
-    new_values != term.values ? YieldOp(new_values) : term
-end
-
-function negate_terminator_ssa(term::ContinueOp)
-    new_values = [negate_negative_ssa(v) for v in term.values]
-    new_values != term.values ? ContinueOp(new_values) : term
-end
-
-function negate_terminator_ssa(term::BreakOp)
-    new_values = [negate_negative_ssa(v) for v in term.values]
-    new_values != term.values ? BreakOp(new_values) : term
-end
-
-function negate_terminator_ssa(term::ConditionOp)
-    new_cond = negate_negative_ssa(term.condition)
-    new_args = [negate_negative_ssa(v) for v in term.args]
-    (new_cond !== term.condition || new_args != term.args) ?
-        ConditionOp(new_cond, new_args) : term
-end
-
-function negate_terminator_ssa(term::ReturnNode)
-    if isdefined(term, :val)
-        new_val = negate_negative_ssa(term.val)
-        new_val !== term.val ? ReturnNode(new_val) : term
-    else
-        term
-    end
-end
-
-negate_terminator_ssa(term::Nothing) = term
 
 """
     finalize_ir(block::Block, ctx::StructurizationContext) -> Block
 
 Finalize a Block by:
-1. Converting negative SSAValue to positive local SSAValue (per-block)
-2. Converting PartialControlFlowOp to ControlFlowOp
-3. Resolving control flow op types to Julia types via context
-4. Converting body from OrderedDict to Vector (position IS the local SSA index)
+1. Converting PartialControlFlowOp to ControlFlowOp
+2. Resolving control flow op types to Julia types via context
+3. Converting body from OrderedDict to Vector
+4. Tracking original_indices for cross-block SSA references
 5. Recursively processing all nested regions
 
-SSA indices are local to each block: body[i] defines SSAValue(i).
+SSA indices use original Julia SSA indices throughout.
 """
 function finalize_ir(block::Block, ctx::StructurizationContext)::Block
     finalize_block(block, ctx)
@@ -1103,14 +681,12 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
             end
             push!(original_indices, idx)  # Track original Julia SSA index
         else  # Statement
-            # SSA indices are already positive local indices after convert_to_local_ssa!
             push!(body, item)
             push!(types, block.types[idx])
             push!(original_indices, idx)  # Track original Julia SSA index
         end
     end
 
-    # Terminator SSA indices are already local
     return Block(copy(block.args), body, types, block.terminator, original_indices)
 end
 
@@ -1170,16 +746,14 @@ end
     finalize_control_flow_op(op::PartialControlFlowOp, ctx::StructurizationContext) -> ControlFlowOp
 
 Convert a PartialControlFlowOp to a final ControlFlowOp.
-Nested regions are finalized recursively with their own local SSA namespaces.
+Nested regions are finalized recursively.
 """
 function finalize_control_flow_op(op::PartialControlFlowOp, ctx::StructurizationContext)::ControlFlowOp
-    # Convert all regions (each has its own local SSA namespace)
     regions = Dict{Symbol, Block}()
     for (name, region) in op.regions
         regions[name] = finalize_block(region::Block, ctx)
     end
 
-    # SSA indices are already positive local indices after convert_to_local_ssa!
     iter_args = copy(op.iter_args)
 
     # Construct the appropriate concrete type
