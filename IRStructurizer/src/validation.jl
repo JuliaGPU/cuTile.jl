@@ -105,15 +105,15 @@ function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
     count = 0
 
     for (idx, item) in block.body
-        if is_stmt_key(idx)
+        if item isa PartialControlFlowOp
+            # Control flow op - check nested blocks
+            # Pass is_entry so we know if the op's init_values are at entry level
+            count += count_ssavalues_in_op(item; is_entry)
+        else  # Statement
             if !is_entry
                 # Inside nested block, count SSAValues in the expression
                 count += count_ssavalues_in_value(item)
             end
-        else
-            # Control flow op - check nested blocks
-            # Pass is_entry so we know if the op's init_values are at entry level
-            count += count_ssavalues_in_op(item; is_entry)
         end
     end
 
@@ -259,16 +259,16 @@ function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
     else
         # Pre-flattening: iterate OrderedDict
         for (idx, item) in block.body
-            if is_stmt_key(idx)
-                # Check all SSAValue refs in the expression are in `defined`
-                check_ssa_refs_defined(item, defined, block.args, idx)
-                # Add this statement's SSA to defined set
-                push!(defined, idx)
-            else
+            if item isa PartialControlFlowOp
                 # ControlFlowOp - check its inputs and recurse into nested blocks
                 validate_control_flow_op_ordering(item, defined, block.args)
                 # Add result_vars to defined set (if any)
                 add_result_vars_to_defined!(item, defined)
+            else  # Statement
+                # Check all SSAValue refs in the expression are in `defined`
+                check_ssa_refs_defined(item, defined, block.args, idx)
+                # Add this statement's SSA to defined set
+                push!(defined, idx)
             end
         end
     end

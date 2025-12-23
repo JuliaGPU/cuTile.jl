@@ -363,16 +363,13 @@ function push_stmt!(block::Block, idx::Int, expr, typ)
 end
 
 """
-    push_op!(block::Block, op, typ=Nothing)
+    push_op!(block::Block, result_idx::Int, op, typ=Nothing)
 
-Push a control flow op to a Block during construction. Uses negative keys for ops.
+Push a control flow op to a Block during construction. The op is keyed by its result SSA index.
 """
-function push_op!(block::Block, op, typ=Nothing)
-    # Use decreasing negative numbers for ops to keep them unique
-    n_ops = count(k -> k <= 0, keys(block.body))
-    op_key = -(n_ops + 1)
-    block.body[op_key] = op
-    block.types[op_key] = typ
+function push_op!(block::Block, result_idx::Int, op, typ=Nothing)
+    block.body[result_idx] = op
+    block.types[result_idx] = typ
 end
 
 """
@@ -478,12 +475,7 @@ function substitute_block_shallow!(block::Block, subs::Substitutions)
     isempty(subs) && return  # No substitutions to apply
 
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
-            new_expr = substitute_ssa(item, subs)
-            if new_expr !== item
-                block.body[idx] = new_expr
-            end
-        elseif item isa PartialControlFlowOp
+        if item isa PartialControlFlowOp
             if item.head == :loop
                 # Only substitute init_values (which are in parent scope)
                 # The body is handled by recursion in apply_block_args!
@@ -496,6 +488,11 @@ function substitute_block_shallow!(block::Block, subs::Substitutions)
                 else_blk = item.regions[:else]::Block
                 substitute_block_shallow!(then_blk, subs)
                 substitute_block_shallow!(else_blk, subs)
+            end
+        else  # Statement
+            new_expr = substitute_ssa(item, subs)
+            if new_expr !== item
+                block.body[idx] = new_expr
             end
         end
     end
@@ -562,14 +559,13 @@ function each_stmt(f, block::Block)
         # Pre-flattening: iterate OrderedDict
         for (idx, expr) in block.body
             typ = block.types[idx]
-            if is_stmt_key(idx)  # Statement (positive key)
-                f((idx=idx, expr=expr, type=typ))
-            end
-            # Recurse into control flow ops
             if expr isa PartialControlFlowOp
+                # Recurse into control flow ops
                 for (_, region) in expr.regions
                     each_stmt(f, region)
                 end
+            else  # Statement
+                f((idx=idx, expr=expr, type=typ))
             end
         end
     else
@@ -645,11 +641,13 @@ function collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=fal
 
     # Collect from block body (pre-flattening uses OrderedDict)
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
+        if item isa PartialControlFlowOp
+            if recursive
+                # Recurse into nested control flow ops
+                collect_control_flow_refs!(outer_refs, seen, item, defined)
+            end
+        else  # Statement
             collect_ssa_refs!(outer_refs, seen, item, defined)
-        elseif recursive && item isa PartialControlFlowOp
-            # Recurse into nested control flow ops
-            collect_control_flow_refs!(outer_refs, seen, item, defined)
         end
     end
 
@@ -692,10 +690,10 @@ Recursively collect SSAValue references from a block.
 """
 function collect_block_refs!(refs::Vector{SSAValue}, seen::Set{Int}, block::Block, defined::Set{Int})
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
-            collect_ssa_refs!(refs, seen, item, defined)
-        elseif item isa PartialControlFlowOp
+        if item isa PartialControlFlowOp
             collect_control_flow_refs!(refs, seen, item, defined)
+        else  # Statement
+            collect_ssa_refs!(refs, seen, item, defined)
         end
     end
     if block.terminator !== nothing
@@ -908,28 +906,28 @@ function convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
     idx_to_local = SSAToLocalMap()
     counter = 0
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
-            counter -= 1
-            idx_to_local[idx] = counter
-        elseif item isa PartialControlFlowOp
+        if item isa PartialControlFlowOp
             # Control flow ops produce values through result_vars (stored in context)
             # Each result_var gets its own unique negative index
             for rv in get_result_vars(ctx, item)
                 counter -= 1
                 idx_to_local[rv.id] = counter
             end
+        else  # Statement
+            counter -= 1
+            idx_to_local[idx] = counter
         end
     end
 
     # Convert SSAValues in statements
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
+        if item isa PartialControlFlowOp
+            convert_to_local_ssa_in_op!(item, idx_to_local, ctx)
+        else  # Statement
             new_expr = convert_ssa_in_value(item, idx_to_local)
             if new_expr !== item
                 block.body[idx] = new_expr
             end
-        elseif item isa PartialControlFlowOp
-            convert_to_local_ssa_in_op!(item, idx_to_local, ctx)
         end
     end
 
@@ -1042,10 +1040,7 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
     types = Any[]
 
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
-            push!(body, negate_negative_ssa(item))
-            push!(types, block.types[idx])
-        elseif item isa PartialControlFlowOp
+        if item isa PartialControlFlowOp
             push!(body, finalize_control_flow_op(item, ctx))
             # Store resolved Julia types for codegen
             # Resolve SSAValue references to actual Julia types
@@ -1057,6 +1052,9 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
             else
                 push!(types, Tuple{(ctx.ssavaluetypes[rv.id] for rv in result_vars)...})
             end
+        else  # Statement
+            push!(body, negate_negative_ssa(item))
+            push!(types, block.types[idx])
         end
     end
 
@@ -1188,10 +1186,10 @@ end
 
 function _scan_uses_preflatten!(used::BitSet, block::Block)
     for (idx, item) in block.body
-        if is_stmt_key(idx)
-            _scan_expr_uses!(used, item)
-        elseif item isa PartialControlFlowOp
+        if item isa PartialControlFlowOp
             _scan_control_flow_uses!(used, item)
+        else  # Statement
+            _scan_expr_uses!(used, item)
         end
     end
     if block.terminator !== nothing
@@ -1694,10 +1692,10 @@ end
 function print_block_body_preflatten(p::IRPrinter, block::Block)
     items = []
     for (idx, item) in block.body
-        if is_stmt_key(idx)  # Statement (positive key)
-            push!(items, (:stmt, idx, item, block.types[idx]))
-        elseif item isa PartialControlFlowOp
+        if item isa PartialControlFlowOp
             push!(items, (:nested, item))
+        else  # Statement
+            push!(items, (:stmt, idx, item, block.types[idx]))
         end
     end
     if block.terminator !== nothing
