@@ -1003,22 +1003,22 @@ end
 negate_terminator_ssa(term::Nothing) = term
 
 """
-    finalize_ir(block::PartialBlock, code_length::Int) -> Block
+    finalize_ir(block::PartialBlock, ssavaluetypes) -> Block
 
 Convert a PartialBlock to a final Block by:
 1. Converting negative SSAValue to positive local SSAValue (per-block)
 2. Flattening Statement wrappers to (expr, type) pairs in body/types vectors
 3. Converting PartialControlFlowOp to ControlFlowOp (dropping result_vars)
-4. Recursively processing all nested regions
+4. Resolving control flow op types to Julia types via ssavaluetypes
+5. Recursively processing all nested regions
 
-The code_length parameter is unused but kept for API compatibility.
 SSA indices are local to each block: body[i] defines SSAValue(i).
 """
-function finalize_ir(block::PartialBlock, ::Int)::Block
-    finalize_block(block)
+function finalize_ir(block::PartialBlock, ssavaluetypes)::Block
+    finalize_block(block, ssavaluetypes)
 end
 
-function finalize_block(block::PartialBlock)::Block
+function finalize_block(block::PartialBlock, ssavaluetypes)::Block
     body = Any[]
     types = Any[]
 
@@ -1027,16 +1027,15 @@ function finalize_block(block::PartialBlock)::Block
             push!(body, negate_negative_ssa(item.expr))
             push!(types, item.type)
         elseif item isa PartialControlFlowOp
-            push!(body, finalize_control_flow_op(item))
-            # Store result type info for codegen
-            # For single result: store the SSAValue for type lookup in CodeInfo
-            # For multiple results: store Vector{SSAValue}
+            push!(body, finalize_control_flow_op(item, ssavaluetypes))
+            # Store resolved Julia types for codegen
+            # Resolve SSAValue references to actual Julia types
             if isempty(item.result_vars)
                 push!(types, Nothing)
             elseif length(item.result_vars) == 1
-                push!(types, item.result_vars[1])  # Original SSAValue for type lookup
+                push!(types, ssavaluetypes[item.result_vars[1].id])
             else
-                push!(types, item.result_vars)  # Vector{SSAValue}
+                push!(types, Tuple{(ssavaluetypes[rv.id] for rv in item.result_vars)...})
             end
         end
     end
@@ -1048,16 +1047,16 @@ function finalize_block(block::PartialBlock)::Block
 end
 
 """
-    finalize_control_flow_op(op::PartialControlFlowOp) -> ControlFlowOp
+    finalize_control_flow_op(op::PartialControlFlowOp, ssavaluetypes) -> ControlFlowOp
 
 Convert a PartialControlFlowOp to a final ControlFlowOp.
 Nested regions are finalized recursively with their own local SSA namespaces.
 """
-function finalize_control_flow_op(op::PartialControlFlowOp)::ControlFlowOp
+function finalize_control_flow_op(op::PartialControlFlowOp, ssavaluetypes)::ControlFlowOp
     # Convert all regions (each has its own local SSA namespace)
     regions = Dict{Symbol, Block}()
     for (name, region) in op.regions
-        regions[name] = finalize_block(region::PartialBlock)
+        regions[name] = finalize_block(region::PartialBlock, ssavaluetypes)
     end
 
     init_values = [negate_negative_ssa(v) for v in op.init_values]

@@ -174,16 +174,16 @@ end
     result_count(T) -> Int
 
 Compute the number of results from a Block.types entry.
-Block.types contains:
+Block.types contains Julia types:
 - For Statement: Julia type → 1 result
 - For ControlFlowOp with 0 results: Nothing → 0 results
-- For ControlFlowOp with 1 result: SSAValue → 1 result
-- For ControlFlowOp with N results: Vector{SSAValue} → N results
+- For ControlFlowOp with 1 result: Julia type → 1 result
+- For ControlFlowOp with N results: Tuple{T1, T2, ...} → N results
 """
 function result_count(@nospecialize(T))
     T === Nothing && return 0
-    T isa Vector && return length(T)  # Vector{SSAValue} for multi-result ops
-    return 1  # SSAValue or Julia type
+    T <: Tuple && return length(T.parameters)
+    return 1
 end
 
 """

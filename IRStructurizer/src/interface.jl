@@ -106,7 +106,7 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
         # Phase 4: Convert to local SSA (negative indices)
         convert_to_local_ssa!(new_entry)
         # Phase 5: Finalize IR (convert negative → positive global indices)
-        sci.entry = finalize_ir(new_entry, n)
+        sci.entry = finalize_ir(new_entry, types)
         return sci
     end
 
@@ -131,7 +131,7 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     convert_to_local_ssa!(partial_entry)
 
     # Phase 5: Finalize IR (convert negative → positive global indices)
-    sci.entry = finalize_ir(partial_entry, n)
+    sci.entry = finalize_ir(partial_entry, types)
 
     return sci
 end
