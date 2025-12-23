@@ -1,7 +1,7 @@
 # Phase 1: Control Tree to Structured IR
 #
-# Converts a ControlTree (from graph contraction) to structured IR with PartialBlock,
-# Statement, and PartialControlFlowOp objects. All loops become :loop in this phase.
+# Converts a ControlTree (from graph contraction) to structured IR with Block
+# and PartialControlFlowOp objects. All loops become :loop in this phase.
 # Pattern matching (:for/:while) and substitutions happen in later phases.
 
 using AbstractTrees: PreOrderDFS
@@ -50,7 +50,7 @@ end
 =============================================================================#
 
 """
-    control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> PartialBlock
+    control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> Block
 
 Convert a control tree to structured IR entry block.
 All loops become PartialControlFlowOp(:loop, ...) (no pattern matching yet, no substitutions).
@@ -61,15 +61,15 @@ function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, block
 end
 
 """
-    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> PartialBlock
+    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> Block
 
-Convert a control tree node to a PartialBlock. Creates Statement objects with raw expressions (no substitutions).
+Convert a control tree node to a Block with raw expressions (no substitutions).
 """
 function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                        ctx::StructurizationContext)
     idx = node_index(tree)
     rtype = region_type(tree)
-    block = PartialBlock()
+    block = Block()
 
     if rtype == REGION_BLOCK
         handle_block_region!(block, tree, code, blocks, ctx)
@@ -103,11 +103,11 @@ end
 =============================================================================#
 
 """
-    handle_block_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_BLOCK - a linear sequence of blocks.
 """
-function handle_block_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                               ctx::StructurizationContext)
     if isempty(children(tree))
         # Leaf node - collect statements from the block
@@ -130,11 +130,11 @@ function handle_block_region!(block::PartialBlock, tree::ControlTree, code::Code
 end
 
 """
-    handle_nested_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle a nested control flow region.
 """
-function handle_nested_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                                ctx::StructurizationContext)
     rtype = region_type(tree)
 
@@ -158,11 +158,11 @@ function handle_nested_region!(block::PartialBlock, tree::ControlTree, code::Cod
 end
 
 """
-    handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_IF_THEN_ELSE.
 """
-function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                               ctx::StructurizationContext)
     tree_children = children(tree)
     length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, ctx)
@@ -177,7 +177,7 @@ function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::Code
         for si in cond_block.range
             stmt = code.code[si]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block.body, Statement(si, stmt, code.ssavaluetypes[si]))
+                push_stmt!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -194,15 +194,15 @@ function handle_if_then_else!(block::PartialBlock, tree::ControlTree, code::Code
     # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                   operands=(condition=cond_value,))
-    push!(block.body, if_op)
+    push_op!(block, if_op)
 end
 
 """
-    handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_IF_THEN.
 """
-function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                          ctx::StructurizationContext)
     tree_children = children(tree)
     length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, ctx)
@@ -217,7 +217,7 @@ function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo,
         for si in cond_block.range
             stmt = code.code[si]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block.body, Statement(si, stmt, code.ssavaluetypes[si]))
+                push_stmt!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -229,20 +229,20 @@ function handle_if_then!(block::PartialBlock, tree::ControlTree, code::CodeInfo,
     then_blk = tree_to_block(then_tree, code, blocks, ctx)
 
     # Empty else block
-    else_blk = PartialBlock()
+    else_blk = Block()
 
     # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                   operands=(condition=cond_value,))
-    push!(block.body, if_op)
+    push_op!(block, if_op)
 end
 
 """
-    handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_TERMINATION - branches where some paths terminate.
 """
-function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                              ctx::StructurizationContext)
     tree_children = children(tree)
     isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, ctx)
@@ -257,7 +257,7 @@ function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeI
         for si in cond_block.range
             stmt = code.code[si]
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block.body, Statement(si, stmt, code.ssavaluetypes[si]))
+                push_stmt!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -272,65 +272,65 @@ function handle_termination!(block::PartialBlock, tree::ControlTree, code::CodeI
         else_blk = tree_to_block(else_tree, code, blocks, ctx)
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
-        push!(block.body, if_op)
+        push_op!(block, if_op)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
         then_blk = tree_to_block(then_tree, code, blocks, ctx)
-        else_blk = PartialBlock()
+        else_blk = Block()
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
-        push!(block.body, if_op)
+        push_op!(block, if_op)
     end
 end
 
 """
-    handle_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_WHILE_LOOP and REGION_NATURAL_LOOP.
 Phase 1: Always creates PartialControlFlowOp(:loop, ...) with metadata. Pattern matching happens in Phase 3.
 """
-function handle_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                       ctx::StructurizationContext)
     loop_op = build_loop_op_phase1(tree, code, blocks, ctx)
-    push!(block.body, loop_op)
+    push_op!(block, loop_op)
 end
 
 """
-    handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_SELF_LOOP.
 """
-function handle_self_loop!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                            ctx::StructurizationContext)
     idx = node_index(tree)
 
-    body_blk = PartialBlock()
+    body_blk = Block()
 
     if 1 <= idx <= length(blocks)
         collect_block_statements!(body_blk, blocks[idx], code)
     end
 
     loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body_blk))
-    push!(block.body, loop_op)
+    push_op!(block, loop_op)
 end
 
 """
-    handle_proper_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_PROPER - acyclic region not matching other patterns.
 """
-function handle_proper_region!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_proper_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                                ctx::StructurizationContext)
     # Process as a sequence of blocks
     handle_block_region!(block, tree, code, blocks, ctx)
 end
 
 """
-    handle_switch!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_SWITCH.
 """
-function handle_switch!(block::PartialBlock, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                         ctx::StructurizationContext)
     # For now, handle as a nested if-else chain
     # TODO: Implement proper switch handling if needed
@@ -342,12 +342,12 @@ end
 =============================================================================#
 
 """
-    collect_block_statements!(block::PartialBlock, info::BlockInfo, code::CodeInfo)
+    collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo)
 
-Collect statements from a BlockInfo into a PartialBlock, excluding control flow.
-Creates Statement objects with raw expressions (no substitutions).
+Collect statements from a BlockInfo into a Block, excluding control flow.
+Stores raw expressions (no substitutions) with their SSA indices.
 """
-function collect_block_statements!(block::PartialBlock, info::BlockInfo, code::CodeInfo)
+function collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo)
     stmts = code.code
     types = code.ssavaluetypes
     for si in info.range
@@ -355,7 +355,7 @@ function collect_block_statements!(block::PartialBlock, info::BlockInfo, code::C
         if stmt isa ReturnNode
             block.terminator = stmt
         elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
-            push!(block.body, Statement(si, stmt, types[si]))
+            push_stmt!(block, si, stmt, types[si])
         end
     end
 end
@@ -385,19 +385,20 @@ function find_condition_value(block_idx::Int, code::CodeInfo, blocks::Vector{Blo
 end
 
 """
-    set_block_terminator!(block::PartialBlock, code::CodeInfo, blocks::Vector{BlockInfo})
+    set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{BlockInfo})
 
 Set the block terminator based on statements.
 """
-function set_block_terminator!(block::PartialBlock, code::CodeInfo, blocks::Vector{BlockInfo})
+function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{BlockInfo})
     block.terminator !== nothing && return
 
-    # Find the last statement index in body
+    # Find the last statement SSA index in body (largest positive key)
     last_idx = nothing
-    for item in reverse(block.body)
-        if item isa Statement
-            last_idx = item.idx
-            break
+    for (idx, _) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            if last_idx === nothing || idx > last_idx
+                last_idx = idx
+            end
         end
     end
     if last_idx !== nothing && last_idx < length(code.code)
@@ -472,7 +473,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     end
 
     # Build loop body block (no BlockArgs yet - Phase 2 will add them)
-    body = PartialBlock()
+    body = Block()
     # body.args stays empty - Phase 2 will populate it
 
     # Find the condition for loop exit
@@ -489,7 +490,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     for si in header_block.range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(body.body, Statement(si, stmt, types[si]))
+            push_stmt!(body, si, stmt, types[si])
         end
     end
 
@@ -497,7 +498,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     if condition !== nothing
         cond_value = convert_phi_value(condition)
 
-        then_blk = PartialBlock()
+        then_blk = Block()
 
         # Process loop body blocks (excluding header)
         for child in children(tree)
@@ -509,13 +510,13 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
         then_blk.terminator = ContinueOp(copy(carried_values))
 
-        else_blk = PartialBlock()
+        else_blk = Block()
         # BreakOp with result_vars (SSAValues) - Phase 2 will substitute to BlockArgs
         else_blk.terminator = BreakOp(IRValue[rv for rv in result_vars])
 
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
-        push!(body.body, if_op)
+        push_op!(body, if_op)
     else
         # No condition - process children directly
         for child in children(tree)
@@ -535,15 +536,15 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
 end
 
 """
-    collect_defined_ssas!(defined::Set{Int}, block::PartialBlock, ctx::StructurizationContext)
+    collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::StructurizationContext)
 
 Collect all SSA indices defined by statements in the block (recursively).
 Also includes result_vars from loops (phi nodes define SSAValues).
 """
-function collect_defined_ssas!(defined::Set{Int}, block::PartialBlock, ctx::StructurizationContext)
-    for item in block.body
-        if item isa Statement
-            push!(defined, item.idx)
+function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::StructurizationContext)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            push!(defined, idx)
         elseif item isa PartialControlFlowOp
             # result_vars define SSAValues (stored in context)
             for rv in get_result_vars(ctx, item)
@@ -562,7 +563,7 @@ end
 =============================================================================#
 
 """
-    apply_block_args!(block::PartialBlock, ctx::StructurizationContext, defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
+    apply_block_args!(block::Block, ctx::StructurizationContext, defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
 
 Single pass that creates BlockArgs and substitutes SSAValue references.
 
@@ -574,18 +575,18 @@ Substitutes SSAValue → BlockArg references throughout.
 The parent_subs parameter carries substitutions from outer scopes, so nested
 control flow ops can convert SSAValues to the correct BlockArgs.
 """
-function apply_block_args!(block::PartialBlock, ctx::StructurizationContext,
+function apply_block_args!(block::Block, ctx::StructurizationContext,
                            defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
     # Track what's defined at this level
     defined = copy(defined)
-    for item in block.body
-        if item isa Statement
-            push!(defined, item.idx)
+    for (idx, _) in block.body
+        if is_stmt_key(idx)
+            push!(defined, idx)
         end
     end
 
     # Process each control flow op
-    for item in block.body
+    for (idx, item) in block.body
         if item isa PartialControlFlowOp
             if item.head == :loop
                 process_loop_block_args!(item, ctx, defined, parent_subs)
@@ -611,7 +612,7 @@ Create BlockArgs for a :loop op and substitute SSAValue references.
 function process_loop_block_args!(loop::PartialControlFlowOp, ctx::StructurizationContext,
                                   parent_defined::Set{Int}, parent_subs::Substitutions)
     @assert loop.head == :loop
-    body = loop.regions[:body]::PartialBlock
+    body = loop.regions[:body]::Block
     subs = Substitutions()
     result_vars = get_result_vars(ctx, loop)
 
@@ -669,8 +670,8 @@ Create BlockArgs for an :if op and substitute SSAValue references.
 function process_if_block_args!(if_op::PartialControlFlowOp, ctx::StructurizationContext,
                                 parent_defined::Set{Int}, parent_subs::Substitutions)
     @assert if_op.head == :if
-    then_blk = if_op.regions[:then]::PartialBlock
-    else_blk = if_op.regions[:else]::PartialBlock
+    then_blk = if_op.regions[:then]::Block
+    else_blk = if_op.regions[:else]::Block
 
     # Build combined defined set from parent + what's defined in each branch
     then_defined = copy(parent_defined)

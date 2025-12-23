@@ -2,8 +2,8 @@ using Test
 
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
-                      YieldOp, ContinueOp, BreakOp, ConditionOp, Statement,
-                      validate_scf, check_global_ssa_refs, PartialBlock, PartialControlFlowOp
+                      YieldOp, ContinueOp, BreakOp, ConditionOp,
+                      validate_scf, check_global_ssa_refs, PartialControlFlowOp, is_stmt_key
 using Core: SSAValue
 
 # Helper to check if block contains a control flow op with given head
@@ -51,15 +51,15 @@ end
     gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ci.code)
     @test gotoifnot_idx !== nothing
     # Check that the GotoIfNot is in the body (before structurize!)
-    # Entry is a PartialBlock with Statement objects containing the unstructured code
-    @test any(stmt -> stmt.expr isa Core.GotoIfNot, sci.entry.body)
+    # Entry body is OrderedDict{Int, Any}, iterate as (idx, expr) pairs
+    @test any(((idx, expr),) -> expr isa Core.GotoIfNot, sci.entry.body)
 
     # Validation should throw
     @test_throws UnstructuredControlFlowError validate_scf(sci)
 
     # After structurize!, validation passes
     structurize!(sci)
-    # GotoIfNot should no longer be in body (replaced by IfOp, and entry is now Block)
+    # GotoIfNot should no longer be in body (replaced by IfOp, entry.body is now Vector)
     @test !any(expr -> expr isa Core.GotoIfNot, sci.entry.body)
     validate_scf(sci)  # Should not throw
 end

@@ -8,12 +8,12 @@
 =============================================================================#
 
 """
-    find_ifop(block::PartialBlock) -> Union{PartialControlFlowOp, Nothing}
+    find_ifop(block::Block) -> Union{PartialControlFlowOp, Nothing}
 
 Find the first :if op in a block's body.
 """
-function find_ifop(block::PartialBlock)
-    for item in block.body
+function find_ifop(block::Block)
+    for (idx, item) in block.body
         if item isa PartialControlFlowOp && item.head == :if
             return item
         end
@@ -22,42 +22,44 @@ function find_ifop(block::PartialBlock)
 end
 
 """
-    find_statement_by_ssa(block::PartialBlock, ssa::SSAValue) -> Union{Statement, Nothing}
+    find_expr_by_ssa(block::Block, ssa::SSAValue) -> Union{Tuple{Int, Any, Any}, Nothing}
 
-Find a Statement in the block whose idx matches the SSAValue's id.
+Find an expression in the block whose SSA index matches the SSAValue's id.
+Returns (idx, expr, type) tuple or nothing.
 """
-function find_statement_by_ssa(block::PartialBlock, ssa::SSAValue)
-    for item in block.body
-        if item isa Statement && item.idx == ssa.id
-            return item
+function find_expr_by_ssa(block::Block, ssa::SSAValue)
+    for (idx, item) in block.body
+        if is_stmt_key(idx) && idx == ssa.id
+            return (idx, item, block.types[idx])
         end
     end
     return nothing
 end
 
 """
-    find_add_int_for_iv(block::PartialBlock, iv_arg::BlockArg) -> Union{Statement, Nothing}
+    find_add_int_for_iv(block::Block, iv_arg::BlockArg) -> Union{Tuple{Int, Any, Any}, Nothing}
 
-Find a Statement containing `add_int(iv_arg, step)` in the block.
+Find an expression containing `add_int(iv_arg, step)` in the block.
 Searches inside :if ops (since condition creates :if structure),
 but NOT into nested :loop ops (those have their own IVs).
+Returns (idx, expr, type) tuple or nothing.
 """
-function find_add_int_for_iv(block::PartialBlock, iv_arg::BlockArg)
-    for item in block.body
-        if item isa Statement
-            expr = item.expr
+function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)
+            expr = item
             if expr isa Expr && expr.head === :call && length(expr.args) >= 3
                 func = expr.args[1]
                 if func isa GlobalRef && func.name === :add_int
                     if expr.args[2] == iv_arg
-                        return item
+                        return (idx, item, block.types[idx])
                     end
                 end
             end
         elseif item isa PartialControlFlowOp && item.head == :if
             # Search in :if blocks (condition structure)
-            then_blk = item.regions[:then]::PartialBlock
-            else_blk = item.regions[:else]::PartialBlock
+            then_blk = item.regions[:then]::Block
+            else_blk = item.regions[:else]::Block
             result = find_add_int_for_iv(then_blk, iv_arg)
             result !== nothing && return result
             result = find_add_int_for_iv(else_blk, iv_arg)
@@ -69,15 +71,15 @@ function find_add_int_for_iv(block::PartialBlock, iv_arg::BlockArg)
 end
 
 """
-    is_loop_invariant(val, block::PartialBlock, n_result_vars::Int) -> Bool
+    is_loop_invariant(val, block::Block, n_result_vars::Int) -> Bool
 
 Check if a value is loop-invariant (not defined inside the loop body).
 - BlockArgs for phi values (indices 1..n_result_vars) are loop-variant
 - BlockArgs for outer captures (indices > n_result_vars) are loop-invariant
-- SSAValues are loop-invariant if no Statement in the body defines them
+- SSAValues are loop-invariant if no statement in the body defines them
 - Constants and Arguments are always loop-invariant
 """
-function is_loop_invariant(val, block::PartialBlock, n_result_vars::Int)
+function is_loop_invariant(val, block::Block, n_result_vars::Int)
     # BlockArgs: phi values are variant, outer captures are invariant
     if val isa BlockArg
         # BlockArgs beyond result_vars count are outer captures (invariant)
@@ -94,14 +96,14 @@ function is_loop_invariant(val, block::PartialBlock, n_result_vars::Int)
 end
 
 """
-    defines(block::PartialBlock, ssa::SSAValue) -> Bool
+    defines(block::Block, ssa::SSAValue) -> Bool
 
-Check if a block defines an SSA value (i.e., contains a Statement that produces it).
+Check if a block defines an SSA value (i.e., contains an expression that produces it).
 Searches nested blocks recursively.
 """
-function defines(block::PartialBlock, ssa::SSAValue)
-    for item in block.body
-        if item isa Statement && item.idx == ssa.id
+function defines(block::Block, ssa::SSAValue)
+    for (idx, item) in block.body
+        if is_stmt_key(idx) && idx == ssa.id
             return true
         elseif item isa PartialControlFlowOp
             for (_, region) in item.regions
@@ -130,13 +132,13 @@ end
 =============================================================================#
 
 """
-    apply_loop_patterns!(block::PartialBlock, ctx::StructurizationContext)
+    apply_loop_patterns!(block::Block, ctx::StructurizationContext)
 
 Upgrade :loop ops to :for/:while where patterns match.
 Modifies ops in-place by changing their head and operands.
 """
-function apply_loop_patterns!(block::PartialBlock, ctx::StructurizationContext)
-    for (i, item) in enumerate(block.body)
+function apply_loop_patterns!(block::Block, ctx::StructurizationContext)
+    for (idx, item) in block.body
         if item isa PartialControlFlowOp
             if item.head == :loop
                 if try_upgrade_loop!(item, ctx)
@@ -191,26 +193,27 @@ Modifies the op in-place. Returns true if upgraded.
 """
 function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
-    body = loop.regions[:body]::PartialBlock
+    body = loop.regions[:body]::Block
     result_vars = get_result_vars(ctx, loop)
 
     # Find the :if op in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
     condition_ifop === nothing && return false
 
-    # The condition should be an SSAValue pointing to a comparison Statement
+    # The condition should be an SSAValue pointing to a comparison expression
     cond_val = condition_ifop.operands.condition
     cond_val isa SSAValue || return false
-    cond_stmt = find_statement_by_ssa(body, cond_val)
-    cond_stmt === nothing && return false
+    cond_result = find_expr_by_ssa(body, cond_val)
+    cond_result === nothing && return false
+    cond_idx, cond_expr, _ = cond_result
 
     # Check it's a for-loop condition: slt_int(iv_arg, upper_bound)
-    is_for_condition(cond_stmt.expr) || return false
+    is_for_condition(cond_expr) || return false
 
     # After substitution, the IV should be a BlockArg
-    iv_arg = cond_stmt.expr.args[2]
+    iv_arg = cond_expr.args[2]
     iv_arg isa BlockArg || return false
-    upper_bound_raw = cond_stmt.expr.args[3]
+    upper_bound_raw = cond_expr.args[3]
 
     # If upper_bound is a BlockArg (from outer capture), resolve to original SSAValue
     upper_bound = if upper_bound_raw isa BlockArg && upper_bound_raw.id <= length(loop.init_values)
@@ -229,9 +232,10 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     lower_bound = loop.init_values[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
-    step_stmt = find_add_int_for_iv(body, iv_arg)
-    step_stmt === nothing && return false
-    step_raw = step_stmt.expr.args[3]
+    step_result = find_add_int_for_iv(body, iv_arg)
+    step_result === nothing && return false
+    step_idx, step_expr, _ = step_result
+    step_raw = step_expr.args[3]
 
     # If step is a BlockArg (from outer capture), resolve to original SSAValue
     step = if step_raw isa BlockArg && step_raw.id <= length(loop.init_values)
@@ -260,29 +264,29 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     end
 
     # Rebuild body block without condition structure
-    then_blk = condition_ifop.regions[:then]::PartialBlock
-    new_body = PartialBlock()
+    then_blk = condition_ifop.regions[:then]::Block
+    new_body = Block()
     # Only include carried values, not IV
     new_body.args = [arg for arg in body.args if arg !== iv_arg]
 
-    # Extract body statements, filtering out iv-related ones
-    for item in body.body
-        if item isa Statement
-            item === step_stmt && continue
-            item === cond_stmt && continue
-            push!(new_body.body, item)
+    # Extract body items, filtering out iv-related ones
+    for (idx, item) in body.body
+        if is_stmt_key(idx)
+            idx == step_idx && continue
+            idx == cond_idx && continue
+            push_stmt!(new_body, idx, item, body.types[idx])
         elseif item isa PartialControlFlowOp && item.head == :if && item === condition_ifop
             # Extract the continue path's body (skip condition check structure)
-            for sub_item in then_blk.body
-                if sub_item isa Statement
-                    sub_item === step_stmt && continue
-                    push!(new_body.body, sub_item)
+            for (sub_idx, sub_item) in then_blk.body
+                if is_stmt_key(sub_idx)
+                    sub_idx == step_idx && continue
+                    push_stmt!(new_body, sub_idx, sub_item, then_blk.types[sub_idx])
                 else
-                    push!(new_body.body, sub_item)
+                    push_op!(new_body, sub_item)
                 end
             end
         else
-            push!(new_body.body, item)
+            push_op!(new_body, item)
         end
     end
 
@@ -324,28 +328,28 @@ Creates MLIR-style scf.while with before/after regions:
 """
 function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
-    body = loop.regions[:body]::PartialBlock
+    body = loop.regions[:body]::Block
     result_vars = get_result_vars(ctx, loop)
 
     # Find the :if op in the loop body - its condition is the while condition
     condition_ifop = find_ifop(body)
     condition_ifop === nothing && return false
 
-    then_blk = condition_ifop.regions[:then]::PartialBlock
-    else_blk = condition_ifop.regions[:else]::PartialBlock
+    then_blk = condition_ifop.regions[:then]::Block
+    else_blk = condition_ifop.regions[:else]::Block
 
     # Build "before" region: statements before the :if + ConditionOp
-    before = PartialBlock()
+    before = Block()
     before.args = copy(body.args)
 
-    for item in body.body
-        if item isa Statement
-            push!(before.body, item)
+    for (idx, item) in body.body
+        if is_stmt_key(idx)
+            push_stmt!(before, idx, item, body.types[idx])
         elseif item isa PartialControlFlowOp && item === condition_ifop
             # Stop before :if - the condition becomes ConditionOp
             break
         else
-            push!(before.body, item)
+            push_op!(before, item)
         end
     end
 
@@ -365,13 +369,17 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
     before.terminator = ConditionOp(cond_val, condition_args)
 
     # Build "after" region: statements from the then_block + YieldOp
-    after = PartialBlock()
+    after = Block()
     for (i, arg) in enumerate(before.args)
         push!(after.args, BlockArg(i, arg.type))
     end
 
-    for item in then_blk.body
-        push!(after.body, item)
+    for (idx, item) in then_blk.body
+        if is_stmt_key(idx)
+            push_stmt!(after, idx, item, then_blk.types[idx])
+        else
+            push_op!(after, item)
+        end
     end
 
     # Get yield values from the continue terminator

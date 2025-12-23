@@ -98,13 +98,13 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
 
     if !has_control_flow
         # Straight-line code - no substitutions needed
-        new_entry = PartialBlock()
+        new_entry = Block()
         for i in 1:n
             stmt = stmts[i]
             if stmt isa ReturnNode
                 new_entry.terminator = stmt
             elseif !(stmt isa GotoNode || stmt isa GotoIfNot)
-                push!(new_entry.body, Statement(i, stmt, types[i]))
+                push_stmt!(new_entry, i, stmt, types[i])
             end
         end
         # Phase 4: Convert to local SSA (negative indices)

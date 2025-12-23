@@ -2,6 +2,7 @@ module IRStructurizer
 
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
             GotoNode, GotoIfNot, ReturnNode, PhiNode, PiNode, QuoteNode, GlobalRef
+using OrderedCollections: OrderedDict
 
 # graph-level analyses
 include("graph.jl")

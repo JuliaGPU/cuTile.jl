@@ -34,11 +34,9 @@ function validate_scf(sci::StructuredCodeInfo)
 
     # Walk all blocks and check that no statement is unstructured control flow
     each_stmt(sci.entry) do stmt
-        # stmt is either a Statement (PartialBlock) or a NamedTuple (Block)
-        expr = stmt isa Statement ? stmt.expr : stmt.expr
-        idx = stmt isa Statement ? stmt.idx : stmt.idx
-        if expr isa GotoNode || expr isa GotoIfNot
-            push!(unstructured, idx)
+        # stmt is a NamedTuple with idx, expr, type fields
+        if stmt.expr isa GotoNode || stmt.expr isa GotoIfNot
+            push!(unstructured, stmt.idx)
         end
     end
 
@@ -73,19 +71,6 @@ function check_global_ssa_refs(sci::StructuredCodeInfo; strict::Bool=false)
     check_global_ssa_refs(sci.entry; strict, is_entry=true)
 end
 
-function check_global_ssa_refs(block::PartialBlock; strict::Bool=false, is_entry::Bool=false)
-    count = count_ssavalues_in_nested(block; is_entry)
-    if count > 0
-        msg = "Block has $count global SSAValue references in nested structures"
-        if strict
-            error(msg)
-        else
-            @warn msg
-        end
-    end
-    return count
-end
-
 function check_global_ssa_refs(block::Block; strict::Bool=false, is_entry::Bool=false)
     count = count_ssavalues_in_nested(block; is_entry)
     if count > 0
@@ -100,21 +85,30 @@ function check_global_ssa_refs(block::Block; strict::Bool=false, is_entry::Bool=
 end
 
 """
-    count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false) -> Int
+    count_ssavalues_in_nested(block::Block; is_entry::Bool=false) -> Int
 
 Count positive SSAValue references inside nested control flow structures.
 Positive SSAValues in the entry block are allowed (they reference the original
 CodeInfo), but positive SSAValues inside nested blocks (if/for/etc.) should
 have been converted to negative SSAValue (local) or BlockArg.
+
+For pre-flattening (OrderedDict body), this scans expressions and nested ops.
+For post-flattening (Vector body), all SSAs are valid local references, so return 0.
 """
-function count_ssavalues_in_nested(block::PartialBlock; is_entry::Bool=false)
+function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
+    # Post-flattening: all SSAValues are valid local references
+    if block.body isa Vector
+        return 0
+    end
+
+    # Pre-flattening: count SSAValues in nested structures
     count = 0
 
-    for item in block.body
-        if item isa Statement
+    for (idx, item) in block.body
+        if is_stmt_key(idx)
             if !is_entry
                 # Inside nested block, count SSAValues in the expression
-                count += count_ssavalues_in_value(item.expr)
+                count += count_ssavalues_in_value(item)
             end
         else
             # Control flow op - check nested blocks
@@ -148,17 +142,6 @@ function count_ssavalues_in_op(op::PartialControlFlowOp; is_entry::Bool=false)
         count += count_ssavalues_in_nested(region)
     end
     return count
-end
-
-# Final Block/ControlFlowOp versions
-# After finalization, ALL SSAValues are positive local indices (per-block namespace).
-# There are no "global" CodeInfo references left - they were all converted to
-# BlockArgs or local SSAs during structurization. So we return 0 for all checks.
-function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
-    # After finalization, all SSAValues in nested blocks are valid local references.
-    # The negative-to-positive conversion means all indices are now positive,
-    # but they're still local to each block, not global CodeInfo references.
-    return 0
 end
 
 # For finalized ControlFlowOps (IfOp, ForOp, WhileOp, LoopOp), all SSAValues
@@ -245,7 +228,7 @@ count_ssavalues_in_value(_) = 0
 
 """
     validate_ssa_ordering(sci::StructuredCodeInfo) -> Bool
-    validate_ssa_ordering(block::PartialBlock; defined::Set{Int}=Set{Int}()) -> Bool
+    validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}()) -> Bool
 
 Validate that every SSAValue reference in block items has been defined earlier
 in the block or is a BlockArg. This catches the phi-referencing-phi bug where
@@ -258,21 +241,35 @@ function validate_ssa_ordering(sci::StructuredCodeInfo)
     validate_ssa_ordering(sci.entry; defined=Set{Int}())
 end
 
-function validate_ssa_ordering(block::PartialBlock; defined::Set{Int}=Set{Int}())
+function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
     # BlockArgs are available from the start
     # (They reference external values, not SSA indices in this block)
 
-    for item in block.body
-        if item isa Statement
-            # Check all SSAValue refs in the expression are in `defined`
-            check_ssa_refs_defined(item.expr, defined, block.args, item.idx)
-            # Add this statement's SSA to defined set
-            push!(defined, item.idx)
-        else
-            # ControlFlowOp - check its inputs and recurse into nested blocks
-            validate_control_flow_op_ordering(item, defined, block.args)
-            # Add result_vars to defined set (if any)
-            add_result_vars_to_defined!(item, defined)
+    # Handle both pre-flattening (OrderedDict) and post-flattening (Vector)
+    if block.body isa Vector
+        # Post-flattening: iterate with enumerate
+        for (pos, item) in enumerate(block.body)
+            if !(item isa ControlFlowOp)
+                check_ssa_refs_defined(item, defined, block.args, pos)
+                push!(defined, pos)
+            else
+                # Already finalized, skip deep validation
+            end
+        end
+    else
+        # Pre-flattening: iterate OrderedDict
+        for (idx, item) in block.body
+            if is_stmt_key(idx)
+                # Check all SSAValue refs in the expression are in `defined`
+                check_ssa_refs_defined(item, defined, block.args, idx)
+                # Add this statement's SSA to defined set
+                push!(defined, idx)
+            else
+                # ControlFlowOp - check its inputs and recurse into nested blocks
+                validate_control_flow_op_ordering(item, defined, block.args)
+                # Add result_vars to defined set (if any)
+                add_result_vars_to_defined!(item, defined)
+            end
         end
     end
 
@@ -303,7 +300,7 @@ function add_result_vars_to_defined!(op::PartialControlFlowOp, defined::Set{Int}
     # Note: result_vars are now stored in StructurizationContext, not on the op.
     # This validation would need context to access result_vars. Since this is
     # internal validation that's not exercised in practice, we skip this check.
-    # The main validation (validate_scf) works on finalized Block, not PartialBlock.
+    # The main validation (validate_scf) works on finalized Block.
 end
 
 function check_terminator_refs_defined(term::YieldOp, defined::Set{Int}, args::Vector{BlockArg})

@@ -122,25 +122,6 @@ end
 # Convenience for empty substitutions
 substitute_ssa(value) = value
 
-#=============================================================================
- Statement - self-contained statement with type
-=============================================================================#
-
-"""
-    Statement
-
-A statement in structured IR. Self-contained with expression and type.
-SSA substitutions (phi refs → block args) are applied during construction.
-"""
-struct Statement
-    idx::Int      # Original statement index (for source mapping/debugging)
-    expr::Any     # The expression (with SSA refs substituted where needed)
-    type::Any     # The SSA value type
-end
-
-function Base.show(io::IO, stmt::Statement)
-    print(io, "Statement(", stmt.idx, ", ", stmt.expr, ")")
-end
 
 #=============================================================================
  Structured Control Flow Operations
@@ -242,41 +223,6 @@ else_block(op::PartialControlFlowOp) = get(op.regions, :else, nothing)
 body_block(op::PartialControlFlowOp) = get(op.regions, :body, nothing)
 before_block(op::PartialControlFlowOp) = get(op.regions, :before, nothing)
 after_block(op::PartialControlFlowOp) = get(op.regions, :after, nothing)
-
-const PartialBlockItem = Union{Statement, PartialControlFlowOp}
-
-"""
-    PartialBlock
-
-A basic block with SSA metadata, used during IR construction (Phases 1-4).
-Same as Block but with explicit name to distinguish from final flattened Block.
-"""
-mutable struct PartialBlock
-    args::Vector{BlockArg}
-    body::Vector{PartialBlockItem}
-    terminator::Terminator
-end
-
-PartialBlock() = PartialBlock(BlockArg[], PartialBlockItem[], nothing)
-
-function Base.show(io::IO, block::PartialBlock)
-    print(io, "PartialBlock(")
-    if !isempty(block.args)
-        print(io, "args=", length(block.args), ", ")
-    end
-    n_stmts = count(x -> x isa Statement, block.body)
-    n_ops = count(x -> x isa PartialControlFlowOp, block.body)
-    print(io, "stmts=", n_stmts)
-    if n_ops > 0
-        print(io, ", ops=", n_ops)
-    end
-    print(io, ")")
-end
-
-# Iteration protocol for PartialBlock
-Base.iterate(block::PartialBlock, state=1) = state > length(block.body) ? nothing : (block.body[state], state + 1)
-Base.length(block::PartialBlock) = length(block.body)
-Base.eltype(::Type{PartialBlock}) = PartialBlockItem
 
 #=============================================================================
  Final Types (Block / ControlFlowOp) - Output of Phase 5
@@ -386,26 +332,68 @@ const BlockItem = Union{Any, ControlFlowOp}
 """
     Block
 
-Final immutable block. Output of finalize_ir!.
-Body contains expressions and ControlFlowOps interleaved.
-Types vector is parallel to body.
+Unified block type used throughout IR construction and after finalization.
+
+During construction (Phases 1-4):
+- body: OrderedDict{Int, Any} - keys are SSA indices (positive for statements, negative for ops)
+- types: OrderedDict{Int, Any} - parallel to body
+
+After finalization (Phase 5):
+- body: Vector{Any} - position IS the local SSA index, body[i] defines SSAValue(i)
+- types: Vector{Any} - parallel to body
 """
-struct Block
+mutable struct Block
     args::Vector{BlockArg}
-    body::Vector{Any}           # Expressions and ControlFlowOps interleaved
-    types::Vector{Any}          # Parallel to body (type for each item)
+    body::Union{OrderedDict{Int, Any}, Vector{Any}}
+    types::Union{OrderedDict{Int, Any}, Vector{Any}}
     terminator::Terminator
 end
 
-Block() = Block(BlockArg[], Any[], Any[], nothing)
+Block() = Block(BlockArg[], OrderedDict{Int, Any}(), OrderedDict{Int, Any}(), nothing)
+Block(args, body::Vector, types::Vector, terminator) = Block(args, body, types, terminator)
+
+"""
+    push_stmt!(block::Block, idx::Int, expr, typ)
+
+Push a statement to a Block during construction. Key = original SSA index.
+"""
+function push_stmt!(block::Block, idx::Int, expr, typ)
+    block.body[idx] = expr
+    block.types[idx] = typ
+end
+
+"""
+    push_op!(block::Block, op, typ=Nothing)
+
+Push a control flow op to a Block during construction. Uses negative keys for ops.
+"""
+function push_op!(block::Block, op, typ=Nothing)
+    # Use decreasing negative numbers for ops to keep them unique
+    n_ops = count(k -> k <= 0, keys(block.body))
+    op_key = -(n_ops + 1)
+    block.body[op_key] = op
+    block.types[op_key] = typ
+end
+
+"""
+    is_stmt_key(key::Int) -> Bool
+
+Check if a key represents a statement (positive) vs a control flow op (non-positive).
+"""
+is_stmt_key(key::Int) = key > 0
 
 function Base.show(io::IO, block::Block)
     print(io, "Block(")
     if !isempty(block.args)
         print(io, "args=", length(block.args), ", ")
     end
-    n_exprs = count(x -> !(x isa ControlFlowOp), block.body)
-    n_ops = count(x -> x isa ControlFlowOp, block.body)
+    if block.body isa OrderedDict
+        n_exprs = count(is_stmt_key, keys(block.body))
+        n_ops = length(block.body) - n_exprs
+    else
+        n_exprs = count(x -> !(x isa ControlFlowOp), block.body)
+        n_ops = count(x -> x isa ControlFlowOp, block.body)
+    end
     print(io, "exprs=", n_exprs)
     if n_ops > 0
         print(io, ", ops=", n_ops)
@@ -436,14 +424,14 @@ then call `structurize!(sci)` to convert control flow to structured ops.
 """
 mutable struct StructuredCodeInfo
     const code::CodeInfo                      # For metadata (slotnames, argtypes, etc.)
-    entry::Union{PartialBlock, Block}         # Structured IR (Block after finalization)
+    entry::Block                              # Structured IR
 end
 
 """
     StructuredCodeInfo(code::CodeInfo)
 
 Create a flat (unstructured) StructuredCodeInfo from Julia CodeInfo.
-All statements are placed sequentially in a single block as Statement objects,
+All statements are placed sequentially in a single block,
 with control flow statements (GotoNode, GotoIfNot) included as-is.
 
 Call `structurize!(sci)` to convert to structured control flow.
@@ -453,15 +441,15 @@ function StructuredCodeInfo(code::CodeInfo)
     types = code.ssavaluetypes
     n = length(stmts)
 
-    entry = PartialBlock()
+    entry = Block()
 
     for i in 1:n
         stmt = stmts[i]
         if stmt isa ReturnNode
             entry.terminator = stmt
         else
-            # Include ALL statements as Statement objects (no substitutions at entry level)
-            push!(entry.body, Statement(i, stmt, types[i]))
+            # Include ALL statements (no substitutions at entry level)
+            push_stmt!(entry, i, stmt, types[i])
         end
     end
 
@@ -473,7 +461,7 @@ end
 =============================================================================#
 
 """
-    substitute_block_shallow!(block::PartialBlock, subs::Substitutions)
+    substitute_block_shallow!(block::Block, subs::Substitutions)
 
 Apply SSA substitutions within a block, recursing into :if ops (same scope) but NOT into :loop ops.
 Used by apply_block_args! to let each :loop op handle its own substitution separately.
@@ -486,14 +474,14 @@ Substitutes:
 
 Does NOT recurse into :loop ops - each handles its own substitution via apply_block_args!.
 """
-function substitute_block_shallow!(block::PartialBlock, subs::Substitutions)
+function substitute_block_shallow!(block::Block, subs::Substitutions)
     isempty(subs) && return  # No substitutions to apply
 
-    for (i, item) in enumerate(block.body)
-        if item isa Statement
-            new_expr = substitute_ssa(item.expr, subs)
-            if new_expr !== item.expr
-                block.body[i] = Statement(item.idx, new_expr, item.type)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            new_expr = substitute_ssa(item, subs)
+            if new_expr !== item
+                block.body[idx] = new_expr
             end
         elseif item isa PartialControlFlowOp
             if item.head == :loop
@@ -504,8 +492,8 @@ function substitute_block_shallow!(block::PartialBlock, subs::Substitutions)
                 end
             elseif item.head == :if
                 # IfOps are part of the same scope - recurse into them
-                then_blk = item.regions[:then]::PartialBlock
-                else_blk = item.regions[:else]::PartialBlock
+                then_blk = item.regions[:then]::Block
+                else_blk = item.regions[:else]::Block
                 substitute_block_shallow!(then_blk, subs)
                 substitute_block_shallow!(else_blk, subs)
             end
@@ -563,51 +551,35 @@ end
 =============================================================================#
 
 """
-    each_stmt(f, block::PartialBlock)
-
-Recursively iterate over all statements in a PartialBlock.
-"""
-function each_stmt(f, block::PartialBlock)
-    for item in block.body
-        if item isa Statement
-            f(item)
-        elseif item isa PartialControlFlowOp
-            for (_, region) in item.regions
-                each_stmt(f, region)
-            end
-        end
-    end
-end
-
-"""
-    each_block(f, block::PartialBlock)
-
-Recursively iterate over all blocks in a PartialBlock.
-"""
-function each_block(f, block::PartialBlock)
-    f(block)
-    for item in block.body
-        if item isa PartialControlFlowOp
-            for (_, region) in item.regions
-                each_block(f, region)
-            end
-        end
-    end
-end
-
-"""
     each_stmt(f, block::Block)
 
-Recursively iterate over all expressions in a final Block.
-Calls f with (index, expr, type) for each expression in the body.
+Recursively iterate over all statements in a Block.
+Pre-flattening (OrderedDict): calls f with (idx=ssa_idx, expr=expr, type=type).
+Post-flattening (Vector): calls f with (idx=position, expr=expr, type=type).
 """
 function each_stmt(f, block::Block)
-    for (i, (expr, typ)) in enumerate(zip(block.body, block.types))
-        if expr isa ControlFlowOp
-            each_stmt_in_op(f, expr)
-        else
-            # For final Block, we call with a pseudo-Statement-like object
-            f((idx=i, expr=expr, type=typ))
+    if block.body isa OrderedDict
+        # Pre-flattening: iterate OrderedDict
+        for (idx, expr) in block.body
+            typ = block.types[idx]
+            if is_stmt_key(idx)  # Statement (positive key)
+                f((idx=idx, expr=expr, type=typ))
+            end
+            # Recurse into control flow ops
+            if expr isa PartialControlFlowOp
+                for (_, region) in expr.regions
+                    each_stmt(f, region)
+                end
+            end
+        end
+    else
+        # Post-flattening: iterate Vector with enumerate
+        for (idx, (expr, typ)) in enumerate(zip(block.body, block.types))
+            if !(expr isa ControlFlowOp)
+                f((idx=idx, expr=expr, type=typ))
+            elseif expr isa ControlFlowOp
+                each_stmt_in_op(f, expr)
+            end
         end
     end
 end
@@ -621,13 +593,23 @@ each_stmt_in_op(f, op::LoopOp) = each_stmt(f, op.body)
 """
     each_block(f, block::Block)
 
-Recursively iterate over all blocks in a final Block.
+Recursively iterate over all blocks in a Block.
 """
 function each_block(f, block::Block)
     f(block)
-    for expr in block.body
-        if expr isa ControlFlowOp
-            each_block_in_op(f, expr)
+    if block.body isa OrderedDict
+        for (_, expr) in block.body
+            if expr isa PartialControlFlowOp
+                for (_, region) in expr.regions
+                    each_block(f, region)
+                end
+            end
+        end
+    else
+        for expr in block.body
+            if expr isa ControlFlowOp
+                each_block_in_op(f, expr)
+            end
         end
     end
 end
@@ -643,7 +625,7 @@ each_block_in_op(f, op::LoopOp) = each_block(f, op.body)
 =============================================================================#
 
 """
-    collect_outer_refs(block::PartialBlock, defined::Set{Int}; recursive::Bool=false) -> Vector{SSAValue}
+    collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=false) -> Vector{SSAValue}
 
 Collect all SSAValue references in the block that are NOT in the defined set.
 These are "outer" references that need to be captured as BlockArgs.
@@ -657,14 +639,14 @@ Does NOT recurse into nested control flow ops - those will have their own captur
 If recursive=true: Also collects from nested control flow ops' blocks.
 Use this when the outer op needs to know ALL outer refs in its entire subtree.
 """
-function collect_outer_refs(block::PartialBlock, defined::Set{Int}; recursive::Bool=false)
+function collect_outer_refs(block::Block, defined::Set{Int}; recursive::Bool=false)
     outer_refs = SSAValue[]
     seen = Set{Int}()
 
-    # Collect from block body
-    for item in block.body
-        if item isa Statement
-            collect_ssa_refs!(outer_refs, seen, item.expr, defined)
+    # Collect from block body (pre-flattening uses OrderedDict)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            collect_ssa_refs!(outer_refs, seen, item, defined)
         elseif recursive && item isa PartialControlFlowOp
             # Recurse into nested control flow ops
             collect_control_flow_refs!(outer_refs, seen, item, defined)
@@ -708,10 +690,10 @@ end
 
 Recursively collect SSAValue references from a block.
 """
-function collect_block_refs!(refs::Vector{SSAValue}, seen::Set{Int}, block::PartialBlock, defined::Set{Int})
-    for item in block.body
-        if item isa Statement
-            collect_ssa_refs!(refs, seen, item.expr, defined)
+function collect_block_refs!(refs::Vector{SSAValue}, seen::Set{Int}, block::Block, defined::Set{Int})
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            collect_ssa_refs!(refs, seen, item, defined)
         elseif item isa PartialControlFlowOp
             collect_control_flow_refs!(refs, seen, item, defined)
         end
@@ -913,22 +895,22 @@ function convert_ssa_in_terminator(term::Nothing, ::SSAToLocalMap)
 end
 
 """
-    convert_to_local_ssa!(block::PartialBlock, ctx::StructurizationContext)
+    convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
 
 Convert SSAValue references within a block to negative SSAValue indices.
 Each statement and control flow op result gets a unique negative index.
 These negative indices are block-local and will be converted to positive
 global indices during finalization.
 """
-function convert_to_local_ssa!(block::PartialBlock, ctx::StructurizationContext)
-    # Build mapping: Statement.idx → unique negative index
+function convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
+    # Build mapping: original SSA idx → unique negative index
     # Each result gets its own unique negative index (no result_idx needed)
     idx_to_local = SSAToLocalMap()
     counter = 0
-    for item in block.body
-        if item isa Statement
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
             counter -= 1
-            idx_to_local[item.idx] = counter
+            idx_to_local[idx] = counter
         elseif item isa PartialControlFlowOp
             # Control flow ops produce values through result_vars (stored in context)
             # Each result_var gets its own unique negative index
@@ -940,11 +922,11 @@ function convert_to_local_ssa!(block::PartialBlock, ctx::StructurizationContext)
     end
 
     # Convert SSAValues in statements
-    for (i, item) in enumerate(block.body)
-        if item isa Statement
-            new_expr = convert_ssa_in_value(item.expr, idx_to_local)
-            if new_expr !== item.expr
-                block.body[i] = Statement(item.idx, new_expr, item.type)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            new_expr = convert_ssa_in_value(item, idx_to_local)
+            if new_expr !== item
+                block.body[idx] = new_expr
             end
         elseif item isa PartialControlFlowOp
             convert_to_local_ssa_in_op!(item, idx_to_local, ctx)
@@ -1040,29 +1022,29 @@ end
 negate_terminator_ssa(term::Nothing) = term
 
 """
-    finalize_ir(block::PartialBlock, ctx::StructurizationContext) -> Block
+    finalize_ir(block::Block, ctx::StructurizationContext) -> Block
 
-Convert a PartialBlock to a final Block by:
+Finalize a Block by:
 1. Converting negative SSAValue to positive local SSAValue (per-block)
-2. Flattening Statement wrappers to (expr, type) pairs in body/types vectors
-3. Converting PartialControlFlowOp to ControlFlowOp
-4. Resolving control flow op types to Julia types via context
+2. Converting PartialControlFlowOp to ControlFlowOp
+3. Resolving control flow op types to Julia types via context
+4. Converting body from OrderedDict to Vector (position IS the local SSA index)
 5. Recursively processing all nested regions
 
 SSA indices are local to each block: body[i] defines SSAValue(i).
 """
-function finalize_ir(block::PartialBlock, ctx::StructurizationContext)::Block
+function finalize_ir(block::Block, ctx::StructurizationContext)::Block
     finalize_block(block, ctx)
 end
 
-function finalize_block(block::PartialBlock, ctx::StructurizationContext)::Block
+function finalize_block(block::Block, ctx::StructurizationContext)::Block
     body = Any[]
     types = Any[]
 
-    for item in block.body
-        if item isa Statement
-            push!(body, negate_negative_ssa(item.expr))
-            push!(types, item.type)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            push!(body, negate_negative_ssa(item))
+            push!(types, block.types[idx])
         elseif item isa PartialControlFlowOp
             push!(body, finalize_control_flow_op(item, ctx))
             # Store resolved Julia types for codegen
@@ -1094,7 +1076,7 @@ function finalize_control_flow_op(op::PartialControlFlowOp, ctx::Structurization
     # Convert all regions (each has its own local SSA namespace)
     regions = Dict{Symbol, Block}()
     for (name, region) in op.regions
-        regions[name] = finalize_block(region::PartialBlock, ctx)
+        regions[name] = finalize_block(region::Block, ctx)
     end
 
     init_values = [negate_negative_ssa(v) for v in op.init_values]
@@ -1197,16 +1179,17 @@ function _scan_terminator_uses!(used::BitSet, ::Nothing)
 end
 
 # Compute which SSA values are used (for type coloring)
-function compute_used_ssas(block::PartialBlock)
+# Pre-flattening version for Block with OrderedDict body
+function compute_used_ssas_preflatten(block::Block)
     used = BitSet()
-    _scan_uses!(used, block)
+    _scan_uses_preflatten!(used, block)
     return used
 end
 
-function _scan_uses!(used::BitSet, block::PartialBlock)
-    for item in block.body
-        if item isa Statement
-            _scan_expr_uses!(used, item.expr)
+function _scan_uses_preflatten!(used::BitSet, block::Block)
+    for (idx, item) in block.body
+        if is_stmt_key(idx)
+            _scan_expr_uses!(used, item)
         elseif item isa PartialControlFlowOp
             _scan_control_flow_uses!(used, item)
         end
@@ -1231,18 +1214,22 @@ function _scan_control_flow_uses!(used::BitSet, op::PartialControlFlowOp)
     end
     # Recursively scan regions
     for (_, region) in op.regions
-        _scan_uses!(used, region)
+        _scan_uses_preflatten!(used, region)
     end
 end
 
-# Final Block/ControlFlowOp usage scanning
+# Block usage scanning - handles both pre and post flattening
 function compute_used_ssas(block::Block)
     used = BitSet()
-    _scan_uses!(used, block)
+    if block.body isa OrderedDict
+        _scan_uses_preflatten!(used, block)
+    else
+        _scan_uses_postflatten!(used, block)
+    end
     return used
 end
 
-function _scan_uses!(used::BitSet, block::Block)
+function _scan_uses_postflatten!(used::BitSet, block::Block)
     for (expr, _) in zip(block.body, block.types)
         if expr isa ControlFlowOp
             _scan_control_flow_uses!(used, expr)
@@ -1260,8 +1247,8 @@ function _scan_control_flow_uses!(used::BitSet, op::IfOp)
     for v in op.init_values
         _scan_expr_uses!(used, v)
     end
-    _scan_uses!(used, op.then_region)
-    _scan_uses!(used, op.else_region)
+    _scan_uses_postflatten!(used, op.then_region)
+    _scan_uses_postflatten!(used, op.else_region)
 end
 
 function _scan_control_flow_uses!(used::BitSet, op::ForOp)
@@ -1271,22 +1258,22 @@ function _scan_control_flow_uses!(used::BitSet, op::ForOp)
     for v in op.init_values
         _scan_expr_uses!(used, v)
     end
-    _scan_uses!(used, op.body)
+    _scan_uses_postflatten!(used, op.body)
 end
 
 function _scan_control_flow_uses!(used::BitSet, op::WhileOp)
     for v in op.init_values
         _scan_expr_uses!(used, v)
     end
-    _scan_uses!(used, op.before)
-    _scan_uses!(used, op.after)
+    _scan_uses_postflatten!(used, op.before)
+    _scan_uses_postflatten!(used, op.after)
 end
 
 function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
     for v in op.init_values
         _scan_expr_uses!(used, v)
     end
-    _scan_uses!(used, op.body)
+    _scan_uses_postflatten!(used, op.body)
 end
 
 # Compute which SSAValue indices are used in a Block (for pretty printing)
@@ -1333,12 +1320,6 @@ mutable struct IRPrinter
     block_used::BitSet     # Which SSA values are used in current block (for nested blocks)
     max_idx_width::Int     # Max width of "%N = " for alignment (like Julia's SSA printer)
     color::Bool            # Whether to use colors
-end
-
-function IRPrinter(io::IO, code::CodeInfo, entry::PartialBlock)
-    used = compute_used_ssas(entry)
-    color = get(io, :color, false)::Bool
-    IRPrinter(io, code, 0, "", false, used, BitSet(), 0, color)
 end
 
 function IRPrinter(io::IO, code::CodeInfo, entry::Block)
@@ -1513,19 +1494,19 @@ function print_results(p::IRPrinter, results::Vector{SSAValue})
     end
 end
 
-# Print a statement
-function print_stmt(p::IRPrinter, stmt::Statement; prefix::String="│  ")
+# Print a statement (pre-flattening mode, when body is OrderedDict)
+function print_stmt_preflatten(p::IRPrinter, idx::Int, expr, typ; prefix::String="│  ")
     print_indent(p)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
     # Only show %N = when the value is used (like Julia's code_typed)
-    is_used = stmt.idx in p.used
+    is_used = idx in p.used
     if is_used
-        print(p.io, "%", stmt.idx, " = ")
+        print(p.io, "%", idx, " = ")
     end
-    print_expr(p, stmt.expr)
-    print_type_annotation(p, stmt.idx, stmt.type)
+    print_expr(p, expr)
+    print_type_annotation(p, idx, typ)
     println(p.io)
 end
 
@@ -1709,12 +1690,12 @@ function print_terminator(p::IRPrinter, ::Nothing; prefix::String="└──")
     # No terminator
 end
 
-# Print a PartialBlock's contents
-function print_block_body(p::IRPrinter, block::PartialBlock)
+# Print a Block's contents (pre-flattening mode, when body is OrderedDict)
+function print_block_body_preflatten(p::IRPrinter, block::Block)
     items = []
-    for item in block.body
-        if item isa Statement
-            push!(items, (:stmt, item))
+    for (idx, item) in block.body
+        if is_stmt_key(idx)  # Statement (positive key)
+            push!(items, (:stmt, idx, item, block.types[idx]))
         elseif item isa PartialControlFlowOp
             push!(items, (:nested, item))
         end
@@ -1727,7 +1708,7 @@ function print_block_body(p::IRPrinter, block::PartialBlock)
         is_last = (i == length(items))
         if item[1] == :stmt
             prefix = is_last ? "└──" : "│  "
-            print_stmt(p, item[2]; prefix=prefix)
+            print_stmt_preflatten(p, item[2], item[3], item[4]; prefix=prefix)
         elseif item[1] == :nested
             print_control_flow(p, item[2]; is_last=is_last)
         else  # :term
@@ -1765,17 +1746,17 @@ function print_if_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=false
     print_value(p, op.operands.condition)
     println(p.io)
 
-    then_blk = op.regions[:then]::PartialBlock
-    else_blk = op.regions[:else]::PartialBlock
+    then_blk = op.regions[:then]::Block
+    else_blk = op.regions[:else]::Block
 
-    then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(then_p, then_blk)
+    then_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
+    print_block_body_preflatten(then_p, then_blk)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "else")
 
-    print_block_body(then_p, else_blk)
+    print_block_body_preflatten(then_p, else_blk)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
@@ -1792,7 +1773,7 @@ function print_for_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fals
 
     # Note: result_vars are stored in context, not on op, so we don't print them here
 
-    body = op.regions[:body]::PartialBlock
+    body = op.regions[:body]::Block
 
     print_colored(p, "for", :yellow)
     print(p.io, " %arg", op.operands.iv_arg.id, " = ")
@@ -1808,8 +1789,8 @@ function print_for_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fals
 
     println(p.io)
 
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(body_p, body)
+    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
+    print_block_body_preflatten(body_p, body)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
@@ -1826,14 +1807,14 @@ function print_loop_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fal
 
     # Note: result_vars are stored in context, not on op, so we don't print them here
 
-    body = op.regions[:body]::PartialBlock
+    body = op.regions[:body]::Block
 
     print_colored(p, "loop", :yellow)
     print_iter_args(p, body.args, op.init_values)
     println(p.io)
 
-    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(body_p, body)
+    body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
+    print_block_body_preflatten(body_p, body)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
@@ -1850,22 +1831,22 @@ function print_while_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fa
 
     # Note: result_vars are stored in context, not on op, so we don't print them here
 
-    before = op.regions[:before]::PartialBlock
-    after = op.regions[:after]::PartialBlock
+    before = op.regions[:before]::Block
+    after = op.regions[:after]::Block
 
     print_colored(p, "while", :yellow)
     print_iter_args(p, before.args, op.init_values)
     println(p.io, " {")
 
-    before_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(before_p, before)
+    before_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
+    print_block_body_preflatten(before_p, before)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
     println(p.io, "} do {")
 
-    after_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, p.color)
-    print_block_body(after_p, after)
+    after_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
+    print_block_body_preflatten(after_p, after)
 
     print_indent(p)
     print_colored(p, cont_prefix, :light_black)
