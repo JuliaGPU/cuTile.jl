@@ -787,6 +787,42 @@ end
     end
 end
 
+@testset "while loop ConditionOp uses BlockArgs not SSAValues" begin
+    # Regression test: ConditionOp args should be BlockArgs, not SSAValues.
+    # When a loop computes intermediate values, the result should be the
+    # loop-carried variable, not an intermediate computation.
+
+    function count_power(x::Int, y::Int)
+        count = 0
+        while x^count < y  # x^count is intermediate, count is the result
+            count += 1
+        end
+        return count
+    end
+
+    sci = code_structured(count_power, Tuple{Int, Int})
+    @test sci isa StructuredCodeInfo
+    validate_scf(sci)
+
+    # Find the WhileOp
+    while_idx = findfirst(item -> item isa WhileOp, sci.entry.body)
+    @test while_idx !== nothing
+
+    if while_idx !== nothing
+        while_op = sci.entry.body[while_idx]
+        before = while_op.before
+
+        # The ConditionOp should have BlockArg as its result value
+        @test before.terminator isa ConditionOp
+        cond_op = before.terminator
+
+        # The result should be %arg1 (the count BlockArg), not an SSAValue
+        # pointing to the power computation
+        @test !isempty(cond_op.args)
+        @test cond_op.args[1] isa IRStructurizer.BlockArg
+    end
+end
+
 end  # regression
 
 end  # @testset "IRStructurizer"

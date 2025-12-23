@@ -362,17 +362,10 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
         end
     end
 
-    # Get break values (become results when condition is false)
-    condition_args = IRValue[]
-    if else_blk.terminator isa BreakOp
-        condition_args = copy(else_blk.terminator.values)
-        # Add outer captures unchanged
-        for j in (length(result_vars)+1):length(before.args)
-            push!(condition_args, before.args[j])
-        end
-    elseif !isempty(before.args)
-        condition_args = [arg for arg in before.args]
-    end
+    # ConditionOp args: BlockArgs from before region (results + outer captures)
+    # The first len(result_vars) args are results; rest are outer captures
+    # Note: Must use BlockArgs, not SSAValues from BreakOp (which aren't substituted)
+    condition_args = IRValue[arg for arg in before.args]
 
     cond_val = condition_ifop.operands.condition
     before.terminator = ConditionOp(cond_val, condition_args)
