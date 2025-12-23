@@ -171,7 +171,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     cond_tree = tree_children[1]
     cond_idx = node_index(cond_tree)
 
-    # Find the GotoIfNot's SSA index for keying
+    # Find the GotoIfNot's SSA index for keying (fallback if no merge phi)
     gotoifnot_idx = nothing
     if 1 <= cond_idx <= length(blocks)
         cond_block = blocks[cond_idx]
@@ -195,12 +195,79 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     then_blk = tree_to_block(then_tree, code, blocks, ctx)
     else_blk = tree_to_block(else_tree, code, blocks, ctx)
 
+    # Find merge block and detect merge phis
+    then_block_idx = node_index(then_tree)
+    else_block_idx = node_index(else_tree)
+    merge_phis = find_merge_phis(code, blocks, then_block_idx, else_block_idx)
+
+    # Add YieldOp terminators with phi values
+    if !isempty(merge_phis)
+        then_values = [phi.then_val for phi in merge_phis]
+        else_values = [phi.else_val for phi in merge_phis]
+        then_blk.terminator = YieldOp(then_values)
+        else_blk.terminator = YieldOp(else_values)
+    end
+
     # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                   operands=(condition=cond_value,))
-    # Key by GotoIfNot's SSA index (TODO: use merge phi index when detected)
-    result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
+
+    # Set result_vars from merge phis (for Phase 2 compatibility)
+    if !isempty(merge_phis)
+        result_vars = [SSAValue(phi.ssa_idx) for phi in merge_phis]
+        set_result_vars!(ctx, if_op, result_vars)
+        result_idx = merge_phis[1].ssa_idx
+    else
+        result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
+    end
     push_op!(block, result_idx, if_op)
+end
+
+"""
+    find_merge_phis(code, blocks, then_block_idx, else_block_idx)
+
+Find phis in the merge block (common successor of then and else blocks)
+that receive values from both branches.
+
+Returns a vector of NamedTuples: (ssa_idx, then_val, else_val)
+"""
+function find_merge_phis(code::CodeInfo, blocks::Vector{BlockInfo},
+                         then_block_idx::Int, else_block_idx::Int)
+    merge_phis = NamedTuple{(:ssa_idx, :then_val, :else_val), Tuple{Int, Any, Any}}[]
+
+    # Find common successor (merge block)
+    then_succs = 1 <= then_block_idx <= length(blocks) ? blocks[then_block_idx].succs : Int[]
+    else_succs = 1 <= else_block_idx <= length(blocks) ? blocks[else_block_idx].succs : Int[]
+    merge_blocks = intersect(then_succs, else_succs)
+    isempty(merge_blocks) && return merge_phis
+
+    merge_block_idx = first(merge_blocks)
+    1 <= merge_block_idx <= length(blocks) || return merge_phis
+    merge_block = blocks[merge_block_idx]
+
+    # Look for phis that have edges from both then and else blocks
+    for si in merge_block.range
+        stmt = code.code[si]
+        stmt isa PhiNode || continue
+
+        # Find values for then and else edges
+        then_val = nothing
+        else_val = nothing
+        for (edge_idx, edge) in enumerate(stmt.edges)
+            if edge == then_block_idx
+                then_val = stmt.values[edge_idx]
+            elseif edge == else_block_idx
+                else_val = stmt.values[edge_idx]
+            end
+        end
+
+        # Only include if we have values from both branches
+        if then_val !== nothing && else_val !== nothing
+            push!(merge_phis, (ssa_idx=si, then_val=then_val, else_val=else_val))
+        end
+    end
+
+    return merge_phis
 end
 
 """
