@@ -138,13 +138,22 @@ end
 
 Upgrade :loop ops to :for/:while where patterns match.
 Modifies ops in-place by changing their head and operands.
+When upgrading to :for, re-keys the op if the IV was the first result.
 """
 function apply_loop_patterns!(block::Block, ctx::StructurizationContext)
+    # Collect all re-keying needed (old_key => new_key)
+    rekey_map = Dict{Int,Int}()
+
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
             if item.head == :loop
-                if try_upgrade_loop!(item, ctx)
-                    # Successfully upgraded, recurse into the modified op's regions
+                new_key = try_upgrade_loop!(item, ctx, idx)
+                if new_key !== nothing
+                    # Successfully upgraded - record re-keying if needed
+                    if new_key != idx
+                        rekey_map[idx] = new_key
+                    end
+                    # Recurse into the modified op's regions
                     for (_, region) in item.regions
                         apply_loop_patterns!(region, ctx)
                     end
@@ -163,58 +172,77 @@ function apply_loop_patterns!(block::Block, ctx::StructurizationContext)
             end
         end
     end
+
+    # Apply re-keying by rebuilding the OrderedDict to maintain position order
+    if !isempty(rekey_map)
+        old_body = block.body
+        old_types = block.types
+        block.body = OrderedDict{Int,Any}()
+        block.types = OrderedDict{Int,Any}()
+
+        for (old_key, item) in old_body
+            new_key = get(rekey_map, old_key, old_key)
+            block.body[new_key] = item
+            block.types[new_key] = old_types[old_key]
+        end
+    end
 end
 
 """
-    try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext) -> Bool
+    try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int) -> Union{Int, Nothing}
 
 Try to upgrade a :loop op to :for or :while by modifying it in-place.
-Returns true if upgraded, false otherwise.
+Returns the new key if upgraded (may be same as current_key), or nothing if not upgraded.
 """
-function try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext)
+function try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int)
     @assert loop.head == :loop
 
     # Try ForOp pattern first
-    if try_upgrade_to_for!(loop, ctx)
-        return true
+    new_key = try_upgrade_to_for!(loop, ctx, current_key)
+    if new_key !== nothing
+        return new_key
     end
 
     # Try WhileOp pattern
     if try_upgrade_to_while!(loop, ctx)
-        return true
+        return current_key  # WhileOp doesn't change keying
     end
 
-    return false
+    return nothing
 end
 
 """
-    try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext) -> Bool
+    try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int) -> Union{Int, Nothing}
 
 Try to upgrade a :loop op to :for by detecting the for-loop pattern.
-Modifies the op in-place. Returns true if upgraded.
+Modifies the op in-place. Returns the new key if upgraded, or nothing if not upgraded.
+The new key is the first non-IV result's SSA index (needed for correct result storage in codegen).
 """
-function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext)
+function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int)
     @assert loop.head == :loop
     body = loop.regions[:body]::Block
     n_iter_args = length(loop.iter_args)
 
+    # Get original result SSA indices before modifying (needed for re-keying)
+    original_result_indices = derive_result_vars(loop)
+
     # Find the :if op in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
-    condition_ifop === nothing && return false
+    condition_ifop === nothing && return nothing
 
     # The condition should be an SSAValue pointing to a comparison expression
     cond_val = condition_ifop.operands.condition
-    cond_val isa SSAValue || return false
+    cond_val isa SSAValue || return nothing
     cond_result = find_expr_by_ssa(body, cond_val)
-    cond_result === nothing && return false
+    cond_result === nothing && return nothing
     cond_idx, cond_expr, _ = cond_result
 
     # Check it's a for-loop condition: slt_int(iv_arg, upper_bound)
-    is_for_condition(cond_expr) || return false
+    is_for_condition(cond_expr) || return nothing
 
     # After substitution, the IV should be a BlockArg
     iv_arg = cond_expr.args[2]
-    iv_arg isa BlockArg || return false
+    iv_arg isa BlockArg || return nothing
     upper_bound_raw = cond_expr.args[3]
 
     # Helper to resolve BlockArg to original value from iter_args
@@ -229,27 +257,37 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
 
     # Find which index this BlockArg corresponds to
     iv_idx = findfirst(==(iv_arg), body.args)
-    iv_idx === nothing && return false
+    iv_idx === nothing && return nothing
 
     # IV must be an iter_arg (in the iter_args range)
-    iv_idx > n_iter_args && return false
+    iv_idx > n_iter_args && return nothing
     lower_bound = loop.iter_args[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
     step_result = find_add_int_for_iv(body, iv_arg)
-    step_result === nothing && return false
+    step_result === nothing && return nothing
     step_idx, step_expr, _ = step_result
     step_raw = step_expr.args[3]
     step = resolve_blockarg(step_raw)
 
     # Verify upper_bound and step are loop-invariant
-    is_loop_invariant(upper_bound, body, n_iter_args) || return false
-    is_loop_invariant(step, body, n_iter_args) || return false
+    is_loop_invariant(upper_bound, body, n_iter_args) || return nothing
+    is_loop_invariant(step, body, n_iter_args) || return nothing
 
     # Separate non-IV iter_args (the new iter_args for :for)
     other_iter_args = IRValue[]
     for (j, v) in enumerate(loop.iter_args)
         j != iv_idx && push!(other_iter_args, v)
+    end
+
+    # Compute the new key: first non-IV result's SSA index
+    # If no non-IV results, keep the current key
+    new_key = current_key
+    for (j, rv) in enumerate(original_result_indices)
+        if j != iv_idx
+            new_key = rv.id
+            break
+        end
     end
 
     # Rebuild body block without condition structure
@@ -300,7 +338,7 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     loop.iter_args = other_iter_args
     loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
 
-    return true
+    return new_key
 end
 
 """

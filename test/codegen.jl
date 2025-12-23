@@ -1018,4 +1018,55 @@ end
             end
         end
     end
+
+    @testset "sequential for loops with shared accumulator value" begin
+        # Regression test: Two sequential for loops where the second loop both:
+        # 1. Uses a value computed from the first loop's reduction
+        # 2. Has its own accumulator (loop-carried value)
+        #
+        # This pattern appears in LayerNorm forward pass where:
+        # - First loop computes mean/variance
+        # - Second loop normalizes using those computed values while accumulating
+        #
+        # Test: Sequential for loops where the second loop uses a value computed from
+        # the first loop's result AND has its own loop-carried accumulator.
+        # This exercises correct SSA index storage across multiple ForOps.
+        spec = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            check"CHECK-LABEL: entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec},
+                           ct.Constant{Int,16}}) do out, inp, TILE_N
+                bid = ct.bid(0)
+                num_tiles = ct.num_tiles(inp, 0, (TILE_N[],))
+
+                # First loop: accumulate and reduce
+                check"CHECK: for"
+                acc = ct.zeros((TILE_N[],), Float32)
+                i = Int32(0)
+                while i < num_tiles
+                    tile = ct.load(inp, i, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+                    acc = acc .+ tile
+                    i += Int32(1)
+                end
+                check"CHECK: reduce"
+                sum_val = ct.reduce_sum(acc, 0)
+
+                # Second loop: use sum_val AND accumulate
+                check"CHECK: for"
+                acc2 = ct.zeros((TILE_N[],), Float32)
+                i = Int32(0)
+                while i < num_tiles
+                    tile = ct.load(inp, i, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+                    check"CHECK: subf"
+                    acc2 = acc2 .+ (tile .- sum_val)  # Uses sum_val from first loop
+                    i += Int32(1)
+                end
+                check"CHECK: reduce"
+                check"CHECK: store_view_tko"
+                ct.store(out, bid, ct.reduce_sum(acc2, 0))
+
+                return
+            end
+        end
+    end
 end

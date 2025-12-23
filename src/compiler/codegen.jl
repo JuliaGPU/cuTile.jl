@@ -358,12 +358,12 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     ctx.token = results[end]
 
     # Store results by original Julia SSA index
-    # For ForOp: ssa_idx is where the IV phi was, iter_arg results are at ssa_idx+1, ssa_idx+2, ...
+    # ForOp results are stored at ssa_idx, ssa_idx+1, etc. (consistent with other control flow ops)
     for i in 1:n_user_results
         type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
         shape = extract_tile_shape(body_blk.args[i].type)
         tv = CGVal(results[i], type_id, body_blk.args[i].type, shape)
-        ctx.values[ssa_idx + i] = tv
+        ctx.values[ssa_idx + i - 1] = tv
     end
 end
 

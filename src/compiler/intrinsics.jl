@@ -639,10 +639,19 @@ function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(re
     tile_tv = emit_value!(ctx, args[2])
     tile_tv === nothing && error("store() requires a tile argument")
     tile_shape = tile_tv.shape
-    isempty(tile_shape) && error("Cannot determine tile shape for store()")
+    tile_shape === nothing && error("Cannot determine tile shape for store()")
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     ndim = length(tile_shape)
+
+    # Handle 0D scalar stores by reshaping to 1D (partition views require at least 1D)
+    tile_val = tile_tv.v
+    if ndim == 0
+        ndim = 1
+        tile_shape = Int[1]
+        tile_1d_type = tile_type!(tt, dtype, tile_shape)
+        tile_val = encode_ReshapeOp!(cb, tile_1d_type, tile_val)
+    end
 
     # Extract indices directly from args[3:end] (no tuple decomposition needed!)
     index_vals = Value[]
@@ -684,7 +693,7 @@ function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(re
 
     # Store tile with token
     token_type = Token(tt)
-    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_tv.v, partition, index_vals; token=ctx.token)
+    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, partition, index_vals; token=ctx.token)
     ctx.token = new_token
 
     nothing
@@ -953,10 +962,10 @@ function get_size_stride_vals(ctx::CodegenContext, arg_idx, is_tilearray::Bool, 
         strides_from_arg = get_arg_flat_values(ctx, arg_idx, :strides)
 
         if sizes_from_arg !== nothing && length(sizes_from_arg) >= ndim
-            size_vals = sizes_from_arg[1:ndim]
+            size_vals = Value[sizes_from_arg[i] for i in 1:ndim]
         end
         if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
-            stride_vals = strides_from_arg[1:ndim]
+            stride_vals = Value[strides_from_arg[i] for i in 1:ndim]
         end
     end
 
@@ -1002,15 +1011,15 @@ function emit_assume_ops!(ctx::CodegenContext, array_val::Value, size_vals::Vect
     end
 
     # Bounds assumes for sizes
-    size_vals = [encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in size_vals]
+    size_vals = Value[encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in size_vals]
 
     # Bounds assumes for strides - only for dynamic strides
     if tv_strides !== nothing
-        stride_vals = [tv_strides[i] == DYNAMIC_SHAPE ?
+        stride_vals = Value[tv_strides[i] == DYNAMIC_SHAPE ?
                        encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) : v
                        for (i, v) in enumerate(stride_vals)]
     else
-        stride_vals = [encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in stride_vals]
+        stride_vals = Value[encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in stride_vals]
     end
 
     # Divisibility assumes for sizes
