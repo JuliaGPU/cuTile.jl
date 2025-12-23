@@ -70,12 +70,14 @@ Convert unstructured control flow in `sci` to structured control flow operations
 This transforms GotoNode and GotoIfNot statements into nested structured ops
 that can be traversed hierarchically.
 
-Five-phase approach:
+Four-phase approach:
 1. Build structure (pure SSAValues, no BlockArgs)
-2. Create BlockArgs and substitute SSA→BlockArg
+2. Create BlockArgs and substitute SSA→BlockArg for loop-carried values
 3. Upgrade loop patterns (:for/:while) if enabled
-4. Convert to local SSA (positive block-local indices)
-5. Finalize IR (flatten OrderedDict→Vector)
+4. Finalize IR (convert OrderedDict→Vector, PartialControlFlowOp→ControlFlowOp)
+
+SSA indices use original Julia SSA indices throughout (like MLIR), allowing
+direct references to outer scope values without captures.
 
 When `loop_patterning=true` (default), loops are classified as :for (bounded counters)
 or :while (condition-based). When `false`, all loops remain as :loop.
@@ -102,20 +104,15 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     # Phase 1: Build structure (pure SSAValues, no BlockArgs)
     partial_entry = control_tree_to_structured_ir(ctree, code, blocks, ctx)
 
-    # Phase 2: Create BlockArgs and substitute SSA→BlockArg
+    # Phase 2: Create BlockArgs and substitute SSA→BlockArg for loop-carried values
     apply_block_args!(partial_entry, ctx)
 
     # Phase 3: Upgrade loop patterns (optional)
-    # Must run before local SSA conversion so pattern matching can use original indices
     if loop_patterning
         apply_loop_patterns!(partial_entry, ctx)
     end
 
-    # Phase 4: Skipped - keep original Julia SSA indices everywhere
-    # This allows direct references to outer scope values without collision issues
-    # convert_to_local_ssa!(partial_entry, ctx)
-
-    # Phase 5: Finalize IR (flatten OrderedDict→Vector)
+    # Phase 4: Finalize IR (convert OrderedDict→Vector)
     sci.entry = finalize_ir(partial_entry, ctx)
 
     return sci

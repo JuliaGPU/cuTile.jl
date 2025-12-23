@@ -1,6 +1,6 @@
 # structured IR validation
 
-export UnstructuredControlFlowError, check_global_ssa_refs
+export UnstructuredControlFlowError
 
 """
     UnstructuredControlFlowError <: Exception
@@ -48,179 +48,6 @@ function validate_scf(sci::StructuredCodeInfo)
 end
 
 #=============================================================================
- Global SSA Reference Validation
- Detects positive SSAValue references inside nested blocks (which should only
- contain negative SSAValue or BlockArg until finalization).
-=============================================================================#
-
-"""
-    check_global_ssa_refs(sci::StructuredCodeInfo; strict::Bool=false) -> Int
-    check_global_ssa_refs(block::Block; strict::Bool=false) -> Int
-
-Count positive SSAValue references inside nested control flow structures.
-Returns the count. If strict=true, errors when count > 0.
-
-Before finalization:
-- Entry block: positive SSAValue (original CodeInfo refs) are allowed
-- Nested blocks: should only have negative SSAValue (local) or BlockArg
-
-After finalization:
-- All SSAValue are positive (global indices)
-"""
-function check_global_ssa_refs(sci::StructuredCodeInfo; strict::Bool=false)
-    check_global_ssa_refs(sci.entry; strict, is_entry=true)
-end
-
-function check_global_ssa_refs(block::Block; strict::Bool=false, is_entry::Bool=false)
-    count = count_ssavalues_in_nested(block; is_entry)
-    if count > 0
-        msg = "Block has $count global SSAValue references in nested structures"
-        if strict
-            error(msg)
-        else
-            @warn msg
-        end
-    end
-    return count
-end
-
-"""
-    count_ssavalues_in_nested(block::Block; is_entry::Bool=false) -> Int
-
-Count positive SSAValue references inside nested control flow structures.
-Positive SSAValues in the entry block are allowed (they reference the original
-CodeInfo), but positive SSAValues inside nested blocks (if/for/etc.) should
-have been converted to negative SSAValue (local) or BlockArg.
-
-For pre-flattening (OrderedDict body), this scans expressions and nested ops.
-For post-flattening (Vector body), all SSAs are valid local references, so return 0.
-"""
-function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
-    # Post-flattening: all SSAValues are valid local references
-    if block.body isa Vector
-        return 0
-    end
-
-    # Pre-flattening: count SSAValues in nested structures
-    count = 0
-
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            # Control flow op - check nested blocks
-            # Pass is_entry so we know if the op's iter_args are at entry level
-            count += count_ssavalues_in_op(item; is_entry)
-        else  # Statement
-            if !is_entry
-                # Inside nested block, count SSAValues in the expression
-                count += count_ssavalues_in_value(item)
-            end
-        end
-    end
-
-    # Check terminator (except in entry block)
-    if !is_entry && block.terminator !== nothing
-        count += count_ssavalues_in_terminator(block.terminator)
-    end
-
-    return count
-end
-
-function count_ssavalues_in_op(op::PartialControlFlowOp; is_entry::Bool=false)
-    count = 0
-    # Only count operands and iter_args if op is nested (not at entry level)
-    if !is_entry
-        # Count SSAValues in operands
-        for v in values(op.operands)
-            count += count_ssavalues_in_value(v)
-        end
-        for v in op.iter_args
-            count += count_ssavalues_in_value(v)
-        end
-    end
-    # Recurse into all regions
-    for (_, region) in op.regions
-        count += count_ssavalues_in_nested(region)
-    end
-    return count
-end
-
-# For finalized ControlFlowOps (IfOp, ForOp, WhileOp, LoopOp), all SSAValues
-# are valid local references (per-block namespace), so we return 0.
-count_ssavalues_in_op(::IfOp; is_entry::Bool=false) = 0
-count_ssavalues_in_op(::ForOp; is_entry::Bool=false) = 0
-count_ssavalues_in_op(::WhileOp; is_entry::Bool=false) = 0
-count_ssavalues_in_op(::LoopOp; is_entry::Bool=false) = 0
-
-function count_ssavalues_in_terminator(term::YieldOp)
-    count = 0
-    for v in term.values
-        count += count_ssavalues_in_value(v)
-    end
-    return count
-end
-
-function count_ssavalues_in_terminator(term::ContinueOp)
-    count = 0
-    for v in term.values
-        count += count_ssavalues_in_value(v)
-    end
-    return count
-end
-
-function count_ssavalues_in_terminator(term::BreakOp)
-    count = 0
-    for v in term.values
-        count += count_ssavalues_in_value(v)
-    end
-    return count
-end
-
-function count_ssavalues_in_terminator(term::ConditionOp)
-    count = count_ssavalues_in_value(term.condition)
-    for v in term.args
-        count += count_ssavalues_in_value(v)
-    end
-    return count
-end
-
-function count_ssavalues_in_terminator(::ReturnNode)
-    return 0  # ReturnNode in nested blocks handled elsewhere
-end
-
-function count_ssavalues_in_terminator(::Nothing)
-    return 0
-end
-
-"""
-    count_ssavalues_in_value(value) -> Int
-
-Count positive SSAValue occurrences in an IR value, recursively traversing Expr trees.
-Negative SSAValue (local references) are not counted.
-"""
-count_ssavalues_in_value(v::SSAValue) = v.id > 0 ? 1 : 0
-count_ssavalues_in_value(::BlockArg) = 0
-count_ssavalues_in_value(::Argument) = 0
-count_ssavalues_in_value(::SlotNumber) = 0
-count_ssavalues_in_value(::GlobalRef) = 0
-count_ssavalues_in_value(::QuoteNode) = 0
-count_ssavalues_in_value(::Nothing) = 0
-count_ssavalues_in_value(::Number) = 0
-count_ssavalues_in_value(::Symbol) = 0
-count_ssavalues_in_value(::Type) = 0
-count_ssavalues_in_value(::PiNode) = 0  # PiNode handled separately if needed
-
-function count_ssavalues_in_value(expr::Expr)
-    count = 0
-    for arg in expr.args
-        count += count_ssavalues_in_value(arg)
-    end
-    return count
-end
-
-# Fallback for other types
-count_ssavalues_in_value(_) = 0
-
-#=============================================================================
  SSA Ordering Validation
  Validates that all SSAValue references in an RHS have been defined earlier
  in the same block or are available as BlockArgs.
@@ -242,12 +69,11 @@ function validate_ssa_ordering(sci::StructuredCodeInfo)
 end
 
 function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
-    # BlockArgs are available from the start
-    # (They reference external values, not SSA indices in this block)
+    # BlockArgs are available from the start (loop-carried values)
 
-    # Handle both pre-flattening (OrderedDict) and post-flattening (Vector)
+    # Handle both construction (OrderedDict) and finalized (Vector) forms
     if block.body isa Vector
-        # Post-flattening: iterate with enumerate
+        # Finalized: iterate with enumerate
         for (pos, item) in enumerate(block.body)
             if !(item isa ControlFlowOp)
                 check_ssa_refs_defined(item, defined, block.args, pos)
@@ -257,7 +83,7 @@ function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
             end
         end
     else
-        # Pre-flattening: iterate OrderedDict
+        # During construction: iterate OrderedDict
         for (idx, item) in block.body
             if item isa PartialControlFlowOp
                 # ControlFlowOp - check its inputs and recurse into nested blocks

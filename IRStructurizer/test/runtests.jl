@@ -3,7 +3,7 @@ using Test
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      validate_scf, check_global_ssa_refs, PartialControlFlowOp
+                      validate_scf, PartialControlFlowOp
 using Core: SSAValue
 
 # Helper to check if block contains a control flow op with given head
@@ -699,10 +699,9 @@ end
 end
 
 @testset "swap_loop phi references" begin
-    # Regression test for phi-referencing-phi bug
-    # When x and y are swapped in a loop, the IR has phi nodes that reference
-    # other phi nodes. The current substitution pass may not handle this correctly,
-    # leaving global SSAValues in nested blocks that should be BlockArgs.
+    # Test for loops with phi nodes that reference other phi nodes.
+    # When x and y are swapped in a loop, the IR has cross-referencing phis.
+    # With global SSA, outer scope values can be referenced directly.
     function swap_loop(n::Int)
         x, y = 1, 2
         for i in 1:n
@@ -736,22 +735,9 @@ end
     while_op = find_while_op(sci.entry)
     @test while_op !== nothing
 
-    # BUG: The before block references SSAValue(%5) which is defined outside the loop
-    # but not captured as a BlockArg. After the fix, all external references should
-    # be BlockArgs, not raw SSAValues.
-    #
-    # Current behavior (broken):
-    #   %19 = Base.===(%arg1, %5)::Bool   <- %5 is not a BlockArg!
-    #
-    # Expected behavior (after fix):
-    #   %19 = Base.===(%arg1, %arg4)::Bool  <- %5 captured as BlockArg
-
-    # All SSAValue references have been converted:
-    # 1. Outer scope values are captured as BlockArgs
-    # 2. Inner block values get unique global SSAValue indices after finalization
-    ssa_ref_count = check_global_ssa_refs(sci)
-    @test ssa_ref_count == 0
-    check_global_ssa_refs(sci; strict=true)  # Should not throw
+    # Loop-carried values are properly tracked via iter_args and BlockArgs
+    @test !isempty(while_op.iter_args)
+    @test !isempty(while_op.before.args)
 end
 
 @testset "while loop with outer capture has Nothing type" begin

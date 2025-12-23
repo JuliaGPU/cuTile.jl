@@ -578,12 +578,12 @@ end
     each_stmt(f, block::Block)
 
 Recursively iterate over all statements in a Block.
-Pre-flattening (OrderedDict): calls f with (idx=ssa_idx, expr=expr, type=type).
-Post-flattening (Vector): calls f with (idx=position, expr=expr, type=type).
+During construction (OrderedDict): calls f with (idx=original_ssa_idx, expr=expr, type=type).
+After finalization (Vector): calls f with (idx=position, expr=expr, type=type).
 """
 function each_stmt(f, block::Block)
     if block.body isa OrderedDict
-        # Pre-flattening: iterate OrderedDict
+        # During construction: iterate OrderedDict (keyed by original SSA index)
         for (idx, expr) in block.body
             typ = block.types[idx]
             if expr isa PartialControlFlowOp
@@ -596,7 +596,7 @@ function each_stmt(f, block::Block)
             end
         end
     else
-        # Post-flattening: iterate Vector with enumerate
+        # After finalization: iterate Vector with enumerate
         for (idx, (expr, typ)) in enumerate(zip(block.body, block.types))
             if !(expr isa ControlFlowOp)
                 f((idx=idx, expr=expr, type=typ))
@@ -853,7 +853,7 @@ function _scan_terminator_uses!(used::BitSet, ::Nothing)
 end
 
 # Compute which SSA values are used (for type coloring)
-# Pre-flattening version for Block with OrderedDict body
+# Version for Block during construction (OrderedDict body)
 function compute_used_ssas_preflatten(block::Block)
     used = BitSet()
     _scan_uses_preflatten!(used, block)
@@ -892,7 +892,7 @@ function _scan_control_flow_uses!(used::BitSet, op::PartialControlFlowOp)
     end
 end
 
-# Block usage scanning - handles both pre and post flattening
+# Block usage scanning - handles both construction and finalized forms
 function compute_used_ssas(block::Block)
     used = BitSet()
     if block.body isa OrderedDict
