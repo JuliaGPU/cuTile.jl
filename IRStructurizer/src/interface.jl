@@ -93,27 +93,6 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     # Create context for tracking metadata during construction
     ctx = StructurizationContext(types)
 
-    # Check if the code is straight-line (no control flow)
-    has_control_flow = any(s -> s isa GotoNode || s isa GotoIfNot, stmts)
-
-    if !has_control_flow
-        # Straight-line code - no substitutions needed
-        new_entry = Block()
-        for i in 1:n
-            stmt = stmts[i]
-            if stmt isa ReturnNode
-                new_entry.terminator = stmt
-            elseif !(stmt isa GotoNode || stmt isa GotoIfNot)
-                push_stmt!(new_entry, i, stmt, types[i])
-            end
-        end
-        # Phase 4: Convert to local SSA (negative indices)
-        convert_to_local_ssa!(new_entry, ctx)
-        # Phase 5: Finalize IR (convert negative → positive global indices)
-        sci.entry = finalize_ir(new_entry, ctx)
-        return sci
-    end
-
     # Build block-level CFG
     blocks, cfg = build_block_cfg(code)
 

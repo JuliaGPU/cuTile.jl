@@ -165,15 +165,21 @@ Heads:
 - :for - counted for loop, regions[:body], operands has lower/upper/step/iv_arg
 - :while - MLIR-style while, regions[:before] and regions[:after]
 
-result_vars: For :loop, derived from BreakOp.values. For :for, stored explicitly
-since ForOp has no BreakOp. Empty means derive from terminator.
+Result values flow through terminators:
+- :loop: BreakOp.values for results, ContinueOp.values for iteration
+- :for/:while: ContinueOp/YieldOp serves as both iteration AND final results
+- :if: YieldOp.values in then/else branches
+
+result_vars: Optional storage of result SSA indices for multi-result :for ops.
+Used only for SSA index mapping in convert_to_local_ssa!. Types are derived
+from body.args at finalization, not from result_vars.
 """
 mutable struct PartialControlFlowOp
     head::Symbol
     regions::Dict{Symbol, Any}  # Values are PartialBlock (forward reference)
     init_values::Vector{IRValue}
     operands::NamedTuple
-    result_vars::Vector{SSAValue}  # Explicit storage for ops without derivable results
+    result_vars::Vector{SSAValue}  # Only for multi-result :for ops (SSA index mapping)
 end
 
 # Convenience constructor
@@ -382,14 +388,19 @@ Base.eltype(::Type{Block}) = Any
 """
     derive_result_vars(op::PartialControlFlowOp) -> Vector{SSAValue}
 
-Derive result_vars from an op's terminator.
-- For :loop: BreakOp.values in body
-- For :while: ConditionOp.args in before region
-- For :for: explicit op.result_vars (set during pattern upgrade)
+Derive result SSAValues from an op's terminator. Used for SSA index mapping
+in convert_to_local_ssa!.
+
+- For :loop: BreakOp.values in body (kept as SSAValues, not substituted)
+- For :for: explicit result_vars if set (for multi-result), else empty
+- For :while: empty (single key from OrderedDict position)
 - For :if: empty (if-ops are keyed by their result index)
+
+Note: Types for :for/:while are derived from body.args at finalization,
+not from result_vars. result_vars is only for SSA index mapping.
 """
 function derive_result_vars(op::PartialControlFlowOp)
-    # Check explicit storage first (used by :for after pattern upgrade)
+    # Check explicit storage first (used by multi-result :for)
     if !isempty(op.result_vars)
         return op.result_vars
     end
@@ -397,12 +408,8 @@ function derive_result_vars(op::PartialControlFlowOp)
         body = op.regions[:body]::Block
         break_vals = find_break_values(body)
         return SSAValue[v for v in break_vals if v isa SSAValue]
-    elseif op.head == :while
-        before = op.regions[:before]::Block
-        if before.terminator isa ConditionOp
-            return SSAValue[v for v in before.terminator.args if v isa SSAValue]
-        end
     end
+    # :for (single result), :while, :if - return empty
     return SSAValue[]
 end
 
@@ -1070,14 +1077,7 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
         if item isa PartialControlFlowOp
             push!(body, finalize_control_flow_op(item, ctx))
             # Determine Julia type for the op's result
-            results = derive_result_vars(item)
-            if isempty(results)
-                push!(types, Nothing)
-            elseif length(results) == 1
-                push!(types, ctx.ssavaluetypes[results[1].id])
-            else
-                push!(types, Tuple{(ctx.ssavaluetypes[rv.id] for rv in results)...})
-            end
+            push!(types, derive_op_result_type(item, ctx))
         else  # Statement
             push!(body, negate_negative_ssa(item))
             push!(types, block.types[idx])
@@ -1088,6 +1088,50 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
         negate_terminator_ssa(block.terminator)
 
     return Block(copy(block.args), body, types, terminator)
+end
+
+"""
+    derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationContext) -> Type
+
+Derive the result type for a control flow op.
+- For :for/:while: derive from body.args/before.args (iter_args types = result types)
+- For :loop/:if: derive from ssavaluetypes via derive_result_vars
+"""
+function derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationContext)
+    if op.head == :for
+        # For-loops: result types match iter_args types (body.args)
+        body = op.regions[:body]::Block
+        return args_to_result_type(body.args)
+    elseif op.head == :while
+        # While-loops: result types match iter_args types (before.args)
+        before = op.regions[:before]::Block
+        return args_to_result_type(before.args)
+    else
+        # :loop and :if: derive from result_vars via ssavaluetypes
+        results = derive_result_vars(op)
+        if isempty(results)
+            return Nothing
+        elseif length(results) == 1
+            return ctx.ssavaluetypes[results[1].id]
+        else
+            return Tuple{(ctx.ssavaluetypes[rv.id] for rv in results)...}
+        end
+    end
+end
+
+"""
+    args_to_result_type(args::Vector{BlockArg}) -> Type
+
+Convert BlockArgs to a result type (single type or Tuple).
+"""
+function args_to_result_type(args::Vector{BlockArg})
+    if isempty(args)
+        return Nothing
+    elseif length(args) == 1
+        return args[1].type
+    else
+        return Tuple{(arg.type for arg in args)...}
+    end
 end
 
 """

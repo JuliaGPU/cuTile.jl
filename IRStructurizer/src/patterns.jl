@@ -316,7 +316,8 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     loop.regions = Dict{Symbol,Any}(:body => new_body)
     loop.init_values = other_init_values
     loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
-    # Store result_vars on the op (ForOp has no BreakOp to derive from)
+    # Store result_vars only for multi-result :for (needed for SSA index mapping)
+    # Types are derived from body.args at finalization
     loop.result_vars = other_result_vars
 
     return true
