@@ -754,6 +754,39 @@ end
     check_global_ssa_refs(sci; strict=true)  # Should not throw
 end
 
+@testset "while loop with outer capture has Nothing type" begin
+    # Regression test: a while loop with only outer captures (no actual results)
+    # should have Nothing result type, not the type of the outer capture.
+    # This bug caused type information loss in downstream codegen.
+
+    # Spinloop pattern: condition uses outer capture `x`, but loop produces no results
+    function spinloop_capture(x::Int)
+        while x > 0  # x is captured but loop has no actual results
+        end
+        return x
+    end
+
+    sci = code_structured(spinloop_capture, Tuple{Int})
+    @test sci isa StructuredCodeInfo
+    validate_scf(sci)
+
+    # Find the loop in the structure
+    while_op = nothing
+    for (i, item) in enumerate(sci.entry.body)
+        if item isa WhileOp
+            while_op = item
+            break
+        end
+    end
+
+    if while_op !== nothing
+        # Check that the result type is Nothing (no results), not Int (outer capture type)
+        while_idx = findfirst(item -> item isa WhileOp, sci.entry.body)
+        result_type = sci.entry.types[while_idx]
+        @test result_type === Nothing
+    end
+end
+
 end  # regression
 
 end  # @testset "IRStructurizer"

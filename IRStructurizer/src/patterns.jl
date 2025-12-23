@@ -407,7 +407,8 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
     # Modify the loop in-place to become :while
     loop.head = :while
     loop.regions = Dict{Symbol,Any}(:before => before, :after => after)
-    # init_values stay the same; result_vars derived from BreakOp in before region
+    # Store result_vars for SSA index mapping (needed to distinguish results from outer captures)
+    loop.result_vars = result_vars
 
     return true
 end

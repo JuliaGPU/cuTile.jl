@@ -392,15 +392,14 @@ Derive result SSAValues from an op's terminator. Used for SSA index mapping
 in convert_to_local_ssa!.
 
 - For :loop: BreakOp.values in body (kept as SSAValues, not substituted)
-- For :for: explicit result_vars if set (for multi-result), else empty
-- For :while: empty (single key from OrderedDict position)
+- For :for/:while: explicit result_vars (stored during pattern upgrade)
 - For :if: empty (if-ops are keyed by their result index)
 
-Note: Types for :for/:while are derived from body.args at finalization,
-not from result_vars. result_vars is only for SSA index mapping.
+Note: Types for :for/:while are derived from body.args/before.args at
+finalization, using result_vars to exclude outer captures.
 """
 function derive_result_vars(op::PartialControlFlowOp)
-    # Check explicit storage first (used by multi-result :for)
+    # Check explicit storage first (used by :for and :while after pattern upgrade)
     if !isempty(op.result_vars)
         return op.result_vars
     end
@@ -409,7 +408,7 @@ function derive_result_vars(op::PartialControlFlowOp)
         break_vals = find_break_values(body)
         return SSAValue[v for v in break_vals if v isa SSAValue]
     end
-    # :for (single result), :while, :if - return empty
+    # Single-result :for/:while (no explicit result_vars), :if - return empty
     return SSAValue[]
 end
 
@@ -1094,18 +1093,22 @@ end
     derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationContext) -> Type
 
 Derive the result type for a control flow op.
-- For :for/:while: derive from body.args/before.args (iter_args types = result types)
+- For :for/:while: derive from body.args/before.args, using result_vars to exclude outer captures
 - For :loop/:if: derive from ssavaluetypes via derive_result_vars
 """
 function derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationContext)
     if op.head == :for
-        # For-loops: result types match iter_args types (body.args)
+        # For-loops: result types from body.args, excluding outer captures
         body = op.regions[:body]::Block
-        return args_to_result_type(body.args)
+        n_results = length(op.result_vars)
+        result_args = n_results > 0 ? body.args[1:n_results] : BlockArg[]
+        return args_to_result_type(result_args)
     elseif op.head == :while
-        # While-loops: result types match iter_args types (before.args)
+        # While-loops: result types from before.args, excluding outer captures
         before = op.regions[:before]::Block
-        return args_to_result_type(before.args)
+        n_results = length(op.result_vars)
+        result_args = n_results > 0 ? before.args[1:n_results] : BlockArg[]
+        return args_to_result_type(result_args)
     else
         # :loop and :if: derive from result_vars via ssavaluetypes
         results = derive_result_vars(op)
