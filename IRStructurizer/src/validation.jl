@@ -107,7 +107,7 @@ function count_ssavalues_in_nested(block::Block; is_entry::Bool=false)
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
             # Control flow op - check nested blocks
-            # Pass is_entry so we know if the op's iter_args/captures are at entry level
+            # Pass is_entry so we know if the op's iter_args are at entry level
             count += count_ssavalues_in_op(item; is_entry)
         else  # Statement
             if !is_entry
@@ -127,16 +127,13 @@ end
 
 function count_ssavalues_in_op(op::PartialControlFlowOp; is_entry::Bool=false)
     count = 0
-    # Only count operands and iter_args/captures if op is nested (not at entry level)
+    # Only count operands and iter_args if op is nested (not at entry level)
     if !is_entry
         # Count SSAValues in operands
         for v in values(op.operands)
             count += count_ssavalues_in_value(v)
         end
         for v in op.iter_args
-            count += count_ssavalues_in_value(v)
-        end
-        for v in op.captures
             count += count_ssavalues_in_value(v)
         end
     end
@@ -291,11 +288,8 @@ function validate_control_flow_op_ordering(op::PartialControlFlowOp, defined::Se
     for v in values(op.operands)
         check_ssa_refs_defined(v, defined, args, nothing)
     end
-    # Check iter_args and captures
+    # Check iter_args
     for v in op.iter_args
-        check_ssa_refs_defined(v, defined, args, nothing)
-    end
-    for v in op.captures
         check_ssa_refs_defined(v, defined, args, nothing)
     end
     # Recurse into all regions - each region starts fresh

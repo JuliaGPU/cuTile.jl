@@ -157,10 +157,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     sci = StructuredCodeInfo(target.ci)
     structurize!(sci)
 
-    # Initialize SSA counter (each block has local indices starting at 1)
-    ctx.next_ssa_idx = 1
-
-    # Emit the structured IR
+    # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, sci.entry)
 
     finalize_function!(func_buf, cb, writer.debug_info)
@@ -190,48 +187,46 @@ end
     emit_block!(ctx, block::Block)
 
 Emit bytecode for a structured IR block.
-SSA indices are assigned sequentially using ctx.next_ssa_idx counter.
-For control flow ops, indices are assigned AFTER nested regions (DFS order).
+All SSA values use original Julia SSA indices (no local renumbering).
+Values are stored in ctx.values by their original index.
 """
-function emit_block!(ctx::CodegenContext, block::Block)
+function emit_block!(ctx::CodegenContext, block::Block; skip_terminator::Bool=false)
     # Emit body items (interleaved expressions and control flow ops)
-    for (expr, result_type) in zip(block.body, block.types)
+    for (i, (expr, result_type)) in enumerate(zip(block.body, block.types))
+        # Get original Julia SSA index for this item
+        ssa_idx = !isempty(block.original_indices) ? block.original_indices[i] : i
         if expr isa ControlFlowOp
-            # For control flow ops, nested regions are emitted first (in the callbacks),
-            # then result indices are assigned. The emit function handles this internally.
             n_results = result_count(result_type)
-            emit_control_flow_op!(ctx, expr, result_type, n_results)
+            emit_control_flow_op!(ctx, expr, result_type, n_results, ssa_idx)
         else
-            # Regular expression - assign result at current index, then increment
-            ssa_idx = ctx.next_ssa_idx
-            ctx.next_ssa_idx += 1
             emit_statement!(ctx, expr, ssa_idx, result_type)
         end
     end
 
-    # Emit terminator
-    if block.terminator !== nothing
+    # Emit terminator (unless skipped)
+    if !skip_terminator && block.terminator !== nothing
         emit_terminator!(ctx, block.terminator)
     end
 end
 
 """
-    emit_control_flow_op!(ctx, op::ControlFlowOp, result_type, n_results)
+    emit_control_flow_op!(ctx, op::ControlFlowOp, result_type, n_results, original_idx)
 
 Emit bytecode for a structured control flow operation.
 Uses multiple dispatch on the concrete ControlFlowOp type.
 Results are stored at indices assigned AFTER nested regions (DFS order).
+original_idx is the original Julia SSA index for cross-block references.
 """
-emit_control_flow_op!(ctx::CodegenContext, op::IfOp, @nospecialize(result_type), n_results::Int) =
-    emit_if_op!(ctx, op, result_type, n_results)
-emit_control_flow_op!(ctx::CodegenContext, op::ForOp, @nospecialize(result_type), n_results::Int) =
-    emit_for_op!(ctx, op, result_type, n_results)
-emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(result_type), n_results::Int) =
-    emit_while_op!(ctx, op, result_type, n_results)
-emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(result_type), n_results::Int) =
-    emit_loop_op!(ctx, op, result_type, n_results)
+emit_control_flow_op!(ctx::CodegenContext, op::IfOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
+    emit_if_op!(ctx, op, result_type, n_results, original_idx)
+emit_control_flow_op!(ctx::CodegenContext, op::ForOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
+    emit_for_op!(ctx, op, result_type, n_results, original_idx)
+emit_control_flow_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
+    emit_while_op!(ctx, op, result_type, n_results, original_idx)
+emit_control_flow_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
+    emit_loop_op!(ctx, op, result_type, n_results, original_idx)
 
-function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_type), n_results::Int)
+function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
     then_blk = op.then_region
     else_blk = op.else_region
@@ -241,7 +236,6 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
 
     # Determine result types from parent_result_type
-    # If parent_result_type is a Tuple, unpack it; otherwise it's a single result
     result_types = TypeId[]
     julia_result_types = Type[]
     if parent_result_type === Nothing
@@ -262,73 +256,18 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
     # Save token before branches
     token_before = ctx.token
 
-    # Resolve captures from outer scope BEFORE entering the then/else blocks
-    # (captures reference outer SSA values that won't be available after ctx.values is reset)
-    capture_tvs = CGVal[]
-    for capture_val in op.captures
-        tv = emit_value!(ctx, capture_val)
-        push!(capture_tvs, tv)
-    end
-
     # Emit IfOp with callback-based region building
-    # Nested regions are emitted in the callbacks, each with their own local SSA namespace
     then_body = function(_)
-        # Save outer context
-        saved_values = copy(ctx.values)
-        saved_next_ssa_idx = ctx.next_ssa_idx
         saved_block_args = copy(ctx.block_args)
-
-        # Reset for nested block
-        empty!(ctx.values)
-        ctx.next_ssa_idx = 1
         ctx.token = token_before  # Reset to pre-branch token
-
-        # Map captures (then_blk.args are all captures for IfOp) - use pre-resolved values
-        for (j, tv) in enumerate(capture_tvs)
-            if j <= length(then_blk.args)
-                block_arg = then_blk.args[j]
-                if tv !== nothing
-                    ctx[block_arg] = tv
-                end
-            end
-        end
-
         emit_block!(ctx, then_blk)
-
-        # Restore outer context
-        empty!(ctx.values)
-        merge!(ctx.values, saved_values)
-        ctx.next_ssa_idx = saved_next_ssa_idx
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
     end
     else_body = function(_)
-        # Save outer context
-        saved_values = copy(ctx.values)
-        saved_next_ssa_idx = ctx.next_ssa_idx
         saved_block_args = copy(ctx.block_args)
-
-        # Reset for nested block
-        empty!(ctx.values)
-        ctx.next_ssa_idx = 1
         ctx.token = token_before  # Reset to pre-branch token
-
-        # Map captures (else_blk.args are all captures for IfOp) - use pre-resolved values
-        for (j, tv) in enumerate(capture_tvs)
-            if j <= length(else_blk.args)
-                block_arg = else_blk.args[j]
-                if tv !== nothing
-                    ctx[block_arg] = tv
-                end
-            end
-        end
-
         emit_block!(ctx, else_blk)
-
-        # Restore outer context
-        empty!(ctx.values)
-        merge!(ctx.values, saved_values)
-        ctx.next_ssa_idx = saved_next_ssa_idx
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
     end
@@ -337,15 +276,15 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
     # Last result is the merged token from both branches
     ctx.token = results[end]
 
-    # Assign SSA indices for results AFTER nested regions (DFS order)
-    base_idx = ctx.next_ssa_idx
-    ctx.next_ssa_idx += n_results
+    # Store results by original Julia SSA index
+    # For IfOp: results are stored at ssa_idx, ssa_idx+1, etc. (the merge phi positions)
     for i in 1:n_user_results
-        ctx.values[base_idx + i - 1] = CGVal(results[i], result_types[i], julia_result_types[i])
+        tv = CGVal(results[i], result_types[i], julia_result_types[i])
+        ctx.values[ssa_idx + i - 1] = tv
     end
 end
 
-function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_result_type), n_results::Int)
+function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
     tt = ctx.tt
     body_blk = op.body
@@ -370,10 +309,9 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     push!(init_values, ctx.token)
 
     # Number of carries (iter_args) - these are the loop results
-    # body.args = [carries..., captures...], but only carries are results
     n_carries = length(op.iter_args)
 
-    # Determine result types from carries only (first n_carries of body.args)
+    # Determine result types from carries (body.args)
     result_types = TypeId[]
     for i in 1:n_carries
         body_arg = body_blk.args[i]
@@ -386,35 +324,19 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     # Number of user result types (excluding token)
     n_user_results = n_carries
 
-    # Resolve captures from outer scope BEFORE entering the loop body
-    # (captures reference outer SSA values that won't be available after ctx.values is reset)
-    capture_tvs = CGVal[]
-    for capture_val in op.captures
-        tv = emit_value!(ctx, capture_val)
-        push!(capture_tvs, tv)
-    end
-
     # Emit ForOp with callback-based region building
-    # Body is emitted in the callback, assigning SSA indices for body items
     body_builder = function(block_args)
-        # Save outer context (each nested block has its own local SSA namespace)
         saved_block_args = copy(ctx.block_args)
-        saved_values = copy(ctx.values)
-        saved_next_ssa_idx = ctx.next_ssa_idx
-
-        # Reset for nested block
-        empty!(ctx.values)
-        ctx.next_ssa_idx = 1
 
         # Tile IR block args layout: [iv, carries..., token]
-        # Julia IR body.args layout: [carries..., captures...]
+        # Julia IR body.args layout: [carries...]
 
         # Map the induction variable
         iv_type = tile_type!(tt, I32(tt), Int[])
         iv_tv = CGVal(block_args[1], iv_type, Int32)
         ctx[iv_arg] = iv_tv
 
-        # Map carried values (first n_carries of body.args)
+        # Map carried values (body.args)
         for i in 1:n_carries
             body_arg = body_blk.args[i]
             shape = extract_tile_shape(body_arg.type)
@@ -422,42 +344,30 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
             ctx[body_arg] = tv
         end
 
-        # Map captures (remaining body.args) - use pre-resolved values
-        for (j, tv) in enumerate(capture_tvs)
-            body_arg = body_blk.args[n_carries + j]
-            if tv !== nothing
-                ctx[body_arg] = tv
-            end
-        end
-
         # Set token from last block arg
         ctx.token = block_args[end]
 
         emit_block!(ctx, body_blk)
 
-        # Restore outer context
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
-        empty!(ctx.values)
-        merge!(ctx.values, saved_values)
-        ctx.next_ssa_idx = saved_next_ssa_idx
     end
     results = encode_ForOp!(body_builder, cb, result_types, lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
     # Last result is the token
     ctx.token = results[end]
 
-    # Assign SSA indices for results AFTER nested region (DFS order)
-    base_idx = ctx.next_ssa_idx
-    ctx.next_ssa_idx += n_results
+    # Store results by original Julia SSA index
+    # For ForOp: ssa_idx is where the IV phi was, iter_arg results are at ssa_idx+1, ssa_idx+2, ...
     for i in 1:n_user_results
         type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
         shape = extract_tile_shape(body_blk.args[i].type)
-        ctx.values[base_idx + i - 1] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
+        tv = CGVal(results[i], type_id, body_blk.args[i].type, shape)
+        ctx.values[ssa_idx + i] = tv
     end
 end
 
-function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_result_type), n_results::Int)
+function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
     body_blk = op.body
 
@@ -472,10 +382,9 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     push!(init_values, ctx.token)
 
     # Number of carries (iter_args) - these are the loop results
-    # body.args = [carries..., captures...], but only carries are results
     n_carries = length(op.iter_args)
 
-    # Determine result types from carries only (first n_carries of body.args)
+    # Determine result types from carries (body.args)
     result_types = TypeId[]
     for i in 1:n_carries
         body_arg = body_blk.args[i]
@@ -488,42 +397,18 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     # Number of user result types (excluding token)
     n_user_results = n_carries
 
-    # Resolve captures from outer scope BEFORE entering the loop body
-    # (captures reference outer SSA values that won't be available after ctx.values is reset)
-    capture_tvs = CGVal[]
-    for capture_val in op.captures
-        tv = emit_value!(ctx, capture_val)
-        push!(capture_tvs, tv)
-    end
-
     # Emit LoopOp with callback-based region building
-    # Body is emitted in the callback, assigning SSA indices for body items
     body_builder = function(block_args)
-        # Save outer context (each nested block has its own local SSA namespace)
         saved_block_args = copy(ctx.block_args)
-        saved_values = copy(ctx.values)
-        saved_next_ssa_idx = ctx.next_ssa_idx
-
-        # Reset for nested block
-        empty!(ctx.values)
-        ctx.next_ssa_idx = 1
 
         # Tile IR block args layout: [carries..., token]
-        # Julia IR body.args layout: [carries..., captures...]
+        # Julia IR body.args layout: [carries...]
 
-        # Map carried values (first n_carries of body.args)
+        # Map carried values (body.args)
         for i in 1:n_carries
             body_arg = body_blk.args[i]
             shape = extract_tile_shape(body_arg.type)
             ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
-        end
-
-        # Map captures (remaining body.args) - use pre-resolved values
-        for (j, tv) in enumerate(capture_tvs)
-            body_arg = body_blk.args[n_carries + j]
-            if tv !== nothing
-                ctx[body_arg] = tv
-            end
         end
 
         # Set token from last block arg
@@ -534,37 +419,30 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
         # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
         # in all branches), the if is NOT a terminator. We need an explicit terminator
         # after the if. Add an unreachable ContinueOp as fallback terminator.
-        # This is only reached if the if doesn't cover all paths (which it should).
         if body_blk.terminator === nothing
-            # Include only carries + token in fallback continue (not captures)
             fallback_operands = copy(block_args)
             fallback_operands[end] = ctx.token
             encode_ContinueOp!(ctx.cb, fallback_operands)
         end
 
-        # Restore outer context
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
-        empty!(ctx.values)
-        merge!(ctx.values, saved_values)
-        ctx.next_ssa_idx = saved_next_ssa_idx
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
     # Last result is the token
     ctx.token = results[end]
 
-    # Assign SSA indices for results AFTER nested region (DFS order)
-    base_idx = ctx.next_ssa_idx
-    ctx.next_ssa_idx += n_results
+    # Store results by original Julia SSA index
     for i in 1:n_user_results
         type_id = tile_type_for_julia!(ctx, body_blk.args[i].type)
         shape = extract_tile_shape(body_blk.args[i].type)
-        ctx.values[base_idx + i - 1] = CGVal(results[i], type_id, body_blk.args[i].type, shape)
+        tv = CGVal(results[i], type_id, body_blk.args[i].type, shape)
+        ctx.values[ssa_idx + i - 1] = tv
     end
 end
 
-function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_result_type), n_results::Int)
+function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
     before_blk = op.before
     after_blk = op.after
@@ -580,10 +458,9 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     push!(init_values, ctx.token)
 
     # Number of carries (iter_args) - these are the loop results
-    # before.args = [carries..., captures...], but only carries are results
     n_carries = length(op.iter_args)
 
-    # Determine result types from carries only (first n_carries of before.args)
+    # Determine result types from carries (before.args)
     result_types = TypeId[]
     for i in 1:n_carries
         before_arg = before_blk.args[i]
@@ -596,53 +473,29 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     # Number of user result types (excluding token)
     n_user_results = n_carries
 
-    # Resolve captures from outer scope BEFORE entering the loop body
-    # (captures reference outer SSA values that won't be available after ctx.values is reset)
-    capture_tvs = CGVal[]
-    for capture_val in op.captures
-        tv = emit_value!(ctx, capture_val)
-        push!(capture_tvs, tv)
-    end
-
     # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
     # Emitted as: loop { before_stmts; if(cond) { after_stmts; continue } else { break } }
-    # Nested regions are emitted in the callbacks, assigning SSA indices
     body_builder = function(block_args)
-        # Save outer context (each nested block has its own local SSA namespace)
         saved_block_args = copy(ctx.block_args)
-        saved_values = copy(ctx.values)
-        saved_next_ssa_idx = ctx.next_ssa_idx
-
-        # Reset for nested block
-        empty!(ctx.values)
-        ctx.next_ssa_idx = 1
 
         # Tile IR block args layout: [carries..., token]
-        # Julia IR before.args layout: [carries..., captures...]
+        # Julia IR before.args layout: [carries...]
 
-        # Map carried values (first n_carries of before.args)
+        # Map carried values (before.args)
         for i in 1:n_carries
             before_arg = before_blk.args[i]
             shape = extract_tile_shape(before_arg.type)
             ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
         end
 
-        # Map captures (remaining before.args) - use pre-resolved values
-        for (j, tv) in enumerate(capture_tvs)
-            before_arg = before_blk.args[n_carries + j]
-            if tv !== nothing
-                ctx[before_arg] = tv
-            end
-        end
-
         # Set token from last block arg
         ctx.token = block_args[end]
 
-        # Emit "before" region using emit_block! (handles SSA counter correctly)
+        # Emit "before" region
         emit_block!(ctx, before_blk)
 
-        # Get condition from ConditionOp terminator (already emitted by emit_block!)
+        # Get condition from ConditionOp terminator
         cond_op = before_blk.terminator
         cond_op isa ConditionOp || error("WhileOp before region must end with ConditionOp")
 
@@ -651,47 +504,24 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
 
         # Create if-then-else: if condition { after_region; continue } else { break }
         then_body = function(_)
-            # Don't reset context - "before" and "after" regions share the same Tile IR
-            # loop body region and should have continuous SSA indices.
-            # Map "after" region block args - carries from ConditionOp.args, captures from outer scope
-            # Note: after.args has same layout as before.args: [carries..., captures...]
+            # Map "after" region block args - carries from ConditionOp.args
             for i in 1:n_carries
                 after_arg = after_blk.args[i]
                 if i <= length(cond_op.args)
-                    # Map after.args carries to the actual values from cond_op.args
                     tv = emit_value!(ctx, cond_op.args[i])
                     if tv !== nothing
                         ctx[after_arg] = tv
                     else
-                        # Fallback to block_args
                         shape = extract_tile_shape(after_arg.type)
                         ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
                     end
                 end
             end
-            # Map captures for after region - use pre-resolved values
-            for (j, tv) in enumerate(capture_tvs)
-                after_arg = after_blk.args[n_carries + j]
-                if tv !== nothing
-                    ctx[after_arg] = tv
-                end
-            end
 
-            # Emit "after" region body ONLY (not terminator) - continues from where "before" left off
-            # The terminator (YieldOp) is handled below as ContinueOp
-            for (expr, result_type) in zip(after_blk.body, after_blk.types)
-                if expr isa ControlFlowOp
-                    n_results = result_count(result_type)
-                    emit_control_flow_op!(ctx, expr, result_type, n_results)
-                else
-                    ssa_idx = ctx.next_ssa_idx
-                    ctx.next_ssa_idx += 1
-                    emit_statement!(ctx, expr, ssa_idx, result_type)
-                end
-            end
+            # Emit "after" region body (skip terminator - we emit ContinueOp instead)
+            emit_block!(ctx, after_blk; skip_terminator=true)
 
-            # Emit ContinueOp with yield values from after region (only carries, not captures)
-            # (In structured IR, after ends with YieldOp; in Tile IR, we need ContinueOp)
+            # Emit ContinueOp with yield values from after region's YieldOp
             continue_operands = Value[]
             if after_blk.terminator isa YieldOp
                 for val in after_blk.terminator.values
@@ -704,15 +534,12 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         end
 
         else_body = function(_)
-            # Don't reset context - else_body doesn't emit its own block,
-            # it just emits break using values from the "before" region
-            # Break with ConditionOp args (become loop results) - only carries
+            # Break with ConditionOp args (become loop results)
             break_operands = Value[]
             for arg in cond_op.args
                 tv = emit_value!(ctx, arg)
                 tv !== nothing && tv.v !== nothing && push!(break_operands, tv.v)
             end
-            # If no args, use block_args (carries only)
             if isempty(break_operands)
                 for i in 1:n_carries
                     push!(break_operands, block_args[i])
@@ -722,38 +549,31 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
             encode_BreakOp!(ctx.cb, break_operands)
         end
 
-        # Emit IfOp without results (all control flow is via continue/break)
-        if_result_types = TypeId[ctx.token_type]  # Only token result
-        if_results = encode_IfOp!(then_body, else_body, cb, if_result_types, cond_tv.v)
-        ctx.token = if_results[end]
+        # Emit IfOp with NO results - continue/break are terminators to the enclosing loop
+        # They don't yield values back to the IfOp
+        if_result_types = TypeId[]
+        encode_IfOp!(then_body, else_body, cb, if_result_types, cond_tv.v)
 
-        # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
-        # in all branches), the if is NOT a terminator. We need an explicit terminator
-        # after the if. Add an unreachable ContinueOp as fallback terminator.
-        # Only include carries + token (not captures)
+        # Add fallback ContinueOp as block terminator (required even though IfOp covers all paths)
+        # The IfOp is not considered a terminator in CUDA Tile bytecode format
         fallback_operands = copy(block_args)
-        fallback_operands[end] = ctx.token
+        # Token was updated by continue/break inside the branches, use the last known token
         encode_ContinueOp!(ctx.cb, fallback_operands)
 
-        # Restore outer context
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
-        empty!(ctx.values)
-        merge!(ctx.values, saved_values)
-        ctx.next_ssa_idx = saved_next_ssa_idx
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
     # Last result is the token
     ctx.token = results[end]
 
-    # Assign SSA indices for results AFTER nested regions (DFS order)
-    base_idx = ctx.next_ssa_idx
-    ctx.next_ssa_idx += n_results
+    # Store results by original Julia SSA index
     for i in 1:n_user_results
         type_id = tile_type_for_julia!(ctx, before_blk.args[i].type)
         shape = extract_tile_shape(before_blk.args[i].type)
-        ctx.values[base_idx + i - 1] = CGVal(results[i], type_id, before_blk.args[i].type, shape)
+        tv = CGVal(results[i], type_id, before_blk.args[i].type, shape)
+        ctx.values[ssa_idx + i - 1] = tv
     end
 end
 
@@ -821,7 +641,7 @@ end
     emit_statement!(ctx, stmt, ssa_idx, result_type)
 
 Emit bytecode for a single SSA statement.
-The ssa_idx is the SSAValue index to store the result at.
+The ssa_idx is the original Julia SSA index to store the result at.
 """
 function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), ssa_idx::Int, @nospecialize(result_type))
     tv = nothing
@@ -848,7 +668,7 @@ function emit_statement!(ctx::CodegenContext, @nospecialize(stmt), ssa_idx::Int,
         @warn "Unhandled statement type" typeof(stmt) stmt
     end
 
-    # Store result at SSAValue index
+    # Store result by original Julia SSA index
     if tv !== nothing
         ctx.values[ssa_idx] = tv
     end
@@ -885,7 +705,7 @@ function emit_value!(ctx::CodegenContext, ssa::SSAValue)
     # First try to get from context (already processed)
     tv = ctx[ssa]
     tv !== nothing && return tv
-    # For block-local SSAs (id > code length), they must be in ctx.values
+    # For block-local SSAs (id > code length), they must be in ctx.values_stack
     code_stmts = code(ctx.target)
     ssa.id <= length(code_stmts) || error("Block-local SSAValue %$(ssa.id) not found in context")
     # Follow the SSA chain to the defining statement in CodeInfo

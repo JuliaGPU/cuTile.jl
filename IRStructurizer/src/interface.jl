@@ -111,8 +111,9 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
         apply_loop_patterns!(partial_entry, ctx)
     end
 
-    # Phase 4: Convert to local SSA (positive block-local indices)
-    convert_to_local_ssa!(partial_entry, ctx)
+    # Phase 4: Skipped - keep original Julia SSA indices everywhere
+    # This allows direct references to outer scope values without collision issues
+    # convert_to_local_ssa!(partial_entry, ctx)
 
     # Phase 5: Finalize IR (flatten OrderedDict→Vector)
     sci.entry = finalize_ir(partial_entry, ctx)

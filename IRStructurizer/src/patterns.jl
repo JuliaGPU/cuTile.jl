@@ -76,19 +76,17 @@ end
     is_loop_invariant(val, block::Block, n_iter_args::Int) -> Bool
 
 Check if a value is loop-invariant (not defined inside the loop body).
-- BlockArgs for iter_args (indices 1..n_iter_args) are loop-variant (carries)
-- BlockArgs for captures (indices > n_iter_args) are loop-invariant
-- SSAValues are loop-invariant if no statement in the body defines them
+- BlockArgs (all of which are iter_args) are loop-variant (carries)
+- SSAValues are loop-invariant (outer scope references)
 - Constants and Arguments are always loop-invariant
 """
 function is_loop_invariant(val, block::Block, n_iter_args::Int)
-    # BlockArgs: iter_args (carries) are variant, captures are invariant
+    # BlockArgs are all iter_args (carries) - loop-variant
     if val isa BlockArg
-        # BlockArgs beyond iter_args count are captures (invariant)
-        return val.id > n_iter_args
+        return false  # All BlockArgs are carries now
     end
 
-    # SSAValues: check if defined in the loop body (including nested blocks)
+    # SSAValues reference outer scope (loop-invariant) or local body defs (loop-variant)
     if val isa SSAValue
         return !defines(block, val)
     end
@@ -219,14 +217,10 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     iv_arg isa BlockArg || return false
     upper_bound_raw = cond_expr.args[3]
 
-    # Helper to resolve BlockArg to original value from iter_args or captures
+    # Helper to resolve BlockArg to original value from iter_args
     function resolve_blockarg(arg)
-        if arg isa BlockArg
-            if arg.id <= n_iter_args
-                return loop.iter_args[arg.id]
-            elseif arg.id <= n_iter_args + length(loop.captures)
-                return loop.captures[arg.id - n_iter_args]
-            end
+        if arg isa BlockArg && arg.id <= n_iter_args
+            return loop.iter_args[arg.id]
         end
         return arg
     end
@@ -258,9 +252,6 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
         j != iv_idx && push!(other_iter_args, v)
     end
 
-    # Captures stay unchanged
-    other_captures = copy(loop.captures)
-
     # Rebuild body block without condition structure
     then_blk = condition_ifop.regions[:then]::Block
     new_body = Block()
@@ -291,11 +282,10 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     end
 
     # Get yield values from continue terminator, excluding the IV
-    # Only iter_args flow through terminators (not captures)
     yield_values = IRValue[]
     if then_blk.terminator isa ContinueOp
         for (j, v) in enumerate(then_blk.terminator.values)
-            # Only include non-IV values from iter_args range
+            # Only include non-IV values
             if j != iv_idx && j <= n_iter_args
                 push!(yield_values, v)
             end
@@ -308,7 +298,6 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     loop.head = :for
     loop.regions = Dict{Symbol,Any}(:body => new_body)
     loop.iter_args = other_iter_args
-    loop.captures = other_captures
     loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
 
     return true
@@ -353,8 +342,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
         end
     end
 
-    # ConditionOp args: only iter_args (carries), not captures
-    # The first n_iter_args BlockArgs are carries
+    # ConditionOp args: iter_args (carries)
     condition_args = IRValue[before.args[i] for i in 1:n_iter_args]
 
     cond_val = condition_ifop.operands.condition
@@ -375,10 +363,9 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
         end
     end
 
-    # Get yield values from the continue terminator - only iter_args (not captures)
+    # Get yield values from the continue terminator (iter_args / carries)
     yield_values = IRValue[]
     if then_blk.terminator isa ContinueOp
-        # Only take the first n_iter_args values (the carries)
         for (j, v) in enumerate(then_blk.terminator.values)
             if j <= n_iter_args
                 push!(yield_values, v)
@@ -389,7 +376,6 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
     after.terminator = YieldOp(yield_values)
 
     # Modify the loop in-place to become :while
-    # iter_args and captures are already correct from the original loop
     loop.head = :while
     loop.regions = Dict{Symbol,Any}(:before => before, :after => after)
 

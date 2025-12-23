@@ -213,12 +213,21 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
                                   operands=(condition=cond_value,))
 
     # Key by first merge phi's SSA index if available, else by GotoIfNot
+    # Also get the result type(s) from the merge phis
     if !isempty(merge_phis)
         result_idx = merge_phis[1].ssa_idx
+        # Get types from all merge phis
+        result_types = [ctx.ssavaluetypes[phi.ssa_idx] for phi in merge_phis]
+        if length(result_types) == 1
+            result_type = result_types[1]
+        else
+            result_type = Tuple{result_types...}
+        end
     else
         result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
+        result_type = Nothing
     end
-    push_op!(block, result_idx, if_op)
+    push_op!(block, result_idx, if_op, result_type)
 end
 
 """
@@ -243,18 +252,24 @@ function find_merge_phis(code::CodeInfo, blocks::Vector{BlockInfo},
     1 <= merge_block_idx <= length(blocks) || return merge_phis
     merge_block = blocks[merge_block_idx]
 
+    # Get statement ranges for then/else blocks to match against phi edges
+    # PhiNode edges are statement indices, not block indices
+    then_range = blocks[then_block_idx].range
+    else_range = blocks[else_block_idx].range
+
     # Look for phis that have edges from both then and else blocks
     for si in merge_block.range
         stmt = code.code[si]
         stmt isa PhiNode || continue
 
         # Find values for then and else edges
+        # Phi edges are statement indices - check if they fall within block ranges
         then_val = nothing
         else_val = nothing
         for (edge_idx, edge) in enumerate(stmt.edges)
-            if edge == then_block_idx
+            if edge in then_range
                 then_val = stmt.values[edge_idx]
-            elseif edge == else_block_idx
+            elseif edge in else_range
                 else_val = stmt.values[edge_idx]
             end
         end
@@ -626,7 +641,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         body.terminator = ContinueOp(copy(carried_values))
     end
 
-    # Create loop op with iter_args (captures are added in Phase 2)
+    # Create loop op with iter_args
     loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body); iter_args=iter_args)
     return loop_op
 end
@@ -662,12 +677,12 @@ end
 Single pass that creates BlockArgs and substitutes SSAValue references.
 
 Phase 2 of structurization - called after control_tree_to_structured_ir.
-For each :loop op: creates BlockArgs for phi nodes (iter_args) and outer captures.
-For each :if op: creates BlockArgs for outer captures.
-Substitutes SSAValue → BlockArg references throughout.
+For each :loop op: creates BlockArgs for phi nodes (iter_args).
+For :if ops: no BlockArgs needed (outer refs are accessed directly).
+Substitutes phi refs → BlockArg references throughout.
 
 The parent_subs parameter carries substitutions from outer scopes, so nested
-control flow ops can convert SSAValues to the correct BlockArgs.
+control flow ops can convert phi refs to the correct BlockArgs.
 """
 function apply_block_args!(block::Block, ctx::StructurizationContext,
                            defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
@@ -697,15 +712,11 @@ end
 Create BlockArgs for a :loop op and substitute SSAValue references.
 
 1. Create BlockArgs for phi nodes (iter_args / carries)
-2. Collect outer refs (SSAValues not defined in loop or as phi)
-3. Create BlockArgs for outer captures (added to loop.captures)
-4. Apply parent substitutions to iter_args and captures
-5. Substitute all SSAValue → BlockArg in body
-6. Recurse into nested blocks
+2. Apply parent substitutions to iter_args
+3. Substitute phi refs → BlockArg in body
+4. Recurse into nested blocks
 
-Block args layout: [carry_args..., capture_args...]
-- body.args[1:len(iter_args)] = carry args
-- body.args[len(iter_args)+1:end] = capture args
+Outer scope SSA values are referenced directly (like MLIR), no captures needed.
 """
 function process_loop_block_args!(loop::PartialControlFlowOp, ctx::StructurizationContext,
                                   parent_defined::Set{Int}, parent_subs::Substitutions)
@@ -722,34 +733,16 @@ function process_loop_block_args!(loop::PartialControlFlowOp, ctx::Structurizati
         subs[result_var.id] = new_arg
     end
 
-    # 2. Collect outer refs (SSAValues not defined in loop body or as phi)
-    loop_defined = Set{Int}(rv.id for rv in result_vars)
-    collect_defined_ssas!(loop_defined, body, ctx)
-    outer_refs = collect_outer_refs(body, loop_defined; recursive=true)
-
-    # 3. Create BlockArgs for outer captures (added to loop.captures, not iter_args)
-    n_existing = length(body.args)
-    for (i, ref) in enumerate(outer_refs)
-        ref_type = ctx.ssavaluetypes[ref.id]
-        new_arg = BlockArg(n_existing + i, ref_type)
-        push!(body.args, new_arg)
-        push!(loop.captures, ref)  # Add to captures, not iter_args
-        subs[ref.id] = new_arg
-    end
-
-    # 4. Apply parent substitutions to iter_args and captures
+    # 2. Apply parent substitutions to iter_args
     # This converts SSAValues to parent's BlockArgs for nested control flow
     for (j, v) in enumerate(loop.iter_args)
         loop.iter_args[j] = substitute_ssa(v, parent_subs)
     end
-    for (j, v) in enumerate(loop.captures)
-        loop.captures[j] = substitute_ssa(v, parent_subs)
-    end
 
-    # 5. Substitute all SSAValue → BlockArg in body (shallow - don't recurse into nested ops)
+    # 3. Substitute phi refs → BlockArg in body (shallow - don't recurse into nested ops)
     substitute_block_shallow!(body, subs)
 
-    # 6. Recurse into nested blocks, passing merged substitutions
+    # 4. Recurse into nested blocks, passing merged substitutions
     # Merge parent subs with this loop's subs so nested ops can access both
     merged_subs = merge(parent_subs, subs)
     nested_defined = Set{Int}(rv.id for rv in result_vars)
@@ -760,14 +753,10 @@ end
 """
     process_if_block_args!(if_op::PartialControlFlowOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
 
-Create BlockArgs for an :if op and substitute SSAValue references.
-For :if, all block args are captures (no iteration).
+Process an :if op. For :if, no BlockArgs needed (no iteration).
+Just recurse into nested blocks with parent substitutions.
 
-1. Collect outer refs from both blocks
-2. Create matching BlockArgs in both blocks (stored in captures)
-3. Apply parent substitutions to captures
-4. Substitute SSAValue → BlockArg in both blocks
-5. Recurse into nested blocks
+Outer scope SSA values are referenced directly (like MLIR), no captures needed.
 """
 function process_if_block_args!(if_op::PartialControlFlowOp, ctx::StructurizationContext,
                                 parent_defined::Set{Int}, parent_subs::Substitutions)
@@ -781,48 +770,7 @@ function process_if_block_args!(if_op::PartialControlFlowOp, ctx::Structurizatio
     collect_defined_ssas!(then_defined, then_blk, ctx)
     collect_defined_ssas!(else_defined, else_blk, ctx)
 
-    # 1. Collect outer refs from both blocks, filtering out refs already captured by parents.
-    # Use recursive=true to find all refs, but skip refs that are in parent_subs since those
-    # have already been captured by an enclosing scope.
-    outer_refs = SSAValue[]
-    seen = Set{Int}()
-    for ref in collect_outer_refs(then_blk, then_defined; recursive=true)
-        if ref.id ∉ seen && !haskey(parent_subs, ref.id)
-            push!(outer_refs, ref)
-            push!(seen, ref.id)
-        end
-    end
-    for ref in collect_outer_refs(else_blk, else_defined; recursive=true)
-        if ref.id ∉ seen && !haskey(parent_subs, ref.id)
-            push!(outer_refs, ref)
-            push!(seen, ref.id)
-        end
-    end
-
-    subs = Substitutions()
-    if !isempty(outer_refs)
-        # 2. Create matching BlockArgs in both blocks (all are captures for :if)
-        for (i, ref) in enumerate(outer_refs)
-            ref_type = ctx.ssavaluetypes[ref.id]
-            new_arg = BlockArg(i, ref_type)
-            push!(then_blk.args, new_arg)
-            push!(else_blk.args, new_arg)
-            push!(if_op.captures, ref)  # :if only has captures, no iter_args
-            subs[ref.id] = new_arg
-        end
-
-        # 3. Apply parent substitutions to captures
-        for (j, v) in enumerate(if_op.captures)
-            if_op.captures[j] = substitute_ssa(v, parent_subs)
-        end
-
-        # 4. Substitute SSAValue → BlockArg in both blocks (shallow - don't recurse into nested ops)
-        substitute_block_shallow!(then_blk, subs)
-        substitute_block_shallow!(else_blk, subs)
-    end
-
-    # 5. Recurse into nested blocks, passing merged substitutions
-    merged_subs = merge(parent_subs, subs)
-    apply_block_args!(then_blk, ctx, then_defined, merged_subs)
-    apply_block_args!(else_blk, ctx, else_defined, merged_subs)
+    # Recurse into nested blocks, passing parent substitutions
+    apply_block_args!(then_blk, ctx, then_defined, parent_subs)
+    apply_block_args!(else_blk, ctx, else_defined, parent_subs)
 end

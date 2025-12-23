@@ -2,7 +2,6 @@ module cuTile
 
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, BlockArg,
-                      PartialBlock, PartialControlFlowOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp
 
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
