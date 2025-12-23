@@ -198,7 +198,7 @@ Modifies the op in-place. Returns true if upgraded.
 function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
     body = loop.regions[:body]::Block
-    result_vars = get_result_vars(ctx, loop)
+    result_vars = derive_result_vars(loop)
 
     # Find the :if op in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
@@ -316,8 +316,8 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     loop.regions = Dict{Symbol,Any}(:body => new_body)
     loop.init_values = other_init_values
     loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
-    # Update result_vars in context
-    set_result_vars!(ctx, loop, other_result_vars)
+    # Store result_vars on the op (ForOp has no BreakOp to derive from)
+    loop.result_vars = other_result_vars
 
     return true
 end
@@ -335,7 +335,7 @@ Creates MLIR-style scf.while with before/after regions:
 function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
     body = loop.regions[:body]::Block
-    result_vars = get_result_vars(ctx, loop)
+    result_vars = derive_result_vars(loop)
 
     # Find the :if op in the loop body - its condition is the while condition
     condition_ifop = find_ifop(body)
@@ -406,7 +406,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
     # Modify the loop in-place to become :while
     loop.head = :while
     loop.regions = Dict{Symbol,Any}(:before => before, :after => after)
-    # init_values and result_vars stay the same (result_vars already in context)
+    # init_values stay the same; result_vars derived from BreakOp in before region
 
     return true
 end

@@ -137,37 +137,16 @@ substitute_ssa(value) = value
 """
     StructurizationContext
 
-Context for IR construction (Phases 1-4). Holds metadata that shouldn't be part
+Context for IR construction (Phases 1-5). Holds metadata that shouldn't be part
 of the IR node types themselves:
 - ssavaluetypes: Julia types for each SSA value (from CodeInfo)
-- result_vars: Mapping from op identity to its result SSAValues
-
-Using objectid(op) as key allows PartialControlFlowOp to remain simple while
-still tracking which SSAValues each op produces.
 """
-mutable struct StructurizationContext
+struct StructurizationContext
     ssavaluetypes::Any  # Vector of types (from CodeInfo.ssavaluetypes)
-    result_vars::Dict{UInt, Vector{SSAValue}}  # objectid(op) => result_vars
 end
 
-StructurizationContext(ssavaluetypes) =
-    StructurizationContext(ssavaluetypes, Dict{UInt, Vector{SSAValue}}())
-
-"""
-    get_result_vars(ctx::StructurizationContext, op) -> Vector{SSAValue}
-
-Get result_vars for an op, returning empty vector if not found.
-"""
-get_result_vars(ctx::StructurizationContext, op) =
-    get(ctx.result_vars, objectid(op), SSAValue[])
-
-"""
-    set_result_vars!(ctx::StructurizationContext, op, vars::Vector{SSAValue})
-
-Store result_vars for an op.
-"""
-set_result_vars!(ctx::StructurizationContext, op, vars::Vector{SSAValue}) =
-    ctx.result_vars[objectid(op)] = vars
+# derive_result_vars is defined later after PartialControlFlowOp
+derive_result_vars(_) = SSAValue[]
 
 #=============================================================================
  Unified Control Flow (PartialControlFlowOp / PartialBlock)
@@ -186,20 +165,23 @@ Heads:
 - :for - counted for loop, regions[:body], operands has lower/upper/step/iv_arg
 - :while - MLIR-style while, regions[:before] and regions[:after]
 
-Note: result_vars are stored in StructurizationContext, not on the op itself.
+result_vars: For :loop, derived from BreakOp.values. For :for, stored explicitly
+since ForOp has no BreakOp. Empty means derive from terminator.
 """
 mutable struct PartialControlFlowOp
     head::Symbol
     regions::Dict{Symbol, Any}  # Values are PartialBlock (forward reference)
     init_values::Vector{IRValue}
     operands::NamedTuple
+    result_vars::Vector{SSAValue}  # Explicit storage for ops without derivable results
 end
 
 # Convenience constructor
 function PartialControlFlowOp(head::Symbol, regions::Dict{Symbol, <:Any};
                               init_values::Vector{IRValue}=IRValue[],
-                              operands::NamedTuple=NamedTuple())
-    PartialControlFlowOp(head, regions, init_values, operands)
+                              operands::NamedTuple=NamedTuple(),
+                              result_vars::Vector{SSAValue}=SSAValue[])
+    PartialControlFlowOp(head, regions, init_values, operands, result_vars)
 end
 
 function Base.show(io::IO, op::PartialControlFlowOp)
@@ -335,7 +317,7 @@ const BlockItem = Union{Any, ControlFlowOp}
 Unified block type used throughout IR construction and after finalization.
 
 During construction (Phases 1-4):
-- body: OrderedDict{Int, Any} - keys are SSA indices (positive for statements, negative for ops)
+- body: OrderedDict{Int, Any} - keys are SSA indices from original CodeInfo
 - types: OrderedDict{Int, Any} - parallel to body
 
 After finalization (Phase 5):
@@ -372,29 +354,19 @@ function push_op!(block::Block, result_idx::Int, op, typ=Nothing)
     block.types[result_idx] = typ
 end
 
-"""
-    is_stmt_key(key::Int) -> Bool
-
-Check if a key represents a statement (positive) vs a control flow op (non-positive).
-"""
-is_stmt_key(key::Int) = key > 0
-
 function Base.show(io::IO, block::Block)
     print(io, "Block(")
     if !isempty(block.args)
         print(io, "args=", length(block.args), ", ")
     end
     if block.body isa OrderedDict
-        n_exprs = count(is_stmt_key, keys(block.body))
-        n_ops = length(block.body) - n_exprs
+        n_ops = count(item -> item isa PartialControlFlowOp, values(block.body))
+        n_exprs = length(block.body) - n_ops
     else
-        n_exprs = count(x -> !(x isa ControlFlowOp), block.body)
         n_ops = count(x -> x isa ControlFlowOp, block.body)
+        n_exprs = length(block.body) - n_ops
     end
-    print(io, "exprs=", n_exprs)
-    if n_ops > 0
-        print(io, ", ops=", n_ops)
-    end
+    print(io, n_exprs + n_ops, " items")
     print(io, ")")
 end
 
@@ -402,6 +374,61 @@ end
 Base.iterate(block::Block, state=1) = state > length(block.body) ? nothing : (block.body[state], state + 1)
 Base.length(block::Block) = length(block.body)
 Base.eltype(::Type{Block}) = Any
+
+#=============================================================================
+ derive_result_vars - extract result info from terminators
+=============================================================================#
+
+"""
+    derive_result_vars(op::PartialControlFlowOp) -> Vector{SSAValue}
+
+Derive result_vars from an op's terminator.
+- For :loop: BreakOp.values in body
+- For :while: ConditionOp.args in before region
+- For :for: explicit op.result_vars (set during pattern upgrade)
+- For :if: empty (if-ops are keyed by their result index)
+"""
+function derive_result_vars(op::PartialControlFlowOp)
+    # Check explicit storage first (used by :for after pattern upgrade)
+    if !isempty(op.result_vars)
+        return op.result_vars
+    end
+    if op.head == :loop
+        body = op.regions[:body]::Block
+        break_vals = find_break_values(body)
+        return SSAValue[v for v in break_vals if v isa SSAValue]
+    elseif op.head == :while
+        before = op.regions[:before]::Block
+        if before.terminator isa ConditionOp
+            return SSAValue[v for v in before.terminator.args if v isa SSAValue]
+        end
+    end
+    return SSAValue[]
+end
+
+"""
+    find_break_values(block::Block) -> Vector{IRValue}
+
+Find BreakOp values in a block, searching inside nested :if ops.
+"""
+function find_break_values(block::Block)
+    # Check block terminator
+    if block.terminator isa BreakOp
+        return block.terminator.values
+    end
+    # Search in nested :if ops (common loop structure)
+    if block.body isa OrderedDict
+        for (_, item) in block.body
+            if item isa PartialControlFlowOp && item.head == :if
+                else_blk = item.regions[:else]::Block
+                if else_blk.terminator isa BreakOp
+                    return else_blk.terminator.values
+                end
+            end
+        end
+    end
+    return IRValue[]
+end
 
 #=============================================================================
  StructuredCodeInfo - the structured IR for a function
@@ -514,8 +541,9 @@ function substitute_terminator(term::ContinueOp, subs::Substitutions)
 end
 
 function substitute_terminator(term::BreakOp, subs::Substitutions)
-    new_values = [substitute_ssa(v, subs) for v in term.values]
-    return BreakOp(new_values)
+    # Don't substitute BreakOp values - keep them as SSAValues so result_vars
+    # can be derived from terminators without caching
+    return term
 end
 
 function substitute_terminator(term::ConditionOp, subs::Substitutions)
@@ -907,9 +935,8 @@ function convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
     counter = 0
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
-            # Control flow ops produce values through result_vars (stored in context)
-            # Each result_var gets its own unique negative index
-            for rv in get_result_vars(ctx, item)
+            # Control flow ops produce values - each gets a unique negative index
+            for rv in derive_result_vars(item)
                 counter -= 1
                 idx_to_local[rv.id] = counter
             end
@@ -1042,15 +1069,14 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
             push!(body, finalize_control_flow_op(item, ctx))
-            # Store resolved Julia types for codegen
-            # Resolve SSAValue references to actual Julia types
-            result_vars = get_result_vars(ctx, item)
-            if isempty(result_vars)
+            # Determine Julia type for the op's result
+            results = derive_result_vars(item)
+            if isempty(results)
                 push!(types, Nothing)
-            elseif length(result_vars) == 1
-                push!(types, ctx.ssavaluetypes[result_vars[1].id])
+            elseif length(results) == 1
+                push!(types, ctx.ssavaluetypes[results[1].id])
             else
-                push!(types, Tuple{(ctx.ssavaluetypes[rv.id] for rv in result_vars)...})
+                push!(types, Tuple{(ctx.ssavaluetypes[rv.id] for rv in results)...})
             end
         else  # Statement
             push!(body, negate_negative_ssa(item))
@@ -1737,9 +1763,6 @@ function print_if_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=false
     print_indent(p)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
-
-    # Note: result_vars are stored in context, not on op, so we don't print them here
-
     print(p.io, "if ")
     print_value(p, op.operands.condition)
     println(p.io)
@@ -1768,8 +1791,6 @@ function print_for_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fals
     print_indent(p)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
-
-    # Note: result_vars are stored in context, not on op, so we don't print them here
 
     body = op.regions[:body]::Block
 
@@ -1803,8 +1824,6 @@ function print_loop_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fal
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Note: result_vars are stored in context, not on op, so we don't print them here
-
     body = op.regions[:body]::Block
 
     print_colored(p, "loop", :yellow)
@@ -1826,8 +1845,6 @@ function print_while_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fa
     print_indent(p)
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
-
-    # Note: result_vars are stored in context, not on op, so we don't print them here
 
     before = op.regions[:before]::Block
     after = op.regions[:after]::Block

@@ -212,10 +212,8 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                   operands=(condition=cond_value,))
 
-    # Set result_vars from merge phis (for Phase 2 compatibility)
+    # Key by first merge phi's SSA index if available, else by GotoIfNot
     if !isempty(merge_phis)
-        result_vars = [SSAValue(phi.ssa_idx) for phi in merge_phis]
-        set_result_vars!(ctx, if_op, result_vars)
         result_idx = merge_phis[1].ssa_idx
     else
         result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
@@ -375,13 +373,12 @@ Phase 1: Always creates PartialControlFlowOp(:loop, ...) with metadata. Pattern 
 function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                       ctx::StructurizationContext)
     loop_op = build_loop_op_phase1(tree, code, blocks, ctx)
-    result_vars = get_result_vars(ctx, loop_op)
-    if !isempty(result_vars)
+    results = derive_result_vars(loop_op)
+    if !isempty(results)
         # Key by first result phi's SSA index
-        push_op!(block, result_vars[1].id, loop_op)
+        push_op!(block, results[1].id, loop_op)
     else
-        # TODO: Loops with no results should produce `nothing`
-        # For now, use a fallback - find max SSA in the loop header
+        # Loops with no results - use fallback
         header_idx = node_index(tree)
         header_block = blocks[header_idx]
         push_op!(block, last(header_block.range), loop_op)
@@ -516,7 +513,6 @@ end
 
 Build a PartialControlFlowOp(:loop, ...) for Phase 1. Pure structure building - no BlockArgs or substitutions.
 BlockArg creation and SSA→BlockArg substitution happens in Phase 2 (apply_block_args!).
-Stores result_vars in context.
 """
 function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                               ctx::StructurizationContext)
@@ -611,7 +607,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         then_blk.terminator = ContinueOp(copy(carried_values))
 
         else_blk = Block()
-        # BreakOp with result_vars (SSAValues) - Phase 2 will substitute to BlockArgs
+        # BreakOp with SSAValues - kept as-is for derive_result_vars
         else_blk.terminator = BreakOp(IRValue[rv for rv in result_vars])
 
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
@@ -630,9 +626,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         body.terminator = ContinueOp(copy(carried_values))
     end
 
-    # Create PartialControlFlowOp(:loop, ...) and store result_vars in context
     loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body); init_values=init_values)
-    set_result_vars!(ctx, loop_op, result_vars)
     return loop_op
 end
 
@@ -640,16 +634,14 @@ end
     collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::StructurizationContext)
 
 Collect all SSA indices defined by statements in the block (recursively).
-Also includes result_vars from loops (phi nodes define SSAValues).
+Also includes results from control flow ops (phi nodes define SSAValues).
 """
 function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::StructurizationContext)
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
-            # result_vars define SSAValues (stored in context)
-            for rv in get_result_vars(ctx, item)
+            for rv in derive_result_vars(item)
                 push!(defined, rv.id)
             end
-            # Recurse into all regions
             for (_, region) in item.regions
                 collect_defined_ssas!(defined, region, ctx)
             end
@@ -703,7 +695,7 @@ end
 
 Create BlockArgs for a :loop op and substitute SSAValue references.
 
-1. Create BlockArgs for phi nodes (from result_vars)
+1. Create BlockArgs for phi nodes (derived from BreakOp)
 2. Collect outer refs (SSAValues not defined in loop or as phi)
 3. Create BlockArgs for outer captures
 4. Apply parent substitutions to init_values (so nested loops get parent's BlockArgs)
@@ -715,9 +707,9 @@ function process_loop_block_args!(loop::PartialControlFlowOp, ctx::Structurizati
     @assert loop.head == :loop
     body = loop.regions[:body]::Block
     subs = Substitutions()
-    result_vars = get_result_vars(ctx, loop)
+    result_vars = derive_result_vars(loop)
 
-    # 1. Create BlockArgs for phi nodes (from result_vars)
+    # 1. Create BlockArgs for phi nodes
     for (i, result_var) in enumerate(result_vars)
         phi_type = ctx.ssavaluetypes[result_var.id]
         new_arg = BlockArg(i, phi_type)

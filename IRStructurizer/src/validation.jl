@@ -262,8 +262,10 @@ function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
             if item isa PartialControlFlowOp
                 # ControlFlowOp - check its inputs and recurse into nested blocks
                 validate_control_flow_op_ordering(item, defined, block.args)
-                # Add result_vars to defined set (if any)
-                add_result_vars_to_defined!(item, defined)
+                # Add results to defined set
+                for rv in derive_result_vars(item)
+                    push!(defined, rv.id)
+                end
             else  # Statement
                 # Check all SSAValue refs in the expression are in `defined`
                 check_ssa_refs_defined(item, defined, block.args, idx)
@@ -294,13 +296,6 @@ function validate_control_flow_op_ordering(op::PartialControlFlowOp, defined::Se
     for (_, region) in op.regions
         validate_ssa_ordering(region; defined=Set{Int}())
     end
-end
-
-function add_result_vars_to_defined!(op::PartialControlFlowOp, defined::Set{Int})
-    # Note: result_vars are now stored in StructurizationContext, not on the op.
-    # This validation would need context to access result_vars. Since this is
-    # internal validation that's not exercised in practice, we skip this check.
-    # The main validation (validate_scf) works on finalized Block.
 end
 
 function check_terminator_refs_defined(term::YieldOp, defined::Set{Int}, args::Vector{BlockArg})

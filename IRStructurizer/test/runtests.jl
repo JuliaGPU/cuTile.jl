@@ -3,7 +3,7 @@ using Test
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      validate_scf, check_global_ssa_refs, PartialControlFlowOp, is_stmt_key
+                      validate_scf, check_global_ssa_refs, PartialControlFlowOp
 using Core: SSAValue
 
 # Helper to check if block contains a control flow op with given head
