@@ -74,8 +74,8 @@ Five-phase approach:
 1. Build structure (pure SSAValues, no BlockArgs)
 2. Create BlockArgs and substitute SSA→BlockArg
 3. Upgrade loop patterns (:for/:while) if enabled
-4. Convert to local SSA (negative indices for block-local values)
-5. Finalize IR (convert negative→positive indices, flatten PartialBlock→Block)
+4. Convert to local SSA (positive block-local indices)
+5. Finalize IR (flatten OrderedDict→Vector)
 
 When `loop_patterning=true` (default), loops are classified as :for (bounded counters)
 or :while (condition-based). When `false`, all loops remain as :loop.
@@ -106,14 +106,15 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     apply_block_args!(partial_entry, ctx)
 
     # Phase 3: Upgrade loop patterns (optional)
+    # Must run before local SSA conversion so pattern matching can use original indices
     if loop_patterning
         apply_loop_patterns!(partial_entry, ctx)
     end
 
-    # Phase 4: Convert to local SSA (negative indices)
+    # Phase 4: Convert to local SSA (positive block-local indices)
     convert_to_local_ssa!(partial_entry, ctx)
 
-    # Phase 5: Finalize IR (convert negative → positive global indices)
+    # Phase 5: Finalize IR (flatten OrderedDict→Vector)
     sci.entry = finalize_ir(partial_entry, ctx)
 
     return sci

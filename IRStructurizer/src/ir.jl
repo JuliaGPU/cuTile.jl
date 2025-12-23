@@ -170,31 +170,40 @@ Result values flow through terminators:
 - :for/:while: ContinueOp/YieldOp serves as both iteration AND final results
 - :if: YieldOp.values in then/else branches
 
-result_vars: Optional storage of result SSA indices for multi-result :for ops.
-Used only for SSA index mapping in convert_to_local_ssa!. Types are derived
-from body.args at finalization, not from result_vars.
+iter_args: Initial values for loop-carried variables (carries). These flow through
+terminators (ContinueOp, YieldOp, ConditionOp, BreakOp). Results = final iter_args.
+
+captures: Values captured from outer scope. These are bound to block args but do NOT
+flow through terminators. For :if ops, all block args are captures (no iteration).
+
+Block args layout: [carry_args..., capture_args...]
+- block.args[1:len(iter_args)] = carries
+- block.args[len(iter_args)+1:end] = captures
 """
 mutable struct PartialControlFlowOp
     head::Symbol
     regions::Dict{Symbol, Any}  # Values are PartialBlock (forward reference)
-    init_values::Vector{IRValue}
+    iter_args::Vector{IRValue}  # Loop-carried initial values (carries)
+    captures::Vector{IRValue}   # Outer scope references (not loop-carried)
     operands::NamedTuple
-    result_vars::Vector{SSAValue}  # Only for multi-result :for ops (SSA index mapping)
 end
 
 # Convenience constructor
 function PartialControlFlowOp(head::Symbol, regions::Dict{Symbol, <:Any};
-                              init_values::Vector{IRValue}=IRValue[],
-                              operands::NamedTuple=NamedTuple(),
-                              result_vars::Vector{SSAValue}=SSAValue[])
-    PartialControlFlowOp(head, regions, init_values, operands, result_vars)
+                              iter_args::Vector{IRValue}=IRValue[],
+                              captures::Vector{IRValue}=IRValue[],
+                              operands::NamedTuple=NamedTuple())
+    PartialControlFlowOp(head, regions, iter_args, captures, operands)
 end
 
 function Base.show(io::IO, op::PartialControlFlowOp)
     print(io, "PartialControlFlowOp(:", op.head)
     print(io, ", regions=[", join(keys(op.regions), ", "), "]")
-    if !isempty(op.init_values)
-        print(io, ", init=", length(op.init_values))
+    if !isempty(op.iter_args)
+        print(io, ", iter_args=", length(op.iter_args))
+    end
+    if !isempty(op.captures)
+        print(io, ", captures=", length(op.captures))
     end
     print(io, ")")
 end
@@ -227,18 +236,19 @@ after_block(op::PartialControlFlowOp) = get(op.regions, :after, nothing)
 
 Structured if-then-else operation.
 Regions are Block (forward reference, typed as Any).
+For :if, all block args are captures (no iteration).
 """
 struct IfOp
     condition::IRValue
     then_region::Any    # Block (forward reference)
     else_region::Any    # Block
-    init_values::Vector{IRValue}
+    captures::Vector{IRValue}  # Outer scope references
 end
 
 function Base.show(io::IO, op::IfOp)
     print(io, "IfOp(")
-    if !isempty(op.init_values)
-        print(io, "init=", length(op.init_values))
+    if !isempty(op.captures)
+        print(io, "captures=", length(op.captures))
     end
     print(io, ")")
 end
@@ -247,6 +257,7 @@ end
     ForOp
 
 Counted for-loop with lower/upper/step bounds.
+iter_args = loop-carried values, captures = outer scope references.
 """
 struct ForOp
     lower::IRValue
@@ -254,14 +265,16 @@ struct ForOp
     step::IRValue
     iv_arg::BlockArg
     body::Any           # Block (forward reference)
-    init_values::Vector{IRValue}
+    iter_args::Vector{IRValue}  # Loop-carried initial values
+    captures::Vector{IRValue}   # Outer scope references
 end
 
 function Base.show(io::IO, op::ForOp)
     print(io, "ForOp(")
-    if !isempty(op.init_values)
-        print(io, "init=", length(op.init_values))
-    end
+    parts = String[]
+    !isempty(op.iter_args) && push!(parts, "iter_args=$(length(op.iter_args))")
+    !isempty(op.captures) && push!(parts, "captures=$(length(op.captures))")
+    print(io, join(parts, ", "))
     print(io, ")")
 end
 
@@ -269,18 +282,21 @@ end
     WhileOp
 
 MLIR-style while loop with before (condition) and after (body) regions.
+iter_args = loop-carried values, captures = outer scope references.
 """
 struct WhileOp
     before::Any     # Block (forward reference), ends with ConditionOp
     after::Any      # Block
-    init_values::Vector{IRValue}
+    iter_args::Vector{IRValue}  # Loop-carried initial values
+    captures::Vector{IRValue}   # Outer scope references
 end
 
 function Base.show(io::IO, op::WhileOp)
     print(io, "WhileOp(")
-    if !isempty(op.init_values)
-        print(io, "init=", length(op.init_values))
-    end
+    parts = String[]
+    !isempty(op.iter_args) && push!(parts, "iter_args=$(length(op.iter_args))")
+    !isempty(op.captures) && push!(parts, "captures=$(length(op.captures))")
+    print(io, join(parts, ", "))
     print(io, ")")
 end
 
@@ -288,17 +304,20 @@ end
     LoopOp
 
 General loop with dynamic exit via BreakOp/ContinueOp.
+iter_args = loop-carried values, captures = outer scope references.
 """
 struct LoopOp
     body::Any       # Block (forward reference)
-    init_values::Vector{IRValue}
+    iter_args::Vector{IRValue}  # Loop-carried initial values
+    captures::Vector{IRValue}   # Outer scope references
 end
 
 function Base.show(io::IO, op::LoopOp)
     print(io, "LoopOp(")
-    if !isempty(op.init_values)
-        print(io, "init=", length(op.init_values))
-    end
+    parts = String[]
+    !isempty(op.iter_args) && push!(parts, "iter_args=$(length(op.iter_args))")
+    !isempty(op.captures) && push!(parts, "captures=$(length(op.captures))")
+    print(io, join(parts, ", "))
     print(io, ")")
 end
 
@@ -389,26 +408,21 @@ Base.eltype(::Type{Block}) = Any
     derive_result_vars(op::PartialControlFlowOp) -> Vector{SSAValue}
 
 Derive result SSAValues from an op's terminator. Used for SSA index mapping
-in convert_to_local_ssa!.
+in convert_to_local_ssa! during Phase 2 (before pattern upgrade).
 
 - For :loop: BreakOp.values in body (kept as SSAValues, not substituted)
-- For :for/:while: explicit result_vars (stored during pattern upgrade)
-- For :if: empty (if-ops are keyed by their result index)
+- For :for/:while/:if: empty (these use iter_args count for results)
 
-Note: Types for :for/:while are derived from body.args/before.args at
-finalization, using result_vars to exclude outer captures.
+Note: After the iter_args/captures refactor, :for/:while results are determined
+by len(iter_args), not by tracking original SSA indices.
 """
 function derive_result_vars(op::PartialControlFlowOp)
-    # Check explicit storage first (used by :for and :while after pattern upgrade)
-    if !isempty(op.result_vars)
-        return op.result_vars
-    end
     if op.head == :loop
         body = op.regions[:body]::Block
         break_vals = find_break_values(body)
         return SSAValue[v for v in break_vals if v isa SSAValue]
     end
-    # Single-result :for/:while (no explicit result_vars), :if - return empty
+    # :for/:while/:if - results are determined by iter_args count, not SSA indices
     return SSAValue[]
 end
 
@@ -498,7 +512,7 @@ Used by apply_block_args! to let each :loop op handle its own substitution separ
 
 Substitutes:
 - Statement expressions
-- :loop init_values (outer scope references)
+- :loop iter_args and captures (outer scope references)
 - Block terminators
 - :if contents (since they're part of the same scope, not a new binding context)
 
@@ -510,10 +524,13 @@ function substitute_block_shallow!(block::Block, subs::Substitutions)
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
             if item.head == :loop
-                # Only substitute init_values (which are in parent scope)
+                # Only substitute iter_args and captures (which are in parent scope)
                 # The body is handled by recursion in apply_block_args!
-                for (j, v) in enumerate(item.init_values)
-                    item.init_values[j] = substitute_ssa(v, subs)
+                for (j, v) in enumerate(item.iter_args)
+                    item.iter_args[j] = substitute_ssa(v, subs)
+                end
+                for (j, v) in enumerate(item.captures)
+                    item.captures[j] = substitute_ssa(v, subs)
                 end
             elseif item.head == :if
                 # IfOps are part of the same scope - recurse into them
@@ -707,8 +724,11 @@ function collect_control_flow_refs!(refs::Vector{SSAValue}, seen::Set{Int}, op::
         collect_ssa_refs!(refs, seen, op.operands.upper, defined)
         collect_ssa_refs!(refs, seen, op.operands.step, defined)
     end
-    # Collect from init_values
-    for v in op.init_values
+    # Collect from iter_args and captures
+    for v in op.iter_args
+        collect_ssa_refs!(refs, seen, v, defined)
+    end
+    for v in op.captures
         collect_ssa_refs!(refs, seen, v, defined)
     end
     # Recurse into all regions
@@ -929,25 +949,45 @@ end
 """
     convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
 
-Convert SSAValue references within a block to negative SSAValue indices.
-Each statement and control flow op result gets a unique negative index.
-These negative indices are block-local and will be converted to positive
-global indices during finalization.
+Convert SSAValue references within a block to local SSAValue indices.
+Each statement and control flow op result gets a unique positive index (1, 2, 3, ...).
+These are block-local indices that correspond to positions in the flattened body.
 """
 function convert_to_local_ssa!(block::Block, ctx::StructurizationContext)
-    # Build mapping: original SSA idx → unique negative index
-    # Each result gets its own unique negative index (no result_idx needed)
+    # Build mapping: original SSA idx → positive local index (1, 2, 3, ...)
+    # Each result gets its own unique index
     idx_to_local = SSAToLocalMap()
     counter = 0
     for (idx, item) in block.body
         if item isa PartialControlFlowOp
-            # Control flow ops produce values - each gets a unique negative index
-            for rv in derive_result_vars(item)
-                counter -= 1
-                idx_to_local[rv.id] = counter
+            # Control flow ops produce values - each gets a unique index
+            result_vars = derive_result_vars(item)
+            if !isempty(result_vars)
+                # :loop ops: use BreakOp values
+                for rv in result_vars
+                    counter += 1
+                    idx_to_local[rv.id] = counter
+                end
+            elseif item.head == :for
+                # :for ops: the IV phi was at idx, other phis are at idx+1, idx+2, ...
+                # Result indices are the non-IV phis (idx+1, idx+2, ..., idx+n_iter_args)
+                n_results = length(item.iter_args)
+                for i in 1:n_results
+                    counter += 1
+                    idx_to_local[idx + i] = counter
+                end
+            elseif item.head == :while
+                # :while ops: result indices are consecutive starting from idx
+                # (all phis are results, no IV is separated out)
+                n_results = length(item.iter_args)
+                for i in 0:(n_results-1)
+                    counter += 1
+                    idx_to_local[idx + i] = counter
+                end
             end
+            # :if ops produce no results in the parent scope
         else  # Statement
-            counter -= 1
+            counter += 1
             idx_to_local[idx] = counter
         end
     end
@@ -972,9 +1012,12 @@ end
 
 function convert_to_local_ssa_in_op!(op::PartialControlFlowOp, parent_idx_to_local::SSAToLocalMap,
                                      ctx::StructurizationContext)
-    # Convert init_values using parent's mapping
-    for (i, v) in enumerate(op.init_values)
-        op.init_values[i] = convert_ssa_in_value(v, parent_idx_to_local)
+    # Convert iter_args and captures using parent's mapping
+    for (i, v) in enumerate(op.iter_args)
+        op.iter_args[i] = convert_ssa_in_value(v, parent_idx_to_local)
+    end
+    for (i, v) in enumerate(op.captures)
+        op.captures[i] = convert_ssa_in_value(v, parent_idx_to_local)
     end
 
     # For :for ops, convert operands (lower, upper, step)
@@ -1078,39 +1121,39 @@ function finalize_block(block::Block, ctx::StructurizationContext)::Block
             # Determine Julia type for the op's result
             push!(types, derive_op_result_type(item, ctx))
         else  # Statement
-            push!(body, negate_negative_ssa(item))
+            # SSA indices are already positive local indices after convert_to_local_ssa!
+            push!(body, item)
             push!(types, block.types[idx])
         end
     end
 
-    terminator = block.terminator === nothing ? nothing :
-        negate_terminator_ssa(block.terminator)
-
-    return Block(copy(block.args), body, types, terminator)
+    # Terminator SSA indices are already local
+    return Block(copy(block.args), body, types, block.terminator)
 end
 
 """
     derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationContext) -> Type
 
 Derive the result type for a control flow op.
-- For :for/:while: derive from body.args/before.args, using result_vars to exclude outer captures
-- For :loop/:if: derive from ssavaluetypes via derive_result_vars
+- For :for/:while: derive from body.args/before.args, using iter_args count for result count
+- For :loop: derive from ssavaluetypes via derive_result_vars (BreakOp values)
+- For :if: Nothing (if-ops yield via terminator, type derived elsewhere)
 """
 function derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationContext)
     if op.head == :for
-        # For-loops: result types from body.args, excluding outer captures
+        # For-loops: result types from body.args (first n_iter_args are carries/results)
         body = op.regions[:body]::Block
-        n_results = length(op.result_vars)
+        n_results = length(op.iter_args)
         result_args = n_results > 0 ? body.args[1:n_results] : BlockArg[]
         return args_to_result_type(result_args)
     elseif op.head == :while
-        # While-loops: result types from before.args, excluding outer captures
+        # While-loops: result types from before.args (first n_iter_args are carries/results)
         before = op.regions[:before]::Block
-        n_results = length(op.result_vars)
+        n_results = length(op.iter_args)
         result_args = n_results > 0 ? before.args[1:n_results] : BlockArg[]
         return args_to_result_type(result_args)
-    else
-        # :loop and :if: derive from result_vars via ssavaluetypes
+    elseif op.head == :loop
+        # Loop: derive from BreakOp values via derive_result_vars
         results = derive_result_vars(op)
         if isempty(results)
             return Nothing
@@ -1119,6 +1162,9 @@ function derive_op_result_type(op::PartialControlFlowOp, ctx::StructurizationCon
         else
             return Tuple{(ctx.ssavaluetypes[rv.id] for rv in results)...}
         end
+    else
+        # :if: no direct results (yields via terminator)
+        return Nothing
     end
 end
 
@@ -1150,35 +1196,41 @@ function finalize_control_flow_op(op::PartialControlFlowOp, ctx::Structurization
         regions[name] = finalize_block(region::Block, ctx)
     end
 
-    init_values = [negate_negative_ssa(v) for v in op.init_values]
+    # SSA indices are already positive local indices after convert_to_local_ssa!
+    iter_args = copy(op.iter_args)
+    captures = copy(op.captures)
 
-    # Construct the appropriate concrete type with converted operands
+    # Construct the appropriate concrete type
     if op.head == :if
+        # IfOp only has captures (no iteration)
         return IfOp(
-            negate_negative_ssa(op.operands.condition),
+            op.operands.condition,
             regions[:then],
             regions[:else],
-            init_values
+            captures
         )
     elseif op.head == :for
         return ForOp(
-            negate_negative_ssa(op.operands.lower),
-            negate_negative_ssa(op.operands.upper),
-            negate_negative_ssa(op.operands.step),
+            op.operands.lower,
+            op.operands.upper,
+            op.operands.step,
             op.operands.iv_arg,
             regions[:body],
-            init_values
+            iter_args,
+            captures
         )
     elseif op.head == :while
         return WhileOp(
             regions[:before],
             regions[:after],
-            init_values
+            iter_args,
+            captures
         )
     else  # :loop
         return LoopOp(
             regions[:body],
-            init_values
+            iter_args,
+            captures
         )
     end
 end
@@ -1279,8 +1331,11 @@ function _scan_control_flow_uses!(used::BitSet, op::PartialControlFlowOp)
         _scan_expr_uses!(used, op.operands.upper)
         _scan_expr_uses!(used, op.operands.step)
     end
-    # Scan init_values
-    for v in op.init_values
+    # Scan iter_args and captures
+    for v in op.iter_args
+        _scan_expr_uses!(used, v)
+    end
+    for v in op.captures
         _scan_expr_uses!(used, v)
     end
     # Recursively scan regions
@@ -1315,7 +1370,7 @@ end
 
 function _scan_control_flow_uses!(used::BitSet, op::IfOp)
     _scan_expr_uses!(used, op.condition)
-    for v in op.init_values
+    for v in op.captures
         _scan_expr_uses!(used, v)
     end
     _scan_uses_postflatten!(used, op.then_region)
@@ -1326,14 +1381,20 @@ function _scan_control_flow_uses!(used::BitSet, op::ForOp)
     _scan_expr_uses!(used, op.lower)
     _scan_expr_uses!(used, op.upper)
     _scan_expr_uses!(used, op.step)
-    for v in op.init_values
+    for v in op.iter_args
+        _scan_expr_uses!(used, v)
+    end
+    for v in op.captures
         _scan_expr_uses!(used, v)
     end
     _scan_uses_postflatten!(used, op.body)
 end
 
 function _scan_control_flow_uses!(used::BitSet, op::WhileOp)
-    for v in op.init_values
+    for v in op.iter_args
+        _scan_expr_uses!(used, v)
+    end
+    for v in op.captures
         _scan_expr_uses!(used, v)
     end
     _scan_uses_postflatten!(used, op.before)
@@ -1341,7 +1402,10 @@ function _scan_control_flow_uses!(used::BitSet, op::WhileOp)
 end
 
 function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
-    for v in op.init_values
+    for v in op.iter_args
+        _scan_expr_uses!(used, v)
+    end
+    for v in op.captures
         _scan_expr_uses!(used, v)
     end
     _scan_uses_postflatten!(used, op.body)
@@ -1353,15 +1417,24 @@ function compute_block_used(block::Block)
     for expr in block.body
         if expr isa IfOp
             _scan_expr_uses!(used, expr.condition)
+            for v in expr.captures
+                _scan_expr_uses!(used, v)
+            end
         elseif expr isa ForOp
             _scan_expr_uses!(used, expr.lower)
             _scan_expr_uses!(used, expr.upper)
             _scan_expr_uses!(used, expr.step)
-            for v in expr.init_values
+            for v in expr.iter_args
+                _scan_expr_uses!(used, v)
+            end
+            for v in expr.captures
                 _scan_expr_uses!(used, v)
             end
         elseif expr isa LoopOp || expr isa WhileOp
-            for v in expr.init_values
+            for v in expr.iter_args
+                _scan_expr_uses!(used, v)
+            end
+            for v in expr.captures
                 _scan_expr_uses!(used, v)
             end
         else
@@ -1716,20 +1789,43 @@ function print_block_args(p::IRPrinter, args::Vector{BlockArg})
     print(p.io, ")")
 end
 
-# Print iteration arguments with initial values
-function print_iter_args(p::IRPrinter, args::Vector{BlockArg}, init_values::Vector{IRValue})
-    if isempty(args)
+# Print iteration arguments (carries) with initial values
+function print_iter_args(p::IRPrinter, carry_args::Vector{BlockArg}, iter_args::Vector{IRValue})
+    if isempty(carry_args)
         return
     end
     print(p.io, " iter_args(")
-    for (i, (arg, init)) in enumerate(zip(args, init_values))
+    for (i, (arg, init)) in enumerate(zip(carry_args, iter_args))
         i > 1 && print(p.io, ", ")
-        print(p.io, "%arg", arg.id, " = ")
+        print(p.io, "%carry", i - 1, " = ")
         print_value(p, init)
-        # Block args are always "used" within their scope
         print_colored(p, string("::", format_type(arg.type)), :cyan)
     end
     print(p.io, ")")
+end
+
+# Print capture arguments with their source values
+function print_captures(p::IRPrinter, capture_args::Vector{BlockArg}, captures::Vector{IRValue})
+    if isempty(capture_args)
+        return
+    end
+    print(p.io, " captures(")
+    for (i, (arg, cap)) in enumerate(zip(capture_args, captures))
+        i > 1 && print(p.io, ", ")
+        print(p.io, "%arg", i - 1, " = ")
+        print_value(p, cap)
+        print_colored(p, string("::", format_type(arg.type)), :cyan)
+    end
+    print(p.io, ")")
+end
+
+# Print both iter_args and captures for a loop op
+function print_loop_args(p::IRPrinter, all_args::Vector{BlockArg}, iter_args::Vector{IRValue}, captures::Vector{IRValue})
+    n_carries = length(iter_args)
+    carry_args = all_args[1:n_carries]
+    capture_args = all_args[n_carries+1:end]
+    print_iter_args(p, carry_args, iter_args)
+    print_captures(p, capture_args, captures)
 end
 
 # Print a terminator
@@ -1850,7 +1946,7 @@ function print_for_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fals
     print_value(p, op.operands.upper)
 
     if !isempty(body.args)
-        print_iter_args(p, body.args, op.init_values)
+        print_loop_args(p, body.args, op.iter_args, op.captures)
     end
 
     println(p.io)
@@ -1874,7 +1970,7 @@ function print_loop_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fal
     body = op.regions[:body]::Block
 
     print_colored(p, "loop", :yellow)
-    print_iter_args(p, body.args, op.init_values)
+    print_loop_args(p, body.args, op.iter_args, op.captures)
     println(p.io)
 
     body_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
@@ -1897,7 +1993,7 @@ function print_while_op(p::IRPrinter, op::PartialControlFlowOp; is_last::Bool=fa
     after = op.regions[:after]::Block
 
     print_colored(p, "while", :yellow)
-    print_iter_args(p, before.args, op.init_values)
+    print_loop_args(p, before.args, op.iter_args, op.captures)
     println(p.io, " {")
 
     before_p = IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, BitSet(), 0, p.color)
@@ -2169,7 +2265,7 @@ function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int; is_last::Bool=fal
     print_value(p, op.upper)
 
     if !isempty(op.body.args)
-        print_iter_args(p, op.body.args, op.init_values)
+        print_loop_args(p, op.body.args, op.iter_args, op.captures)
     end
 
     println(p.io)
@@ -2197,7 +2293,7 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int; is_last::Bool=f
     end
 
     print_colored(p, "loop", :yellow)
-    print_iter_args(p, op.body.args, op.init_values)
+    print_loop_args(p, op.body.args, op.iter_args, op.captures)
     println(p.io)
 
     # Body is inline (no region header for single-region ops)
@@ -2223,7 +2319,7 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int; is_last::Bool
     end
 
     print_colored(p, "while", :yellow)
-    print_iter_args(p, op.before.args, op.init_values)
+    print_loop_args(p, op.before.args, op.iter_args, op.captures)
     println(p.io)
 
     # Print "before" region header

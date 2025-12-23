@@ -73,19 +73,19 @@ function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
 end
 
 """
-    is_loop_invariant(val, block::Block, n_result_vars::Int) -> Bool
+    is_loop_invariant(val, block::Block, n_iter_args::Int) -> Bool
 
 Check if a value is loop-invariant (not defined inside the loop body).
-- BlockArgs for phi values (indices 1..n_result_vars) are loop-variant
-- BlockArgs for outer captures (indices > n_result_vars) are loop-invariant
+- BlockArgs for iter_args (indices 1..n_iter_args) are loop-variant (carries)
+- BlockArgs for captures (indices > n_iter_args) are loop-invariant
 - SSAValues are loop-invariant if no statement in the body defines them
 - Constants and Arguments are always loop-invariant
 """
-function is_loop_invariant(val, block::Block, n_result_vars::Int)
-    # BlockArgs: phi values are variant, outer captures are invariant
+function is_loop_invariant(val, block::Block, n_iter_args::Int)
+    # BlockArgs: iter_args (carries) are variant, captures are invariant
     if val isa BlockArg
-        # BlockArgs beyond result_vars count are outer captures (invariant)
-        return val.id > n_result_vars
+        # BlockArgs beyond iter_args count are captures (invariant)
+        return val.id > n_iter_args
     end
 
     # SSAValues: check if defined in the loop body (including nested blocks)
@@ -198,7 +198,7 @@ Modifies the op in-place. Returns true if upgraded.
 function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
     body = loop.regions[:body]::Block
-    result_vars = derive_result_vars(loop)
+    n_iter_args = length(loop.iter_args)
 
     # Find the :if op in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
@@ -219,53 +219,47 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     iv_arg isa BlockArg || return false
     upper_bound_raw = cond_expr.args[3]
 
-    # If upper_bound is a BlockArg (from outer capture), resolve to original SSAValue
-    upper_bound = if upper_bound_raw isa BlockArg && upper_bound_raw.id <= length(loop.init_values)
-        loop.init_values[upper_bound_raw.id]
-    else
-        upper_bound_raw
+    # Helper to resolve BlockArg to original value from iter_args or captures
+    function resolve_blockarg(arg)
+        if arg isa BlockArg
+            if arg.id <= n_iter_args
+                return loop.iter_args[arg.id]
+            elseif arg.id <= n_iter_args + length(loop.captures)
+                return loop.captures[arg.id - n_iter_args]
+            end
+        end
+        return arg
     end
+
+    upper_bound = resolve_blockarg(upper_bound_raw)
 
     # Find which index this BlockArg corresponds to
     iv_idx = findfirst(==(iv_arg), body.args)
     iv_idx === nothing && return false
 
-    # Get lower bound from init_values
-    iv_idx > length(loop.init_values) && return false
-    iv_idx > length(result_vars) && return false
-    lower_bound = loop.init_values[iv_idx]
+    # IV must be an iter_arg (in the iter_args range)
+    iv_idx > n_iter_args && return false
+    lower_bound = loop.iter_args[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
     step_result = find_add_int_for_iv(body, iv_arg)
     step_result === nothing && return false
     step_idx, step_expr, _ = step_result
     step_raw = step_expr.args[3]
-
-    # If step is a BlockArg (from outer capture), resolve to original SSAValue
-    step = if step_raw isa BlockArg && step_raw.id <= length(loop.init_values)
-        loop.init_values[step_raw.id]
-    else
-        step_raw
-    end
+    step = resolve_blockarg(step_raw)
 
     # Verify upper_bound and step are loop-invariant
-    is_loop_invariant(upper_bound, body, length(result_vars)) || return false
-    is_loop_invariant(step, body, length(result_vars)) || return false
+    is_loop_invariant(upper_bound, body, n_iter_args) || return false
+    is_loop_invariant(step, body, n_iter_args) || return false
 
-    # Separate non-IV carried values (from result_vars)
-    other_result_vars = SSAValue[]
-    other_init_values = IRValue[]
-    for (j, rv) in enumerate(result_vars)
-        if j != iv_idx && j <= length(loop.init_values)
-            push!(other_result_vars, rv)
-            push!(other_init_values, loop.init_values[j])
-        end
+    # Separate non-IV iter_args (the new iter_args for :for)
+    other_iter_args = IRValue[]
+    for (j, v) in enumerate(loop.iter_args)
+        j != iv_idx && push!(other_iter_args, v)
     end
 
-    # Add outer captures (init_values beyond result_vars)
-    for j in (length(result_vars)+1):length(loop.init_values)
-        push!(other_init_values, loop.init_values[j])
-    end
+    # Captures stay unchanged
+    other_captures = copy(loop.captures)
 
     # Rebuild body block without condition structure
     then_blk = condition_ifop.regions[:then]::Block
@@ -297,16 +291,15 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     end
 
     # Get yield values from continue terminator, excluding the IV
+    # Only iter_args flow through terminators (not captures)
     yield_values = IRValue[]
     if then_blk.terminator isa ContinueOp
         for (j, v) in enumerate(then_blk.terminator.values)
-            j != iv_idx && push!(yield_values, v)
+            # Only include non-IV values from iter_args range
+            if j != iv_idx && j <= n_iter_args
+                push!(yield_values, v)
+            end
         end
-    end
-
-    # Add outer captures unchanged
-    for j in (length(other_result_vars)+1):length(new_body.args)
-        push!(yield_values, new_body.args[j])
     end
 
     new_body.terminator = ContinueOp(yield_values)
@@ -314,11 +307,9 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     # Modify the loop in-place to become :for
     loop.head = :for
     loop.regions = Dict{Symbol,Any}(:body => new_body)
-    loop.init_values = other_init_values
+    loop.iter_args = other_iter_args
+    loop.captures = other_captures
     loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
-    # Store result_vars only for multi-result :for (needed for SSA index mapping)
-    # Types are derived from body.args at finalization
-    loop.result_vars = other_result_vars
 
     return true
 end
@@ -330,13 +321,13 @@ Try to upgrade a :loop op to :while by detecting the while-loop pattern.
 Modifies the op in-place. Returns true if upgraded.
 
 Creates MLIR-style scf.while with before/after regions:
-- before: condition computation, ends with ConditionOp
-- after: loop body, ends with YieldOp
+- before: condition computation, ends with ConditionOp (only passes iter_args)
+- after: loop body, ends with YieldOp (only yields iter_args)
 """
 function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext)
     @assert loop.head == :loop
     body = loop.regions[:body]::Block
-    result_vars = derive_result_vars(loop)
+    n_iter_args = length(loop.iter_args)
 
     # Find the :if op in the loop body - its condition is the while condition
     condition_ifop = find_ifop(body)
@@ -362,15 +353,15 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
         end
     end
 
-    # ConditionOp args: BlockArgs from before region (results + outer captures)
-    # The first len(result_vars) args are results; rest are outer captures
-    # Note: Must use BlockArgs, not SSAValues from BreakOp (which aren't substituted)
-    condition_args = IRValue[arg for arg in before.args]
+    # ConditionOp args: only iter_args (carries), not captures
+    # The first n_iter_args BlockArgs are carries
+    condition_args = IRValue[before.args[i] for i in 1:n_iter_args]
 
     cond_val = condition_ifop.operands.condition
     before.terminator = ConditionOp(cond_val, condition_args)
 
     # Build "after" region: statements from the then_block + YieldOp
+    # After region has the same block args as before region
     after = Block()
     for (i, arg) in enumerate(before.args)
         push!(after.args, BlockArg(i, arg.type))
@@ -384,24 +375,23 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
         end
     end
 
-    # Get yield values from the continue terminator
+    # Get yield values from the continue terminator - only iter_args (not captures)
     yield_values = IRValue[]
     if then_blk.terminator isa ContinueOp
-        yield_values = copy(then_blk.terminator.values)
-    end
-
-    # Add outer captures unchanged
-    for j in (length(result_vars)+1):length(after.args)
-        push!(yield_values, after.args[j])
+        # Only take the first n_iter_args values (the carries)
+        for (j, v) in enumerate(then_blk.terminator.values)
+            if j <= n_iter_args
+                push!(yield_values, v)
+            end
+        end
     end
 
     after.terminator = YieldOp(yield_values)
 
     # Modify the loop in-place to become :while
+    # iter_args and captures are already correct from the original loop
     loop.head = :while
     loop.regions = Dict{Symbol,Any}(:before => before, :after => after)
-    # Store result_vars for SSA index mapping (needed to distinguish results from outer captures)
-    loop.result_vars = result_vars
 
     return true
 end

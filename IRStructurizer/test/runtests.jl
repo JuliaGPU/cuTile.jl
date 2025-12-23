@@ -427,8 +427,8 @@ end
     @test length(for_body.args) == 1
 
     # Loop produces one result (the final accumulator value)
-    # The result count equals init_values count (each init value corresponds to one result)
-    @test length(for_op.init_values) == 1
+    # The result count equals iter_args count (each iter_arg corresponds to one result)
+    @test length(for_op.iter_args) == 1
 end
 
 @testset "nested for loops" begin
@@ -501,7 +501,7 @@ end  # ForOp detection
     @test before_blk.terminator.condition isa SSAValue
 
     # No loop-carried values (flag is just re-read each iteration)
-    @test isempty(while_op.init_values)
+    @test isempty(while_op.iter_args)
     @test isempty(before_blk.args)
 
     # Before region has the condition computation expressions

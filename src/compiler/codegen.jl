@@ -262,6 +262,14 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
     # Save token before branches
     token_before = ctx.token
 
+    # Resolve captures from outer scope BEFORE entering the then/else blocks
+    # (captures reference outer SSA values that won't be available after ctx.values is reset)
+    capture_tvs = CGVal[]
+    for capture_val in op.captures
+        tv = emit_value!(ctx, capture_val)
+        push!(capture_tvs, tv)
+    end
+
     # Emit IfOp with callback-based region building
     # Nested regions are emitted in the callbacks, each with their own local SSA namespace
     then_body = function(_)
@@ -274,6 +282,16 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
         empty!(ctx.values)
         ctx.next_ssa_idx = 1
         ctx.token = token_before  # Reset to pre-branch token
+
+        # Map captures (then_blk.args are all captures for IfOp) - use pre-resolved values
+        for (j, tv) in enumerate(capture_tvs)
+            if j <= length(then_blk.args)
+                block_arg = then_blk.args[j]
+                if tv !== nothing
+                    ctx[block_arg] = tv
+                end
+            end
+        end
 
         emit_block!(ctx, then_blk)
 
@@ -294,6 +312,16 @@ function emit_if_op!(ctx::CodegenContext, op::IfOp, @nospecialize(parent_result_
         empty!(ctx.values)
         ctx.next_ssa_idx = 1
         ctx.token = token_before  # Reset to pre-branch token
+
+        # Map captures (else_blk.args are all captures for IfOp) - use pre-resolved values
+        for (j, tv) in enumerate(capture_tvs)
+            if j <= length(else_blk.args)
+                block_arg = else_blk.args[j]
+                if tv !== nothing
+                    ctx[block_arg] = tv
+                end
+            end
+        end
 
         emit_block!(ctx, else_blk)
 
@@ -331,9 +359,9 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         error("Cannot resolve ForOp bounds")
 
-    # Get init values
+    # Get init values (iter_args are loop-carried values)
     init_values = Value[]
-    for init_val in op.init_values
+    for init_val in op.iter_args
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && error("Cannot resolve ForOp init value")
         push!(init_values, tv.v)
@@ -341,9 +369,14 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from body.args
+    # Number of carries (iter_args) - these are the loop results
+    # body.args = [carries..., captures...], but only carries are results
+    n_carries = length(op.iter_args)
+
+    # Determine result types from carries only (first n_carries of body.args)
     result_types = TypeId[]
-    for body_arg in body_blk.args
+    for i in 1:n_carries
+        body_arg = body_blk.args[i]
         type_id = tile_type_for_julia!(ctx, body_arg.type)
         push!(result_types, type_id)
     end
@@ -351,7 +384,15 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(body_blk.args)
+    n_user_results = n_carries
+
+    # Resolve captures from outer scope BEFORE entering the loop body
+    # (captures reference outer SSA values that won't be available after ctx.values is reset)
+    capture_tvs = CGVal[]
+    for capture_val in op.captures
+        tv = emit_value!(ctx, capture_val)
+        push!(capture_tvs, tv)
+    end
 
     # Emit ForOp with callback-based region building
     # Body is emitted in the callback, assigning SSA indices for body items
@@ -365,18 +406,28 @@ function emit_for_op!(ctx::CodegenContext, op::ForOp, @nospecialize(parent_resul
         empty!(ctx.values)
         ctx.next_ssa_idx = 1
 
-        # Block args layout: [iv, carried..., token]
+        # Tile IR block args layout: [iv, carries..., token]
+        # Julia IR body.args layout: [carries..., captures...]
 
         # Map the induction variable
         iv_type = tile_type!(tt, I32(tt), Int[])
         iv_tv = CGVal(block_args[1], iv_type, Int32)
         ctx[iv_arg] = iv_tv
 
-        # Map carried values (body.args contains carried values)
-        for (i, body_arg) in enumerate(body_blk.args)
+        # Map carried values (first n_carries of body.args)
+        for i in 1:n_carries
+            body_arg = body_blk.args[i]
             shape = extract_tile_shape(body_arg.type)
             tv = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
             ctx[body_arg] = tv
+        end
+
+        # Map captures (remaining body.args) - use pre-resolved values
+        for (j, tv) in enumerate(capture_tvs)
+            body_arg = body_blk.args[n_carries + j]
+            if tv !== nothing
+                ctx[body_arg] = tv
+            end
         end
 
         # Set token from last block arg
@@ -410,9 +461,9 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     cb = ctx.cb
     body_blk = op.body
 
-    # Get init values
+    # Get init values (iter_args are loop-carried values)
     init_values = Value[]
-    for init_val in op.init_values
+    for init_val in op.iter_args
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && error("Cannot resolve LoopOp init value")
         push!(init_values, tv.v)
@@ -420,9 +471,14 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from body.args
+    # Number of carries (iter_args) - these are the loop results
+    # body.args = [carries..., captures...], but only carries are results
+    n_carries = length(op.iter_args)
+
+    # Determine result types from carries only (first n_carries of body.args)
     result_types = TypeId[]
-    for body_arg in body_blk.args
+    for i in 1:n_carries
+        body_arg = body_blk.args[i]
         type_id = tile_type_for_julia!(ctx, body_arg.type)
         push!(result_types, type_id)
     end
@@ -430,7 +486,15 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(body_blk.args)
+    n_user_results = n_carries
+
+    # Resolve captures from outer scope BEFORE entering the loop body
+    # (captures reference outer SSA values that won't be available after ctx.values is reset)
+    capture_tvs = CGVal[]
+    for capture_val in op.captures
+        tv = emit_value!(ctx, capture_val)
+        push!(capture_tvs, tv)
+    end
 
     # Emit LoopOp with callback-based region building
     # Body is emitted in the callback, assigning SSA indices for body items
@@ -444,11 +508,21 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
         empty!(ctx.values)
         ctx.next_ssa_idx = 1
 
-        # Map block arguments (carried values, last is token)
-        for (i, body_arg) in enumerate(body_blk.args)
-            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
-                shape = extract_tile_shape(body_arg.type)
-                ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
+        # Tile IR block args layout: [carries..., token]
+        # Julia IR body.args layout: [carries..., captures...]
+
+        # Map carried values (first n_carries of body.args)
+        for i in 1:n_carries
+            body_arg = body_blk.args[i]
+            shape = extract_tile_shape(body_arg.type)
+            ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
+        end
+
+        # Map captures (remaining body.args) - use pre-resolved values
+        for (j, tv) in enumerate(capture_tvs)
+            body_arg = body_blk.args[n_carries + j]
+            if tv !== nothing
+                ctx[body_arg] = tv
             end
         end
 
@@ -462,7 +536,7 @@ function emit_loop_op!(ctx::CodegenContext, op::LoopOp, @nospecialize(parent_res
         # after the if. Add an unreachable ContinueOp as fallback terminator.
         # This is only reached if the if doesn't cover all paths (which it should).
         if body_blk.terminator === nothing
-            # Include token in fallback continue
+            # Include only carries + token in fallback continue (not captures)
             fallback_operands = copy(block_args)
             fallback_operands[end] = ctx.token
             encode_ContinueOp!(ctx.cb, fallback_operands)
@@ -495,9 +569,9 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     before_blk = op.before
     after_blk = op.after
 
-    # Get init values
+    # Get init values (iter_args are loop-carried values)
     init_values = Value[]
-    for init_val in op.init_values
+    for init_val in op.iter_args
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && error("Cannot resolve WhileOp init value: $init_val")
         push!(init_values, tv.v)
@@ -505,9 +579,14 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Determine result types from before.args
+    # Number of carries (iter_args) - these are the loop results
+    # before.args = [carries..., captures...], but only carries are results
+    n_carries = length(op.iter_args)
+
+    # Determine result types from carries only (first n_carries of before.args)
     result_types = TypeId[]
-    for before_arg in before_blk.args
+    for i in 1:n_carries
+        before_arg = before_blk.args[i]
         type_id = tile_type_for_julia!(ctx, before_arg.type)
         push!(result_types, type_id)
     end
@@ -515,7 +594,15 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     push!(result_types, ctx.token_type)
 
     # Number of user result types (excluding token)
-    n_user_results = length(before_blk.args)
+    n_user_results = n_carries
+
+    # Resolve captures from outer scope BEFORE entering the loop body
+    # (captures reference outer SSA values that won't be available after ctx.values is reset)
+    capture_tvs = CGVal[]
+    for capture_val in op.captures
+        tv = emit_value!(ctx, capture_val)
+        push!(capture_tvs, tv)
+    end
 
     # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
@@ -531,11 +618,21 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         empty!(ctx.values)
         ctx.next_ssa_idx = 1
 
-        # Map block arguments for the "before" region (carried values, last is token)
-        for (i, before_arg) in enumerate(before_blk.args)
-            if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
-                shape = extract_tile_shape(before_arg.type)
-                ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
+        # Tile IR block args layout: [carries..., token]
+        # Julia IR before.args layout: [carries..., captures...]
+
+        # Map carried values (first n_carries of before.args)
+        for i in 1:n_carries
+            before_arg = before_blk.args[i]
+            shape = extract_tile_shape(before_arg.type)
+            ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
+        end
+
+        # Map captures (remaining before.args) - use pre-resolved values
+        for (j, tv) in enumerate(capture_tvs)
+            before_arg = before_blk.args[n_carries + j]
+            if tv !== nothing
+                ctx[before_arg] = tv
             end
         end
 
@@ -556,19 +653,27 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         then_body = function(_)
             # Don't reset context - "before" and "after" regions share the same Tile IR
             # loop body region and should have continuous SSA indices.
-            # Map "after" region block args to the values from ConditionOp.args
-            # (which are values computed in "before")
-            for (i, after_arg) in enumerate(after_blk.args)
+            # Map "after" region block args - carries from ConditionOp.args, captures from outer scope
+            # Note: after.args has same layout as before.args: [carries..., captures...]
+            for i in 1:n_carries
+                after_arg = after_blk.args[i]
                 if i <= length(cond_op.args)
-                    # Map after.args to the actual values from cond_op.args
+                    # Map after.args carries to the actual values from cond_op.args
                     tv = emit_value!(ctx, cond_op.args[i])
                     if tv !== nothing
                         ctx[after_arg] = tv
-                    elseif i <= length(block_args) - 1 && i <= n_user_results
+                    else
                         # Fallback to block_args
                         shape = extract_tile_shape(after_arg.type)
                         ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
                     end
+                end
+            end
+            # Map captures for after region - use pre-resolved values
+            for (j, tv) in enumerate(capture_tvs)
+                after_arg = after_blk.args[n_carries + j]
+                if tv !== nothing
+                    ctx[after_arg] = tv
                 end
             end
 
@@ -585,7 +690,7 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
                 end
             end
 
-            # Emit ContinueOp with yield values from after region
+            # Emit ContinueOp with yield values from after region (only carries, not captures)
             # (In structured IR, after ends with YieldOp; in Tile IR, we need ContinueOp)
             continue_operands = Value[]
             if after_blk.terminator isa YieldOp
@@ -601,15 +706,15 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         else_body = function(_)
             # Don't reset context - else_body doesn't emit its own block,
             # it just emits break using values from the "before" region
-            # Break with ConditionOp args (become loop results)
+            # Break with ConditionOp args (become loop results) - only carries
             break_operands = Value[]
             for arg in cond_op.args
                 tv = emit_value!(ctx, arg)
                 tv !== nothing && tv.v !== nothing && push!(break_operands, tv.v)
             end
-            # If no args, use block_args
+            # If no args, use block_args (carries only)
             if isempty(break_operands)
-                for i in 1:n_user_results
+                for i in 1:n_carries
                     push!(break_operands, block_args[i])
                 end
             end
@@ -625,6 +730,7 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
         # in all branches), the if is NOT a terminator. We need an explicit terminator
         # after the if. Add an unreachable ContinueOp as fallback terminator.
+        # Only include carries + token (not captures)
         fallback_operands = copy(block_args)
         fallback_operands[end] = ctx.token
         encode_ContinueOp!(ctx.cb, fallback_operands)

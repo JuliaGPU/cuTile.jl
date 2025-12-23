@@ -525,15 +525,15 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     header_block = blocks[header_idx]
     stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
 
-    # Find phi nodes in header - these become loop-carried values and results
-    init_values = IRValue[]      # Entry values for each phi
+    # Find phi nodes in header - these become loop-carried values (iter_args)
+    iter_args = IRValue[]        # Entry values for each phi (becomes iter_args)
     carried_values = IRValue[]   # Loop-back values for each phi (SSAValues)
-    result_vars = SSAValue[]     # SSA indices of phi nodes
+    result_ssa_indices = SSAValue[]  # SSA indices of phi nodes (for BreakOp)
 
     for si in header_block.range
         stmt = stmts[si]
         if stmt isa PhiNode
-            push!(result_vars, SSAValue(si))
+            push!(result_ssa_indices, SSAValue(si))
             phi = stmt
 
             entry_val = nothing
@@ -561,7 +561,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 end
             end
 
-            entry_val !== nothing && push!(init_values, entry_val)
+            entry_val !== nothing && push!(iter_args, entry_val)
             carried_val !== nothing && push!(carried_values, carried_val)
         end
     end
@@ -608,7 +608,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
 
         else_blk = Block()
         # BreakOp with SSAValues - kept as-is for derive_result_vars
-        else_blk.terminator = BreakOp(IRValue[rv for rv in result_vars])
+        else_blk.terminator = BreakOp(IRValue[rv for rv in result_ssa_indices])
 
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
@@ -626,7 +626,8 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         body.terminator = ContinueOp(copy(carried_values))
     end
 
-    loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body); init_values=init_values)
+    # Create loop op with iter_args (captures are added in Phase 2)
+    loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body); iter_args=iter_args)
     return loop_op
 end
 
@@ -661,7 +662,7 @@ end
 Single pass that creates BlockArgs and substitutes SSAValue references.
 
 Phase 2 of structurization - called after control_tree_to_structured_ir.
-For each :loop op: creates BlockArgs for phi nodes (result_vars) and outer captures.
+For each :loop op: creates BlockArgs for phi nodes (iter_args) and outer captures.
 For each :if op: creates BlockArgs for outer captures.
 Substitutes SSAValue → BlockArg references throughout.
 
@@ -695,12 +696,16 @@ end
 
 Create BlockArgs for a :loop op and substitute SSAValue references.
 
-1. Create BlockArgs for phi nodes (derived from BreakOp)
+1. Create BlockArgs for phi nodes (iter_args / carries)
 2. Collect outer refs (SSAValues not defined in loop or as phi)
-3. Create BlockArgs for outer captures
-4. Apply parent substitutions to init_values (so nested loops get parent's BlockArgs)
+3. Create BlockArgs for outer captures (added to loop.captures)
+4. Apply parent substitutions to iter_args and captures
 5. Substitute all SSAValue → BlockArg in body
 6. Recurse into nested blocks
+
+Block args layout: [carry_args..., capture_args...]
+- body.args[1:len(iter_args)] = carry args
+- body.args[len(iter_args)+1:end] = capture args
 """
 function process_loop_block_args!(loop::PartialControlFlowOp, ctx::StructurizationContext,
                                   parent_defined::Set{Int}, parent_subs::Substitutions)
@@ -709,7 +714,7 @@ function process_loop_block_args!(loop::PartialControlFlowOp, ctx::Structurizati
     subs = Substitutions()
     result_vars = derive_result_vars(loop)
 
-    # 1. Create BlockArgs for phi nodes
+    # 1. Create BlockArgs for phi nodes (these are the carries)
     for (i, result_var) in enumerate(result_vars)
         phi_type = ctx.ssavaluetypes[result_var.id]
         new_arg = BlockArg(i, phi_type)
@@ -722,20 +727,23 @@ function process_loop_block_args!(loop::PartialControlFlowOp, ctx::Structurizati
     collect_defined_ssas!(loop_defined, body, ctx)
     outer_refs = collect_outer_refs(body, loop_defined; recursive=true)
 
-    # 3. Create BlockArgs for outer captures
+    # 3. Create BlockArgs for outer captures (added to loop.captures, not iter_args)
     n_existing = length(body.args)
     for (i, ref) in enumerate(outer_refs)
         ref_type = ctx.ssavaluetypes[ref.id]
         new_arg = BlockArg(n_existing + i, ref_type)
         push!(body.args, new_arg)
-        push!(loop.init_values, ref)
+        push!(loop.captures, ref)  # Add to captures, not iter_args
         subs[ref.id] = new_arg
     end
 
-    # 4. Apply parent substitutions to init_values
+    # 4. Apply parent substitutions to iter_args and captures
     # This converts SSAValues to parent's BlockArgs for nested control flow
-    for (j, v) in enumerate(loop.init_values)
-        loop.init_values[j] = substitute_ssa(v, parent_subs)
+    for (j, v) in enumerate(loop.iter_args)
+        loop.iter_args[j] = substitute_ssa(v, parent_subs)
+    end
+    for (j, v) in enumerate(loop.captures)
+        loop.captures[j] = substitute_ssa(v, parent_subs)
     end
 
     # 5. Substitute all SSAValue → BlockArg in body (shallow - don't recurse into nested ops)
@@ -753,10 +761,11 @@ end
     process_if_block_args!(if_op::PartialControlFlowOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
 
 Create BlockArgs for an :if op and substitute SSAValue references.
+For :if, all block args are captures (no iteration).
 
 1. Collect outer refs from both blocks
-2. Create matching BlockArgs in both blocks
-3. Apply parent substitutions to init_values
+2. Create matching BlockArgs in both blocks (stored in captures)
+3. Apply parent substitutions to captures
 4. Substitute SSAValue → BlockArg in both blocks
 5. Recurse into nested blocks
 """
@@ -792,19 +801,19 @@ function process_if_block_args!(if_op::PartialControlFlowOp, ctx::Structurizatio
 
     subs = Substitutions()
     if !isempty(outer_refs)
-        # 2. Create matching BlockArgs in both blocks
+        # 2. Create matching BlockArgs in both blocks (all are captures for :if)
         for (i, ref) in enumerate(outer_refs)
             ref_type = ctx.ssavaluetypes[ref.id]
             new_arg = BlockArg(i, ref_type)
             push!(then_blk.args, new_arg)
             push!(else_blk.args, new_arg)
-            push!(if_op.init_values, ref)
+            push!(if_op.captures, ref)  # :if only has captures, no iter_args
             subs[ref.id] = new_arg
         end
 
-        # 3. Apply parent substitutions to init_values
-        for (j, v) in enumerate(if_op.init_values)
-            if_op.init_values[j] = substitute_ssa(v, parent_subs)
+        # 3. Apply parent substitutions to captures
+        for (j, v) in enumerate(if_op.captures)
+            if_op.captures[j] = substitute_ssa(v, parent_subs)
         end
 
         # 4. Substitute SSAValue → BlockArg in both blocks (shallow - don't recurse into nested ops)

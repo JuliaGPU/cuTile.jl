@@ -909,7 +909,8 @@ end
             check"CHECK: for %loopIdx in"
             check"CHECK: loop iter_values"
             # The store MUST use loopIdx for the column index, not the spinloop result
-            check"CHECK: store_view_tko{{.*}}[%iterArg{{[0-9]+}}, %loopIdx]"
+            # First index can be any value (direct outer ref or iter_arg), second must be loopIdx
+            check"CHECK: store_view_tko{{.*}}[%{{[^,]+}}, %loopIdx]"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                            Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(0)
