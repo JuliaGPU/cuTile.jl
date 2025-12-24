@@ -3,16 +3,15 @@ using Test
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      validate_scf, PartialControlFlowOp, items, statements
+                      validate_scf, items, statements
 using Core: SSAValue
 
-# Helper to check if block contains a control flow op with given head
-# Works with both PartialControlFlowOp (during construction) and concrete types (final)
-is_if(item) = item isa IfOp || (item isa PartialControlFlowOp && item.head == :if)
-is_for(item) = item isa ForOp || (item isa PartialControlFlowOp && item.head == :for)
-is_while(item) = item isa WhileOp || (item isa PartialControlFlowOp && item.head == :while)
-is_loop(item) = item isa LoopOp || (item isa PartialControlFlowOp && item.head == :loop)
-is_control_flow(item) = item isa ControlFlowOp || item isa PartialControlFlowOp
+# Helper to check if block contains a control flow op with given type
+is_if(item) = item isa IfOp
+is_for(item) = item isa ForOp
+is_while(item) = item isa WhileOp
+is_loop(item) = item isa LoopOp
+is_control_flow(item) = item isa ControlFlowOp
 
 # Helper to check if item is an expression (not a control flow op)
 is_expr(item) = !is_control_flow(item)

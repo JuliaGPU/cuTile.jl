@@ -1,6 +1,6 @@
 # Phase 3: Pattern matching and loop upgrades
 #
-# This file contains functions for upgrading :loop to :for/:while.
+# This file contains functions for upgrading LoopOp to ForOp/WhileOp.
 # All pattern matching operates on the structured IR after substitutions.
 
 #=============================================================================
@@ -8,13 +8,13 @@
 =============================================================================#
 
 """
-    find_ifop(block::Block) -> Union{PartialControlFlowOp, Nothing}
+    find_ifop(block::Block) -> Union{IfOp, Nothing}
 
-Find the first :if op in a block's body.
+Find the first IfOp in a block's body.
 """
 function find_ifop(block::Block)
     for stmt in statements(block.body)
-        if stmt isa PartialControlFlowOp && stmt.head == :if
+        if stmt isa IfOp
             return stmt
         end
     end
@@ -29,7 +29,7 @@ Returns (idx, entry) tuple or nothing.
 """
 function find_expr_by_ssa(block::Block, ssa::SSAValue)
     for (idx, entry) in block.body
-        if !(entry.stmt isa PartialControlFlowOp) && idx == ssa.id
+        if !(entry.stmt isa ControlFlowOp) && idx == ssa.id
             return (idx, entry)
         end
     end
@@ -40,24 +40,20 @@ end
     find_add_int_for_iv(block::Block, iv_arg::BlockArg) -> Union{Tuple{Int, SSAEntry}, Nothing}
 
 Find an expression containing `add_int(iv_arg, step)` in the block.
-Searches inside :if ops (since condition creates :if structure),
-but NOT into nested :loop ops (those have their own IVs).
+Searches inside IfOp (since condition creates if structure),
+but NOT into nested LoopOp (those have their own IVs).
 Returns (idx, entry) tuple or nothing.
 """
 function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
     for (idx, entry) in block.body
-        if entry.stmt isa PartialControlFlowOp
-            if entry.stmt.head == :if
-                # Search in :if blocks (condition structure)
-                then_blk = entry.stmt.regions[:then]::Block
-                else_blk = entry.stmt.regions[:else]::Block
-                result = find_add_int_for_iv(then_blk, iv_arg)
-                result !== nothing && return result
-                result = find_add_int_for_iv(else_blk, iv_arg)
-                result !== nothing && return result
-            end
-            # Don't recurse into :loop - nested loops have their own IVs
-        else  # Statement
+        if entry.stmt isa IfOp
+            # Search in IfOp blocks (condition structure)
+            result = find_add_int_for_iv(entry.stmt.then_region, iv_arg)
+            result !== nothing && return result
+            result = find_add_int_for_iv(entry.stmt.else_region, iv_arg)
+            result !== nothing && return result
+            # Don't recurse into LoopOp - nested loops have their own IVs
+        elseif !(entry.stmt isa ControlFlowOp)  # Statement
             expr = entry.stmt
             if expr isa Expr && expr.head === :call && length(expr.args) >= 3
                 func = expr.args[1]
@@ -103,10 +99,8 @@ Searches nested blocks recursively.
 """
 function defines(block::Block, ssa::SSAValue)
     for (idx, entry) in block.body
-        if entry.stmt isa PartialControlFlowOp
-            for (_, region) in entry.stmt.regions
-                defines(region, ssa) && return true
-            end
+        if entry.stmt isa ControlFlowOp
+            defines_in_op(entry.stmt, ssa) && return true
         else  # Statement
             if idx == ssa.id
                 return true
@@ -115,6 +109,12 @@ function defines(block::Block, ssa::SSAValue)
     end
     return false
 end
+
+# Helper to check if an SSA is defined in a control flow op's regions
+defines_in_op(op::IfOp, ssa::SSAValue) = defines(op.then_region, ssa) || defines(op.else_region, ssa)
+defines_in_op(op::LoopOp, ssa::SSAValue) = defines(op.body, ssa)
+defines_in_op(op::ForOp, ssa::SSAValue) = defines(op.body, ssa)
+defines_in_op(op::WhileOp, ssa::SSAValue) = defines(op.before, ssa) || defines(op.after, ssa)
 
 """
     is_for_condition(expr) -> Bool
@@ -130,104 +130,102 @@ function is_for_condition(expr)
 end
 
 #=============================================================================
- Loop Pattern Matching (upgrade :loop → :for/:while)
+ Loop Pattern Matching (upgrade LoopOp → ForOp/WhileOp)
 =============================================================================#
 
 """
     apply_loop_patterns!(block::Block, ctx::StructurizationContext)
 
-Upgrade :loop ops to :for/:while where patterns match.
-Modifies ops in-place by changing their head and operands.
-When upgrading to :for, re-keys the op if the IV was the first result.
+Upgrade LoopOp to ForOp/WhileOp where patterns match.
+Creates new ops and replaces them in the block body.
+When upgrading to ForOp, re-keys the op if the IV was the first result.
 """
 function apply_loop_patterns!(block::Block, ctx::StructurizationContext)
-    # Collect all re-keying needed (old_key => new_key)
-    rekey_map = Dict{Int,Int}()
+    # Collect replacements: (old_idx => (new_op, new_key))
+    replacements = Dict{Int, Tuple{ControlFlowOp, Int}}()
 
     for (idx, entry) in block.body
-        if entry.stmt isa PartialControlFlowOp
-            if entry.stmt.head == :loop
-                new_key = try_upgrade_loop!(entry.stmt, ctx, idx)
-                if new_key !== nothing
-                    # Successfully upgraded - record re-keying if needed
-                    if new_key != idx
-                        rekey_map[idx] = new_key
-                    end
-                    # Recurse into the modified op's regions
-                    for (_, region) in entry.stmt.regions
-                        apply_loop_patterns!(region, ctx)
-                    end
-                else
-                    # Not upgraded, recurse into body
-                    apply_loop_patterns!(entry.stmt.regions[:body], ctx)
-                end
-            elseif entry.stmt.head == :if
-                apply_loop_patterns!(entry.stmt.regions[:then], ctx)
-                apply_loop_patterns!(entry.stmt.regions[:else], ctx)
-            elseif entry.stmt.head == :while
-                apply_loop_patterns!(entry.stmt.regions[:before], ctx)
-                apply_loop_patterns!(entry.stmt.regions[:after], ctx)
-            elseif entry.stmt.head == :for
-                apply_loop_patterns!(entry.stmt.regions[:body], ctx)
+        if entry.stmt isa LoopOp
+            result = try_upgrade_loop(entry.stmt, ctx, idx)
+            if result !== nothing
+                new_op, new_key = result
+                replacements[idx] = (new_op, new_key)
             end
         end
     end
 
-    # Apply re-keying by rebuilding SSAVector
-    if !isempty(rekey_map)
+    # Apply replacements and recurse
+    if !isempty(replacements)
         new_body = SSAVector()
         for (old_key, entry) in block.body
-            new_key = get(rekey_map, old_key, old_key)
-            push!(new_body, (new_key, entry.stmt, entry.typ))
+            if haskey(replacements, old_key)
+                new_op, new_key = replacements[old_key]
+                push!(new_body, (new_key, new_op, entry.typ))
+            else
+                push!(new_body, (old_key, entry.stmt, entry.typ))
+            end
         end
         block.body = new_body
+    end
+
+    # Recurse into all control flow ops (including newly created ones)
+    for stmt in statements(block.body)
+        if stmt isa LoopOp
+            apply_loop_patterns!(stmt.body, ctx)
+        elseif stmt isa IfOp
+            apply_loop_patterns!(stmt.then_region, ctx)
+            apply_loop_patterns!(stmt.else_region, ctx)
+        elseif stmt isa WhileOp
+            apply_loop_patterns!(stmt.before, ctx)
+            apply_loop_patterns!(stmt.after, ctx)
+        elseif stmt isa ForOp
+            apply_loop_patterns!(stmt.body, ctx)
+        end
     end
 end
 
 """
-    try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int) -> Union{Int, Nothing}
+    try_upgrade_loop(loop::LoopOp, ctx::StructurizationContext, current_key::Int) -> Union{Tuple{ControlFlowOp, Int}, Nothing}
 
-Try to upgrade a :loop op to :for or :while by modifying it in-place.
-Returns the new key if upgraded (may be same as current_key), or nothing if not upgraded.
+Try to upgrade a LoopOp to ForOp or WhileOp.
+Returns (new_op, new_key) if upgraded, or nothing if not upgraded.
 """
-function try_upgrade_loop!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int)
-    @assert loop.head == :loop
-
+function try_upgrade_loop(loop::LoopOp, ctx::StructurizationContext, current_key::Int)
     # Try ForOp pattern first
-    new_key = try_upgrade_to_for!(loop, ctx, current_key)
-    if new_key !== nothing
-        return new_key
+    result = try_upgrade_to_for(loop, ctx, current_key)
+    if result !== nothing
+        return result
     end
 
     # Try WhileOp pattern
-    if try_upgrade_to_while!(loop, ctx)
-        return current_key  # WhileOp doesn't change keying
+    while_op = try_upgrade_to_while(loop, ctx)
+    if while_op !== nothing
+        return (while_op, current_key)  # WhileOp doesn't change keying
     end
 
     return nothing
 end
 
 """
-    try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int) -> Union{Int, Nothing}
+    try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_key::Int) -> Union{Tuple{ForOp, Int}, Nothing}
 
-Try to upgrade a :loop op to :for by detecting the for-loop pattern.
-Modifies the op in-place. Returns the new key if upgraded, or nothing if not upgraded.
+Try to upgrade a LoopOp to ForOp by detecting the for-loop pattern.
+Returns (ForOp, new_key) if upgraded, or nothing if not upgraded.
 The new key is the first non-IV result's SSA index (needed for correct result storage in codegen).
 """
-function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationContext, current_key::Int)
-    @assert loop.head == :loop
-    body = loop.regions[:body]::Block
+function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_key::Int)
+    body = loop.body::Block
     n_iter_args = length(loop.iter_args)
 
     # Get original result SSA indices before modifying (needed for re-keying)
     original_result_indices = derive_result_vars(loop)
 
-    # Find the :if op in the loop body - this contains the condition check
+    # Find the IfOp in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
     condition_ifop === nothing && return nothing
 
     # The condition should be an SSAValue pointing to a comparison expression
-    cond_val = condition_ifop.operands.condition
+    cond_val = condition_ifop.condition
     cond_val isa SSAValue || return nothing
     cond_result = find_expr_by_ssa(body, cond_val)
     cond_result === nothing && return nothing
@@ -272,7 +270,7 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     is_loop_invariant(upper_bound, body, n_iter_args) || return nothing
     is_loop_invariant(step, body, n_iter_args) || return nothing
 
-    # Separate non-IV iter_args (the new iter_args for :for)
+    # Separate non-IV iter_args (the new iter_args for ForOp)
     other_iter_args = IRValue[]
     for (j, v) in enumerate(loop.iter_args)
         j != iv_idx && push!(other_iter_args, v)
@@ -289,23 +287,21 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     end
 
     # Rebuild body block without condition structure
-    then_blk = condition_ifop.regions[:then]::Block
+    then_blk = condition_ifop.then_region::Block
     new_body = Block()
     # Only include carried values, not IV
     new_body.args = [arg for arg in body.args if arg !== iv_arg]
 
     # Extract body items, filtering out iv-related ones
     for (idx, entry) in body.body
-        if entry.stmt isa PartialControlFlowOp
-            if entry.stmt.head == :if && entry.stmt === condition_ifop
-                # Extract the continue path's body (skip condition check structure)
-                for (sub_idx, sub_entry) in then_blk.body
-                    sub_idx == step_idx && continue
-                    push!(new_body, sub_idx, sub_entry.stmt, sub_entry.typ)
-                end
-            else
-                push!(new_body, idx, entry.stmt, entry.typ)
+        if entry.stmt isa IfOp && entry.stmt === condition_ifop
+            # Extract the continue path's body (skip condition check structure)
+            for (sub_idx, sub_entry) in then_blk.body
+                sub_idx == step_idx && continue
+                push!(new_body, sub_idx, sub_entry.stmt, sub_entry.typ)
             end
+        elseif entry.stmt isa ControlFlowOp
+            push!(new_body, idx, entry.stmt, entry.typ)
         else  # Statement
             idx == step_idx && continue
             idx == cond_idx && continue
@@ -326,49 +322,43 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
 
     new_body.terminator = ContinueOp(yield_values)
 
-    # Modify the loop in-place to become :for
-    loop.head = :for
-    loop.regions = Dict{Symbol,Any}(:body => new_body)
-    loop.iter_args = other_iter_args
-    loop.operands = (lower=lower_bound, upper=upper_bound, step=step, iv_arg=iv_arg)
+    # Create ForOp
+    for_op = ForOp(lower_bound, upper_bound, step, iv_arg, new_body, other_iter_args)
 
-    return new_key
+    return (for_op, new_key)
 end
 
 """
-    try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext) -> Bool
+    try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext) -> Union{WhileOp, Nothing}
 
-Try to upgrade a :loop op to :while by detecting the while-loop pattern.
-Modifies the op in-place. Returns true if upgraded.
+Try to upgrade a LoopOp to WhileOp by detecting the while-loop pattern.
+Returns WhileOp if upgraded, or nothing if not upgraded.
 
 Creates MLIR-style scf.while with before/after regions:
 - before: condition computation, ends with ConditionOp (only passes iter_args)
 - after: loop body, ends with YieldOp (only yields iter_args)
 """
-function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationContext)
-    @assert loop.head == :loop
-    body = loop.regions[:body]::Block
+function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
+    body = loop.body::Block
     n_iter_args = length(loop.iter_args)
 
-    # Find the :if op in the loop body - its condition is the while condition
+    # Find the IfOp in the loop body - its condition is the while condition
     condition_ifop = find_ifop(body)
-    condition_ifop === nothing && return false
+    condition_ifop === nothing && return nothing
 
-    then_blk = condition_ifop.regions[:then]::Block
-    else_blk = condition_ifop.regions[:else]::Block
+    then_blk = condition_ifop.then_region::Block
+    else_blk = condition_ifop.else_region::Block
 
-    # Build "before" region: statements before the :if + ConditionOp
+    # Build "before" region: statements before the IfOp + ConditionOp
     before = Block()
     before.args = copy(body.args)
 
     for (idx, entry) in body.body
-        if entry.stmt isa PartialControlFlowOp
-            if entry.stmt === condition_ifop
-                # Stop before :if - the condition becomes ConditionOp
-                break
-            else
-                push!(before, idx, entry.stmt, entry.typ)
-            end
+        if entry.stmt isa IfOp && entry.stmt === condition_ifop
+            # Stop before IfOp - the condition becomes ConditionOp
+            break
+        elseif entry.stmt isa ControlFlowOp
+            push!(before, idx, entry.stmt, entry.typ)
         else  # Statement
             push!(before, idx, entry.stmt, entry.typ)
         end
@@ -377,7 +367,7 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
     # ConditionOp args: iter_args (carries)
     condition_args = IRValue[before.args[i] for i in 1:n_iter_args]
 
-    cond_val = condition_ifop.operands.condition
+    cond_val = condition_ifop.condition
     before.terminator = ConditionOp(cond_val, condition_args)
 
     # Build "after" region: statements from the then_block + YieldOp
@@ -403,9 +393,6 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
 
     after.terminator = YieldOp(yield_values)
 
-    # Modify the loop in-place to become :while
-    loop.head = :while
-    loop.regions = Dict{Symbol,Any}(:before => before, :after => after)
-
-    return true
+    # Create WhileOp
+    return WhileOp(before, after, loop.iter_args)
 end

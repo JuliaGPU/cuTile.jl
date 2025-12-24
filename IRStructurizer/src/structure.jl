@@ -1,8 +1,8 @@
 # Phase 1: Control Tree to Structured IR
 #
 # Converts a ControlTree (from graph contraction) to structured IR with Block
-# and PartialControlFlowOp objects. All loops become :loop in this phase.
-# Pattern matching (:for/:while) and substitutions happen in later phases.
+# and ControlFlowOp objects. All loops become LoopOp in this phase.
+# Pattern matching (ForOp/WhileOp) and substitutions happen in later phases.
 
 using AbstractTrees: PreOrderDFS
 
@@ -53,7 +53,7 @@ end
     control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> Block
 
 Convert a control tree to structured IR entry block.
-All loops become PartialControlFlowOp(:loop, ...) (no pattern matching yet, no substitutions).
+All loops become LoopOp (no pattern matching yet, no substitutions).
 """
 function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                                        ctx::StructurizationContext)
@@ -208,9 +208,8 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         else_blk.terminator = YieldOp(else_values)
     end
 
-    # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
-    if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
-                                  operands=(condition=cond_value,))
+    # Create IfOp - no outer capture yet, Phase 2 will handle it
+    if_op = IfOp(cond_value, then_blk, else_blk)
 
     # Key by first merge phi's SSA index if available, else by GotoIfNot
     # Also get the result type(s) from the merge phis
@@ -321,9 +320,8 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     # Empty else block
     else_blk = Block()
 
-    # Create PartialControlFlowOp(:if, ...) - no outer capture yet, Phase 2 will handle it
-    if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
-                                  operands=(condition=cond_value,))
+    # Create IfOp - no outer capture yet, Phase 2 will handle it
+    if_op = IfOp(cond_value, then_blk, else_blk)
     result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
     push!(block, result_idx, if_op, Nothing)
 end
@@ -366,15 +364,13 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         else_tree = tree_children[3]
         then_blk = tree_to_block(then_tree, code, blocks, ctx)
         else_blk = tree_to_block(else_tree, code, blocks, ctx)
-        if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
-                                      operands=(condition=cond_value,))
+        if_op = IfOp(cond_value, then_blk, else_blk)
         push!(block, result_idx, if_op, Nothing)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
         then_blk = tree_to_block(then_tree, code, blocks, ctx)
         else_blk = Block()
-        if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
-                                      operands=(condition=cond_value,))
+        if_op = IfOp(cond_value, then_blk, else_blk)
         push!(block, result_idx, if_op, Nothing)
     end
 end
@@ -383,7 +379,7 @@ end
     handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
 
 Handle REGION_WHILE_LOOP and REGION_NATURAL_LOOP.
-Phase 1: Always creates PartialControlFlowOp(:loop, ...) with metadata. Pattern matching happens in Phase 3.
+Phase 1: Always creates LoopOp with metadata. Pattern matching happens in Phase 3.
 """
 function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                       ctx::StructurizationContext)
@@ -415,7 +411,7 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
         collect_block_statements!(body_blk, blocks[idx], code)
     end
 
-    loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body_blk))
+    loop_op = LoopOp(body_blk, IRValue[])
     # Self-loops typically don't have phi nodes - use block's last SSA index
     if 1 <= idx <= length(blocks)
         push!(block, last(blocks[idx].range), loop_op, Nothing)
@@ -505,7 +501,7 @@ function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{Bloc
     # Find the last statement SSA index in body (largest positive key)
     last_idx = nothing
     for (idx, entry) in block.body
-        if !(entry.stmt isa PartialControlFlowOp)  # Statement
+        if !(entry.stmt isa ControlFlowOp)  # Statement
             if last_idx === nothing || idx > last_idx
                 last_idx = idx
             end
@@ -524,9 +520,9 @@ end
 =============================================================================#
 
 """
-    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> PartialControlFlowOp
+    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> LoopOp
 
-Build a PartialControlFlowOp(:loop, ...) for Phase 1. Pure structure building - no BlockArgs or substitutions.
+Build a LoopOp for Phase 1. Pure structure building - no BlockArgs or substitutions.
 BlockArg creation and SSA→BlockArg substitution happens in Phase 2 (apply_block_args!).
 """
 function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
@@ -625,8 +621,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         # BreakOp with SSAValues - kept as-is for derive_result_vars
         else_blk.terminator = BreakOp(IRValue[rv for rv in result_ssa_indices])
 
-        if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
-                                      operands=(condition=cond_value,))
+        if_op = IfOp(cond_value, then_blk, else_blk)
         # Key by the GotoIfNot's SSA index
         push!(body, condition_idx, if_op, Nothing)
     else
@@ -642,7 +637,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     end
 
     # Create loop op with iter_args
-    loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body); iter_args=iter_args)
+    loop_op = LoopOp(body, iter_args)
     return loop_op
 end
 
@@ -654,12 +649,21 @@ Also includes results from control flow ops (phi nodes define SSAValues).
 """
 function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::StructurizationContext)
     for (idx, entry) in block.body
-        if entry.stmt isa PartialControlFlowOp
+        if entry.stmt isa ControlFlowOp
             for rv in derive_result_vars(entry.stmt)
                 push!(defined, rv.id)
             end
-            for (_, region) in entry.stmt.regions
-                collect_defined_ssas!(defined, region, ctx)
+            # Recurse into regions based on op type
+            if entry.stmt isa LoopOp
+                collect_defined_ssas!(defined, entry.stmt.body, ctx)
+            elseif entry.stmt isa IfOp
+                collect_defined_ssas!(defined, entry.stmt.then_region, ctx)
+                collect_defined_ssas!(defined, entry.stmt.else_region, ctx)
+            elseif entry.stmt isa WhileOp
+                collect_defined_ssas!(defined, entry.stmt.before, ctx)
+                collect_defined_ssas!(defined, entry.stmt.after, ctx)
+            elseif entry.stmt isa ForOp
+                collect_defined_ssas!(defined, entry.stmt.body, ctx)
             end
         else  # Statement
             push!(defined, idx)
@@ -689,27 +693,25 @@ function apply_block_args!(block::Block, ctx::StructurizationContext,
     # Track what's defined at this level
     defined = copy(defined)
     for (idx, entry) in block.body
-        if !(entry.stmt isa PartialControlFlowOp)  # Statement
+        if !(entry.stmt isa ControlFlowOp)  # Statement
             push!(defined, idx)
         end
     end
 
     # Process each control flow op
     for stmt in statements(block.body)
-        if stmt isa PartialControlFlowOp
-            if stmt.head == :loop
-                process_loop_block_args!(stmt, ctx, defined, parent_subs)
-            elseif stmt.head == :if
-                process_if_block_args!(stmt, ctx, defined, parent_subs)
-            end
+        if stmt isa LoopOp
+            process_loop_block_args!(stmt, ctx, defined, parent_subs)
+        elseif stmt isa IfOp
+            process_if_block_args!(stmt, ctx, defined, parent_subs)
         end
     end
 end
 
 """
-    process_loop_block_args!(loop::PartialControlFlowOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
+    process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
 
-Create BlockArgs for a :loop op and substitute SSAValue references.
+Create BlockArgs for a LoopOp and substitute SSAValue references.
 
 1. Create BlockArgs for phi nodes (iter_args / carries)
 2. Apply parent substitutions to iter_args
@@ -718,10 +720,9 @@ Create BlockArgs for a :loop op and substitute SSAValue references.
 
 Outer scope SSA values are referenced directly (like MLIR), no captures needed.
 """
-function process_loop_block_args!(loop::PartialControlFlowOp, ctx::StructurizationContext,
+function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
                                   parent_defined::Set{Int}, parent_subs::Substitutions)
-    @assert loop.head == :loop
-    body = loop.regions[:body]::Block
+    body = loop.body::Block
     subs = Substitutions()
     result_vars = derive_result_vars(loop)
 
@@ -751,18 +752,17 @@ function process_loop_block_args!(loop::PartialControlFlowOp, ctx::Structurizati
 end
 
 """
-    process_if_block_args!(if_op::PartialControlFlowOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
+    process_if_block_args!(if_op::IfOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
 
-Process an :if op. For :if, no BlockArgs needed (no iteration).
+Process an IfOp. For IfOp, no BlockArgs needed (no iteration).
 Just recurse into nested blocks with parent substitutions.
 
 Outer scope SSA values are referenced directly (like MLIR), no captures needed.
 """
-function process_if_block_args!(if_op::PartialControlFlowOp, ctx::StructurizationContext,
+function process_if_block_args!(if_op::IfOp, ctx::StructurizationContext,
                                 parent_defined::Set{Int}, parent_subs::Substitutions)
-    @assert if_op.head == :if
-    then_blk = if_op.regions[:then]::Block
-    else_blk = if_op.regions[:else]::Block
+    then_blk = if_op.then_region::Block
+    else_blk = if_op.else_region::Block
 
     # Build combined defined set from parent + what's defined in each branch
     then_defined = copy(parent_defined)

@@ -72,7 +72,7 @@ function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
     # BlockArgs are available from the start (loop-carried values)
 
     for (idx, entry) in block.body
-        if entry.stmt isa PartialControlFlowOp
+        if entry.stmt isa ControlFlowOp
             # ControlFlowOp - check its inputs and recurse into nested blocks
             validate_control_flow_op_ordering(entry.stmt, defined, block.args)
             # Add results to defined set
@@ -95,19 +95,35 @@ function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
     return true
 end
 
-function validate_control_flow_op_ordering(op::PartialControlFlowOp, defined::Set{Int}, args::Vector{BlockArg})
-    # Check operands
-    for v in values(op.operands)
-        check_ssa_refs_defined(v, defined, args, nothing)
-    end
-    # Check iter_args
+function validate_control_flow_op_ordering(op::IfOp, defined::Set{Int}, args::Vector{BlockArg})
+    check_ssa_refs_defined(op.condition, defined, args, nothing)
+    validate_ssa_ordering(op.then_region; defined=Set{Int}())
+    validate_ssa_ordering(op.else_region; defined=Set{Int}())
+end
+
+function validate_control_flow_op_ordering(op::LoopOp, defined::Set{Int}, args::Vector{BlockArg})
     for v in op.iter_args
         check_ssa_refs_defined(v, defined, args, nothing)
     end
-    # Recurse into all regions - each region starts fresh
-    for (_, region) in op.regions
-        validate_ssa_ordering(region; defined=Set{Int}())
+    validate_ssa_ordering(op.body; defined=Set{Int}())
+end
+
+function validate_control_flow_op_ordering(op::ForOp, defined::Set{Int}, args::Vector{BlockArg})
+    check_ssa_refs_defined(op.lower, defined, args, nothing)
+    check_ssa_refs_defined(op.upper, defined, args, nothing)
+    check_ssa_refs_defined(op.step, defined, args, nothing)
+    for v in op.iter_args
+        check_ssa_refs_defined(v, defined, args, nothing)
     end
+    validate_ssa_ordering(op.body; defined=Set{Int}())
+end
+
+function validate_control_flow_op_ordering(op::WhileOp, defined::Set{Int}, args::Vector{BlockArg})
+    for v in op.iter_args
+        check_ssa_refs_defined(v, defined, args, nothing)
+    end
+    validate_ssa_ordering(op.before; defined=Set{Int}())
+    validate_ssa_ordering(op.after; defined=Set{Int}())
 end
 
 function check_terminator_refs_defined(term::YieldOp, defined::Set{Int}, args::Vector{BlockArg})

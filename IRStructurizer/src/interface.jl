@@ -65,22 +65,21 @@ end
     structurize!(sci::StructuredCodeInfo; loop_patterning=true) -> StructuredCodeInfo
 
 Convert unstructured control flow in `sci` to structured control flow operations
-(ControlFlowOp with head :if, :for, :while, :loop) in-place.
+(IfOp, ForOp, WhileOp, LoopOp) in-place.
 
 This transforms GotoNode and GotoIfNot statements into nested structured ops
 that can be traversed hierarchically.
 
-Four-phase approach:
-1. Build structure (pure SSAValues, no BlockArgs)
+Three-phase approach:
+1. Build structure (pure SSAValues, no BlockArgs) - creates IfOp/LoopOp
 2. Create BlockArgs and substitute SSA→BlockArg for loop-carried values
-3. Upgrade loop patterns (:for/:while) if enabled
-4. Finalize IR (convert PartialControlFlowOp→ControlFlowOp)
+3. Upgrade loop patterns (ForOp/WhileOp) if enabled
 
 SSA indices use original Julia SSA indices throughout (like MLIR), allowing
 direct references to outer scope values without captures.
 
-When `loop_patterning=true` (default), loops are classified as :for (bounded counters)
-or :while (condition-based). When `false`, all loops remain as :loop.
+When `loop_patterning=true` (default), loops are classified as ForOp (bounded counters)
+or WhileOp (condition-based). When `false`, all loops remain as LoopOp.
 
 Returns `sci` for convenience (allows chaining).
 """
@@ -101,19 +100,18 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
     # Build control tree using SPIRV.jl-style graph contraction
     ctree = ControlTree(cfg)
 
-    # Phase 1: Build structure (pure SSAValues, no BlockArgs)
-    partial_entry = control_tree_to_structured_ir(ctree, code, blocks, ctx)
+    # Phase 1: Build structure (pure SSAValues, no BlockArgs) - creates IfOp/LoopOp
+    entry = control_tree_to_structured_ir(ctree, code, blocks, ctx)
 
     # Phase 2: Create BlockArgs and substitute SSA→BlockArg for loop-carried values
-    apply_block_args!(partial_entry, ctx)
+    apply_block_args!(entry, ctx)
 
-    # Phase 3: Upgrade loop patterns (optional)
+    # Phase 3: Upgrade loop patterns (optional) - LoopOp → ForOp/WhileOp
     if loop_patterning
-        apply_loop_patterns!(partial_entry, ctx)
+        apply_loop_patterns!(entry, ctx)
     end
 
-    # Phase 4: Finalize IR (convert PartialControlFlowOp→ControlFlowOp)
-    sci.entry = finalize_ir(partial_entry, ctx)
+    sci.entry = entry
 
     return sci
 end
