@@ -903,7 +903,9 @@ end
 # Block usage scanning - handles both construction and finalized forms
 function compute_used_ssas(block::Block)
     used = BitSet()
-    if block.body isa OrderedDict
+    # Detect preflatten (has PartialControlFlowOp) vs postflatten (has ControlFlowOp)
+    has_partial = any(stmt isa PartialControlFlowOp for stmt in statements(block.body))
+    if has_partial
         _scan_uses_preflatten!(used, block)
     else
         _scan_uses_postflatten!(used, block)
@@ -955,34 +957,6 @@ function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
     _scan_uses_postflatten!(used, op.body)
 end
 
-# Compute which SSAValue indices are used in a Block (for pretty printing)
-function compute_block_used(block::Block)
-    used = BitSet()
-    for expr in block.body
-        if expr isa IfOp
-            _scan_expr_uses!(used, expr.condition)
-        elseif expr isa ForOp
-            _scan_expr_uses!(used, expr.lower)
-            _scan_expr_uses!(used, expr.upper)
-            _scan_expr_uses!(used, expr.step)
-            for v in expr.iter_args
-                _scan_expr_uses!(used, v)
-            end
-        elseif expr isa LoopOp || expr isa WhileOp
-            for v in expr.iter_args
-                _scan_expr_uses!(used, v)
-            end
-        else
-            _scan_expr_uses!(used, expr)
-        end
-    end
-    # Scan terminator
-    if block.terminator !== nothing
-        _scan_terminator_uses!(used, block.terminator)
-    end
-    return used
-end
-
 """
     IRPrinter
 
@@ -995,31 +969,28 @@ mutable struct IRPrinter
     indent::Int
     line_prefix::String    # Prefix for continuation lines (│, spaces)
     is_last_stmt::Bool     # Whether current stmt is last in block
-    used::BitSet           # Which SSA values are used (for type coloring)
-    block_used::BitSet     # Which SSA values are used in current block (for nested blocks)
+    used::BitSet           # Which SSA values are used anywhere in the IR
     max_idx_width::Int     # Max width of "%N = " for alignment (like Julia's SSA printer)
     color::Bool            # Whether to use colors
 end
 
 function IRPrinter(io::IO, code::CodeInfo, entry::Block)
     used = compute_used_ssas(entry)
-    block_used = compute_block_used(entry)
     # Compute max index width for alignment: "%N = " where N is the max index
     max_idx_width = ndigits(length(entry.body)) + 4  # % + digits + space + = + space
     color = get(io, :color, false)::Bool
-    IRPrinter(io, code, 0, "", false, used, block_used, max_idx_width, color)
+    IRPrinter(io, code, 0, "", false, used, max_idx_width, color)
 end
 
 function indent(p::IRPrinter, n::Int=1)
     new_prefix = p.line_prefix * "    "  # 4 spaces per indent level
-    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.block_used, p.max_idx_width, p.color)
+    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.max_idx_width, p.color)
 end
 
-# Create a child printer for a nested Block with fresh block_used and max_idx_width
+# Create a child printer for a nested Block
 function child_printer(p::IRPrinter, nested_block::Block, cont_prefix::String)
-    nested_block_used = compute_block_used(nested_block)
     nested_max_idx_width = ndigits(length(nested_block.body)) + 4
-    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, nested_block_used, nested_max_idx_width, p.color)
+    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, nested_max_idx_width, p.color)
 end
 
 # Print region header: "├ label(%arg1::Type):" (regions always use ├, closing is on last line of content)
@@ -1540,9 +1511,9 @@ function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String=
         print(p.io, " ")
     end
 
-    # For final Block, we use position index instead of SSA index
+    # Show %N = if value is used anywhere in the IR (global usage)
     # Type color: cyan if used, grey if unused (matches Julia's SSA IR printer)
-    is_used = idx in p.block_used
+    is_used = idx in p.used
     if is_used
         idx_s = string(idx)
         pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
@@ -1652,8 +1623,9 @@ function print_expr_with_type_closing(p::IRPrinter, idx::Int, expr, typ; cascade
     closing_prefix = close_trailing_boxes(p.line_prefix, cascade_depth + 1)
     print_colored(p, closing_prefix, :light_black)
 
+    # Show %N = if value is used anywhere in the IR (global usage)
     # Type color: cyan if used, grey if unused (matches Julia's SSA IR printer)
-    is_used = idx in p.block_used
+    is_used = idx in p.used
     if is_used
         idx_s = string(idx)
         pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
@@ -1732,8 +1704,8 @@ function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int; is_last::Bool=false
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Show assignment if this position is used
-    if pos in p.block_used
+    # Show assignment if this position is used anywhere in the IR
+    if pos in p.used
         print(p.io, "%", pos, " = ")
     end
 
@@ -1767,8 +1739,8 @@ function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int; is_last::Bool=fal
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Show assignment if this position is used
-    if pos in p.block_used
+    # Show assignment if this position is used anywhere in the IR
+    if pos in p.used
         print(p.io, "%", pos, " = ")
     end
 
@@ -1803,8 +1775,8 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int; is_last::Bool=f
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Show assignment if this position is used
-    if pos in p.block_used
+    # Show assignment if this position is used anywhere in the IR
+    if pos in p.used
         print(p.io, "%", pos, " = ")
     end
 
@@ -1829,8 +1801,8 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int; is_last::Bool
     print_colored(p, prefix, :light_black)
     print(p.io, " ")
 
-    # Show assignment if this position is used
-    if pos in p.block_used
+    # Show assignment if this position is used anywhere in the IR
+    if pos in p.used
         print(p.io, "%", pos, " = ")
     end
 
