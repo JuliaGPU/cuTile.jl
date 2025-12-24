@@ -74,7 +74,7 @@ Four-phase approach:
 1. Build structure (pure SSAValues, no BlockArgs)
 2. Create BlockArgs and substitute SSA→BlockArg for loop-carried values
 3. Upgrade loop patterns (:for/:while) if enabled
-4. Finalize IR (convert OrderedDict→Vector, PartialControlFlowOp→ControlFlowOp)
+4. Finalize IR (convert PartialControlFlowOp→ControlFlowOp)
 
 SSA indices use original Julia SSA indices throughout (like MLIR), allowing
 direct references to outer scope values without captures.
@@ -112,7 +112,7 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
         apply_loop_patterns!(partial_entry, ctx)
     end
 
-    # Phase 4: Finalize IR (convert OrderedDict→Vector)
+    # Phase 4: Finalize IR (convert PartialControlFlowOp→ControlFlowOp)
     sci.entry = finalize_ir(partial_entry, ctx)
 
     return sci

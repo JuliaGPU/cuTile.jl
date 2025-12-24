@@ -667,7 +667,7 @@ each_block_in_op(f, op::WhileOp) = (each_block(f, op.before); each_block(f, op.a
 each_block_in_op(f, op::LoopOp) = each_block(f, op.body)
 
 #=============================================================================
- IR Finalization (PartialControlFlowOp → ControlFlowOp, OrderedDict → Vector)
+ IR Finalization (PartialControlFlowOp → ControlFlowOp)
 =============================================================================#
 
 """
@@ -861,7 +861,7 @@ function _scan_terminator_uses!(used::BitSet, ::Nothing)
 end
 
 # Compute which SSA values are used (for type coloring)
-# Version for Block during construction (OrderedDict body)
+# Version for Block during construction (uses PartialControlFlowOp)
 function compute_used_ssas_preflatten(block::Block)
     used = BitSet()
     _scan_uses_preflatten!(used, block)
@@ -1144,7 +1144,7 @@ function print_results(p::IRPrinter, results::Vector{SSAValue})
     end
 end
 
-# Print a statement (pre-flattening mode, when body is OrderedDict)
+# Print a statement (pre-finalization mode, when using PartialControlFlowOp)
 function print_stmt_preflatten(p::IRPrinter, idx::Int, expr, typ; prefix::String="│  ")
     print_indent(p)
     print_colored(p, prefix, :light_black)
