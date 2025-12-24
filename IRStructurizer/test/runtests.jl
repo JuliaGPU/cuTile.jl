@@ -6,17 +6,6 @@ using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       validate_scf, items, statements
 using Core: SSAValue
 
-# Helper to check if block contains a control flow op with given type
-is_if(item) = item isa IfOp
-is_for(item) = item isa ForOp
-is_while(item) = item isa WhileOp
-is_loop(item) = item isa LoopOp
-is_control_flow(item) = item isa ControlFlowOp
-
-# Helper to check if item is an expression (not a control flow op)
-is_expr(item) = !is_control_flow(item)
-
-
 @testset "IRStructurizer" verbose=true begin
 
 #=============================================================================
@@ -31,14 +20,14 @@ is_expr(item) = !is_control_flow(item)
 
     # Create flat, then structurize
     sci = StructuredCodeInfo(ci)
-    @test !any(is_if, items(sci.entry.body))
+    @test !any(x -> x isa IfOp, items(sci.entry.body))
 
     structurize!(sci)
-    @test any(is_if, items(sci.entry.body))
+    @test any(x -> x isa IfOp, items(sci.entry.body))
 
     # code_structured does both steps
     sci2 = code_structured(g, Tuple{Int})
-    @test any(is_if, items(sci2.entry.body))
+    @test any(x -> x isa IfOp, items(sci2.entry.body))
 end
 
 @testset "validation: UnstructuredControlFlowError" begin
@@ -76,15 +65,15 @@ end
 
     # With patterning (default): :for
     sci_with = code_structured(count_loop, Tuple{Int}; loop_patterning=true)
-    loop_op_with = filter(is_control_flow, collect(items(sci_with.entry.body)))
+    loop_op_with = filter(x -> x isa ControlFlowOp, collect(items(sci_with.entry.body)))
     @test !isempty(loop_op_with)
-    @test is_for(loop_op_with[1])
+    @test loop_op_with[1] isa ForOp
 
     # Without patterning: :loop
     sci_without = code_structured(count_loop, Tuple{Int}; loop_patterning=false)
-    loop_op_without = filter(is_control_flow, collect(items(sci_without.entry.body)))
+    loop_op_without = filter(x -> x isa ControlFlowOp, collect(items(sci_without.entry.body)))
     @test !isempty(loop_op_without)
-    @test is_loop(loop_op_without[1])
+    @test loop_op_without[1] isa LoopOp
 end
 
 @testset "display output format" begin
@@ -133,7 +122,7 @@ end  # interface
 
     # Entry block: one expression (the add), no control flow ops
     @test length(sci.entry.body) == 1
-    @test is_expr(sci.entry.body[1].stmt)
+    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
     @test sci.entry.terminator isa Core.ReturnNode
 
     # Multiple operations: (x + y) * (x - y)
@@ -144,7 +133,7 @@ end  # interface
 
     # Entry block: 3 expressions (add, sub, mul), no control flow ops
     @test length(sci.entry.body) == 3
-    @test all(is_expr, items(sci.entry.body))
+    @test all(x -> !(x isa ControlFlowOp), items(sci.entry.body))
     @test sci.entry.terminator isa Core.ReturnNode
 end
 
@@ -157,8 +146,8 @@ end
 
     # Entry: comparison expr, then IfOp
     @test length(sci.entry.body) == 2
-    @test is_expr(sci.entry.body[1].stmt)
-    @test sci.entry.body[2].stmt |> is_if
+    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
+    @test sci.entry.body[2].stmt isa IfOp
 
     if_op = sci.entry.body[2].stmt
     then_blk = if_op.then_region
@@ -166,12 +155,12 @@ end
 
     # Then branch: one expr (addition), then return
     @test length(then_blk.body) == 1
-    @test is_expr(then_blk.body[1].stmt)
+    @test !(then_blk.body[1].stmt isa ControlFlowOp)
     @test then_blk.terminator isa Core.ReturnNode
 
     # Else branch: one expr (subtraction), then return
     @test length(else_blk.body) == 1
-    @test is_expr(else_blk.body[1].stmt)
+    @test !(else_blk.body[1].stmt isa ControlFlowOp)
     @test else_blk.terminator isa Core.ReturnNode
 end
 
@@ -184,7 +173,7 @@ end
 
     # Entry: exactly one IfOp, no expressions
     @test length(sci.entry.body) == 1
-    @test sci.entry.body[1].stmt |> is_if
+    @test sci.entry.body[1].stmt isa IfOp
 
     if_op = sci.entry.body[1].stmt
     then_blk = if_op.then_region
@@ -214,8 +203,8 @@ end
 
     # Entry: one expr (comparison), then IfOp
     @test length(sci.entry.body) == 2
-    @test is_expr(sci.entry.body[1].stmt)
-    @test sci.entry.body[2].stmt |> is_if
+    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
+    @test sci.entry.body[2].stmt isa IfOp
 
     if_op = sci.entry.body[2].stmt
     then_blk = if_op.then_region
@@ -244,8 +233,8 @@ end
 
     # Entry: [comparison_expr, IfOp]
     @test length(sci.entry.body) == 2
-    @test is_expr(sci.entry.body[1].stmt)
-    @test sci.entry.body[2].stmt |> is_if
+    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
+    @test sci.entry.body[2].stmt isa IfOp
 
     if_op = sci.entry.body[2].stmt
     then_blk = if_op.then_region
@@ -274,7 +263,7 @@ end  # acyclic regions
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(is_loop, collect(items(sci.entry.body)))
+    loop_ops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
     @test length(loop_ops) == 1
 end
 
@@ -291,7 +280,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(is_loop, collect(items(sci.entry.body)))
+    loop_ops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
     @test length(loop_ops) == 1
 
     loop_op = loop_ops[1]
@@ -313,7 +302,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have a LoopOp
-    loop_ops = filter(is_loop, collect(items(sci.entry.body)))
+    loop_ops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
     @test length(loop_ops) == 1
 end
 
@@ -337,7 +326,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Entry should have outer LoopOp
-    outer_loops = filter(is_loop, collect(items(sci.entry.body)))
+    outer_loops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
     @test length(outer_loops) == 1
 
     # Find inner loop in outer loop's body
@@ -345,7 +334,7 @@ end
     function find_nested_loops(block::Block)
         loops = ControlFlowOp[]
         for stmt in statements(block.body)
-            if stmt |> is_loop
+            if stmt isa LoopOp
                 push!(loops, stmt)
             elseif stmt isa IfOp
                 append!(loops, find_nested_loops(stmt.then_region))
@@ -386,7 +375,7 @@ end  # CFG analysis
     @test sci isa StructuredCodeInfo
 
     # Should produce ForOp
-    for_ops = filter(is_for, collect(items(sci.entry.body)))
+    for_ops = filter(x -> x isa ForOp, collect(items(sci.entry.body)))
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
@@ -417,7 +406,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Should produce ForOp
-    for_ops = filter(is_for, collect(items(sci.entry.body)))
+    for_ops = filter(x -> x isa ForOp, collect(items(sci.entry.body)))
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
@@ -452,16 +441,16 @@ end
 
     # Entry: [init_expr, outer_ForOp]
     @test length(sci.entry.body) == 2
-    @test is_expr(sci.entry.body[1].stmt)
-    @test sci.entry.body[2].stmt |> is_for
+    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
+    @test sci.entry.body[2].stmt isa ForOp
 
     outer_loop = sci.entry.body[2].stmt
     outer_body = outer_loop.body
 
     # Outer body: [init_expr, inner_ForOp]
     @test length(outer_body.body) == 2
-    @test is_expr(outer_body.body[1].stmt)
-    @test outer_body.body[2].stmt |> is_for
+    @test !(outer_body.body[1].stmt isa ControlFlowOp)
+    @test outer_body.body[2].stmt isa ForOp
 
     inner_loop = outer_body.body[2].stmt
     inner_body = inner_loop.body
@@ -488,7 +477,7 @@ end  # ForOp detection
 
     # Entry: [WhileOp] - no setup statements
     @test length(sci.entry.body) == 1
-    @test sci.entry.body[1].stmt |> is_while
+    @test sci.entry.body[1].stmt isa WhileOp
 
     while_op = sci.entry.body[1].stmt
     before_blk = while_op.before
@@ -506,7 +495,7 @@ end  # ForOp detection
 
     # Before region has the condition computation expressions
     @test !isempty(before_blk.body)
-    @test all(is_expr, items(before_blk.body))
+    @test all(x -> !(x isa ControlFlowOp), items(before_blk.body))
 
     # After region terminates with YieldOp
     @test after_blk.terminator isa YieldOp
@@ -528,7 +517,7 @@ end
     @test !isempty(sci.entry.body)
     loop_op = sci.entry.body[length(sci.entry.body)].stmt
     # Could be :for, :while, or :loop depending on pattern detection
-    @test is_for(loop_op) || is_while(loop_op) || is_loop(loop_op)
+    @test loop_op isa ForOp || loop_op isa WhileOp || loop_op isa LoopOp
 end
 
 end  # WhileOp detection
@@ -551,7 +540,7 @@ end  # WhileOp detection
     @test sci isa StructuredCodeInfo
 
     # With loop_patterning=false, should be LoopOp
-    loop_ops = filter(is_loop, collect(items(sci.entry.body)))
+    loop_ops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
     @test length(loop_ops) == 1
 end
 
@@ -583,14 +572,14 @@ end  # loop patterning
     @test sci isa StructuredCodeInfo
 
     # Should have a loop op in entry
-    loop_ops = filter(item -> is_for(item) || is_while(item) || is_loop(item), collect(items(sci.entry.body)))
+    loop_ops = filter(x -> x isa ForOp || x isa WhileOp || x isa LoopOp, collect(items(sci.entry.body)))
     @test !isempty(loop_ops)
 
     # The loop body should contain an IfOp
     loop_op = loop_ops[1]
     function has_if_op(block::Block)
         for stmt in statements(block.body)
-            if stmt |> is_if
+            if stmt isa IfOp
                 return true
             end
         end
@@ -625,7 +614,7 @@ end
     @test sci isa StructuredCodeInfo
 
     # Should have IfOp in entry
-    if_ops = filter(is_if, collect(items(sci.entry.body)))
+    if_ops = filter(x -> x isa IfOp, collect(items(sci.entry.body)))
     @test !isempty(if_ops)
 
     if_op = if_ops[1]
@@ -634,7 +623,7 @@ end
     # Then branch should contain a loop
     function has_loop_op(block::Block)
         for stmt in statements(block.body)
-            if is_for(stmt) || is_while(stmt) || is_loop(stmt)
+            if stmt isa ForOp || stmt isa WhileOp || stmt isa LoopOp
                 return true
             end
         end
@@ -667,7 +656,7 @@ end  # nested control flow
     @test sci isa StructuredCodeInfo
 
     # Count expressions in entry block (final Block uses position indexing, not Statement.idx)
-    expr_count = count(is_expr, items(sci.entry.body))
+    expr_count = count(x -> !(x isa ControlFlowOp), items(sci.entry.body))
     # Just verify we have some expressions (the exact count may vary)
     @test expr_count >= 0
 
