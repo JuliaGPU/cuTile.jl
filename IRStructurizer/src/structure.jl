@@ -181,7 +181,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
                 gotoifnot_idx = si
             end
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push_stmt!(block, si, stmt, code.ssavaluetypes[si])
+                push!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -227,7 +227,7 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
         result_type = Nothing
     end
-    push_op!(block, result_idx, if_op, result_type)
+    push!(block, result_idx, if_op, result_type)
 end
 
 """
@@ -307,7 +307,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
                 gotoifnot_idx = si
             end
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push_stmt!(block, si, stmt, code.ssavaluetypes[si])
+                push!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -325,7 +325,7 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                   operands=(condition=cond_value,))
     result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
-    push_op!(block, result_idx, if_op)
+    push!(block, result_idx, if_op, Nothing)
 end
 
 """
@@ -352,7 +352,7 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
                 gotoifnot_idx = si
             end
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push_stmt!(block, si, stmt, code.ssavaluetypes[si])
+                push!(block, si, stmt, code.ssavaluetypes[si])
             end
         end
     end
@@ -368,14 +368,14 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
         else_blk = tree_to_block(else_tree, code, blocks, ctx)
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
-        push_op!(block, result_idx, if_op)
+        push!(block, result_idx, if_op, Nothing)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
         then_blk = tree_to_block(then_tree, code, blocks, ctx)
         else_blk = Block()
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
-        push_op!(block, result_idx, if_op)
+        push!(block, result_idx, if_op, Nothing)
     end
 end
 
@@ -391,12 +391,12 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::V
     results = derive_result_vars(loop_op)
     if !isempty(results)
         # Key by first result phi's SSA index
-        push_op!(block, results[1].id, loop_op)
+        push!(block, results[1].id, loop_op, Nothing)
     else
         # Loops with no results - use fallback
         header_idx = node_index(tree)
         header_block = blocks[header_idx]
-        push_op!(block, last(header_block.range), loop_op)
+        push!(block, last(header_block.range), loop_op, Nothing)
     end
 end
 
@@ -418,9 +418,9 @@ function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, bloc
     loop_op = PartialControlFlowOp(:loop, Dict{Symbol,Any}(:body => body_blk))
     # Self-loops typically don't have phi nodes - use block's last SSA index
     if 1 <= idx <= length(blocks)
-        push_op!(block, last(blocks[idx].range), loop_op)
+        push!(block, last(blocks[idx].range), loop_op, Nothing)
     else
-        push_op!(block, idx, loop_op)  # Fallback
+        push!(block, idx, loop_op, Nothing)  # Fallback
     end
 end
 
@@ -465,7 +465,7 @@ function collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo
         if stmt isa ReturnNode
             block.terminator = stmt
         elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
-            push_stmt!(block, si, stmt, types[si])
+            push!(block, si, stmt, types[si])
         end
     end
 end
@@ -504,8 +504,8 @@ function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{Bloc
 
     # Find the last statement SSA index in body (largest positive key)
     last_idx = nothing
-    for (idx, item) in block.body
-        if !(item isa PartialControlFlowOp)  # Statement
+    for (idx, entry) in block.body
+        if !(entry.stmt isa PartialControlFlowOp)  # Statement
             if last_idx === nothing || idx > last_idx
                 last_idx = idx
             end
@@ -601,7 +601,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     for si in header_block.range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push_stmt!(body, si, stmt, types[si])
+            push!(body, si, stmt, types[si])
         end
     end
 
@@ -628,7 +628,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         if_op = PartialControlFlowOp(:if, Dict{Symbol,Any}(:then => then_blk, :else => else_blk);
                                       operands=(condition=cond_value,))
         # Key by the GotoIfNot's SSA index
-        push_op!(body, condition_idx, if_op)
+        push!(body, condition_idx, if_op, Nothing)
     else
         # No condition - process children directly
         for child in children(tree)
@@ -653,12 +653,12 @@ Collect all SSA indices defined by statements in the block (recursively).
 Also includes results from control flow ops (phi nodes define SSAValues).
 """
 function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::StructurizationContext)
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            for rv in derive_result_vars(item)
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            for rv in derive_result_vars(entry.stmt)
                 push!(defined, rv.id)
             end
-            for (_, region) in item.regions
+            for (_, region) in entry.stmt.regions
                 collect_defined_ssas!(defined, region, ctx)
             end
         else  # Statement
@@ -688,19 +688,19 @@ function apply_block_args!(block::Block, ctx::StructurizationContext,
                            defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
     # Track what's defined at this level
     defined = copy(defined)
-    for (idx, item) in block.body
-        if !(item isa PartialControlFlowOp)  # Statement
+    for (idx, entry) in block.body
+        if !(entry.stmt isa PartialControlFlowOp)  # Statement
             push!(defined, idx)
         end
     end
 
     # Process each control flow op
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            if item.head == :loop
-                process_loop_block_args!(item, ctx, defined, parent_subs)
-            elseif item.head == :if
-                process_if_block_args!(item, ctx, defined, parent_subs)
+    for stmt in statements(block.body)
+        if stmt isa PartialControlFlowOp
+            if stmt.head == :loop
+                process_loop_block_args!(stmt, ctx, defined, parent_subs)
+            elseif stmt.head == :if
+                process_if_block_args!(stmt, ctx, defined, parent_subs)
             end
         end
     end

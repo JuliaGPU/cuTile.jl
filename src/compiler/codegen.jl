@@ -192,14 +192,13 @@ Values are stored in ctx.values by their original index.
 """
 function emit_block!(ctx::CodegenContext, block::Block; skip_terminator::Bool=false)
     # Emit body items (interleaved expressions and control flow ops)
-    for (i, (expr, result_type)) in enumerate(zip(block.body, block.types))
-        # Get original Julia SSA index for this item
-        ssa_idx = !isempty(block.original_indices) ? block.original_indices[i] : i
-        if expr isa ControlFlowOp
-            n_results = result_count(result_type)
-            emit_control_flow_op!(ctx, expr, result_type, n_results, ssa_idx)
+    # SSAVector iteration yields (ssa_idx, entry) where entry has .stmt and .typ
+    for (ssa_idx, entry) in block.body
+        if entry.stmt isa ControlFlowOp
+            n_results = result_count(entry.typ)
+            emit_control_flow_op!(ctx, entry.stmt, entry.typ, n_results, ssa_idx)
         else
-            emit_statement!(ctx, expr, ssa_idx, result_type)
+            emit_statement!(ctx, entry.stmt, ssa_idx, entry.typ)
         end
     end
 

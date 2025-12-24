@@ -71,33 +71,19 @@ end
 function validate_ssa_ordering(block::Block; defined::Set{Int}=Set{Int}())
     # BlockArgs are available from the start (loop-carried values)
 
-    # Handle both construction (OrderedDict) and finalized (Vector) forms
-    if block.body isa Vector
-        # Finalized: iterate with enumerate
-        for (pos, item) in enumerate(block.body)
-            if !(item isa ControlFlowOp)
-                check_ssa_refs_defined(item, defined, block.args, pos)
-                push!(defined, pos)
-            else
-                # Already finalized, skip deep validation
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            # ControlFlowOp - check its inputs and recurse into nested blocks
+            validate_control_flow_op_ordering(entry.stmt, defined, block.args)
+            # Add results to defined set
+            for rv in derive_result_vars(entry.stmt)
+                push!(defined, rv.id)
             end
-        end
-    else
-        # During construction: iterate OrderedDict
-        for (idx, item) in block.body
-            if item isa PartialControlFlowOp
-                # ControlFlowOp - check its inputs and recurse into nested blocks
-                validate_control_flow_op_ordering(item, defined, block.args)
-                # Add results to defined set
-                for rv in derive_result_vars(item)
-                    push!(defined, rv.id)
-                end
-            else  # Statement
-                # Check all SSAValue refs in the expression are in `defined`
-                check_ssa_refs_defined(item, defined, block.args, idx)
-                # Add this statement's SSA to defined set
-                push!(defined, idx)
-            end
+        else  # Statement
+            # Check all SSAValue refs in the expression are in `defined`
+            check_ssa_refs_defined(entry.stmt, defined, block.args, idx)
+            # Add this statement's SSA to defined set
+            push!(defined, idx)
         end
     end
 

@@ -13,44 +13,44 @@
 Find the first :if op in a block's body.
 """
 function find_ifop(block::Block)
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp && item.head == :if
-            return item
+    for stmt in statements(block.body)
+        if stmt isa PartialControlFlowOp && stmt.head == :if
+            return stmt
         end
     end
     return nothing
 end
 
 """
-    find_expr_by_ssa(block::Block, ssa::SSAValue) -> Union{Tuple{Int, Any, Any}, Nothing}
+    find_expr_by_ssa(block::Block, ssa::SSAValue) -> Union{Tuple{Int, SSAEntry}, Nothing}
 
 Find an expression in the block whose SSA index matches the SSAValue's id.
-Returns (idx, expr, type) tuple or nothing.
+Returns (idx, entry) tuple or nothing.
 """
 function find_expr_by_ssa(block::Block, ssa::SSAValue)
-    for (idx, item) in block.body
-        if !(item isa PartialControlFlowOp) && idx == ssa.id
-            return (idx, item, block.types[idx])
+    for (idx, entry) in block.body
+        if !(entry.stmt isa PartialControlFlowOp) && idx == ssa.id
+            return (idx, entry)
         end
     end
     return nothing
 end
 
 """
-    find_add_int_for_iv(block::Block, iv_arg::BlockArg) -> Union{Tuple{Int, Any, Any}, Nothing}
+    find_add_int_for_iv(block::Block, iv_arg::BlockArg) -> Union{Tuple{Int, SSAEntry}, Nothing}
 
 Find an expression containing `add_int(iv_arg, step)` in the block.
 Searches inside :if ops (since condition creates :if structure),
 but NOT into nested :loop ops (those have their own IVs).
-Returns (idx, expr, type) tuple or nothing.
+Returns (idx, entry) tuple or nothing.
 """
 function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            if item.head == :if
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            if entry.stmt.head == :if
                 # Search in :if blocks (condition structure)
-                then_blk = item.regions[:then]::Block
-                else_blk = item.regions[:else]::Block
+                then_blk = entry.stmt.regions[:then]::Block
+                else_blk = entry.stmt.regions[:else]::Block
                 result = find_add_int_for_iv(then_blk, iv_arg)
                 result !== nothing && return result
                 result = find_add_int_for_iv(else_blk, iv_arg)
@@ -58,12 +58,12 @@ function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
             end
             # Don't recurse into :loop - nested loops have their own IVs
         else  # Statement
-            expr = item
+            expr = entry.stmt
             if expr isa Expr && expr.head === :call && length(expr.args) >= 3
                 func = expr.args[1]
                 if func isa GlobalRef && func.name === :add_int
                     if expr.args[2] == iv_arg
-                        return (idx, item, block.types[idx])
+                        return (idx, entry)
                     end
                 end
             end
@@ -102,9 +102,9 @@ Check if a block defines an SSA value (i.e., contains an expression that produce
 Searches nested blocks recursively.
 """
 function defines(block::Block, ssa::SSAValue)
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            for (_, region) in item.regions
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            for (_, region) in entry.stmt.regions
                 defines(region, ssa) && return true
             end
         else  # Statement
@@ -144,47 +144,43 @@ function apply_loop_patterns!(block::Block, ctx::StructurizationContext)
     # Collect all re-keying needed (old_key => new_key)
     rekey_map = Dict{Int,Int}()
 
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            if item.head == :loop
-                new_key = try_upgrade_loop!(item, ctx, idx)
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            if entry.stmt.head == :loop
+                new_key = try_upgrade_loop!(entry.stmt, ctx, idx)
                 if new_key !== nothing
                     # Successfully upgraded - record re-keying if needed
                     if new_key != idx
                         rekey_map[idx] = new_key
                     end
                     # Recurse into the modified op's regions
-                    for (_, region) in item.regions
+                    for (_, region) in entry.stmt.regions
                         apply_loop_patterns!(region, ctx)
                     end
                 else
                     # Not upgraded, recurse into body
-                    apply_loop_patterns!(item.regions[:body], ctx)
+                    apply_loop_patterns!(entry.stmt.regions[:body], ctx)
                 end
-            elseif item.head == :if
-                apply_loop_patterns!(item.regions[:then], ctx)
-                apply_loop_patterns!(item.regions[:else], ctx)
-            elseif item.head == :while
-                apply_loop_patterns!(item.regions[:before], ctx)
-                apply_loop_patterns!(item.regions[:after], ctx)
-            elseif item.head == :for
-                apply_loop_patterns!(item.regions[:body], ctx)
+            elseif entry.stmt.head == :if
+                apply_loop_patterns!(entry.stmt.regions[:then], ctx)
+                apply_loop_patterns!(entry.stmt.regions[:else], ctx)
+            elseif entry.stmt.head == :while
+                apply_loop_patterns!(entry.stmt.regions[:before], ctx)
+                apply_loop_patterns!(entry.stmt.regions[:after], ctx)
+            elseif entry.stmt.head == :for
+                apply_loop_patterns!(entry.stmt.regions[:body], ctx)
             end
         end
     end
 
-    # Apply re-keying by rebuilding the OrderedDict to maintain position order
+    # Apply re-keying by rebuilding SSAVector
     if !isempty(rekey_map)
-        old_body = block.body
-        old_types = block.types
-        block.body = OrderedDict{Int,Any}()
-        block.types = OrderedDict{Int,Any}()
-
-        for (old_key, item) in old_body
+        new_body = SSAVector()
+        for (old_key, entry) in block.body
             new_key = get(rekey_map, old_key, old_key)
-            block.body[new_key] = item
-            block.types[new_key] = old_types[old_key]
+            push!(new_body, (new_key, entry.stmt, entry.typ))
         end
+        block.body = new_body
     end
 end
 
@@ -235,7 +231,8 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     cond_val isa SSAValue || return nothing
     cond_result = find_expr_by_ssa(body, cond_val)
     cond_result === nothing && return nothing
-    cond_idx, cond_expr, _ = cond_result
+    cond_idx, cond_entry = cond_result
+    cond_expr = cond_entry.stmt
 
     # Check it's a for-loop condition: slt_int(iv_arg, upper_bound)
     is_for_condition(cond_expr) || return nothing
@@ -266,7 +263,8 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     # Find the step: add_int(iv_arg, step)
     step_result = find_add_int_for_iv(body, iv_arg)
     step_result === nothing && return nothing
-    step_idx, step_expr, _ = step_result
+    step_idx, step_entry = step_result
+    step_expr = step_entry.stmt
     step_raw = step_expr.args[3]
     step = resolve_blockarg(step_raw)
 
@@ -297,25 +295,21 @@ function try_upgrade_to_for!(loop::PartialControlFlowOp, ctx::StructurizationCon
     new_body.args = [arg for arg in body.args if arg !== iv_arg]
 
     # Extract body items, filtering out iv-related ones
-    for (idx, item) in body.body
-        if item isa PartialControlFlowOp
-            if item.head == :if && item === condition_ifop
+    for (idx, entry) in body.body
+        if entry.stmt isa PartialControlFlowOp
+            if entry.stmt.head == :if && entry.stmt === condition_ifop
                 # Extract the continue path's body (skip condition check structure)
-                for (sub_idx, sub_item) in then_blk.body
-                    if sub_item isa PartialControlFlowOp
-                        push_op!(new_body, sub_idx, sub_item)
-                    else  # Statement
-                        sub_idx == step_idx && continue
-                        push_stmt!(new_body, sub_idx, sub_item, then_blk.types[sub_idx])
-                    end
+                for (sub_idx, sub_entry) in then_blk.body
+                    sub_idx == step_idx && continue
+                    push!(new_body, sub_idx, sub_entry.stmt, sub_entry.typ)
                 end
             else
-                push_op!(new_body, idx, item)
+                push!(new_body, idx, entry.stmt, entry.typ)
             end
         else  # Statement
             idx == step_idx && continue
             idx == cond_idx && continue
-            push_stmt!(new_body, idx, item, body.types[idx])
+            push!(new_body, idx, entry.stmt, entry.typ)
         end
     end
 
@@ -367,16 +361,16 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
     before = Block()
     before.args = copy(body.args)
 
-    for (idx, item) in body.body
-        if item isa PartialControlFlowOp
-            if item === condition_ifop
+    for (idx, entry) in body.body
+        if entry.stmt isa PartialControlFlowOp
+            if entry.stmt === condition_ifop
                 # Stop before :if - the condition becomes ConditionOp
                 break
             else
-                push_op!(before, idx, item)
+                push!(before, idx, entry.stmt, entry.typ)
             end
         else  # Statement
-            push_stmt!(before, idx, item, body.types[idx])
+            push!(before, idx, entry.stmt, entry.typ)
         end
     end
 
@@ -393,12 +387,8 @@ function try_upgrade_to_while!(loop::PartialControlFlowOp, ctx::StructurizationC
         push!(after.args, BlockArg(i, arg.type))
     end
 
-    for (idx, item) in then_blk.body
-        if item isa PartialControlFlowOp
-            push_op!(after, idx, item)
-        else  # Statement
-            push_stmt!(after, idx, item, then_blk.types[idx])
-        end
+    for (idx, entry) in then_blk.body
+        push!(after, idx, entry.stmt, entry.typ)
     end
 
     # Get yield values from the continue terminator (iter_args / carries)

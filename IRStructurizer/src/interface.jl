@@ -2,7 +2,7 @@
 
 export code_structured, structurize!, StructuredCodeInfo
 export ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp
-export Block, BlockArg
+export Block, BlockArg, SSAVector, SSAEntry, indices, statements, types, items
 export YieldOp, ContinueOp, BreakOp, ConditionOp
 export StructurizationContext
 

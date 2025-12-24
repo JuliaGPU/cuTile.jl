@@ -26,6 +26,77 @@ end
 const IRValue = Any
 
 #=============================================================================
+ SSAVector - Vector of (ssa_idx, stmt, type) triples
+=============================================================================#
+
+"""
+    SSAEntry
+
+Named tuple for SSAVector entries: `(; stmt, typ)`.
+"""
+const SSAEntry = @NamedTuple{stmt::Any, typ::Any}
+
+"""
+    SSAVector
+
+A vector of `(ssa_idx, statement, type)` triples, ordered by insertion.
+Used to store block body contents with their original Julia SSA indices.
+
+Iteration yields `(idx, entry)` pairs where `entry` is a `SSAEntry` named tuple.
+Indexing by position returns `SSAEntry`. Use `idx in v` to test presence by SSA index.
+"""
+struct SSAVector <: AbstractVector{Tuple{Int, SSAEntry}}
+    data::Vector{Tuple{Int, Any, Any}}
+end
+
+SSAVector() = SSAVector(Tuple{Int,Any,Any}[])
+
+# Iteration yields (idx, (; stmt, typ)) pairs
+function Base.iterate(v::SSAVector)
+    isempty(v.data) && return nothing
+    idx, stmt, typ = v.data[1]
+    return (idx, SSAEntry((stmt, typ))), 2
+end
+
+function Base.iterate(v::SSAVector, state::Int)
+    state > length(v.data) && return nothing
+    idx, stmt, typ = v.data[state]
+    return (idx, SSAEntry((stmt, typ))), state + 1
+end
+
+Base.length(v::SSAVector) = length(v.data)
+Base.size(v::SSAVector) = (length(v.data),)
+
+# Positional indexing returns SSAEntry
+Base.getindex(v::SSAVector, i::Int) = let (_, stmt, typ) = v.data[i]; SSAEntry((stmt, typ)) end
+
+# Push raw tuple
+Base.push!(v::SSAVector, item::Tuple{Int,Any,Any}) = push!(v.data, item)
+
+# Test if SSA index is present
+Base.in(ssa_idx::Int, v::SSAVector) = any(idx == ssa_idx for (idx, _, _) in v.data)
+
+# Lazy iterators
+indices(v::SSAVector) = (idx for (idx, _, _) in v.data)
+statements(v::SSAVector) = (stmt for (_, stmt, _) in v.data)
+types(v::SSAVector) = (typ for (_, _, typ) in v.data)
+
+# Alias for backwards compatibility
+items(v::SSAVector) = statements(v)
+
+"""
+    find_by_ssa(v::SSAVector, ssa_idx::Int) -> Union{SSAEntry, Nothing}
+
+Find a statement and its type by SSA index. Returns SSAEntry or nothing.
+"""
+function find_by_ssa(v::SSAVector, ssa_idx::Int)
+    for (idx, stmt, typ) in v.data
+        idx == ssa_idx && return SSAEntry((stmt, typ))
+    end
+    nothing
+end
+
+#=============================================================================
  Terminator Operations
 =============================================================================#
 
@@ -317,70 +388,40 @@ const BlockItem = Union{Any, ControlFlowOp}
 """
     Block
 
-Unified block type used throughout IR construction and after finalization.
-
-During construction (Phases 1-4):
-- body: OrderedDict{Int, Any} - keys are SSA indices from original CodeInfo
-- types: OrderedDict{Int, Any} - parallel to body
-
-After finalization (Phase 5):
-- body: Vector{Any} - position IS the local SSA index, body[i] defines SSAValue(i)
-- types: Vector{Any} - parallel to body
-- original_indices: Vector{Int} - maps local index → original Julia SSA index (for cross-block refs)
+A block of statements with block arguments and a terminator.
+Body is stored as SSAVector of (ssa_idx, stmt, type) triples.
 """
 mutable struct Block
     args::Vector{BlockArg}
-    body::Union{OrderedDict{Int, Any}, Vector{Any}}
-    types::Union{OrderedDict{Int, Any}, Vector{Any}}
+    body::SSAVector
     terminator::Terminator
-    original_indices::Vector{Int}  # Only populated after finalization
 end
 
-Block() = Block(BlockArg[], OrderedDict{Int, Any}(), OrderedDict{Int, Any}(), nothing, Int[])
-Block(args, body::Vector, types::Vector, terminator) = Block(args, body, types, terminator, Int[])
-Block(args, body::Vector, types::Vector, terminator, original_indices::Vector{Int}) =
-    Block(args, body, types, terminator, original_indices)
+Block() = Block(BlockArg[], SSAVector(), nothing)
 
 """
-    push_stmt!(block::Block, idx::Int, expr, typ)
+    push!(block::Block, idx::Int, stmt, typ)
 
-Push a statement to a Block during construction. Key = original SSA index.
+Push a statement or control flow op to a block with its SSA index and type.
 """
-function push_stmt!(block::Block, idx::Int, expr, typ)
-    block.body[idx] = expr
-    block.types[idx] = typ
-end
-
-"""
-    push_op!(block::Block, result_idx::Int, op, typ=Nothing)
-
-Push a control flow op to a Block during construction. The op is keyed by its result SSA index.
-"""
-function push_op!(block::Block, result_idx::Int, op, typ=Nothing)
-    block.body[result_idx] = op
-    block.types[result_idx] = typ
-end
+Base.push!(block::Block, idx::Int, stmt, typ) = push!(block.body, (idx, stmt, typ))
 
 function Base.show(io::IO, block::Block)
     print(io, "Block(")
     if !isempty(block.args)
         print(io, "args=", length(block.args), ", ")
     end
-    if block.body isa OrderedDict
-        n_ops = count(item -> item isa PartialControlFlowOp, values(block.body))
-        n_exprs = length(block.body) - n_ops
-    else
-        n_ops = count(x -> x isa ControlFlowOp, block.body)
-        n_exprs = length(block.body) - n_ops
-    end
+    n_ops = count(((_, item, _),) -> item isa PartialControlFlowOp || item isa ControlFlowOp, block.body)
+    n_exprs = length(block.body) - n_ops
     print(io, n_exprs + n_ops, " items")
     print(io, ")")
 end
 
-# Iteration protocol for Block
-Base.iterate(block::Block, state=1) = state > length(block.body) ? nothing : (block.body[state], state + 1)
+# Iteration protocol for Block - yields (idx, stmt, typ) triples
+Base.iterate(block::Block) = iterate(block.body)
+Base.iterate(block::Block, state) = iterate(block.body, state)
 Base.length(block::Block) = length(block.body)
-Base.eltype(::Type{Block}) = Any
+Base.eltype(::Type{Block}) = Tuple{Int,Any,Any}
 
 #=============================================================================
  derive_result_vars - extract result info from terminators
@@ -416,13 +457,11 @@ function find_break_values(block::Block)
         return block.terminator.values
     end
     # Search in nested :if ops (common loop structure)
-    if block.body isa OrderedDict
-        for (_, item) in block.body
-            if item isa PartialControlFlowOp && item.head == :if
-                else_blk = item.regions[:else]::Block
-                if else_blk.terminator isa BreakOp
-                    return else_blk.terminator.values
-                end
+    for stmt in statements(block.body)
+        if stmt isa PartialControlFlowOp && stmt.head == :if
+            else_blk = stmt.regions[:else]::Block
+            if else_blk.terminator isa BreakOp
+                return else_blk.terminator.values
             end
         end
     end
@@ -472,7 +511,7 @@ function StructuredCodeInfo(code::CodeInfo)
             entry.terminator = stmt
         else
             # Include ALL statements (no substitutions at entry level)
-            push_stmt!(entry, i, stmt, types[i])
+            push!(entry, i, stmt, types[i])
         end
     end
 
@@ -500,28 +539,30 @@ Does NOT recurse into :loop ops - each handles its own substitution via apply_bl
 function substitute_block_shallow!(block::Block, subs::Substitutions)
     isempty(subs) && return  # No substitutions to apply
 
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            if item.head == :loop
+    # Rebuild body with substitutions applied
+    new_body = SSAVector()
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            if entry.stmt.head == :loop
                 # Only substitute iter_args (which are in parent scope)
                 # The body is handled by recursion in apply_block_args!
-                for (j, v) in enumerate(item.iter_args)
-                    item.iter_args[j] = substitute_ssa(v, subs)
+                for (j, v) in enumerate(entry.stmt.iter_args)
+                    entry.stmt.iter_args[j] = substitute_ssa(v, subs)
                 end
-            elseif item.head == :if
+            elseif entry.stmt.head == :if
                 # IfOps are part of the same scope - recurse into them
-                then_blk = item.regions[:then]::Block
-                else_blk = item.regions[:else]::Block
+                then_blk = entry.stmt.regions[:then]::Block
+                else_blk = entry.stmt.regions[:else]::Block
                 substitute_block_shallow!(then_blk, subs)
                 substitute_block_shallow!(else_blk, subs)
             end
+            push!(new_body, (idx, entry.stmt, entry.typ))
         else  # Statement
-            new_expr = substitute_ssa(item, subs)
-            if new_expr !== item
-                block.body[idx] = new_expr
-            end
+            new_expr = substitute_ssa(entry.stmt, subs)
+            push!(new_body, (idx, new_expr, entry.typ))
         end
     end
+    block.body = new_body
 
     # Substitute terminator
     if block.terminator !== nothing
@@ -578,31 +619,19 @@ end
     each_stmt(f, block::Block)
 
 Recursively iterate over all statements in a Block.
-During construction (OrderedDict): calls f with (idx=original_ssa_idx, expr=expr, type=type).
-After finalization (Vector): calls f with (idx=position, expr=expr, type=type).
+Calls f with (idx=original_ssa_idx, expr=expr, type=type).
 """
 function each_stmt(f, block::Block)
-    if block.body isa OrderedDict
-        # During construction: iterate OrderedDict (keyed by original SSA index)
-        for (idx, expr) in block.body
-            typ = block.types[idx]
-            if expr isa PartialControlFlowOp
-                # Recurse into control flow ops
-                for (_, region) in expr.regions
-                    each_stmt(f, region)
-                end
-            else  # Statement
-                f((idx=idx, expr=expr, type=typ))
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            # Recurse into control flow ops
+            for (_, region) in entry.stmt.regions
+                each_stmt(f, region)
             end
-        end
-    else
-        # After finalization: iterate Vector with enumerate
-        for (idx, (expr, typ)) in enumerate(zip(block.body, block.types))
-            if !(expr isa ControlFlowOp)
-                f((idx=idx, expr=expr, type=typ))
-            elseif expr isa ControlFlowOp
-                each_stmt_in_op(f, expr)
-            end
+        elseif entry.stmt isa ControlFlowOp
+            each_stmt_in_op(f, entry.stmt)
+        else  # Statement
+            f((idx=idx, expr=entry.stmt, type=entry.typ))
         end
     end
 end
@@ -620,19 +649,13 @@ Recursively iterate over all blocks in a Block.
 """
 function each_block(f, block::Block)
     f(block)
-    if block.body isa OrderedDict
-        for (_, expr) in block.body
-            if expr isa PartialControlFlowOp
-                for (_, region) in expr.regions
-                    each_block(f, region)
-                end
+    for stmt in statements(block.body)
+        if stmt isa PartialControlFlowOp
+            for (_, region) in stmt.regions
+                each_block(f, region)
             end
-        end
-    else
-        for expr in block.body
-            if expr isa ControlFlowOp
-                each_block_in_op(f, expr)
-            end
+        elseif stmt isa ControlFlowOp
+            each_block_in_op(f, stmt)
         end
     end
 end
@@ -652,42 +675,27 @@ each_block_in_op(f, op::LoopOp) = each_block(f, op.body)
 
 Finalize a Block by:
 1. Converting PartialControlFlowOp to ControlFlowOp
-2. Resolving control flow op types to Julia types via context
-3. Converting body from OrderedDict to Vector
-4. Tracking original_indices for cross-block SSA references
-5. Recursively processing all nested regions
+2. Recursively processing all nested regions
 
-SSA indices use original Julia SSA indices throughout.
+SSA indices use original Julia SSA indices throughout (stored in tuples).
 """
 function finalize_ir(block::Block, ctx::StructurizationContext)::Block
     finalize_block(block, ctx)
 end
 
 function finalize_block(block::Block, ctx::StructurizationContext)::Block
-    body = Any[]
-    types = Any[]
-    original_indices = Int[]
+    new_body = SSAVector()
 
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            push!(body, finalize_control_flow_op(item, ctx))
-            # Determine Julia type for the op's result
-            # For :if ops, use the type stored during construction (from merge phis)
-            # For other ops, derive from block args
-            if item.head == :if
-                push!(types, block.types[idx])
-            else
-                push!(types, derive_op_result_type(item, ctx))
-            end
-            push!(original_indices, idx)  # Track original Julia SSA index
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            finalized_op = finalize_control_flow_op(entry.stmt, ctx)
+            push!(new_body, (idx, finalized_op, entry.typ))
         else  # Statement
-            push!(body, item)
-            push!(types, block.types[idx])
-            push!(original_indices, idx)  # Track original Julia SSA index
+            push!(new_body, (idx, entry.stmt, entry.typ))
         end
     end
 
-    return Block(copy(block.args), body, types, block.terminator, original_indices)
+    return Block(copy(block.args), new_body, block.terminator)
 end
 
 """
@@ -861,11 +869,11 @@ function compute_used_ssas_preflatten(block::Block)
 end
 
 function _scan_uses_preflatten!(used::BitSet, block::Block)
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            _scan_control_flow_uses!(used, item)
+    for stmt in statements(block.body)
+        if stmt isa PartialControlFlowOp
+            _scan_control_flow_uses!(used, stmt)
         else  # Statement
-            _scan_expr_uses!(used, item)
+            _scan_expr_uses!(used, stmt)
         end
     end
     if block.terminator !== nothing
@@ -904,11 +912,11 @@ function compute_used_ssas(block::Block)
 end
 
 function _scan_uses_postflatten!(used::BitSet, block::Block)
-    for (expr, _) in zip(block.body, block.types)
-        if expr isa ControlFlowOp
-            _scan_control_flow_uses!(used, expr)
+    for stmt in statements(block.body)
+        if stmt isa ControlFlowOp
+            _scan_control_flow_uses!(used, stmt)
         else
-            _scan_expr_uses!(used, expr)
+            _scan_expr_uses!(used, stmt)
         end
     end
     if block.terminator !== nothing
@@ -1365,14 +1373,14 @@ function print_terminator(p::IRPrinter, ::Nothing; prefix::String="└──")
     # No terminator
 end
 
-# Print a Block's contents (pre-flattening mode, when body is OrderedDict)
+# Print a Block's contents (SSAVector mode with (idx, stmt, typ) tuples)
 function print_block_body_preflatten(p::IRPrinter, block::Block)
     items = []
-    for (idx, item) in block.body
-        if item isa PartialControlFlowOp
-            push!(items, (:nested, item))
+    for (idx, entry) in block.body
+        if entry.stmt isa PartialControlFlowOp
+            push!(items, (:nested, entry.stmt))
         else  # Statement
-            push!(items, (:stmt, idx, item, block.types[idx]))
+            push!(items, (:stmt, idx, entry.stmt, entry.typ))
         end
     end
     if block.terminator !== nothing
@@ -1556,11 +1564,11 @@ end
 # If is_last_region=true, modify the last line to show outer block closing
 function print_block_body(p::IRPrinter, block::Block; inside_region::Bool=false, is_last_region::Bool=false, cascade_depth::Int=0)
     items = []
-    for (i, (expr, typ)) in enumerate(zip(block.body, block.types))
-        if expr isa ControlFlowOp
-            push!(items, (:nested, i, expr, typ))
+    for (i, (idx, entry)) in enumerate(block.body)
+        if entry.stmt isa ControlFlowOp
+            push!(items, (:nested, idx, entry.stmt, entry.typ))
         else
-            push!(items, (:expr, i, expr, typ))
+            push!(items, (:expr, idx, entry.stmt, entry.typ))
         end
     end
     if block.terminator !== nothing
