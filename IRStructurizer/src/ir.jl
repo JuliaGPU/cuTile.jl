@@ -195,123 +195,19 @@ substitute_ssa(value) = value
 
 
 #=============================================================================
- Structured Control Flow Operations
+ Abstract Control Flow Type
 =============================================================================#
-
-# Forward declarations needed for mutual recursion
-# (The actual types are defined below)
-
-#=============================================================================
- Structurization Context
-=============================================================================#
-
-"""
-    StructurizationContext
-
-Context for IR construction (Phases 1-5). Holds metadata that shouldn't be part
-of the IR node types themselves:
-- ssavaluetypes: Julia types for each SSA value (from CodeInfo)
-"""
-struct StructurizationContext
-    ssavaluetypes::Any  # Vector of types (from CodeInfo.ssavaluetypes)
-end
-
-#=============================================================================
- Control Flow Types
-=============================================================================#
-
-"""
-    IfOp
-
-Structured if-then-else operation.
-Regions are Block (forward reference, typed as Any).
-"""
-mutable struct IfOp
-    condition::IRValue
-    then_region::Any    # Block (forward reference)
-    else_region::Any    # Block
-end
-
-function Base.show(io::IO, ::IfOp)
-    print(io, "IfOp()")
-end
-
-"""
-    ForOp
-
-Counted for-loop with lower/upper/step bounds.
-iter_args = loop-carried values.
-"""
-mutable struct ForOp
-    lower::IRValue
-    upper::IRValue
-    step::IRValue
-    iv_arg::BlockArg
-    body::Any           # Block (forward reference)
-    iter_args::Vector{IRValue}  # Loop-carried initial values
-end
-
-function Base.show(io::IO, op::ForOp)
-    print(io, "ForOp(")
-    if !isempty(op.iter_args)
-        print(io, "iter_args=", length(op.iter_args))
-    end
-    print(io, ")")
-end
-
-"""
-    WhileOp
-
-MLIR-style while loop with before (condition) and after (body) regions.
-iter_args = loop-carried values.
-"""
-mutable struct WhileOp
-    before::Any     # Block (forward reference), ends with ConditionOp
-    after::Any      # Block
-    iter_args::Vector{IRValue}  # Loop-carried initial values
-end
-
-function Base.show(io::IO, op::WhileOp)
-    print(io, "WhileOp(")
-    if !isempty(op.iter_args)
-        print(io, "iter_args=", length(op.iter_args))
-    end
-    print(io, ")")
-end
-
-"""
-    LoopOp
-
-General loop with dynamic exit via BreakOp/ContinueOp.
-iter_args = loop-carried values.
-"""
-mutable struct LoopOp
-    body::Any       # Block (forward reference)
-    iter_args::Vector{IRValue}  # Loop-carried initial values
-end
-
-function Base.show(io::IO, op::LoopOp)
-    print(io, "LoopOp(")
-    if !isempty(op.iter_args)
-        print(io, "iter_args=", length(op.iter_args))
-    end
-    print(io, ")")
-end
 
 """
     ControlFlowOp
 
-Union of all control flow operation types.
+Abstract type for all structured control flow operations.
 """
-const ControlFlowOp = Union{IfOp, ForOp, WhileOp, LoopOp}
+abstract type ControlFlowOp end
 
-"""
-    BlockItem
-
-Union type for items in a block's body.
-Can be either an expression (Any) or a ControlFlowOp.
-"""
-const BlockItem = Union{Any, ControlFlowOp}
+#=============================================================================
+ Block (defined before control flow ops so they can reference it)
+=============================================================================#
 
 """
     Block
@@ -350,6 +246,102 @@ Base.iterate(block::Block) = iterate(block.body)
 Base.iterate(block::Block, state) = iterate(block.body, state)
 Base.length(block::Block) = length(block.body)
 Base.eltype(::Type{Block}) = Tuple{Int,Any,Any}
+
+#=============================================================================
+ Structurization Context
+=============================================================================#
+
+"""
+    StructurizationContext
+
+Context for IR construction (Phases 1-5). Holds metadata that shouldn't be part
+of the IR node types themselves:
+- ssavaluetypes: Julia types for each SSA value (from CodeInfo)
+"""
+struct StructurizationContext
+    ssavaluetypes::Any  # Vector of types (from CodeInfo.ssavaluetypes)
+end
+
+#=============================================================================
+ Control Flow Types
+=============================================================================#
+
+"""
+    IfOp
+
+Structured if-then-else operation.
+"""
+mutable struct IfOp <: ControlFlowOp
+    condition::IRValue
+    then_region::Block
+    else_region::Block
+end
+
+function Base.show(io::IO, ::IfOp)
+    print(io, "IfOp()")
+end
+
+"""
+    ForOp
+
+Counted for-loop with lower/upper/step bounds.
+iter_args = loop-carried values.
+"""
+mutable struct ForOp <: ControlFlowOp
+    lower::IRValue
+    upper::IRValue
+    step::IRValue
+    iv_arg::BlockArg
+    body::Block
+    iter_args::Vector{IRValue}
+end
+
+function Base.show(io::IO, op::ForOp)
+    print(io, "ForOp(")
+    if !isempty(op.iter_args)
+        print(io, "iter_args=", length(op.iter_args))
+    end
+    print(io, ")")
+end
+
+"""
+    WhileOp
+
+MLIR-style while loop with before (condition) and after (body) regions.
+iter_args = loop-carried values.
+"""
+mutable struct WhileOp <: ControlFlowOp
+    before::Block
+    after::Block
+    iter_args::Vector{IRValue}
+end
+
+function Base.show(io::IO, op::WhileOp)
+    print(io, "WhileOp(")
+    if !isempty(op.iter_args)
+        print(io, "iter_args=", length(op.iter_args))
+    end
+    print(io, ")")
+end
+
+"""
+    LoopOp
+
+General loop with dynamic exit via BreakOp/ContinueOp.
+iter_args = loop-carried values.
+"""
+mutable struct LoopOp <: ControlFlowOp
+    body::Block
+    iter_args::Vector{IRValue}
+end
+
+function Base.show(io::IO, op::LoopOp)
+    print(io, "LoopOp(")
+    if !isempty(op.iter_args)
+        print(io, "iter_args=", length(op.iter_args))
+    end
+    print(io, ")")
+end
 
 #=============================================================================
  derive_result_vars - extract result info from terminators
@@ -407,7 +399,7 @@ Represents a function's code with a structured view of control flow.
 The CodeInfo is kept for metadata (slotnames, argtypes, method info).
 
 After structurize!(), the entry Block contains the final structured IR with
-expressions and ControlFlowOps.
+expressions and control flow ops.
 
 Create with `StructuredCodeInfo(ci)` for a flat (unstructured) view,
 then call `structurize!(sci)` to convert control flow to structured ops.
