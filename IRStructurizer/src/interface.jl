@@ -66,14 +66,6 @@ Convert unstructured control flow in `sci` to structured control flow operations
 This transforms GotoNode and GotoIfNot statements into nested structured ops
 that can be traversed hierarchically.
 
-Three-phase approach:
-1. Build structure (pure SSAValues, no BlockArgs) - creates IfOp/LoopOp
-2. Create BlockArgs and substitute SSA→BlockArg for loop-carried values
-3. Upgrade loop patterns (ForOp/WhileOp) if enabled
-
-SSA indices use original Julia SSA indices throughout (like MLIR), allowing
-direct references to outer scope values without captures.
-
 When `loop_patterning=true` (default), loops are classified as ForOp (bounded counters)
 or WhileOp (condition-based). When `false`, all loops remain as LoopOp.
 
@@ -87,22 +79,15 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
 
     n == 0 && return sci
 
-    # Create context for tracking metadata during construction
     ctx = StructurizationContext(types)
 
     # Build block-level CFG
     blocks, cfg = build_block_cfg(code)
 
-    # Build control tree using SPIRV.jl-style graph contraction
     ctree = ControlTree(cfg)
-
-    # Phase 1: Build structure (pure SSAValues, no BlockArgs) - creates IfOp/LoopOp
     entry = control_tree_to_structured_ir(ctree, code, blocks, ctx)
-
-    # Phase 2: Create BlockArgs and substitute SSA→BlockArg for loop-carried values
     apply_block_args!(entry, ctx)
 
-    # Phase 3: Upgrade loop patterns (optional) - LoopOp → ForOp/WhileOp
     if loop_patterning
         apply_loop_patterns!(entry, ctx)
     end

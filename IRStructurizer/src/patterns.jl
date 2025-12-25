@@ -1,7 +1,4 @@
-# Phase 3: Pattern matching and loop upgrades
-#
-# This file contains functions for upgrading LoopOp to ForOp/WhileOp.
-# All pattern matching operates on the structured IR after substitutions.
+# Pattern matching and loop upgrades (LoopOp → ForOp/WhileOp)
 
 #=============================================================================
  Helper Functions (Pattern matching on structured IR)
@@ -47,13 +44,11 @@ Returns (idx, entry) tuple or nothing.
 function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
     for (idx, entry) in block.body
         if entry.stmt isa IfOp
-            # Search in IfOp blocks (condition structure)
             result = find_add_int_for_iv(entry.stmt.then_region, iv_arg)
             result !== nothing && return result
             result = find_add_int_for_iv(entry.stmt.else_region, iv_arg)
             result !== nothing && return result
-            # Don't recurse into LoopOp - nested loops have their own IVs
-        elseif !(entry.stmt isa ControlFlowOp)  # Statement
+        elseif !(entry.stmt isa ControlFlowOp)
             expr = entry.stmt
             if expr isa Expr && expr.head === :call && length(expr.args) >= 3
                 func = expr.args[1]
@@ -77,12 +72,10 @@ Check if a value is loop-invariant (not defined inside the loop body).
 - Constants and Arguments are always loop-invariant
 """
 function is_loop_invariant(val, block::Block, n_iter_args::Int)
-    # BlockArgs are all iter_args (carries) - loop-variant
     if val isa BlockArg
-        return false  # All BlockArgs are carries now
+        return false
     end
 
-    # SSAValues reference outer scope (loop-invariant) or local body defs (loop-variant)
     if val isa SSAValue
         return !defines(block, val)
     end
@@ -101,10 +94,8 @@ function defines(block::Block, ssa::SSAValue)
     for (idx, entry) in block.body
         if entry.stmt isa ControlFlowOp
             defines_in_op(entry.stmt, ssa) && return true
-        else  # Statement
-            if idx == ssa.id
-                return true
-            end
+        elseif idx == ssa.id
+            return true
         end
     end
     return false
@@ -217,7 +208,6 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
     body = loop.body::Block
     n_iter_args = length(loop.iter_args)
 
-    # Get original result SSA indices before modifying (needed for re-keying)
     original_result_indices = derive_result_vars(loop)
 
     # Find the IfOp in the loop body - this contains the condition check
@@ -302,7 +292,7 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
             end
         elseif entry.stmt isa ControlFlowOp
             push!(new_body, idx, entry.stmt, entry.typ)
-        else  # Statement
+        else
             idx == step_idx && continue
             idx == cond_idx && continue
             push!(new_body, idx, entry.stmt, entry.typ)
@@ -355,23 +345,19 @@ function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
 
     for (idx, entry) in body.body
         if entry.stmt isa IfOp && entry.stmt === condition_ifop
-            # Stop before IfOp - the condition becomes ConditionOp
             break
         elseif entry.stmt isa ControlFlowOp
             push!(before, idx, entry.stmt, entry.typ)
-        else  # Statement
+        else
             push!(before, idx, entry.stmt, entry.typ)
         end
     end
 
-    # ConditionOp args: iter_args (carries)
     condition_args = IRValue[before.args[i] for i in 1:n_iter_args]
 
     cond_val = condition_ifop.condition
     before.terminator = ConditionOp(cond_val, condition_args)
 
-    # Build "after" region: statements from the then_block + YieldOp
-    # After region has the same block args as before region
     after = Block()
     for (i, arg) in enumerate(before.args)
         push!(after.args, BlockArg(i, arg.type))
@@ -381,7 +367,6 @@ function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
         push!(after, idx, entry.stmt, entry.typ)
     end
 
-    # Get yield values from the continue terminator (iter_args / carries)
     yield_values = IRValue[]
     if then_blk.terminator isa ContinueOp
         for (j, v) in enumerate(then_blk.terminator.values)
@@ -393,6 +378,5 @@ function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
 
     after.terminator = YieldOp(yield_values)
 
-    # Create WhileOp
     return WhileOp(before, after, loop.iter_args)
 end

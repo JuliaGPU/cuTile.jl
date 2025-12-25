@@ -1,13 +1,9 @@
-# Phase 1: Control Tree to Structured IR
-#
-# Converts a ControlTree (from graph contraction) to structured IR with Block
-# and ControlFlowOp objects. All loops become LoopOp in this phase.
-# Pattern matching (ForOp/WhileOp) and substitutions happen in later phases.
+# Control Tree to Structured IR
 
 using AbstractTrees: PreOrderDFS
 
 #=============================================================================
- Phase 1 Helpers
+ Helpers
 =============================================================================#
 
 """
@@ -208,14 +204,11 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
         else_blk.terminator = YieldOp(else_values)
     end
 
-    # Create IfOp - no outer capture yet, Phase 2 will handle it
     if_op = IfOp(cond_value, then_blk, else_blk)
 
     # Key by first merge phi's SSA index if available, else by GotoIfNot
-    # Also get the result type(s) from the merge phis
     if !isempty(merge_phis)
         result_idx = merge_phis[1].ssa_idx
-        # Get types from all merge phis
         result_types = [ctx.ssavaluetypes[phi.ssa_idx] for phi in merge_phis]
         if length(result_types) == 1
             result_type = result_types[1]
@@ -251,8 +244,6 @@ function find_merge_phis(code::CodeInfo, blocks::Vector{BlockInfo},
     1 <= merge_block_idx <= length(blocks) || return merge_phis
     merge_block = blocks[merge_block_idx]
 
-    # Get statement ranges for then/else blocks to match against phi edges
-    # PhiNode edges are statement indices, not block indices
     then_range = blocks[then_block_idx].range
     else_range = blocks[else_block_idx].range
 
@@ -261,8 +252,6 @@ function find_merge_phis(code::CodeInfo, blocks::Vector{BlockInfo},
         stmt = code.code[si]
         stmt isa PhiNode || continue
 
-        # Find values for then and else edges
-        # Phi edges are statement indices - check if they fall within block ranges
         then_val = nothing
         else_val = nothing
         for (edge_idx, edge) in enumerate(stmt.edges)
@@ -320,7 +309,6 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
     # Empty else block
     else_blk = Block()
 
-    # Create IfOp - no outer capture yet, Phase 2 will handle it
     if_op = IfOp(cond_value, then_blk, else_blk)
     result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
     push!(block, result_idx, if_op, Nothing)
@@ -498,10 +486,9 @@ Set the block terminator based on statements.
 function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{BlockInfo})
     block.terminator !== nothing && return
 
-    # Find the last statement SSA index in body (largest positive key)
     last_idx = nothing
     for (idx, entry) in block.body
-        if !(entry.stmt isa ControlFlowOp)  # Statement
+        if !(entry.stmt isa ControlFlowOp)
             if last_idx === nothing || idx > last_idx
                 last_idx = idx
             end
@@ -536,10 +523,9 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
     header_block = blocks[header_idx]
     stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
 
-    # Find phi nodes in header - these become loop-carried values (iter_args)
-    iter_args = IRValue[]        # Entry values for each phi (becomes iter_args)
-    carried_values = IRValue[]   # Loop-back values for each phi (SSAValues)
-    result_ssa_indices = SSAValue[]  # SSA indices of phi nodes (for BreakOp)
+    iter_args = IRValue[]
+    carried_values = IRValue[]
+    result_ssa_indices = SSAValue[]
 
     for si in header_block.range
         stmt = stmts[si]
@@ -577,9 +563,7 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
         end
     end
 
-    # Build loop body block (no BlockArgs yet - Phase 2 will add them)
     body = Block()
-    # body.args stays empty - Phase 2 will populate it
 
     # Find the condition for loop exit and its SSA index
     condition = nothing
@@ -614,15 +598,12 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(then_blk, child, code, blocks, ctx)
             end
         end
-        # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
         then_blk.terminator = ContinueOp(copy(carried_values))
 
         else_blk = Block()
-        # BreakOp with SSAValues - kept as-is for derive_result_vars
         else_blk.terminator = BreakOp(IRValue[rv for rv in result_ssa_indices])
 
         if_op = IfOp(cond_value, then_blk, else_blk)
-        # Key by the GotoIfNot's SSA index
         push!(body, condition_idx, if_op, Nothing)
     else
         # No condition - process children directly
@@ -632,7 +613,6 @@ function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{
                 handle_block_region!(body, child, code, blocks, ctx)
             end
         end
-        # ContinueOp with raw carried_values (SSAValues) - Phase 2 will substitute
         body.terminator = ContinueOp(copy(carried_values))
     end
 
@@ -653,7 +633,6 @@ function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::Structuriza
             for rv in derive_result_vars(entry.stmt)
                 push!(defined, rv.id)
             end
-            # Recurse into regions based on op type
             if entry.stmt isa LoopOp
                 collect_defined_ssas!(defined, entry.stmt.body, ctx)
             elseif entry.stmt isa IfOp
@@ -665,7 +644,7 @@ function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::Structuriza
             elseif entry.stmt isa ForOp
                 collect_defined_ssas!(defined, entry.stmt.body, ctx)
             end
-        else  # Statement
+        else
             push!(defined, idx)
         end
     end
@@ -690,15 +669,13 @@ control flow ops can convert phi refs to the correct BlockArgs.
 """
 function apply_block_args!(block::Block, ctx::StructurizationContext,
                            defined::Set{Int}=Set{Int}(), parent_subs::Substitutions=Substitutions())
-    # Track what's defined at this level
     defined = copy(defined)
     for (idx, entry) in block.body
-        if !(entry.stmt isa ControlFlowOp)  # Statement
+        if !(entry.stmt isa ControlFlowOp)
             push!(defined, idx)
         end
     end
 
-    # Process each control flow op
     for stmt in statements(block.body)
         if stmt isa LoopOp
             process_loop_block_args!(stmt, ctx, defined, parent_subs)
@@ -712,13 +689,6 @@ end
     process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
 
 Create BlockArgs for a LoopOp and substitute SSAValue references.
-
-1. Create BlockArgs for phi nodes (iter_args / carries)
-2. Apply parent substitutions to iter_args
-3. Substitute phi refs → BlockArg in body
-4. Recurse into nested blocks
-
-Outer scope SSA values are referenced directly (like MLIR), no captures needed.
 """
 function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
                                   parent_defined::Set{Int}, parent_subs::Substitutions)
@@ -726,7 +696,6 @@ function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
     subs = Substitutions()
     result_vars = derive_result_vars(loop)
 
-    # 1. Create BlockArgs for phi nodes (these are the carries)
     for (i, result_var) in enumerate(result_vars)
         phi_type = ctx.ssavaluetypes[result_var.id]
         new_arg = BlockArg(i, phi_type)
@@ -734,17 +703,12 @@ function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
         subs[result_var.id] = new_arg
     end
 
-    # 2. Apply parent substitutions to iter_args
-    # This converts SSAValues to parent's BlockArgs for nested control flow
     for (j, v) in enumerate(loop.iter_args)
         loop.iter_args[j] = substitute_ssa(v, parent_subs)
     end
 
-    # 3. Substitute phi refs → BlockArg in body (shallow - don't recurse into nested ops)
     substitute_block_shallow!(body, subs)
 
-    # 4. Recurse into nested blocks, passing merged substitutions
-    # Merge parent subs with this loop's subs so nested ops can access both
     merged_subs = merge(parent_subs, subs)
     nested_defined = Set{Int}(rv.id for rv in result_vars)
     collect_defined_ssas!(nested_defined, body, ctx)
@@ -754,23 +718,18 @@ end
 """
     process_if_block_args!(if_op::IfOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
 
-Process an IfOp. For IfOp, no BlockArgs needed (no iteration).
-Just recurse into nested blocks with parent substitutions.
-
-Outer scope SSA values are referenced directly (like MLIR), no captures needed.
+Recurse into IfOp branches with parent substitutions.
 """
 function process_if_block_args!(if_op::IfOp, ctx::StructurizationContext,
                                 parent_defined::Set{Int}, parent_subs::Substitutions)
     then_blk = if_op.then_region::Block
     else_blk = if_op.else_region::Block
 
-    # Build combined defined set from parent + what's defined in each branch
     then_defined = copy(parent_defined)
     else_defined = copy(parent_defined)
     collect_defined_ssas!(then_defined, then_blk, ctx)
     collect_defined_ssas!(else_defined, else_blk, ctx)
 
-    # Recurse into nested blocks, passing parent substitutions
     apply_block_args!(then_blk, ctx, then_defined, parent_subs)
     apply_block_args!(else_blk, ctx, else_defined, parent_subs)
 end

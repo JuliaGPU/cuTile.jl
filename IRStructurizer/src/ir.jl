@@ -445,16 +445,7 @@ end
 """
     substitute_block_shallow!(block::Block, subs::Substitutions)
 
-Apply SSA substitutions within a block, recursing into :if ops (same scope) but NOT into :loop ops.
-Used by apply_block_args! to let each :loop op handle its own substitution separately.
-
-Substitutes:
-- Statement expressions
-- :loop iter_args and captures (outer scope references)
-- Block terminators
-- :if contents (since they're part of the same scope, not a new binding context)
-
-Does NOT recurse into :loop ops - each handles its own substitution via apply_block_args!.
+Apply SSA substitutions within a block. Recurses into IfOp (same scope) but not LoopOp.
 """
 function substitute_block_shallow!(block::Block, subs::Substitutions)
     isempty(subs) && return  # No substitutions to apply
@@ -463,18 +454,15 @@ function substitute_block_shallow!(block::Block, subs::Substitutions)
     new_body = SSAVector()
     for (idx, entry) in block.body
         if entry.stmt isa LoopOp
-            # Only substitute iter_args (which are in parent scope)
-            # The body is handled by recursion in apply_block_args!
             for (j, v) in enumerate(entry.stmt.iter_args)
                 entry.stmt.iter_args[j] = substitute_ssa(v, subs)
             end
             push!(new_body, (idx, entry.stmt, entry.typ))
         elseif entry.stmt isa IfOp
-            # IfOps are part of the same scope - recurse into them
             substitute_block_shallow!(entry.stmt.then_region, subs)
             substitute_block_shallow!(entry.stmt.else_region, subs)
             push!(new_body, (idx, entry.stmt, entry.typ))
-        else  # Statement
+        else
             new_expr = substitute_ssa(entry.stmt, subs)
             push!(new_body, (idx, new_expr, entry.typ))
         end
@@ -498,8 +486,6 @@ function substitute_terminator(term::ContinueOp, subs::Substitutions)
 end
 
 function substitute_terminator(term::BreakOp, subs::Substitutions)
-    # Don't substitute BreakOp values - keep them as SSAValues so result_vars
-    # can be derived from terminators without caching
     return term
 end
 
@@ -542,7 +528,7 @@ function each_stmt(f, block::Block)
     for (idx, entry) in block.body
         if entry.stmt isa ControlFlowOp
             each_stmt_in_op(f, entry.stmt)
-        else  # Statement
+        else
             f((idx=idx, expr=entry.stmt, type=entry.typ))
         end
     end
@@ -1028,7 +1014,6 @@ function print_iter_args(p::IRPrinter, carry_args::Vector{BlockArg}, iter_args::
     print(p.io, ")")
 end
 
-# Print iter_args for a loop op (captures removed - outer values accessed directly)
 function print_loop_args(p::IRPrinter, block_args::Vector{BlockArg}, iter_args::Vector{IRValue})
     print_iter_args(p, block_args, iter_args)
 end
