@@ -37,7 +37,7 @@ function convert_phi_value(val)
     elseif val isa QuoteNode
         return val.value
     else
-        return 0  # Fallback
+        error("Unexpected phi value type: $(typeof(val))")
     end
 end
 
@@ -84,8 +84,7 @@ function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
     elseif rtype == REGION_SWITCH
         handle_switch!(block, tree, code, blocks, ctx)
     else
-        # Fallback: collect statements
-        handle_block_region!(block, tree, code, blocks, ctx)
+        error("Unknown region type: $rtype")
     end
 
     # Set terminator if not already set
@@ -149,7 +148,7 @@ function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, 
     elseif rtype == REGION_SWITCH
         handle_switch!(block, tree, code, blocks, ctx)
     else
-        handle_block_region!(block, tree, code, blocks, ctx)
+        error("Unknown region type in nested region: $rtype")
     end
 end
 
@@ -377,10 +376,11 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::V
         # Key by first result phi's SSA index
         push!(block, results[1].id, loop_op, Nothing)
     else
-        # Loops with no results - use fallback
+        # Spin loops with no loop-carried variables have no result phis.
+        # Use the header's last statement (typically GotoIfNot) as the key.
         header_idx = node_index(tree)
-        header_block = blocks[header_idx]
-        push!(block, last(header_block.range), loop_op, Nothing)
+        @assert 1 <= header_idx <= length(blocks) "Invalid header index: $header_idx"
+        push!(block, last(blocks[header_idx].range), loop_op, Nothing)
     end
 end
 
@@ -392,20 +392,13 @@ Handle REGION_SELF_LOOP.
 function handle_self_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                            ctx::StructurizationContext)
     idx = node_index(tree)
+    @assert 1 <= idx <= length(blocks) "Invalid block index from control tree: $idx"
 
     body_blk = Block()
-
-    if 1 <= idx <= length(blocks)
-        collect_block_statements!(body_blk, blocks[idx], code)
-    end
+    collect_block_statements!(body_blk, blocks[idx], code)
 
     loop_op = LoopOp(body_blk, IRValue[])
-    # Self-loops typically don't have phi nodes - use block's last SSA index
-    if 1 <= idx <= length(blocks)
-        push!(block, last(blocks[idx].range), loop_op, Nothing)
-    else
-        push!(block, idx, loop_op, Nothing)  # Fallback
-    end
+    push!(block, last(blocks[idx].range), loop_op, Nothing)
 end
 
 """
@@ -460,22 +453,19 @@ end
 Find the condition value for a GotoIfNot in the given block.
 """
 function find_condition_value(block_idx::Int, code::CodeInfo, blocks::Vector{BlockInfo})
-    block_idx < 1 || block_idx > length(blocks) && return SSAValue(1)
+    @assert 1 <= block_idx <= length(blocks) "Invalid block index: $block_idx"
 
     block = blocks[block_idx]
     for si in block.range
         stmt = code.code[si]
         if stmt isa GotoIfNot
             cond = stmt.cond
-            if cond isa SSAValue || cond isa SlotNumber || cond isa Argument
-                return cond
-            else
-                return SSAValue(max(1, si - 1))
-            end
+            @assert cond isa SSAValue || cond isa SlotNumber || cond isa Argument "Unexpected condition type: $(typeof(cond))"
+            return cond
         end
     end
 
-    return SSAValue(max(1, first(block.range)))
+    error("No GotoIfNot found in block $block_idx")
 end
 
 """
