@@ -667,21 +667,18 @@ function apply_block_args!(block::Block, ctx::StructurizationContext,
     end
 
     for stmt in statements(block.body)
-        if stmt isa LoopOp
-            process_loop_block_args!(stmt, ctx, defined, parent_subs)
-        elseif stmt isa IfOp
-            process_if_block_args!(stmt, ctx, defined, parent_subs)
+        if stmt isa LoopOp || stmt isa IfOp
+            process_block_args!(stmt, ctx, defined, parent_subs)
         end
     end
 end
 
 """
-    process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
-
 Create BlockArgs for a LoopOp and substitute SSAValue references.
+iter_args substitution is handled by apply_substitutions! in the parent block.
 """
-function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
-                                  parent_defined::Set{Int}, parent_subs::Substitutions)
+function process_block_args!(loop::LoopOp, ctx::StructurizationContext,
+                             parent_defined::Set{Int}, parent_subs::Substitutions)
     body = loop.body::Block
     subs = Substitutions()
     result_vars = derive_result_vars(loop)
@@ -693,11 +690,7 @@ function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
         subs[result_var.id] = new_arg
     end
 
-    for (j, v) in enumerate(loop.iter_args)
-        loop.iter_args[j] = substitute_ssa(v, parent_subs)
-    end
-
-    substitute_block_shallow!(body, subs)
+    apply_substitutions!(body, subs)
 
     merged_subs = merge(parent_subs, subs)
     nested_defined = Set{Int}(rv.id for rv in result_vars)
@@ -706,14 +699,15 @@ function process_loop_block_args!(loop::LoopOp, ctx::StructurizationContext,
 end
 
 """
-    process_if_block_args!(if_op::IfOp, ctx::StructurizationContext, parent_defined::Set{Int}, parent_subs::Substitutions)
-
-Recurse into IfOp branches with parent substitutions.
+Apply parent substitutions to IfOp branches and recurse.
 """
-function process_if_block_args!(if_op::IfOp, ctx::StructurizationContext,
-                                parent_defined::Set{Int}, parent_subs::Substitutions)
+function process_block_args!(if_op::IfOp, ctx::StructurizationContext,
+                             parent_defined::Set{Int}, parent_subs::Substitutions)
     then_blk = if_op.then_region::Block
     else_blk = if_op.else_region::Block
+
+    apply_substitutions!(then_blk, parent_subs)
+    apply_substitutions!(else_blk, parent_subs)
 
     then_defined = copy(parent_defined)
     else_defined = copy(parent_defined)
@@ -723,3 +717,4 @@ function process_if_block_args!(if_op::IfOp, ctx::StructurizationContext,
     apply_block_args!(then_blk, ctx, then_defined, parent_subs)
     apply_block_args!(else_blk, ctx, else_defined, parent_subs)
 end
+

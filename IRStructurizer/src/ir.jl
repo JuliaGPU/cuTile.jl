@@ -443,24 +443,19 @@ end
 =============================================================================#
 
 """
-    substitute_block_shallow!(block::Block, subs::Substitutions)
+    apply_substitutions!(block::Block, subs::Substitutions)
 
-Apply SSA substitutions within a block. Recurses into IfOp (same scope) but not LoopOp.
+Apply SSA substitutions within a block. Does not recurse into control flow regions.
+Each control flow op's entry values (condition, iter_args) are substituted,
+but the nested regions are handled by process_block_args! dispatch.
 """
-function substitute_block_shallow!(block::Block, subs::Substitutions)
-    isempty(subs) && return  # No substitutions to apply
+function apply_substitutions!(block::Block, subs::Substitutions)
+    isempty(subs) && return
 
-    # Rebuild body with substitutions applied
     new_body = SSAVector()
     for (idx, entry) in block.body
-        if entry.stmt isa LoopOp
-            for (j, v) in enumerate(entry.stmt.iter_args)
-                entry.stmt.iter_args[j] = substitute_ssa(v, subs)
-            end
-            push!(new_body, (idx, entry.stmt, entry.typ))
-        elseif entry.stmt isa IfOp
-            substitute_block_shallow!(entry.stmt.then_region, subs)
-            substitute_block_shallow!(entry.stmt.else_region, subs)
+        if entry.stmt isa ControlFlowOp
+            apply_substitutions!(entry.stmt, subs)
             push!(new_body, (idx, entry.stmt, entry.typ))
         else
             new_expr = substitute_ssa(entry.stmt, subs)
@@ -469,11 +464,21 @@ function substitute_block_shallow!(block::Block, subs::Substitutions)
     end
     block.body = new_body
 
-    # Substitute terminator
     if block.terminator !== nothing
         block.terminator = substitute_terminator(block.terminator, subs)
     end
 end
+
+function apply_substitutions!(op::IfOp, subs::Substitutions)
+    op.condition = substitute_ssa(op.condition, subs)
+end
+
+function apply_substitutions!(op::LoopOp, subs::Substitutions)
+    for (j, v) in enumerate(op.iter_args)
+        op.iter_args[j] = substitute_ssa(v, subs)
+    end
+end
+
 
 """
     substitute_terminator(term, subs::Substitutions)
