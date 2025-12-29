@@ -50,15 +50,12 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          validate::Bool=true, loop_patterning::Bool=true, kwargs...)
     ci, _ = only(code_typed(f, argtypes; kwargs...))
     sci = StructuredCodeInfo(ci)
-    structurize!(sci; loop_patterning)
-    if validate
-        validate_scf(sci)
-    end
+    structurize!(sci; validate, loop_patterning)
     return sci
 end
 
 """
-    structurize!(sci::StructuredCodeInfo; loop_patterning=true) -> StructuredCodeInfo
+    structurize!(sci::StructuredCodeInfo; validate=true, loop_patterning=true) -> StructuredCodeInfo
 
 Convert unstructured control flow in `sci` to structured control flow operations
 (IfOp, ForOp, WhileOp, LoopOp) in-place.
@@ -71,7 +68,7 @@ or WhileOp (condition-based). When `false`, all loops remain as LoopOp.
 
 Returns `sci` for convenience (allows chaining).
 """
-function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
+function structurize!(sci::StructuredCodeInfo; validate::Bool=true, loop_patterning::Bool=true)
     code = sci.code
     stmts = code.code
     types = code.ssavaluetypes
@@ -86,7 +83,9 @@ function structurize!(sci::StructuredCodeInfo; loop_patterning::Bool=true)
 
     ctree = ControlTree(cfg)
     entry = control_tree_to_structured_ir(ctree, code, blocks, ctx)
+    validate && validate_scf(entry)
     apply_block_args!(entry, ctx)
+    validate && validate_no_phis(entry)
 
     if loop_patterning
         apply_loop_patterns!(entry, ctx)
