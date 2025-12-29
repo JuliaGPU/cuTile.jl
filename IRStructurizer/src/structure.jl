@@ -370,7 +370,7 @@ Phase 1: Always creates LoopOp with metadata. Pattern matching happens in Phase 
 """
 function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                       ctx::StructurizationContext)
-    loop_op = build_loop_op_phase1(tree, code, blocks, ctx)
+    loop_op = build_loop_op(tree, code, blocks, ctx)
     results = derive_result_vars(loop_op)
     if !isempty(results)
         # Key by first result phi's SSA index
@@ -497,12 +497,12 @@ end
 =============================================================================#
 
 """
-    build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> LoopOp
+    build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> LoopOp
 
-Build a LoopOp for Phase 1. Pure structure building - no BlockArgs or substitutions.
-BlockArg creation and SSA→BlockArg substitution happens in Phase 2 (apply_block_args!).
+Build a LoopOp from a control tree. Pure structure building - no BlockArgs or substitutions.
+BlockArg creation and SSA→BlockArg substitution happens later in apply_block_args!.
 """
-function build_loop_op_phase1(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
                               ctx::StructurizationContext)
     stmts = code.code
     types = code.ssavaluetypes
