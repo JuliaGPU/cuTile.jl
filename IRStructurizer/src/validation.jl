@@ -19,30 +19,26 @@ end
 """
     validate_scf(sci::StructuredCodeInfo) -> Bool
 
-Validate that all control flow in the original CodeInfo has been properly
-converted to structured control flow operations (ControlFlowOp).
-
-Throws `UnstructuredControlFlowError` if unstructured control flow remains.
-Returns `true` if all control flow is properly structured.
-
-The invariant is simple: no expression in any `block.body` should be a
-`GotoNode` or `GotoIfNot` - those should have been replaced by
-structured ops that the visitor descends into.
+Validate that all control flow has been converted to structured ops.
+Throws `UnstructuredControlFlowError` if GotoNode/GotoIfNot remains.
 """
 function validate_scf(sci::StructuredCodeInfo)
     unstructured = Int[]
+    validate_block!(unstructured, sci.entry)
+    isempty(unstructured) || throw(UnstructuredControlFlowError(sort!(unstructured)))
+    return true
+end
 
-    # Walk all blocks and check that no statement is unstructured control flow
-    each_stmt(sci.entry) do stmt
-        # stmt is a NamedTuple with idx, expr, type fields
-        if stmt.expr isa GotoNode || stmt.expr isa GotoIfNot
-            push!(unstructured, stmt.idx)
+function validate_block!(unstructured::Vector{Int}, block::Block)
+    for (idx, entry) in block.body
+        stmt = entry.stmt
+        if stmt isa GotoNode || stmt isa GotoIfNot
+            push!(unstructured, idx)
+        elseif stmt isa IfOp
+            validate_block!(unstructured, stmt.then_region)
+            validate_block!(unstructured, stmt.else_region)
+        elseif stmt isa LoopOp
+            validate_block!(unstructured, stmt.body)
         end
     end
-
-    if !isempty(unstructured)
-        throw(UnstructuredControlFlowError(sort!(unstructured)))
-    end
-
-    return true
 end

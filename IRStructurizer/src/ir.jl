@@ -519,51 +519,6 @@ function substitute_terminator(term::Nothing, subs::Substitutions)
     return nothing
 end
 
-#=============================================================================
- Iteration Utilities
-=============================================================================#
-
-"""
-    each_stmt(f, block::Block)
-
-Recursively iterate over all statements in a Block.
-Calls f with (idx=original_ssa_idx, expr=expr, type=type).
-"""
-function each_stmt(f, block::Block)
-    for (idx, entry) in block.body
-        if entry.stmt isa ControlFlowOp
-            each_stmt_in_op(f, entry.stmt)
-        else
-            f((idx=idx, expr=entry.stmt, type=entry.typ))
-        end
-    end
-end
-
-# Helper to iterate over regions in concrete ControlFlowOp types
-each_stmt_in_op(f, op::IfOp) = (each_stmt(f, op.then_region); each_stmt(f, op.else_region))
-each_stmt_in_op(f, op::ForOp) = each_stmt(f, op.body)
-each_stmt_in_op(f, op::WhileOp) = (each_stmt(f, op.before); each_stmt(f, op.after))
-each_stmt_in_op(f, op::LoopOp) = each_stmt(f, op.body)
-
-"""
-    each_block(f, block::Block)
-
-Recursively iterate over all blocks in a Block.
-"""
-function each_block(f, block::Block)
-    f(block)
-    for stmt in statements(block.body)
-        if stmt isa ControlFlowOp
-            each_block_in_op(f, stmt)
-        end
-    end
-end
-
-# Helper to iterate over blocks in concrete ControlFlowOp types
-each_block_in_op(f, op::IfOp) = (each_block(f, op.then_region); each_block(f, op.else_region))
-each_block_in_op(f, op::ForOp) = each_block(f, op.body)
-each_block_in_op(f, op::WhileOp) = (each_block(f, op.before); each_block(f, op.after))
-each_block_in_op(f, op::LoopOp) = each_block(f, op.body)
 
 #=============================================================================
  Pretty Printing (Julia CodeInfo-style with colors)
