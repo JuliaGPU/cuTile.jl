@@ -1,113 +1,37 @@
-# Pretty Printing (Julia CodeInfo-style with colors)
-
-_scan_expr_uses!(used::BitSet, v::SSAValue) = push!(used, v.id)
-_scan_expr_uses!(used::BitSet, v::Expr) = _scan_expr_uses!.(Ref(used), v.args)
-_scan_expr_uses!(used::BitSet, v::PhiNode) = _scan_expr_uses!.(Ref(used), v.values)
-_scan_expr_uses!(used::BitSet, v::PiNode) = _scan_expr_uses!(used, v.val)
-_scan_expr_uses!(used::BitSet, v::GotoIfNot) = _scan_expr_uses!(used, v.cond)
-_scan_expr_uses!(::BitSet, _) = nothing  # constants, GlobalRefs, etc.
-
-function _scan_terminator_uses!(used::BitSet, term::ReturnNode)
-    if isdefined(term, :val)
-        _scan_expr_uses!(used, term.val)
-    end
-end
-
-_scan_terminator_uses!(used::BitSet, term::Union{YieldOp,ContinueOp,BreakOp}) =
-    _scan_expr_uses!.(Ref(used), term.values)
-
-function _scan_terminator_uses!(used::BitSet, term::ConditionOp)
-    _scan_expr_uses!(used, term.condition)
-    _scan_expr_uses!.(Ref(used), term.args)
-end
-
-_scan_terminator_uses!(::BitSet, ::Nothing) = nothing
-
-# Block usage scanning (for type coloring)
-function compute_used_ssas(block::Block)
-    used = BitSet()
-    _scan_block_uses!(used, block)
-    return used
-end
-
-function _scan_block_uses!(used::BitSet, block::Block)
-    for stmt in statements(block.body)
-        if stmt isa ControlFlowOp
-            _scan_control_flow_uses!(used, stmt)
-        else
-            _scan_expr_uses!(used, stmt)
-        end
-    end
-    if block.terminator !== nothing
-        _scan_terminator_uses!(used, block.terminator)
-    end
-end
-
-function _scan_control_flow_uses!(used::BitSet, op::IfOp)
-    _scan_expr_uses!(used, op.condition)
-    _scan_block_uses!(used, op.then_region)
-    _scan_block_uses!(used, op.else_region)
-end
-
-function _scan_control_flow_uses!(used::BitSet, op::ForOp)
-    _scan_expr_uses!(used, op.lower)
-    _scan_expr_uses!(used, op.upper)
-    _scan_expr_uses!(used, op.step)
-    for v in op.init_values
-        _scan_expr_uses!(used, v)
-    end
-    _scan_block_uses!(used, op.body)
-end
-
-function _scan_control_flow_uses!(used::BitSet, op::WhileOp)
-    for v in op.init_values
-        _scan_expr_uses!(used, v)
-    end
-    _scan_block_uses!(used, op.before)
-    _scan_block_uses!(used, op.after)
-end
-
-function _scan_control_flow_uses!(used::BitSet, op::LoopOp)
-    for v in op.init_values
-        _scan_expr_uses!(used, v)
-    end
-    _scan_block_uses!(used, op.body)
-end
+# Pretty Printing (Julia CodeInfo-style with box-drawing characters)
 
 """
     IRPrinter
 
 Context for printing structured IR with proper indentation and value formatting.
-Uses Julia's CodeInfo style with box-drawing characters and colors.
+Uses Julia's CodeInfo style with box-drawing characters.
 """
 mutable struct IRPrinter
     io::IO
     code::CodeInfo
     indent::Int
     line_prefix::String    # Prefix for continuation lines (│, spaces)
-    is_last_stmt::Bool     # Whether current stmt is last in block
-    used::BitSet           # Which SSA values are used anywhere in the IR
-    max_idx_width::Int     # Max width of "%N = " for alignment (like Julia's SSA printer)
+    max_idx_width::Int     # Max width of "%N = " for alignment
     color::Bool            # Whether to use colors
 end
 
 function IRPrinter(io::IO, code::CodeInfo, entry::Block)
-    used = compute_used_ssas(entry)
     # Compute max index width for alignment: "%N = " where N is the max index
-    max_idx_width = ndigits(length(entry.body)) + 4  # % + digits + space + = + space
+    # Use code.code length since SSA indices come from the original CodeInfo
+    max_idx_width = ndigits(length(code.code)) + 4  # % + digits + space + = + space
     color = get(io, :color, false)::Bool
-    IRPrinter(io, code, 0, "", false, used, max_idx_width, color)
+    IRPrinter(io, code, 0, "", max_idx_width, color)
 end
 
 function indent(p::IRPrinter, n::Int=1)
     new_prefix = p.line_prefix * "    "  # 4 spaces per indent level
-    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, false, p.used, p.max_idx_width, p.color)
+    return IRPrinter(p.io, p.code, p.indent + n, new_prefix, p.max_idx_width, p.color)
 end
 
 # Create a child printer for a nested Block
 function child_printer(p::IRPrinter, nested_block::Block, cont_prefix::String)
-    nested_max_idx_width = ndigits(length(nested_block.body)) + 4
-    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, false, p.used, nested_max_idx_width, p.color)
+    # Use parent's max_idx_width since SSA indices are global (from original CodeInfo)
+    IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, p.max_idx_width, p.color)
 end
 
 # Print region header: "├ label(%arg1::Type):" (regions always use ├, closing is on last line of content)
@@ -215,12 +139,9 @@ function format_type(t)
     end
 end
 
-# Print type annotation with color based on whether the value is used
-# Like Julia's code_typed: both :: and type share the same color
-function print_type_annotation(p::IRPrinter, idx::Int, t)
-    is_used = idx in p.used
-    color = is_used ? :cyan : :light_black
-    print_colored(p, string("::", format_type(t)), color)
+# Print type annotation
+function print_type_annotation(p::IRPrinter, t)
+    print_colored(p, string("::", format_type(t)), :cyan)
 end
 
 # Format result variables (string version for backwards compat)
@@ -238,24 +159,20 @@ function format_results(p::IRPrinter, results::Vector{SSAValue})
     end
 end
 
-# Print result variables with type colors
+# Print result variables with types
 function print_results(p::IRPrinter, results::Vector{SSAValue})
     if isempty(results)
         return
     elseif length(results) == 1
         r = results[1]
         print(p.io, "%", r.id)
-        is_used = r.id in p.used
-        color = is_used ? :cyan : :light_black
-        print_colored(p, string("::", format_type(p.code.ssavaluetypes[r.id])), color)
+        print_colored(p, string("::", format_type(p.code.ssavaluetypes[r.id])), :cyan)
     else
         print(p.io, "(")
         for (i, r) in enumerate(results)
             i > 1 && print(p.io, ", ")
             print(p.io, "%", r.id)
-            is_used = r.id in p.used
-            color = is_used ? :cyan : :light_black
-            print_colored(p, string("::", format_type(p.code.ssavaluetypes[r.id])), color)
+            print_colored(p, string("::", format_type(p.code.ssavaluetypes[r.id])), :cyan)
         end
         print(p.io, ")")
     end
@@ -450,30 +367,21 @@ end
 =============================================================================#
 
 # Print expression with type annotation (for final Block)
-# prefix can be "│  " for continuation, "└──" for last, or "" for no prefix (inside regions)
-function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String="│  ")
+function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String="├──")
     print_indent(p)
     if !isempty(prefix)
         print_colored(p, prefix, :light_black)
         print(p.io, " ")
     end
 
-    # Show %N = if value is used anywhere in the IR (global usage)
-    # Type color: cyan if used, grey if unused (matches Julia's SSA IR printer)
-    is_used = idx in p.used
-    if is_used
-        idx_s = string(idx)
-        pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
-        print(p.io, "%", idx_s, pad, " = ")
-    else
-        # Pad to align with "%N = " (like Julia's SSA printer)
-        print(p.io, " "^p.max_idx_width)
-    end
+    # Print %N = assignment
+    idx_s = string(idx)
+    pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
+    print(p.io, "%", idx_s, pad, " = ")
     print_expr(p, expr)
 
     # Print type annotation
-    color = is_used ? :cyan : :light_black
-    print_colored(p, string("::", format_type(typ)), color)
+    print_colored(p, string("::", format_type(typ)), :cyan)
     println(p.io)
 end
 
@@ -499,7 +407,7 @@ function print_block_body(p::IRPrinter, block::Block; inside_region::Bool=false,
             if inside_region
                 prefix = ""
             else
-                prefix = is_last ? "└──" : "│  "
+                prefix = is_last ? "└──" : "├──"
             end
             if is_last && is_last_region
                 # Replace trailing │ characters in line_prefix with └ for outer block closing
@@ -570,22 +478,14 @@ function print_expr_with_type_closing(p::IRPrinter, idx::Int, expr, typ; cascade
     closing_prefix = close_trailing_boxes(p.line_prefix, cascade_depth + 1)
     print_colored(p, closing_prefix, :light_black)
 
-    # Show %N = if value is used anywhere in the IR (global usage)
-    # Type color: cyan if used, grey if unused (matches Julia's SSA IR printer)
-    is_used = idx in p.used
-    if is_used
-        idx_s = string(idx)
-        pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
-        print(p.io, "%", idx_s, pad, " = ")
-    else
-        # Pad to align with "%N = " (like Julia's SSA printer)
-        print(p.io, " "^p.max_idx_width)
-    end
+    # Print %N = assignment
+    idx_s = string(idx)
+    pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
+    print(p.io, "%", idx_s, pad, " = ")
     print_expr(p, expr)
 
     # Print type annotation
-    color = is_used ? :cyan : :light_black
-    print_colored(p, string("::", format_type(typ)), color)
+    print_colored(p, string("::", format_type(typ)), :cyan)
     println(p.io)
 end
 
@@ -649,14 +549,7 @@ function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(resul
 
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, " ")
-
-    # Show assignment if this position is used anywhere in the IR
-    if pos in p.used
-        print(p.io, "%", pos, " = ")
-    end
-
-    print(p.io, "if ")
+    print(p.io, " %", pos, " = if ")
     print_value(p, op.condition)
 
     # Show return type annotation
@@ -670,9 +563,9 @@ function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(resul
     # Print "then:" region header
     then_p = child_printer(p, op.then_region, cont_prefix)
     print_region_header(then_p, "then", op.then_region.args)
-    # Print then region body (inside_region=true, no statement-level box drawing)
+    # Print then region body
     then_body_p = child_printer(then_p, op.then_region, "│   ")
-    print_block_body(then_body_p, op.then_region; inside_region=true)
+    print_block_body(then_body_p, op.then_region)
 
     # Print "else:" region header
     else_p = child_printer(p, op.else_region, cont_prefix)
@@ -680,7 +573,7 @@ function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(resul
     # Print else region body (last region, show closing on last line)
     # Pass cascade_depth so innermost item can close all cascaded levels
     else_body_p = child_printer(else_p, op.else_region, "│   ")
-    print_block_body(else_body_p, op.else_region; inside_region=true, is_last_region=true, cascade_depth=cascade_depth)
+    print_block_body(else_body_p, op.else_region; is_last_region=true, cascade_depth=cascade_depth)
 end
 
 function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0)
@@ -691,13 +584,7 @@ function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(res
 
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, " ")
-
-    # Show assignment if this position is used anywhere in the IR
-    if pos in p.used
-        print(p.io, "%", pos, " = ")
-    end
-
+    print(p.io, " %", pos, " = ")
     print_colored(p, "for", :yellow)
     print(p.io, " %arg", op.iv_arg.id, " = ")
     print_value(p, op.lower)
@@ -732,13 +619,7 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int, @nospecialize(r
 
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, " ")
-
-    # Show assignment if this position is used anywhere in the IR
-    if pos in p.used
-        print(p.io, "%", pos, " = ")
-    end
-
+    print(p.io, " %", pos, " = ")
     print_colored(p, "loop", :yellow)
     print_loop_args(p, op.body.args, op.init_values)
     # Show return type annotation
@@ -762,13 +643,7 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize
 
     print_indent(p)
     print_colored(p, prefix, :light_black)
-    print(p.io, " ")
-
-    # Show assignment if this position is used anywhere in the IR
-    if pos in p.used
-        print(p.io, "%", pos, " = ")
-    end
-
+    print(p.io, " %", pos, " = ")
     print_colored(p, "while", :yellow)
     print_loop_args(p, op.before.args, op.init_values)
     # Show return type annotation
@@ -781,9 +656,9 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize
     # Print "before" region header
     before_p = child_printer(p, op.before, cont_prefix)
     print_region_header(before_p, "before", op.before.args)
-    # Print before region body (inside_region=true, no statement-level box drawing)
+    # Print before region body
     before_body_p = child_printer(before_p, op.before, "│   ")
-    print_block_body(before_body_p, op.before; inside_region=true)
+    print_block_body(before_body_p, op.before)
 
     # Print "do" region header
     after_p = child_printer(p, op.after, cont_prefix)
@@ -791,7 +666,7 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize
     # Print do region body (last region, show closing on last line)
     # Pass cascade_depth so innermost item can close all cascaded levels
     after_body_p = child_printer(after_p, op.after, "│   ")
-    print_block_body(after_body_p, op.after; inside_region=true, is_last_region=true, cascade_depth=cascade_depth)
+    print_block_body(after_body_p, op.after; is_last_region=true, cascade_depth=cascade_depth)
 end
 
 # Main entry point: show for StructuredCodeInfo
