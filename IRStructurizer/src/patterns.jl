@@ -100,14 +100,14 @@ function find_add_int_for_iv(block::Block, iv_arg::BlockArg)
 end
 
 """
-    is_loop_invariant(val, block::Block, n_iter_args::Int) -> Bool
+    is_loop_invariant(val, block::Block, n_init_values::Int) -> Bool
 
 Check if a value is loop-invariant (not defined inside the loop body).
-- BlockArgs (all of which are iter_args) are loop-variant (carries)
+- BlockArgs (all of which are init_values) are loop-variant (carries)
 - SSAValues are loop-invariant (outer scope references)
 - Constants and Arguments are always loop-invariant
 """
-function is_loop_invariant(val, block::Block, n_iter_args::Int)
+function is_loop_invariant(val, block::Block, n_init_values::Int)
     if val isa BlockArg
         return false
     end
@@ -310,7 +310,7 @@ Returns (ForOp, iv_getfield_idx, iv_field_idx) if upgraded, or nothing if not up
 """
 function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_key::Int, parent_block::Block)
     body = loop.body::Block
-    n_iter_args = length(loop.iter_args)
+    n_init_values = length(loop.init_values)
 
     # Find the IfOp in the loop body - this contains the condition check
     condition_ifop = find_ifop(body)
@@ -332,10 +332,10 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
     iv_arg isa BlockArg || return nothing
     upper_bound_raw = cond_expr.args[3]
 
-    # Helper to resolve BlockArg to original value from iter_args
+    # Helper to resolve BlockArg to original value from init_values
     function resolve_blockarg(arg)
-        if arg isa BlockArg && arg.id <= n_iter_args
-            return loop.iter_args[arg.id]
+        if arg isa BlockArg && arg.id <= n_init_values
+            return loop.init_values[arg.id]
         end
         return arg
     end
@@ -346,9 +346,9 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
     iv_idx = findfirst(==(iv_arg), body.args)
     iv_idx === nothing && return nothing
 
-    # IV must be an iter_arg (in the iter_args range)
-    iv_idx > n_iter_args && return nothing
-    lower_bound = loop.iter_args[iv_idx]
+    # IV must be an init_value (in the init_values range)
+    iv_idx > n_init_values && return nothing
+    lower_bound = loop.init_values[iv_idx]
 
     # Find the step: add_int(iv_arg, step)
     step_result = find_add_int_for_iv(body, iv_arg)
@@ -359,13 +359,13 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
     step = resolve_blockarg(step_raw)
 
     # Verify upper_bound and step are loop-invariant
-    is_loop_invariant(upper_bound, body, n_iter_args) || return nothing
-    is_loop_invariant(step, body, n_iter_args) || return nothing
+    is_loop_invariant(upper_bound, body, n_init_values) || return nothing
+    is_loop_invariant(step, body, n_init_values) || return nothing
 
-    # Separate non-IV iter_args (the new iter_args for ForOp)
-    other_iter_args = IRValue[]
-    for (j, v) in enumerate(loop.iter_args)
-        j != iv_idx && push!(other_iter_args, v)
+    # Separate non-IV init_values (the new init_values for ForOp)
+    other_init_values = IRValue[]
+    for (j, v) in enumerate(loop.init_values)
+        j != iv_idx && push!(other_init_values, v)
     end
 
     # Find the IV's getfield in the parent block
@@ -407,7 +407,7 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
     if then_blk.terminator isa ContinueOp
         for (j, v) in enumerate(then_blk.terminator.values)
             # Only include non-IV values
-            if j != iv_idx && j <= n_iter_args
+            if j != iv_idx && j <= n_init_values
                 push!(yield_values, v)
             end
         end
@@ -416,7 +416,7 @@ function try_upgrade_to_for(loop::LoopOp, ctx::StructurizationContext, current_k
     new_body.terminator = ContinueOp(yield_values)
 
     # Create ForOp
-    for_op = ForOp(lower_bound, upper_bound, step, iv_arg, new_body, other_iter_args)
+    for_op = ForOp(lower_bound, upper_bound, step, iv_arg, new_body, other_init_values)
 
     return (for_op, iv_getfield_idx, iv_idx)
 end
@@ -428,12 +428,12 @@ Try to upgrade a LoopOp to WhileOp by detecting the while-loop pattern.
 Returns WhileOp if upgraded, or nothing if not upgraded.
 
 Creates MLIR-style scf.while with before/after regions:
-- before: condition computation, ends with ConditionOp (only passes iter_args)
-- after: loop body, ends with YieldOp (only yields iter_args)
+- before: condition computation, ends with ConditionOp (only passes init_values)
+- after: loop body, ends with YieldOp (only yields init_values)
 """
 function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
     body = loop.body::Block
-    n_iter_args = length(loop.iter_args)
+    n_init_values = length(loop.init_values)
 
     # Find the IfOp in the loop body - its condition is the while condition
     condition_ifop = find_ifop(body)
@@ -456,7 +456,7 @@ function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
         end
     end
 
-    condition_args = IRValue[before.args[i] for i in 1:n_iter_args]
+    condition_args = IRValue[before.args[i] for i in 1:n_init_values]
 
     cond_val = condition_ifop.condition
     before.terminator = ConditionOp(cond_val, condition_args)
@@ -473,7 +473,7 @@ function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
     yield_values = IRValue[]
     if then_blk.terminator isa ContinueOp
         for (j, v) in enumerate(then_blk.terminator.values)
-            if j <= n_iter_args
+            if j <= n_init_values
                 push!(yield_values, v)
             end
         end
@@ -481,5 +481,5 @@ function try_upgrade_to_while(loop::LoopOp, ctx::StructurizationContext)
 
     after.terminator = YieldOp(yield_values)
 
-    return WhileOp(before, after, loop.iter_args)
+    return WhileOp(before, after, loop.init_values)
 end

@@ -538,7 +538,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
     header_block = blocks[header_idx]
     stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
 
-    iter_args = IRValue[]
+    init_values = IRValue[]
     carried_values = IRValue[]
     phi_indices = Int[]
     phi_types = Any[]
@@ -575,7 +575,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
                 end
             end
 
-            entry_val !== nothing && push!(iter_args, entry_val)
+            entry_val !== nothing && push!(init_values, entry_val)
             carried_val !== nothing && push!(carried_values, carried_val)
         end
     end
@@ -635,8 +635,8 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
         body.terminator = ContinueOp(copy(carried_values))
     end
 
-    # Create loop op with iter_args
-    loop_op = LoopOp(body, iter_args)
+    # Create loop op with init_values
+    loop_op = LoopOp(body, init_values)
     return loop_op, phi_indices, phi_types
 end
 
@@ -651,8 +651,8 @@ function collect_defined_ssas!(defined::Set{Int}, block::Block, ctx::Structuriza
         if entry.stmt isa ControlFlowOp
             # Add the control flow op's own index (e.g., loop's synthesized index)
             push!(defined, idx)
-            # Add any additional result indices (phi indices from derive_result_vars)
-            for rv in derive_result_vars(entry.stmt)
+            # Add any additional result indices (phi indices from collect_results_ssavals)
+            for rv in collect_results_ssavals(entry.stmt)
                 push!(defined, rv.id)
             end
             if entry.stmt isa LoopOp
@@ -682,7 +682,7 @@ end
 Single pass that creates BlockArgs and substitutes SSAValue references.
 
 Phase 2 of structurization - called after control_tree_to_structured_ir.
-For each :loop op: creates BlockArgs for phi nodes (iter_args).
+For each :loop op: creates BlockArgs for phi nodes (init_values).
 For :if ops: no BlockArgs needed (outer refs are accessed directly).
 Substitutes phi refs → BlockArg references throughout.
 
@@ -707,13 +707,13 @@ end
 
 """
 Create BlockArgs for a LoopOp and substitute SSAValue references.
-iter_args substitution is handled by apply_substitutions! in the parent block.
+init_values substitution is handled by apply_substitutions! in the parent block.
 """
 function process_block_args!(loop::LoopOp, ctx::StructurizationContext,
                              parent_defined::Set{Int}, parent_subs::Substitutions)
     body = loop.body::Block
     subs = Substitutions()
-    result_vars = derive_result_vars(loop)
+    result_vars = collect_results_ssavals(loop)
 
     for (i, result_var) in enumerate(result_vars)
         phi_type = ctx.ssavaluetypes[result_var.id]

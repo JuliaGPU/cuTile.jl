@@ -10,14 +10,15 @@ include("analysis.jl")
 
 # structured IR definitions
 include("ir.jl")
+include("show.jl")
 
 # block-level CFG
 include("block_cfg.jl")
 
-# Phase 1: control tree to structured IR
+# control tree to structured IR
 include("structure.jl")
 
-# Phase 2: pattern matching and loop upgrades
+# pattern matching and loop upgrades
 include("patterns.jl")
 
 # validation and public API
