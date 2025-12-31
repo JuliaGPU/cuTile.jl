@@ -976,6 +976,60 @@ end
         end
     end
 
+    @testset "nested while loops compile correctly (regression test)" begin
+        # Regression test: Nested while loops must compile without errors.
+        # Previously, nested WhileOp caused "operand index out of bounds" errors
+        # during bytecode parsing due to value ID conflicts in nested regions.
+        spec1d = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            check"CHECK-LABEL: entry"
+            check"CHECK: loop iter_values"
+            check"CHECK: loop iter_values"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do Locks1, Locks2
+                idx = ct.bid(0)
+
+                # Outer spinloop
+                while ct.atomic_cas(Locks1, idx, Int32(0), Int32(1);
+                                   memory_order=ct.MemoryOrder.Acquire) == Int32(1)
+                    # Inner spinloop
+                    while ct.atomic_cas(Locks2, idx, Int32(0), Int32(1);
+                                       memory_order=ct.MemoryOrder.Acquire) == Int32(1)
+                    end
+                end
+
+                return
+            end
+        end
+    end
+
+    @testset "counting while loop with nested control flow upgrades to for (regression test)" begin
+        # Regression test: A counting while loop (j = 0; while j < n; j += 1) should be
+        # upgraded to ForOp even when it contains nested control flow (like inner loops).
+        # Previously, the for-loop pattern detection only searched for the step expression
+        # in the immediate body block, missing it when nested control flow was present.
+        spec1d = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            check"CHECK-LABEL: entry"
+            check"CHECK: for %loopIdx in"
+            check"CHECK: loop iter_values"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, Int32}) do Locks, num_iters
+                idx = ct.bid(0)
+
+                j = Int32(0)
+                while j < num_iters
+                    # Inner spinloop - the presence of this nested loop shouldn't prevent
+                    # the outer loop from being detected as a for-loop pattern
+                    while ct.atomic_cas(Locks, idx, Int32(0), Int32(1);
+                                       memory_order=ct.MemoryOrder.Acquire) == Int32(1)
+                    end
+                    j += Int32(1)
+                end
+
+                return
+            end
+        end
+    end
+
     @testset "Multiple loop results (regression test)" begin
         # Regression test: A while loop with multiple iter_args must generate
         # different result indices (%for#0, %for#1, etc.) for each result.

@@ -230,6 +230,9 @@ function try_detect_for_loop_while(header_idx::Int, body_idx::Int, code::CodeInf
     body_block = blocks[body_idx]
 
     # Find phi nodes in header (loop-carried variables)
+    # Use SSA index position to distinguish entry vs carried values:
+    # - Entry values come from before the header (lower SSA indices)
+    # - Carried values come from within the loop body (higher SSA indices)
     phi_info = Dict{Int, NamedTuple{(:entry_val, :carried_val), Tuple{Any, Any}}}()
     for si in header_block.range
         stmt = stmts[si]
@@ -239,10 +242,10 @@ function try_detect_for_loop_while(header_idx::Int, body_idx::Int, code::CodeInf
             for (edge_idx, _) in enumerate(stmt.edges)
                 if isassigned(stmt.values, edge_idx)
                     val = stmt.values[edge_idx]
-                    # Check if value comes from body (carried) or outside (entry)
-                    if val isa SSAValue && val.id in body_block.range
+                    # Carried value comes from after header, entry from before
+                    if val isa SSAValue && val.id > header_block.range.stop
                         carried_val = val
-                    else
+                    elseif !(val isa SSAValue) || val.id < header_block.range.start
                         entry_val = val
                     end
                 end
@@ -285,37 +288,17 @@ function try_detect_for_loop_while(header_idx::Int, body_idx::Int, code::CodeInf
     iv_phi_idx = iv_candidate.id
     haskey(phi_info, iv_phi_idx) || return nothing
 
-    # Find step expression in body: add_int(iv, step)
-    step = nothing
-    for si in body_block.range
-        stmt = stmts[si]
-        stmt isa Expr || continue
-        stmt.head === :call || continue
-        length(stmt.args) >= 3 || continue
-
-        func = stmt.args[1]
-        func isa GlobalRef || continue
-        func.name === :add_int || continue
-
-        # Check if first arg is the IV (matching phi's carried value or the phi itself)
-        arg1 = stmt.args[2]
-        carried_val = phi_info[iv_phi_idx].carried_val
-        if arg1 == iv_candidate || (carried_val isa SSAValue && arg1 == carried_val)
-            step = stmt.args[3]
-            break
-        end
-    end
-
+    # Find step expression by tracing data flow from carried value
+    # (handles nested control flow where add_int may not be in immediate body block)
+    step = find_step_from_carried_value(stmts, phi_info[iv_phi_idx].carried_val, iv_candidate)
     step === nothing && return nothing
 
     # Get lower bound from phi entry value
     lower_bound = phi_info[iv_phi_idx].entry_val
 
-    # Check if upper bound is loop-invariant (not defined in loop blocks)
-    if upper_bound isa SSAValue
-        if upper_bound.id in header_block.range || upper_bound.id in body_block.range
-            return nothing
-        end
+    # Check if upper bound is loop-invariant (should be defined before header)
+    if upper_bound isa SSAValue && upper_bound.id >= header_block.range.start
+        return nothing
     end
 
     return ForLoopInfo(iv_phi_idx, lower_bound, upper_bound, step, false)

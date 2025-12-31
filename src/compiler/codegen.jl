@@ -457,9 +457,11 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
     # Number of user result types (excluding token)
     n_user_results = n_carries
 
-    # Emit WhileOp as cuda_tile.loop with if-continue-break pattern
+    # Emit WhileOp as cuda_tile.loop with conditional break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
-    # Emitted as: loop { before_stmts; if(cond) { after_stmts; continue } else { break } }
+    # Emitted as: loop { before_stmts; if(!cond) { break } else { yield }; after_stmts; continue }
+    # This structure keeps the "after" statements at LoopOp body level, avoiding
+    # nested region issues when "after" contains loops.
     body_builder = function(block_args)
         saved_block_args = copy(ctx.block_args)
 
@@ -486,35 +488,11 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && error("Cannot resolve WhileOp condition: $(cond_op.condition)")
 
-        # Create if-then-else: if condition { after_region; continue } else { break }
+        # Emit conditional break: if (cond) { yield } else { break }
+        # This keeps nested loops in "after" at LoopOp body level
         then_body = function(_)
-            # Map "after" region block args - carries from ConditionOp.args
-            for i in 1:n_carries
-                after_arg = after_blk.args[i]
-                if i <= length(cond_op.args)
-                    tv = emit_value!(ctx, cond_op.args[i])
-                    if tv !== nothing
-                        ctx[after_arg] = tv
-                    else
-                        shape = extract_tile_shape(after_arg.type)
-                        ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
-                    end
-                end
-            end
-
-            # Emit "after" region body (skip terminator - we emit ContinueOp instead)
-            emit_block!(ctx, after_blk; skip_terminator=true)
-
-            # Emit ContinueOp with yield values from after region's YieldOp
-            continue_operands = Value[]
-            if after_blk.terminator isa YieldOp
-                for val in after_blk.terminator.values
-                    tv = emit_value!(ctx, val)
-                    tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
-                end
-            end
-            push!(continue_operands, ctx.token)
-            encode_ContinueOp!(ctx.cb, continue_operands)
+            # Just yield (empty) - control continues to after_stmts
+            encode_YieldOp!(ctx.cb, Value[])
         end
 
         else_body = function(_)
@@ -533,16 +511,38 @@ function emit_while_op!(ctx::CodegenContext, op::WhileOp, @nospecialize(parent_r
             encode_BreakOp!(ctx.cb, break_operands)
         end
 
-        # Emit IfOp with NO results - continue/break are terminators to the enclosing loop
-        # They don't yield values back to the IfOp
+        # Emit IfOp with NO results: if (cond) continue flow, else break
         if_result_types = TypeId[]
         encode_IfOp!(then_body, else_body, cb, if_result_types, cond_tv.v)
 
-        # Add fallback ContinueOp as block terminator (required even though IfOp covers all paths)
-        # The IfOp is not considered a terminator in CUDA Tile bytecode format
-        fallback_operands = copy(block_args)
-        # Token was updated by continue/break inside the branches, use the last known token
-        encode_ContinueOp!(ctx.cb, fallback_operands)
+        # Now emit "after" region at LoopOp body level (not inside IfOp!)
+        # Map "after" region block args - carries from ConditionOp.args
+        for i in 1:n_carries
+            after_arg = after_blk.args[i]
+            if i <= length(cond_op.args)
+                tv = emit_value!(ctx, cond_op.args[i])
+                if tv !== nothing
+                    ctx[after_arg] = tv
+                else
+                    shape = extract_tile_shape(after_arg.type)
+                    ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
+                end
+            end
+        end
+
+        # Emit "after" region body (skip terminator - we emit ContinueOp instead)
+        emit_block!(ctx, after_blk; skip_terminator=true)
+
+        # Emit ContinueOp with yield values from after region's YieldOp
+        continue_operands = Value[]
+        if after_blk.terminator isa YieldOp
+            for val in after_blk.terminator.values
+                tv = emit_value!(ctx, val)
+                tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
+            end
+        end
+        push!(continue_operands, ctx.token)
+        encode_ContinueOp!(ctx.cb, continue_operands)
 
         empty!(ctx.block_args)
         merge!(ctx.block_args, saved_block_args)
@@ -570,12 +570,10 @@ function emit_terminator!(ctx::CodegenContext, op::YieldOp)
     operands = Value[]
     for val in op.values
         tv = emit_value!(ctx, val)
-        @debug "YieldOp value $val => $(tv !== nothing ? tv : "nothing")"
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
     # Append current token for memory ordering
     push!(operands, ctx.token)
-    @debug "YieldOp operands: $operands ($(length(operands)) values)"
     encode_YieldOp!(ctx.cb, operands)
 end
 
