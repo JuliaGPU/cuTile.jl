@@ -548,22 +548,13 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
             entry_val = nothing
             carried_val = nothing
 
-            for (edge_idx, _) in enumerate(phi.edges)
+            for (edge_idx, edge) in enumerate(phi.edges)
                 if isassigned(phi.values, edge_idx)
                     val = phi.values[edge_idx]
-
-                    if val isa SSAValue
-                        val_stmt = val.id
-                        if val_stmt > 0 && val_stmt <= length(stmts)
-                            val_block = stmt_to_blk[val_stmt]
-                            if val_block ∈ loop_blocks
-                                carried_val = val
-                            else
-                                entry_val = convert_phi_value(val)
-                            end
-                        else
-                            entry_val = convert_phi_value(val)
-                        end
+                    # Check where control flow comes from, not where value is defined
+                    edge_block = stmt_to_blk[edge]
+                    if edge_block ∈ loop_blocks
+                        carried_val = val
                     else
                         entry_val = convert_phi_value(val)
                     end
@@ -665,22 +656,13 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
             entry_val = nothing
             carried_val = nothing
 
-            for (edge_idx, _) in enumerate(phi.edges)
+            for (edge_idx, edge) in enumerate(phi.edges)
                 if isassigned(phi.values, edge_idx)
                     val = phi.values[edge_idx]
-
-                    if val isa SSAValue
-                        val_stmt = val.id
-                        if val_stmt > 0 && val_stmt <= length(stmts)
-                            val_block = stmt_to_blk[val_stmt]
-                            if val_block ∈ loop_blocks
-                                carried_val = val
-                            else
-                                entry_val = convert_phi_value(val)
-                            end
-                        else
-                            entry_val = convert_phi_value(val)
-                        end
+                    # Check where control flow comes from, not where value is defined
+                    edge_block = stmt_to_blk[edge]
+                    if edge_block ∈ loop_blocks
+                        carried_val = val
                     else
                         entry_val = convert_phi_value(val)
                     end
@@ -806,22 +788,13 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
             entry_val = nothing
             carried_val = nothing
 
-            for (edge_idx, _) in enumerate(phi.edges)
+            for (edge_idx, edge) in enumerate(phi.edges)
                 if isassigned(phi.values, edge_idx)
                     val = phi.values[edge_idx]
-
-                    if val isa SSAValue
-                        val_stmt = val.id
-                        if val_stmt > 0 && val_stmt <= length(stmts)
-                            val_block = stmt_to_blk[val_stmt]
-                            if val_block ∈ loop_blocks
-                                carried_val = val
-                            else
-                                entry_val = convert_phi_value(val)
-                            end
-                        else
-                            entry_val = convert_phi_value(val)
-                        end
+                    # Check where control flow comes from, not where value is defined
+                    edge_block = stmt_to_blk[edge]
+                    if edge_block ∈ loop_blocks
+                        carried_val = val
                     else
                         entry_val = convert_phi_value(val)
                     end
