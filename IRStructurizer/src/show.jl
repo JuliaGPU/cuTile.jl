@@ -24,7 +24,7 @@ function IRPrinter(io::IO, code::CodeInfo, entry::Block)
 end
 
 function indent(p::IRPrinter, n::Int=1)
-    new_prefix = p.line_prefix * "    "  # 4 spaces per indent level
+    new_prefix = p.line_prefix * "  "  # 2 spaces per indent level
     return IRPrinter(p.io, p.code, p.indent + n, new_prefix, p.max_idx_width, p.color)
 end
 
@@ -34,10 +34,10 @@ function child_printer(p::IRPrinter, nested_block::Block, cont_prefix::String)
     IRPrinter(p.io, p.code, p.indent + 1, p.line_prefix * cont_prefix, p.max_idx_width, p.color)
 end
 
-# Print region header: "├ label(%arg1::Type):" (regions always use ├, closing is on last line of content)
-function print_region_header(p::IRPrinter, label::String, args::Vector{BlockArg})
+# Print region header: "├ label:" or "└ label:" for last/empty region
+function print_region_header(p::IRPrinter, label::String, args::Vector{BlockArg}; is_last::Bool=false)
     print_indent(p)
-    print_colored(p, "├", :light_black)
+    print_colored(p, is_last ? "└" : "├", :light_black)
     print(p.io, " ", label)
     if !isempty(args)
         print(p.io, "(")
@@ -255,45 +255,6 @@ function print_expr(p::IRPrinter, expr::Expr)
     end
 end
 
-function print_expr(p::IRPrinter, node::PhiNode)
-    print(p.io, "φ (")
-    first = true
-    for (edge, val) in zip(node.edges, node.values)
-        first || print(p.io, ", ")
-        first = false
-        print(p.io, "#", edge, " => ")
-        if isassigned(node.values, findfirst(==(val), node.values))
-            print_value(p, val)
-        else
-            print_colored(p, "#undef", :red)
-        end
-    end
-    print(p.io, ")")
-end
-
-function print_expr(p::IRPrinter, node::PiNode)
-    print(p.io, "π (")
-    print_value(p, node.val)
-    print(p.io, ", ", node.typ, ")")
-end
-
-function print_expr(p::IRPrinter, node::GotoNode)
-    print(p.io, "goto #", node.label)
-end
-
-function print_expr(p::IRPrinter, node::GotoIfNot)
-    print(p.io, "goto #", node.dest, " if not ")
-    print_value(p, node.cond)
-end
-
-function print_expr(p::IRPrinter, node::ReturnNode)
-    print(p.io, "return")
-    if isdefined(node, :val)
-        print(p.io, " ")
-        print_value(p, node.val)
-    end
-end
-
 function print_expr(p::IRPrinter, v)
     print_value(p, v)
 end
@@ -334,11 +295,14 @@ function print_loop_args(p::IRPrinter, block_args::Vector{BlockArg}, init_values
 end
 
 # Print a terminator
-function print_terminator(p::IRPrinter, term::ReturnNode; prefix::String="└──")
-    print_indent(p)
-    if !isempty(prefix)
-        print_colored(p, prefix, :light_black)
-        print(p.io, " ")
+# is_last_in_block: if true, replace trailing │ with └ to close the block
+function print_terminator(p::IRPrinter, term::ReturnNode; is_last_in_block::Bool=false)
+    if is_last_in_block && endswith(p.line_prefix, "│   ")
+        closing_prefix = chop(p.line_prefix; tail=4)
+        print_colored(p, closing_prefix, :light_black)
+        print_colored(p, "└   ", :light_black)
+    else
+        print_indent(p)
     end
     print(p.io, "return")
     if isdefined(term, :val)
@@ -348,31 +312,47 @@ function print_terminator(p::IRPrinter, term::ReturnNode; prefix::String="└─
     println(p.io)
 end
 
-function print_terminator(p::IRPrinter, term::Union{YieldOp,ContinueOp,BreakOp,ConditionOp}; prefix::String="└──")
-    print_indent(p)
-    if !isempty(prefix)
-        print_colored(p, prefix, :light_black)
-        print(p.io, " ")
+function print_terminator(p::IRPrinter, term::Union{YieldOp,ContinueOp,BreakOp,ConditionOp}; is_last_in_block::Bool=false)
+    if is_last_in_block && endswith(p.line_prefix, "│   ")
+        closing_prefix = chop(p.line_prefix; tail=4)
+        print_colored(p, closing_prefix, :light_black)
+        print_colored(p, "└   ", :light_black)
+    else
+        print_indent(p)
     end
     print_terminator_content(p, term)
     println(p.io)
 end
 
-function print_terminator(p::IRPrinter, ::Nothing; prefix::String="└──")
+function print_terminator(p::IRPrinter, ::Nothing; is_last_in_block::Bool=false)
     # No terminator
+end
+
+# Print terminator when closing the block itself (replace trailing │ with └)
+function print_terminator_closing_self(p::IRPrinter, term)
+    # Replace trailing "│ " or "│   " with "└ " in the prefix
+    if endswith(p.line_prefix, "│   ")
+        closing_prefix = chop(p.line_prefix; tail=4)
+        print_colored(p, closing_prefix, :light_black)
+        print_colored(p, "└ ", :light_black)
+    elseif endswith(p.line_prefix, "│ ")
+        closing_prefix = chop(p.line_prefix; tail=2)
+        print_colored(p, closing_prefix, :light_black)
+        print_colored(p, "└ ", :light_black)
+    else
+        print_indent(p)
+    end
+    print_terminator_content(p, term)
+    println(p.io)
 end
 
 #=============================================================================
  Pretty Printing for Final Block/ControlFlowOp
 =============================================================================#
 
-# Print expression with type annotation (for final Block)
-function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String="├──")
+# Print expression with type annotation (no box-drawing, just indent)
+function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ)
     print_indent(p)
-    if !isempty(prefix)
-        print_colored(p, prefix, :light_black)
-        print(p.io, " ")
-    end
 
     # Print %N = assignment
     idx_s = string(idx)
@@ -385,10 +365,10 @@ function print_expr_with_type(p::IRPrinter, idx::Int, expr, typ; prefix::String=
     println(p.io)
 end
 
-# Print a Block's contents (final type)
-# If inside_region=true, don't show statement-level box drawing (just use line_prefix)
-# If is_last_region=true, modify the last line to show outer block closing
-function print_block_body(p::IRPrinter, block::Block; inside_region::Bool=false, is_last_region::Bool=false, cascade_depth::Int=0)
+# Print a Block's contents
+# is_last_in_parent: if true, the terminator should close with └── (added after prefix)
+# is_closing_self: if true, the last item replaces the trailing │ with └── (for entry block)
+function print_block_body(p::IRPrinter, block::Block; is_last_in_parent::Bool=false, is_closing_self::Bool=false)
     items = []
     for (i, (idx, entry)) in enumerate(block.body)
         if entry.stmt isa ControlFlowOp
@@ -404,97 +384,21 @@ function print_block_body(p::IRPrinter, block::Block; inside_region::Bool=false,
     for (i, item) in enumerate(items)
         is_last = (i == length(items))
         if item[1] == :expr
-            if inside_region
-                prefix = ""
-            else
-                prefix = is_last ? "└──" : "├──"
-            end
-            if is_last && is_last_region
-                # Replace trailing │ characters in line_prefix with └ for outer block closing
-                print_expr_with_type_closing(p, item[2], item[3], item[4]; cascade_depth=cascade_depth)
-            else
-                print_expr_with_type(p, item[2], item[3], item[4]; prefix=prefix)
-            end
+            # No box-drawing for expressions, just print with indent
+            print_expr_with_type(p, item[2], item[3], item[4])
         elseif item[1] == :nested
-            if is_last && is_last_region
-                # Cascade the closing - don't use └── here (is_last=false), and increment cascade_depth
-                # so the nested op knows to close this level too
-                print_control_flow(p, item[3], item[2], item[4]; is_last=false, cascade_depth=cascade_depth + 1)
-            else
-                print_control_flow(p, item[3], item[2], item[4]; is_last=is_last, cascade_depth=cascade_depth)
-            end
+            # Control flow ops handle their own box-drawing
+            print_control_flow(p, item[3], item[2], item[4]; is_last=is_last && is_last_in_parent)
         else  # :term
-            if inside_region
-                prefix = ""
+            if is_last && is_closing_self
+                # Closing this block itself: replace trailing │ with └──
+                print_terminator_closing_self(p, item[2])
             else
-                prefix = "└──"
-            end
-            if is_last && is_last_region
-                # Replace trailing │ characters in line_prefix with └ for outer block closing
-                print_terminator_closing(p, item[2]; cascade_depth=cascade_depth)
-            else
-                print_terminator(p, item[2]; prefix=prefix)
+                # Terminators get └── only if this is the last item AND we're closing the parent block
+                print_terminator(p, item[2]; is_last_in_block=is_last && is_last_in_parent)
             end
         end
     end
-end
-
-"""
-    close_trailing_boxes(prefix::String, count::Int) -> String
-
-Replace `count` trailing │ characters in prefix: the last one becomes └, the rest become spaces.
-E.g., close_trailing_boxes("│   │   │   ", 2) → "│   └       " (closes 2 levels)
-"""
-function close_trailing_boxes(prefix::String, count::Int)
-    count <= 0 && return prefix
-
-    # Find all │ positions (working backwards)
-    chars = collect(prefix)
-    box_positions = Int[]
-    for i in length(chars):-1:1
-        if chars[i] == '│'
-            push!(box_positions, i)
-        end
-    end
-
-    # Replace up to `count` trailing │ characters
-    n_to_replace = min(count, length(box_positions))
-    for (i, pos) in enumerate(box_positions[1:n_to_replace])
-        if i == 1
-            # Last │ becomes └
-            chars[pos] = '└'
-        else
-            # Other trailing │ become space
-            chars[pos] = ' '
-        end
-    end
-
-    return String(chars)
-end
-
-# Print expression for last line of last region (replace trailing │ with └)
-function print_expr_with_type_closing(p::IRPrinter, idx::Int, expr, typ; cascade_depth::Int=0)
-    # Replace (cascade_depth + 1) trailing │ characters: last one becomes └, rest become spaces
-    closing_prefix = close_trailing_boxes(p.line_prefix, cascade_depth + 1)
-    print_colored(p, closing_prefix, :light_black)
-
-    # Print %N = assignment
-    idx_s = string(idx)
-    pad = " "^(p.max_idx_width - length(idx_s) - 4)  # -4 for "% = "
-    print(p.io, "%", idx_s, pad, " = ")
-    print_expr(p, expr)
-
-    # Print type annotation
-    print_colored(p, string("::", format_type(typ)), :cyan)
-    println(p.io)
-end
-
-# Print terminator for last line of last region (replace trailing │ with └)
-function print_terminator_closing(p::IRPrinter, term; cascade_depth::Int=0)
-    closing_prefix = close_trailing_boxes(p.line_prefix, cascade_depth + 1)
-    print_colored(p, closing_prefix, :light_black)
-    print_terminator_content(p, term)
-    println(p.io)
 end
 
 # Print just the terminator content (keyword + values), no prefix or newline
@@ -536,20 +440,17 @@ function print_terminator_values(p::IRPrinter, values)
 end
 
 # Print ControlFlowOp (final type, dispatches via multiple dispatch)
-print_control_flow(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0) = print_if_op_final(p, op, pos, result_type; is_last, cascade_depth)
-print_control_flow(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0) = print_for_op_final(p, op, pos, result_type; is_last, cascade_depth)
-print_control_flow(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0) = print_while_op_final(p, op, pos, result_type; is_last, cascade_depth)
-print_control_flow(p::IRPrinter, op::LoopOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0) = print_loop_op_final(p, op, pos, result_type; is_last, cascade_depth)
+print_control_flow(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(result_type); is_last::Bool=false) = print_if_op_final(p, op, pos, result_type; is_last)
+print_control_flow(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(result_type); is_last::Bool=false) = print_for_op_final(p, op, pos, result_type; is_last)
+print_control_flow(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize(result_type); is_last::Bool=false) = print_while_op_final(p, op, pos, result_type; is_last)
+print_control_flow(p::IRPrinter, op::LoopOp, pos::Int, @nospecialize(result_type); is_last::Bool=false) = print_loop_op_final(p, op, pos, result_type; is_last)
 
-function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0)
-    # When cascade_depth > 0, keep │ going (don't use └──) so inner content can close it
-    use_closing = is_last && cascade_depth == 0
-    prefix = use_closing ? "└──" : "├──"
-    cont_prefix = use_closing ? "    " : "│   "
-
+function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(result_type); is_last::Bool=false)
+    # Print the if header (no box-drawing prefix for the op itself)
     print_indent(p)
-    print_colored(p, prefix, :light_black)
-    print(p.io, " %", pos, " = if ")
+    idx_s = string(pos)
+    pad = " "^(p.max_idx_width - length(idx_s) - 4)
+    print(p.io, "%", idx_s, pad, " = if ")
     print_value(p, op.condition)
 
     # Show return type annotation
@@ -560,31 +461,38 @@ function print_if_op_final(p::IRPrinter, op::IfOp, pos::Int, @nospecialize(resul
 
     println(p.io)
 
-    # Print "then:" region header
-    then_p = child_printer(p, op.then_region, cont_prefix)
-    print_region_header(then_p, "then", op.then_region.args)
-    # Print then region body
-    then_body_p = child_printer(then_p, op.then_region, "│   ")
-    print_block_body(then_body_p, op.then_region)
+    # Check if else region is empty (no body, no terminator)
+    else_is_empty = isempty(op.else_region.body) && op.else_region.terminator === nothing
+    # Check if else has only a terminator (no body statements)
+    else_is_just_terminator = isempty(op.else_region.body) && op.else_region.terminator !== nothing
 
-    # Print "else:" region header
-    else_p = child_printer(p, op.else_region, cont_prefix)
-    print_region_header(else_p, "else", op.else_region.args)
-    # Print else region body (last region, show closing on last line)
-    # Pass cascade_depth so innermost item can close all cascaded levels
-    else_body_p = child_printer(else_p, op.else_region, "│   ")
-    print_block_body(else_body_p, op.else_region; is_last_region=true, cascade_depth=cascade_depth)
+    # Print "then:" region header (at same level as the if)
+    print_region_header(p, "then", op.then_region.args; is_last=false)
+    # Print then region body (indented one level)
+    # If else is empty, then's last item closes the if with └──
+    then_body_p = child_printer(p, op.then_region, "│   ")
+    print_block_body(then_body_p, op.then_region; is_last_in_parent=else_is_empty)
+
+    # Handle else region
+    if else_is_empty
+        # Empty else: just print └ else: to close the if
+        print_region_header(p, "else", op.else_region.args; is_last=true)
+    else
+        # Else has content: print region header and body
+        print_region_header(p, "else", op.else_region.args; is_last=false)
+        else_body_p = child_printer(p, op.else_region, "│   ")
+        print_block_body(else_body_p, op.else_region; is_last_in_parent=true)
+    end
 end
 
-function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0)
-    # When cascade_depth > 0, keep │ going so inner content can close it
-    use_closing = is_last && cascade_depth == 0
-    prefix = use_closing ? "└──" : "├──"
-    cont_prefix = use_closing ? "    " : "│   "
+function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(result_type); is_last::Bool=false)
+    cont_prefix = is_last ? "    " : "│   "
 
+    # Print the for header (no box-drawing prefix)
     print_indent(p)
-    print_colored(p, prefix, :light_black)
-    print(p.io, " %", pos, " = ")
+    idx_s = string(pos)
+    pad = " "^(p.max_idx_width - length(idx_s) - 4)
+    print(p.io, "%", idx_s, pad, " = ")
     print_colored(p, "for", :yellow)
     print(p.io, " %arg", op.iv_arg.id, " = ")
     print_value(p, op.lower)
@@ -605,21 +513,19 @@ function print_for_op_final(p::IRPrinter, op::ForOp, pos::Int, @nospecialize(res
 
     println(p.io)
 
-    # Body is inline (no region header for single-region ops)
-    # Use normal block body printing - the last item will get └── prefix automatically
+    # Body content - the terminator (continue) closes the for block with └──
     body_p = child_printer(p, op.body, cont_prefix)
-    print_block_body(body_p, op.body)
+    print_block_body(body_p, op.body; is_last_in_parent=true)
 end
 
-function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0)
-    # When cascade_depth > 0, keep │ going so inner content can close it
-    use_closing = is_last && cascade_depth == 0
-    prefix = use_closing ? "└──" : "├──"
-    cont_prefix = use_closing ? "    " : "│   "
+function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int, @nospecialize(result_type); is_last::Bool=false)
+    cont_prefix = is_last ? "    " : "│   "
 
+    # Print the loop header (no box-drawing prefix)
     print_indent(p)
-    print_colored(p, prefix, :light_black)
-    print(p.io, " %", pos, " = ")
+    idx_s = string(pos)
+    pad = " "^(p.max_idx_width - length(idx_s) - 4)
+    print(p.io, "%", idx_s, pad, " = ")
     print_colored(p, "loop", :yellow)
     print_loop_args(p, op.body.args, op.init_values)
     # Show return type annotation
@@ -629,21 +535,17 @@ function print_loop_op_final(p::IRPrinter, op::LoopOp, pos::Int, @nospecialize(r
     end
     println(p.io)
 
-    # Body is inline (no region header for single-region ops)
-    # Use normal block body printing - the last item will get └── prefix automatically
+    # Body content - the terminator closes the loop block with └──
     body_p = child_printer(p, op.body, cont_prefix)
-    print_block_body(body_p, op.body)
+    print_block_body(body_p, op.body; is_last_in_parent=true)
 end
 
-function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize(result_type); is_last::Bool=false, cascade_depth::Int=0)
-    # When cascade_depth > 0, keep │ going so inner content can close it
-    use_closing = is_last && cascade_depth == 0
-    prefix = use_closing ? "└──" : "├──"
-    cont_prefix = use_closing ? "    " : "│   "
-
+function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize(result_type); is_last::Bool=false)
+    # Print the while header (no box-drawing prefix)
     print_indent(p)
-    print_colored(p, prefix, :light_black)
-    print(p.io, " %", pos, " = ")
+    idx_s = string(pos)
+    pad = " "^(p.max_idx_width - length(idx_s) - 4)
+    print(p.io, "%", idx_s, pad, " = ")
     print_colored(p, "while", :yellow)
     print_loop_args(p, op.before.args, op.init_values)
     # Show return type annotation
@@ -653,20 +555,24 @@ function print_while_op_final(p::IRPrinter, op::WhileOp, pos::Int, @nospecialize
     end
     println(p.io)
 
-    # Print "before" region header
-    before_p = child_printer(p, op.before, cont_prefix)
-    print_region_header(before_p, "before", op.before.args)
-    # Print before region body
-    before_body_p = child_printer(before_p, op.before, "│   ")
-    print_block_body(before_body_p, op.before)
+    # Check if "do" region is empty
+    do_is_empty = isempty(op.after.body) && op.after.terminator === nothing
+
+    # Print "before" region header (at same level as the while)
+    print_region_header(p, "before", op.before.args; is_last=false)
+    # Print before region body (indented one level)
+    # If do is empty, before's last item closes the while with └──
+    before_body_p = child_printer(p, op.before, "│   ")
+    print_block_body(before_body_p, op.before; is_last_in_parent=do_is_empty)
 
     # Print "do" region header
-    after_p = child_printer(p, op.after, cont_prefix)
-    print_region_header(after_p, "do", op.after.args)
-    # Print do region body (last region, show closing on last line)
-    # Pass cascade_depth so innermost item can close all cascaded levels
-    after_body_p = child_printer(after_p, op.after, "│   ")
-    print_block_body(after_body_p, op.after; is_last_region=true, cascade_depth=cascade_depth)
+    # Use └ if empty (nothing follows), ├ if has content
+    print_region_header(p, "do", op.after.args; is_last=do_is_empty)
+    # Print do region body
+    if !do_is_empty
+        after_body_p = child_printer(p, op.after, "│   ")
+        print_block_body(after_body_p, op.after; is_last_in_parent=true)
+    end
 end
 
 # Main entry point: show for StructuredCodeInfo
@@ -690,10 +596,13 @@ function Base.show(io::IO, ::MIME"text/plain", sci::StructuredCodeInfo)
     # Print header
     println(io, "StructuredCodeInfo(")
 
-    p = IRPrinter(io, sci.code, sci.entry)
+    # Create printer with │ prefix for the entry block (2 chars, not 4)
+    base_p = IRPrinter(io, sci.code, sci.entry)
+    p = child_printer(base_p, sci.entry, "│ ")
 
-    # Print entry block body
-    print_block_body(p, sci.entry)
+    # Print entry block body - use is_closing_self=true so the last item
+    # replaces │ with └── instead of adding └── after │
+    print_block_body(p, sci.entry; is_closing_self=true)
 
     print(io, ") => ")
     if color
