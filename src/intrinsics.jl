@@ -194,7 +194,7 @@ Base.Broadcast.broadcastable(t::Tile) = t
  Tile Shape Operations
 =============================================================================#
 
-public transpose
+public transpose, reshape, permute
 
 """
     transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
@@ -204,6 +204,115 @@ Transpose a 2D tile, swapping its dimensions.
 @noinline function transpose(tile::Tile{T, S}) where {T, S}
     Tile{T, reverse(S)}()
 end
+
+"""
+    reshape(tile::Tile{T, S}, shape::NTuple{N, Int}) -> Tile{T, shape}
+
+Reshape a tile to a new shape. The total number of elements must remain the same.
+
+# Example
+```julia
+tile = ct.load(arr, (0, 0), (4, 8))  # Shape (4, 8), 32 elements
+reshaped = ct.reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
+```
+"""
+@noinline function reshape(tile::Tile{T, S}, ::Val{Shape}) where {T, S, Shape}
+    Base.donotdelete(tile)
+    Tile{T, Shape}()
+end
+
+# Convenience overload - inline wrapper that converts tuple to Val
+@inline reshape(tile::Tile{T, S}, shape::NTuple{N, Int}) where {T, S, N} = reshape(tile, Val(shape))
+
+"""
+    permute(tile::Tile{T, S}, perm::NTuple{N, Int}) -> Tile{T, permuted_shape}
+
+Permute the dimensions of a tile according to the given permutation.
+The permutation uses 0-indexed axes (matching cuTile Python convention).
+
+# Example
+```julia
+tile = ct.load(arr, (0, 0, 0), (2, 3, 4))  # Shape (2, 3, 4)
+# Permute axes: new_axis_0 = old_axis_2, new_axis_1 = old_axis_0, new_axis_2 = old_axis_1
+permuted = ct.permute(tile, (2, 0, 1))  # Shape (4, 2, 3)
+```
+"""
+@noinline function permute(tile::Tile{T, S}, ::Val{Perm}) where {T, S, Perm}
+    Base.donotdelete(tile)
+    # Compute permuted shape: for each position i in output, take S[Perm[i]+1]
+    # (Perm is 0-indexed, S is 1-indexed tuple access)
+    permuted_shape = ntuple(i -> S[Perm[i] + 1], length(Perm))
+    Tile{T, permuted_shape}()
+end
+
+# Convenience overload - inline wrapper that converts tuple to Val
+@inline permute(tile::Tile{T, S}, perm::NTuple{N, Int}) where {T, S, N} = permute(tile, Val(perm))
+
+public extract
+
+"""
+    extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}
+
+Extract a slice from a tile starting at the given index with the specified shape.
+Both index and shape are 0-indexed tuples matching cuTile Python convention.
+
+# Example
+```julia
+# Given a tile with shape (batch, N, 2) where 2 represents real/imag components
+tile = ct.load(arr, (0, 0, 0), (BS, N, 2))
+# Extract just the real component (index 0 in last dimension)
+real_part = ct.extract(tile, (0, 0, 0), (BS, N, 1))  # Shape (BS, N, 1)
+# Extract just the imaginary component (index 1 in last dimension)
+imag_part = ct.extract(tile, (0, 0, 1), (BS, N, 1))  # Shape (BS, N, 1)
+```
+"""
+@noinline function extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape}
+    Base.donotdelete(tile)
+    Tile{T, Shape}()
+end
+
+# Convenience overload - inline wrapper that converts tuples to Val
+@inline extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{M, Int}) where {T, S, N, M} =
+    extract(tile, Val(index), Val(shape))
+
+public cat
+
+"""
+    cat(tiles::Tuple{Tile, Tile}, axis::Int) -> Tile
+
+Concatenate two tiles along the specified axis.
+Supports negative axis (e.g., -1 for last dimension).
+
+# Example
+```julia
+tile_a = ct.load(arr_a, (0,), (4, 8))  # Shape (4, 8)
+tile_b = ct.load(arr_b, (0,), (4, 8))  # Shape (4, 8)
+# Concatenate along axis 0: (4, 8) + (4, 8) -> (8, 8)
+combined = ct.cat((tile_a, tile_b), 0)
+# Concatenate along axis -1 (last): (4, 8) + (4, 8) -> (4, 16)
+combined_last = ct.cat((tile_a, tile_b), -1)
+```
+"""
+@noinline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, ::Val{Axis}) where {T, S1, S2, Axis}
+    Base.donotdelete(tiles)
+    # Compute output shape: dimensions must match except at the concatenation axis
+    # Handle negative axis
+    ndims = length(S1)
+    axis = Axis < 0 ? ndims + Axis : Axis
+    # Result shape: sum the sizes along axis, keep others same
+    result_shape = ntuple(ndims) do i
+        if i == axis + 1  # 0-indexed axis, 1-indexed tuple access
+            S1[i] + S2[i]
+        else
+            S1[i]  # S1[i] should equal S2[i] for valid concatenation
+        end
+    end
+    Tile{T, result_shape}()
+end
+
+# Convenience overload - inline wrapper that converts axis to Val
+@inline cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, axis::Int) where {T, S1, S2} =
+    cat(tiles, Val(axis))
 
 #=============================================================================
  GPU Intrinsics (stub implementations for host-side)
@@ -374,7 +483,7 @@ end
  Matrix Multiply-Accumulate
 =============================================================================#
 
-public mma
+public mma, matmul
 
 """
     mma(a::Tile{T1, (M, K)}, b::Tile{T2, (K, N)}, acc::Tile{T3, (M, N)}) -> Tile{T3, (M, N)}
@@ -391,6 +500,24 @@ The input tiles must have compatible shapes:
 @noinline function mma(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
     Base.donotdelete(a, b, acc)
     Tile{T3, SC}()
+end
+
+"""
+    matmul(a::Tile{T1, (M, K)}, b::Tile{T2, (K, N)}) -> Tile{T1, (M, N)}
+
+Perform matrix multiplication: result = a @ b.
+Equivalent to `mma(a, b, zeros((M, N), T1))`.
+
+# Example
+```julia
+c = ct.matmul(a, b)  # c = a @ b
+```
+"""
+@inline function matmul(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
+    M = SA[1]
+    N = SB[2]
+    acc = zeros((M, N), T1)
+    mma(a, b, acc)
 end
 
 #=============================================================================

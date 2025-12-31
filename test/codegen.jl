@@ -15,9 +15,152 @@
         # TODO: mmai - integer matrix multiply-accumulate
         # TODO: offset - tile offset computation
         # TODO: pack - pack tiles
-        # TODO: reshape - reshape tile dimensions
         # TODO: scan - parallel scan/prefix sum
         # TODO: unpack - unpack tiles
+
+        @testset "reshape" begin
+            # 2D -> 1D reshape
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (4, 8))
+                    check"CHECK: reshape"
+                    reshaped = ct.reshape(tile, (32,))
+                    ct.store(b, pid, reshaped)
+                    return
+                end
+            end
+
+            # 1D -> 2D reshape
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (64,))
+                    check"CHECK: reshape"
+                    reshaped = ct.reshape(tile, (8, 8))
+                    ct.store(b, pid, reshaped)
+                    return
+                end
+            end
+
+            # 3D -> 2D reshape (for FFT-like patterns)
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (2, 4, 8))
+                    check"CHECK: reshape"
+                    reshaped = ct.reshape(tile, (2, 32))
+                    ct.store(b, pid, reshaped)
+                    return
+                end
+            end
+        end
+
+        @testset "permute" begin
+            # 2D permute (same as transpose)
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (4, 8))
+                    check"CHECK: permute"
+                    permuted = ct.permute(tile, (1, 0))
+                    ct.store(b, pid, permuted)
+                    return
+                end
+            end
+
+            # 3D permute
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (2, 4, 8))
+                    check"CHECK: permute"
+                    # (2,4,8) with perm (2,0,1) -> (8,2,4)
+                    permuted = ct.permute(tile, (2, 0, 1))
+                    ct.store(b, pid, permuted)
+                    return
+                end
+            end
+
+            # 3D identity permute
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (2, 4, 8))
+                    check"CHECK: permute"
+                    # (2,4,8) with perm (0,1,2) -> (2,4,8) (identity)
+                    permuted = ct.permute(tile, (0, 1, 2))
+                    ct.store(b, pid, permuted)
+                    return
+                end
+            end
+        end
+
+        @testset "extract" begin
+            # Extract slice from 2D tile
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (4, 8))
+                    check"CHECK: extract"
+                    # Extract 2x4 slice starting at (1, 2)
+                    extracted = ct.extract(tile, (1, 2), (2, 4))
+                    ct.store(b, pid, extracted)
+                    return
+                end
+            end
+
+            # Extract slice from 3D tile (FFT real/imag pattern)
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile = ct.load(a, pid, (2, 4, 2))  # (batch, N, real/imag)
+                    check"CHECK: extract"
+                    # Extract real component (index 0 in last dimension)
+                    real_part = ct.extract(tile, (0, 0, 0), (2, 4, 1))
+                    ct.store(b, pid, real_part)
+                    return
+                end
+            end
+        end
+
+        @testset "cat" begin
+            # Concatenate along last axis (axis -1)
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile1 = ct.load(a, pid, (4, 4))
+                    tile2 = ct.load(b, pid, (4, 4))
+                    check"CHECK: cat"
+                    combined = ct.cat((tile1, tile2), Val(-1))  # -> (4, 8)
+                    ct.store(a, pid, combined)
+                    return
+                end
+            end
+
+            # Concatenate along first axis (axis 0)
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
+                    pid = ct.bid(0)
+                    tile1 = ct.load(a, pid, (4, 8))
+                    tile2 = ct.load(b, pid, (4, 8))
+                    check"CHECK: cat"
+                    combined = ct.cat((tile1, tile2), Val(0))  # -> (8, 8)
+                    ct.store(a, pid, combined)
+                    return
+                end
+            end
+        end
 
         @testset "broadcast" begin
             @test @filecheck begin
@@ -124,6 +267,23 @@
                     acc = ct.full((32, 32), 0.0f0, Float32)
                     check"CHECK: mma"
                     result = ct.mma(tile_a, tile_b, acc)
+                    ct.store(c, (bidx, bidy), result)
+                    return
+                end
+            end
+        end
+
+        @testset "matmul" begin
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
+                    bidx = ct.bid(0)
+                    bidy = ct.bid(1)
+                    tile_a = ct.load(a, bidx, (32, 16))
+                    tile_b = ct.load(b, bidy, (16, 32))
+                    # matmul = mma with zero accumulator
+                    check"CHECK: mma"
+                    result = ct.matmul(tile_a, tile_b)
                     ct.store(c, (bidx, bidy), result)
                     return
                 end

@@ -1314,6 +1314,44 @@ function encode_ReshapeOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
     return new_op!(cb)
 end
 
+"""
+    encode_ExtractOp!(cb, result_type, source, indices) -> Value
+
+Extract a slice from a tile at the given indices.
+The indices specify the starting position for each dimension.
+The result shape is determined by result_type.
+Opcode: 38
+"""
+function encode_ExtractOp!(cb::CodeBuilder, result_type::TypeId, source::Value, indices::Vector{Value})
+    encode_varint!(cb.buf, Opcode.ExtractOp)
+    # Variadic result types (just one)
+    encode_typeid_seq!(cb.buf, [result_type])
+    # Operands: source + indices
+    encode_varint!(cb.buf, 1 + length(indices))
+    encode_operand!(cb.buf, source)
+    for idx in indices
+        encode_operand!(cb.buf, idx)
+    end
+    return new_op!(cb)
+end
+
+"""
+    encode_CatOp!(cb, result_type, lhs, rhs, dim) -> Value
+
+Concatenate two tiles along the specified dimension.
+Opcode: 12
+"""
+function encode_CatOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value, dim::Int)
+    encode_varint!(cb.buf, Opcode.CatOp)
+    encode_typeid!(cb.buf, result_type)
+    # Attribute: dimension (as i32)
+    encode_opattr_int!(cb, Int32(dim))
+    # Operands
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
+
 #=============================================================================
  Tensor shape operations
 =============================================================================#

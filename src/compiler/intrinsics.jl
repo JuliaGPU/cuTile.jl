@@ -61,6 +61,22 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(transpose), args, @nospec
     emit_transpose!(ctx, args, result_type)
 end
 
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(reshape), args, @nospecialize(result_type))
+    emit_reshape!(ctx, args, result_type)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(permute), args, @nospecialize(result_type))
+    emit_permute!(ctx, args, result_type)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(extract), args, @nospecialize(result_type))
+    emit_extract!(ctx, args, result_type)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(cat), args, @nospecialize(result_type))
+    emit_cat!(ctx, args, result_type)
+end
+
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(mma), args, @nospecialize(result_type))
     emit_mma!(ctx, args, result_type)
 end
@@ -1082,6 +1098,187 @@ function emit_transpose!(ctx::CodegenContext, args::AbstractVector, @nospecializ
     permutation = collect(ndim-1:-1:0)
 
     result = encode_PermuteOp!(cb, output_tile_type, source.v, permutation)
+
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
+
+#=============================================================================
+ Reshape Operation
+=============================================================================#
+
+function emit_reshape!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get source tile
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve source operand for reshape()")
+
+    # Extract target shape from Val{Shape} argument
+    target_shape_tuple = get_constant(ctx, args[2])
+    target_shape_tuple isa Tuple || error("reshape() shape must be a compile-time constant tuple")
+    target_shape = collect(Int, target_shape_tuple)
+
+    # Get element type
+    source_type = unwrap_type(source.jltype)
+    elem_type = source_type <: Tile ? source_type.parameters[1] : source_type
+
+    # Create target tile type
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    result_type_id = tile_type!(tt, dtype, target_shape)
+
+    # Emit ReshapeOp
+    result_v = encode_ReshapeOp!(cb, result_type_id, source.v)
+
+    CGVal(result_v, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
+end
+
+#=============================================================================
+ Permute Operation (N-D generalization of transpose)
+=============================================================================#
+
+function emit_permute!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get source tile
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve source operand for permute()")
+
+    input_shape = source.shape
+    isempty(input_shape) && error("Cannot determine tile shape for permute()")
+
+    # Extract permutation from Val{Perm} argument
+    perm_tuple = get_constant(ctx, args[2])
+    perm_tuple isa Tuple || error("permute() permutation must be a compile-time constant tuple")
+
+    # Convert to 0-indexed vector for bytecode
+    permutation = collect(Int, perm_tuple)
+
+    # Compute output shape based on permutation
+    # permutation[i] tells us which input dimension goes to output position i
+    output_shape = [input_shape[p + 1] for p in permutation]
+
+    # Get element type
+    elem_type = unwrap_type(source.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+
+    # Create output tile type
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+
+    # Emit PermuteOp
+    result = encode_PermuteOp!(cb, output_tile_type, source.v, permutation)
+
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
+
+#=============================================================================
+ Extract Operation (slice extraction)
+=============================================================================#
+
+function emit_extract!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get source tile
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve source operand for extract()")
+
+    # Extract index from Val{Index} argument
+    index_tuple = get_constant(ctx, args[2])
+    index_tuple isa Tuple || error("extract() index must be a compile-time constant tuple")
+
+    # Extract shape from Val{Shape} argument
+    shape_tuple = get_constant(ctx, args[3])
+    shape_tuple isa Tuple || error("extract() shape must be a compile-time constant tuple")
+    output_shape = collect(Int, shape_tuple)
+
+    # Get element type
+    elem_type = unwrap_type(source.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+
+    # Create output tile type
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+
+    # Create constant index values (0D i32 tiles)
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    index_vals = Value[]
+    for idx in index_tuple
+        idx_bytes = collect(reinterpret(UInt8, [Int32(idx)]))
+        idx_val = encode_ConstantOp!(cb, scalar_i32, idx_bytes)
+        push!(index_vals, idx_val)
+    end
+
+    # Emit ExtractOp
+    result = encode_ExtractOp!(cb, output_tile_type, source.v, index_vals)
+
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
+
+#=============================================================================
+ Concatenation
+=============================================================================#
+
+function emit_cat!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # args[1] is the tuple of tiles - need to trace back to Core.tuple call
+    tuple_ref = args[1]
+    if tuple_ref isa SSAValue
+        stmt = code(ctx.target)[tuple_ref.id]
+        if stmt isa Expr && stmt.head === :call
+            callee = stmt.args[1]
+            if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
+                tile1_ref = stmt.args[2]
+                tile2_ref = stmt.args[3]
+            else
+                error("cat() expects tuple created with Core.tuple, got call to $callee")
+            end
+        else
+            error("cat() expects tuple SSA value pointing to Core.tuple call")
+        end
+    else
+        error("cat() expects tuple SSA value, got $(typeof(tuple_ref))")
+    end
+
+    # Emit the two tiles
+    lhs = emit_value!(ctx, tile1_ref)
+    rhs = emit_value!(ctx, tile2_ref)
+    (lhs === nothing || rhs === nothing) && error("Cannot resolve tile operands for cat()")
+
+    # Get axis from Val{Axis}
+    axis_val = get_constant(ctx, args[2])
+    axis_val isa Integer || error("cat() axis must be a compile-time constant integer")
+
+    # Handle negative axis
+    lhs_shape = lhs.shape
+    ndims = length(lhs_shape)
+    axis = axis_val < 0 ? ndims + axis_val : axis_val
+
+    # Compute output shape - concatenate along the axis
+    rhs_shape = rhs.shape
+    output_shape = collect(Int, lhs_shape)
+    output_shape[axis + 1] += rhs_shape[axis + 1]  # 1-based indexing
+
+    # Get element type
+    elem_type = unwrap_type(lhs.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+
+    # Create output tile type
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+
+    # Emit CatOp (axis is 0-indexed for bytecode)
+    result = encode_CatOp!(cb, output_tile_type, lhs.v, rhs.v, axis)
 
     CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
