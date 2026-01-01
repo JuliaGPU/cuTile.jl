@@ -53,6 +53,43 @@ function test_add_2d(::Type{T}, m, n, tile_x, tile_y; name=nothing) where T
     println("✓ passed")
 end
 
+# 1D kernel using gather/scatter (explicit index-based memory access)
+# This demonstrates the gather/scatter API for cases where you need
+# explicit control over indices (e.g., for non-contiguous access patterns)
+function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
+                                   tile::ct.Constant{Int}) where {T}
+    bid = ct.bid(0)
+    # Create index tile: [0, 1, 2, ..., tile-1] for this block's elements
+    offsets = ct.arange((tile[],), Int32)
+    # Compute global indices: bid * tile + offsets
+    # Use broadcast to add scalar bid*tile to each element of offsets
+    base = ct.Tile(bid * Int32(tile[]))
+    indices = ct.broadcast_to(base, (tile[],)) .+ offsets
+
+    # Gather elements using explicit indices
+    a_tile = ct.gather(a, indices)
+    b_tile = ct.gather(b, indices)
+
+    # Perform addition
+    sum_tile = a_tile + b_tile
+
+    # Scatter result back to output array
+    ct.scatter(c, indices, sum_tile)
+    return
+end
+
+function test_add_1d_gather(::Type{T}, n, tile; name=nothing) where T
+    name = something(name, "1D vec_add gather ($n elements, $T, tile=$tile)")
+    println("--- $name ---")
+    a, b = CUDA.rand(T, n), CUDA.rand(T, n)
+    c = CUDA.zeros(T, n)
+
+    ct.launch(vec_add_kernel_1d_gather, cld(n, tile), a, b, c, ct.Constant(tile))
+
+    @assert Array(c) ≈ Array(a) + Array(b)
+    println("✓ passed")
+end
+
 function main()
     println("--- cuTile Vector/Matrix Addition Examples ---\n")
 
@@ -75,6 +112,11 @@ function main()
 
     # 2D tests with Float16
     test_add_2d(Float16, 1024, 1024, 64, 64)
+
+    # 1D gather/scatter tests with Float32
+    # Uses explicit index-based memory access instead of tiled loads/stores
+    test_add_1d_gather(Float32, 1_024_000, 1024)
+    test_add_1d_gather(Float32, 2^20, 512)
 
     println("\n--- All addition examples completed ---")
 end

@@ -1286,4 +1286,48 @@ end
             end
         end
     end
+
+    #=========================================================================
+     Gather/Scatter Operations
+    =========================================================================#
+    @testset "gather/scatter" begin
+        spec = ct.ArraySpec{1}(16, true)
+
+        @testset "1D gather" begin
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
+                    pid = ct.bid(0)
+                    # Create index tile (simple: just use arange)
+                    check"CHECK: iota"
+                    indices = ct.arange((16,), Int32)
+                    # Gather from array
+                    check"CHECK: offset"
+                    check"CHECK: load_ptr_tko"
+                    tile = ct.gather(a, indices)
+                    ct.store(b, pid, tile)
+                    return
+                end
+            end
+        end
+
+        @testset "1D scatter" begin
+            @test @filecheck begin
+                check"CHECK-LABEL: entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
+                    pid = ct.bid(0)
+                    # Load tile
+                    tile = ct.load(a, pid, (16,))
+                    # Create index tile (simple: just use arange)
+                    check"CHECK: iota"
+                    indices = ct.arange((16,), Int32)
+                    # Scatter to array
+                    check"CHECK: offset"
+                    check"CHECK: store_ptr_tko"
+                    ct.scatter(b, indices, tile)
+                    return
+                end
+            end
+        end
+    end
 end

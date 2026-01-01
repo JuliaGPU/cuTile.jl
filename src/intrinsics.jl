@@ -1079,3 +1079,111 @@ old_val = ct.atomic_add(counters, idx, Int32(1))
                             memory_scope::Int=MemScope.Device) where {T, N}
     _atomic_add(array, index, val, memory_order, memory_scope)::T
 end
+
+#=============================================================================
+ Gather and Scatter Operations
+=============================================================================#
+
+public gather, scatter
+
+"""
+    gather(array::TileArray{T, 1}, indices::Tile{I, S}) -> Tile{T, S}
+
+Gather elements from a 1D array using index tile.
+Returns a tile with the same shape as indices and element type of array.
+
+Out-of-bounds indices are handled with zero padding (elements outside bounds return zero).
+
+# Example
+```julia
+indices = bid * TILE + ct.arange((TILE,), Int32)  # [bid*TILE, bid*TILE+1, ...]
+tile = ct.gather(arr, indices)  # Load elements at those indices
+```
+"""
+# Internal stub - captures index shape in type parameter
+@noinline function _gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
+    Base.donotdelete(array, indices)
+    Tile{T, S}()
+end
+
+# Public API for 1D array gather
+@inline function gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
+    _gather(array, indices)
+end
+
+"""
+    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}) -> Tile{T, S}
+
+Gather elements from a 2D array using a tuple of index tiles.
+The index tiles are broadcast to a common shape, which becomes the output shape.
+
+# Example
+```julia
+x = bid_x * TILE_X + ct.arange((TILE_X,), Int32)  # (TILE_X,)
+y = bid_y * TILE_Y + ct.arange((TILE_Y,), Int32)  # (TILE_Y,)
+# Reshape for broadcasting
+x = ct.reshape(x, (TILE_X, 1))  # (TILE_X, 1)
+y = ct.reshape(y, (1, TILE_Y))  # (1, TILE_Y)
+tile = ct.gather(arr, (x, y))   # (TILE_X, TILE_Y)
+```
+"""
+# Internal stub for 2D gather - indices are two tiles that broadcast to common shape
+@noinline function _gather(array::TileArray{T, 2}, idx0::Tile{I0, S0}, idx1::Tile{I1, S1}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
+    S = broadcast_shape(S0, S1)
+    Base.donotdelete(array, idx0, idx1)
+    Tile{T, S}()
+end
+
+# Public API for 2D array gather (tuple of indices)
+@inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
+    _gather(array, indices[1], indices[2])
+end
+
+"""
+    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) -> Nothing
+
+Scatter elements to a 1D array at indices specified by index tile.
+Out-of-bounds indices are ignored (no write for elements outside bounds).
+
+# Example
+```julia
+indices = bid * TILE + ct.arange((TILE,), Int32)
+ct.scatter(arr, indices, result_tile)
+```
+"""
+# Internal stub - captures shapes for codegen
+@noinline function _scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
+    Base.donotdelete(array, indices, tile)
+    nothing
+end
+
+# Public API for 1D array scatter
+@inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
+    _scatter(array, indices, tile)
+end
+
+"""
+    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile) -> Nothing
+
+Scatter elements to a 2D array at indices specified by tuple of index tiles.
+The index tiles and value tile must broadcast to the same shape.
+
+# Example
+```julia
+x = ct.reshape(bid_x * TILE_X + ct.arange((TILE_X,), Int32), (TILE_X, 1))
+y = ct.reshape(bid_y * TILE_Y + ct.arange((TILE_Y,), Int32), (1, TILE_Y))
+ct.scatter(arr, (x, y), result_tile)
+```
+"""
+# Internal stub for 2D scatter
+@noinline function _scatter(array::TileArray{T, 2}, idx0::Tile{I0, S0}, idx1::Tile{I1, S1}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
+    S = broadcast_shape(S0, S1)
+    S == Stile || error("Tile shape $Stile doesn't match broadcast shape $S of indices")
+    Base.donotdelete(array, idx0, idx1, tile)
+    nothing
+end
+
+# Public API for 2D array scatter (tuple of indices)
+@inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
+    _scatter(array, indices[1], indices[2], tile)
+end

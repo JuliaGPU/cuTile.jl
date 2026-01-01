@@ -1373,4 +1373,48 @@ end
     @test result == n_blocks
 end
 
+@testset "1D gather - simple" begin
+    # Simple 1D gather: copy first 16 elements using gather
+    function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        # Simple indices 0..15
+        indices = ct.arange((16,), Int32)
+        # Gather from source
+        tile = ct.gather(src, indices)
+        # Store to destination
+        ct.store(dst, pid, tile)
+        return
+    end
+
+    n = 16
+    src = CUDA.rand(Float32, n)
+    dst = CUDA.zeros(Float32, n)
+
+    ct.launch(gather_simple_kernel, 1, src, dst)
+
+    @test Array(dst) ≈ Array(src)
+end
+
+@testset "1D scatter - simple" begin
+    # Simple 1D scatter: write first 16 elements using scatter
+    function scatter_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        # Load from source
+        tile = ct.load(src, pid, (16,))
+        # Simple indices 0..15
+        indices = ct.arange((16,), Int32)
+        # Scatter to destination
+        ct.scatter(dst, indices, tile)
+        return
+    end
+
+    n = 16
+    src = CUDA.rand(Float32, n)
+    dst = CUDA.zeros(Float32, n)
+
+    ct.launch(scatter_simple_kernel, 1, src, dst)
+
+    @test Array(dst) ≈ Array(src)
+end
+
 end

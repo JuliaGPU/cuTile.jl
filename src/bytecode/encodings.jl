@@ -494,6 +494,137 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
     return new_op!(cb)
 end
 
+"""
+    encode_OffsetOp!(cb, result_type, ptr, offset) -> Value
+
+Compute pointer offset: ptr + offset.
+Opcode: 81
+
+The offset is in elements (not bytes). Broadcasting applies to ptr and offset.
+"""
+function encode_OffsetOp!(cb::CodeBuilder, result_type::TypeId, ptr::Value, offset::Value)
+    encode_varint!(cb.buf, Opcode.OffsetOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, ptr)
+    encode_operand!(cb.buf, offset)
+    return new_op!(cb)
+end
+
+"""
+    encode_LoadPtrTkoOp!(cb, result_type, token_type, source; kwargs...) -> (Value, Value)
+
+Load from pointer tile with optional masking and token ordering.
+Opcode: 61
+
+Returns (loaded_tile, new_token) tuple.
+"""
+function encode_LoadPtrTkoOp!(cb::CodeBuilder,
+                              result_type::TypeId,
+                              token_type::TypeId,
+                              source::Value;
+                              mask::Union{Value, Nothing}=nothing,
+                              padding_value::Union{Value, Nothing}=nothing,
+                              token::Union{Value, Nothing}=nothing,
+                              memory_ordering::MemoryOrderingSemantics=MemoryWeak,
+                              memory_scope::Union{MemoryScope, Nothing}=nothing,
+                              optimization_hints::Union{Vector{UInt8}, Nothing}=nothing)
+    encode_varint!(cb.buf, Opcode.LoadPtrTkoOp)
+    # Result types
+    encode_typeid!(cb.buf, result_type)
+    encode_typeid!(cb.buf, token_type)
+
+    # Flags
+    flags = 0
+    if memory_scope !== nothing
+        flags |= 1
+    end
+    if optimization_hints !== nothing
+        flags |= 2
+    end
+    if mask !== nothing
+        flags |= 4
+    end
+    if padding_value !== nothing
+        flags |= 8
+    end
+    if token !== nothing
+        flags |= 16
+    end
+    encode_varint!(cb.buf, flags)
+
+    # Attributes
+    encode_enum!(cb.buf, memory_ordering)
+    if memory_scope !== nothing
+        encode_enum!(cb.buf, memory_scope)
+    end
+    if optimization_hints !== nothing
+        append!(cb.buf, optimization_hints)
+    end
+
+    # Operands
+    encode_operand!(cb.buf, source)
+    encode_optional_operand!(cb.buf, mask)
+    encode_optional_operand!(cb.buf, padding_value)
+    encode_optional_operand!(cb.buf, token)
+
+    return new_op!(cb, 2)
+end
+
+"""
+    encode_StorePtrTkoOp!(cb, token_type, destination, value; kwargs...) -> Value
+
+Store to pointer tile with optional masking and token ordering.
+Opcode: 101
+
+Returns new_token.
+"""
+function encode_StorePtrTkoOp!(cb::CodeBuilder,
+                               token_type::TypeId,
+                               destination::Value,
+                               value::Value;
+                               mask::Union{Value, Nothing}=nothing,
+                               token::Union{Value, Nothing}=nothing,
+                               memory_ordering::MemoryOrderingSemantics=MemoryWeak,
+                               memory_scope::Union{MemoryScope, Nothing}=nothing,
+                               optimization_hints::Union{Vector{UInt8}, Nothing}=nothing)
+    encode_varint!(cb.buf, Opcode.StorePtrTkoOp)
+    # Result type (token)
+    encode_typeid!(cb.buf, token_type)
+
+    # Flags
+    flags = 0
+    if memory_scope !== nothing
+        flags |= 1
+    end
+    if optimization_hints !== nothing
+        flags |= 2
+    end
+    if mask !== nothing
+        flags |= 4
+    end
+    if token !== nothing
+        flags |= 8
+    end
+    encode_varint!(cb.buf, flags)
+
+    # Attributes
+    encode_enum!(cb.buf, memory_ordering)
+    if memory_scope !== nothing
+        encode_enum!(cb.buf, memory_scope)
+    end
+    if optimization_hints !== nothing
+        append!(cb.buf, optimization_hints)
+    end
+
+    # Operands
+    encode_operand!(cb.buf, destination)
+    encode_operand!(cb.buf, value)
+    encode_optional_operand!(cb.buf, mask)
+    encode_optional_operand!(cb.buf, token)
+
+    return new_op!(cb)
+end
+
 #=============================================================================
  Arithmetic operations
 =============================================================================#

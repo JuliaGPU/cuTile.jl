@@ -1809,3 +1809,496 @@ function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
         error("Cannot convert $T to constant bytes")
     end
 end
+
+#=============================================================================
+ Gather/Scatter Operations
+=============================================================================#
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_gather), args, @nospecialize(result_type))
+    if length(args) == 2
+        emit_gather_1d!(ctx, args, result_type)
+    elseif length(args) == 3
+        emit_gather_2d!(ctx, args, result_type)
+    else
+        error("_gather: unexpected argument count $(length(args))")
+    end
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_scatter), args, @nospecialize(result_type))
+    if length(args) == 3
+        emit_scatter_1d!(ctx, args, result_type)
+    elseif length(args) == 4
+        emit_scatter_2d!(ctx, args, result_type)
+    else
+        error("_scatter: unexpected argument count $(length(args))")
+    end
+end
+
+"""
+    emit_gather_1d!(ctx, args, result_type)
+
+Emit code for 1D gather: `gather(array, indices)`
+
+Steps:
+1. Get base pointer from TileArray
+2. Compute pointer tile: OffsetOp(base_ptr, indices)
+3. Compute bounds mask: (indices >= 0) & (indices < size)
+4. Load via LoadPtrTkoOp with mask and zero padding
+"""
+function emit_gather_1d!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get array info
+    array_arg = args[1]
+    arg_idx = extract_argument_index(array_arg)
+    (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
+        error("gather() requires a TileArray argument")
+
+    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
+    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    base_ptr = ptr_vals[1]
+
+    tilearray_type = get_arg_type(ctx, arg_idx)
+    elem_type = eltype(tilearray_type)
+
+    # Get array size
+    sizes_vals = get_arg_flat_values(ctx, arg_idx, :sizes)
+    (sizes_vals === nothing || isempty(sizes_vals)) && error("Cannot get size from TileArray")
+    array_size = sizes_vals[1]
+
+    # Get indices tile
+    indices_tv = emit_value!(ctx, args[2])
+    indices_tv === nothing && error("Cannot resolve indices for gather()")
+    indices = indices_tv.v
+    tile_shape = indices_tv.shape
+
+    # Type setup
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    idx_dtype = julia_to_tile_dtype!(tt, Int32)
+    ptr_dtype = pointer_type!(tt, dtype)
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    scalar_ptr_type = tile_type!(tt, ptr_dtype, Int[])
+    ptr_tile_type = tile_type!(tt, ptr_dtype, tile_shape)
+    result_tile_type = tile_type!(tt, dtype, tile_shape)
+    bool_tile_type = tile_type!(tt, I1(tt), tile_shape)
+    token_type = Token(tt)
+
+    # Broadcast base pointer to tile shape
+    # ReshapeOp to add dimensions, then BroadcastOp
+    ndims = length(tile_shape)
+    if ndims > 0
+        ones_shape = fill(1, ndims)
+        reshaped_ptr_type = tile_type!(tt, ptr_dtype, ones_shape)
+        base_ptr_reshaped = encode_ReshapeOp!(cb, reshaped_ptr_type, base_ptr)
+        base_ptr_tile = encode_BroadcastOp!(cb, ptr_tile_type, base_ptr_reshaped)
+    else
+        base_ptr_tile = base_ptr
+    end
+
+    # Compute offset pointers: base_ptr + indices (element offset)
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, indices)
+
+    # Compute bounds mask: (indices >= 0) & (indices < size)
+    # Broadcast size to tile shape
+    idx_tile_type = tile_type!(tt, idx_dtype, tile_shape)
+    if ndims > 0
+        ones_shape = fill(1, ndims)
+        reshaped_size_type = tile_type!(tt, idx_dtype, ones_shape)
+        size_reshaped = encode_ReshapeOp!(cb, reshaped_size_type, array_size)
+        size_tile = encode_BroadcastOp!(cb, idx_tile_type, size_reshaped)
+    else
+        size_tile = array_size
+    end
+
+    # indices >= 0
+    zero_bytes = collect(reinterpret(UInt8, [Int32(0)]))
+    zero_scalar = encode_ConstantOp!(cb, scalar_i32, zero_bytes)
+    if ndims > 0
+        ones_shape = fill(1, ndims)
+        reshaped_zero_type = tile_type!(tt, idx_dtype, ones_shape)
+        zero_reshaped = encode_ReshapeOp!(cb, reshaped_zero_type, zero_scalar)
+        zero_tile = encode_BroadcastOp!(cb, idx_tile_type, zero_reshaped)
+    else
+        zero_tile = zero_scalar
+    end
+    ge_zero = encode_CmpIOp!(cb, bool_tile_type, indices, zero_tile;
+                             predicate=CmpGreaterThanOrEqual, signedness=SignednessSigned)
+
+    # indices < size
+    lt_size = encode_CmpIOp!(cb, bool_tile_type, indices, size_tile;
+                             predicate=CmpLessThan, signedness=SignednessSigned)
+
+    # Combined mask: ge_zero & lt_size
+    mask = encode_AndIOp!(cb, bool_tile_type, ge_zero, lt_size)
+
+    # Create padding value (zero)
+    padding_bytes = if elem_type === Float32
+        collect(reinterpret(UInt8, [Float32(0)]))
+    elseif elem_type === Float64
+        collect(reinterpret(UInt8, [Float64(0)]))
+    elseif elem_type === Int32
+        collect(reinterpret(UInt8, [Int32(0)]))
+    else
+        collect(reinterpret(UInt8, [Int32(0)]))  # Default
+    end
+    padding_scalar = encode_ConstantOp!(cb, tile_type!(tt, dtype, Int[]), padding_bytes)
+    if ndims > 0
+        ones_shape = fill(1, ndims)
+        reshaped_pad_type = tile_type!(tt, dtype, ones_shape)
+        padding_reshaped = encode_ReshapeOp!(cb, reshaped_pad_type, padding_scalar)
+        padding_tile = encode_BroadcastOp!(cb, result_tile_type, padding_reshaped)
+    else
+        padding_tile = padding_scalar
+    end
+
+    # Load with mask
+    tile_val, new_token = encode_LoadPtrTkoOp!(cb, result_tile_type, token_type, pointers;
+                                                mask=mask,
+                                                padding_value=padding_tile,
+                                                token=ctx.token)
+    ctx.token = new_token
+
+    CGVal(tile_val, result_tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+end
+
+"""
+    emit_gather_2d!(ctx, args, result_type)
+
+Emit code for 2D gather: `gather(array, idx0, idx1)`
+
+The indices are broadcast to a common shape. Linear index is computed as:
+linear_idx = idx0 + idx1 * stride1
+"""
+function emit_gather_2d!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get array info
+    array_arg = args[1]
+    arg_idx = extract_argument_index(array_arg)
+    (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
+        error("gather() requires a TileArray argument")
+
+    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
+    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    base_ptr = ptr_vals[1]
+
+    tilearray_type = get_arg_type(ctx, arg_idx)
+    elem_type = eltype(tilearray_type)
+
+    # Get array sizes and strides
+    sizes_vals = get_arg_flat_values(ctx, arg_idx, :sizes)
+    strides_vals = get_arg_flat_values(ctx, arg_idx, :strides)
+    (sizes_vals === nothing || length(sizes_vals) < 2) && error("Cannot get sizes from 2D TileArray")
+    (strides_vals === nothing || length(strides_vals) < 2) && error("Cannot get strides from 2D TileArray")
+
+    size0, size1 = sizes_vals[1], sizes_vals[2]
+    stride0, stride1 = strides_vals[1], strides_vals[2]
+
+    # Get index tiles
+    idx0_tv = emit_value!(ctx, args[2])
+    idx1_tv = emit_value!(ctx, args[3])
+    (idx0_tv === nothing || idx1_tv === nothing) && error("Cannot resolve indices for gather()")
+
+    # Compute broadcast shape
+    output_shape = compute_broadcast_shape(idx0_tv.shape, idx1_tv.shape)
+
+    # Type setup
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    idx_dtype = julia_to_tile_dtype!(tt, Int32)
+    ptr_dtype = pointer_type!(tt, dtype)
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    ptr_tile_type = tile_type!(tt, ptr_dtype, output_shape)
+    result_tile_type = tile_type!(tt, dtype, output_shape)
+    bool_tile_type = tile_type!(tt, I1(tt), output_shape)
+    idx_tile_type = tile_type!(tt, idx_dtype, output_shape)
+    token_type = Token(tt)
+
+    # Broadcast indices to common shape
+    idx0 = broadcast_tile_to_shape!(cb, tt, idx0_tv, output_shape, idx_dtype)
+    idx1 = broadcast_tile_to_shape!(cb, tt, idx1_tv, output_shape, idx_dtype)
+
+    # Compute linear index: idx0 * stride0 + idx1 * stride1
+    # Broadcast strides
+    ndims = length(output_shape)
+    stride0_tile = broadcast_scalar_to_shape!(cb, tt, stride0, output_shape, idx_dtype)
+    stride1_tile = broadcast_scalar_to_shape!(cb, tt, stride1, output_shape, idx_dtype)
+
+    term0 = encode_MulIOp!(cb, idx_tile_type, idx0, stride0_tile)
+    term1 = encode_MulIOp!(cb, idx_tile_type, idx1, stride1_tile)
+    linear_idx = encode_AddIOp!(cb, idx_tile_type, term0, term1)
+
+    # Broadcast base pointer
+    base_ptr_tile = broadcast_scalar_to_shape!(cb, tt, base_ptr, output_shape, ptr_dtype)
+
+    # Compute offset pointers
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, linear_idx)
+
+    # Compute bounds masks for each dimension
+    size0_tile = broadcast_scalar_to_shape!(cb, tt, size0, output_shape, idx_dtype)
+    size1_tile = broadcast_scalar_to_shape!(cb, tt, size1, output_shape, idx_dtype)
+
+    zero_tile = broadcast_constant_to_shape!(cb, tt, Int32(0), output_shape, idx_dtype)
+
+    # idx0 >= 0 && idx0 < size0
+    ge_zero_0 = encode_CmpIOp!(cb, bool_tile_type, idx0, zero_tile;
+                               predicate=CmpGreaterThanOrEqual, signedness=SignednessSigned)
+    lt_size_0 = encode_CmpIOp!(cb, bool_tile_type, idx0, size0_tile;
+                               predicate=CmpLessThan, signedness=SignednessSigned)
+    mask_0 = encode_AndIOp!(cb, bool_tile_type, ge_zero_0, lt_size_0)
+
+    # idx1 >= 0 && idx1 < size1
+    ge_zero_1 = encode_CmpIOp!(cb, bool_tile_type, idx1, zero_tile;
+                               predicate=CmpGreaterThanOrEqual, signedness=SignednessSigned)
+    lt_size_1 = encode_CmpIOp!(cb, bool_tile_type, idx1, size1_tile;
+                               predicate=CmpLessThan, signedness=SignednessSigned)
+    mask_1 = encode_AndIOp!(cb, bool_tile_type, ge_zero_1, lt_size_1)
+
+    # Combined mask
+    mask = encode_AndIOp!(cb, bool_tile_type, mask_0, mask_1)
+
+    # Create padding value (zero)
+    padding_tile = broadcast_constant_to_shape!(cb, tt, zero_value(elem_type), output_shape, dtype)
+
+    # Load with mask
+    tile_val, new_token = encode_LoadPtrTkoOp!(cb, result_tile_type, token_type, pointers;
+                                                mask=mask,
+                                                padding_value=padding_tile,
+                                                token=ctx.token)
+    ctx.token = new_token
+
+    CGVal(tile_val, result_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
+
+"""
+    emit_scatter_1d!(ctx, args, result_type)
+
+Emit code for 1D scatter: `scatter(array, indices, tile)`
+
+Steps:
+1. Get base pointer from TileArray
+2. Compute pointer tile: OffsetOp(base_ptr, indices)
+3. Compute bounds mask: (indices >= 0) & (indices < size)
+4. Store via StorePtrTkoOp with mask
+"""
+function emit_scatter_1d!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get array info
+    array_arg = args[1]
+    arg_idx = extract_argument_index(array_arg)
+    (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
+        error("scatter() requires a TileArray argument")
+
+    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
+    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    base_ptr = ptr_vals[1]
+
+    tilearray_type = get_arg_type(ctx, arg_idx)
+    elem_type = eltype(tilearray_type)
+
+    # Get array size
+    sizes_vals = get_arg_flat_values(ctx, arg_idx, :sizes)
+    (sizes_vals === nothing || isempty(sizes_vals)) && error("Cannot get size from TileArray")
+    array_size = sizes_vals[1]
+
+    # Get indices tile
+    indices_tv = emit_value!(ctx, args[2])
+    indices_tv === nothing && error("Cannot resolve indices for scatter()")
+    indices = indices_tv.v
+    tile_shape = indices_tv.shape
+
+    # Get value tile
+    value_tv = emit_value!(ctx, args[3])
+    value_tv === nothing && error("Cannot resolve value tile for scatter()")
+    value = value_tv.v
+
+    # Type setup
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    idx_dtype = julia_to_tile_dtype!(tt, Int32)
+    ptr_dtype = pointer_type!(tt, dtype)
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    ptr_tile_type = tile_type!(tt, ptr_dtype, tile_shape)
+    bool_tile_type = tile_type!(tt, I1(tt), tile_shape)
+    idx_tile_type = tile_type!(tt, idx_dtype, tile_shape)
+    token_type = Token(tt)
+
+    # Broadcast base pointer to tile shape
+    ndims = length(tile_shape)
+    base_ptr_tile = broadcast_scalar_to_shape!(cb, tt, base_ptr, tile_shape, ptr_dtype)
+
+    # Compute offset pointers
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, indices)
+
+    # Compute bounds mask
+    size_tile = broadcast_scalar_to_shape!(cb, tt, array_size, tile_shape, idx_dtype)
+    zero_tile = broadcast_constant_to_shape!(cb, tt, Int32(0), tile_shape, idx_dtype)
+
+    ge_zero = encode_CmpIOp!(cb, bool_tile_type, indices, zero_tile;
+                             predicate=CmpGreaterThanOrEqual, signedness=SignednessSigned)
+    lt_size = encode_CmpIOp!(cb, bool_tile_type, indices, size_tile;
+                             predicate=CmpLessThan, signedness=SignednessSigned)
+    mask = encode_AndIOp!(cb, bool_tile_type, ge_zero, lt_size)
+
+    # Store with mask
+    new_token = encode_StorePtrTkoOp!(cb, token_type, pointers, value;
+                                       mask=mask, token=ctx.token)
+    ctx.token = new_token
+
+    nothing
+end
+
+"""
+    emit_scatter_2d!(ctx, args, result_type)
+
+Emit code for 2D scatter: `scatter(array, idx0, idx1, tile)`
+"""
+function emit_scatter_2d!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get array info
+    array_arg = args[1]
+    arg_idx = extract_argument_index(array_arg)
+    (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
+        error("scatter() requires a TileArray argument")
+
+    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
+    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    base_ptr = ptr_vals[1]
+
+    tilearray_type = get_arg_type(ctx, arg_idx)
+    elem_type = eltype(tilearray_type)
+
+    # Get array sizes and strides
+    sizes_vals = get_arg_flat_values(ctx, arg_idx, :sizes)
+    strides_vals = get_arg_flat_values(ctx, arg_idx, :strides)
+    (sizes_vals === nothing || length(sizes_vals) < 2) && error("Cannot get sizes from 2D TileArray")
+    (strides_vals === nothing || length(strides_vals) < 2) && error("Cannot get strides from 2D TileArray")
+
+    size0, size1 = sizes_vals[1], sizes_vals[2]
+    stride0, stride1 = strides_vals[1], strides_vals[2]
+
+    # Get index tiles
+    idx0_tv = emit_value!(ctx, args[2])
+    idx1_tv = emit_value!(ctx, args[3])
+    (idx0_tv === nothing || idx1_tv === nothing) && error("Cannot resolve indices for scatter()")
+
+    # Get value tile
+    value_tv = emit_value!(ctx, args[4])
+    value_tv === nothing && error("Cannot resolve value tile for scatter()")
+
+    # Compute broadcast shape from indices
+    output_shape = compute_broadcast_shape(idx0_tv.shape, idx1_tv.shape)
+
+    # Type setup
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    idx_dtype = julia_to_tile_dtype!(tt, Int32)
+    ptr_dtype = pointer_type!(tt, dtype)
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    ptr_tile_type = tile_type!(tt, ptr_dtype, output_shape)
+    bool_tile_type = tile_type!(tt, I1(tt), output_shape)
+    idx_tile_type = tile_type!(tt, idx_dtype, output_shape)
+    token_type = Token(tt)
+
+    # Broadcast indices to common shape
+    idx0 = broadcast_tile_to_shape!(cb, tt, idx0_tv, output_shape, idx_dtype)
+    idx1 = broadcast_tile_to_shape!(cb, tt, idx1_tv, output_shape, idx_dtype)
+
+    # Broadcast value tile if needed
+    value = broadcast_tile_to_shape!(cb, tt, value_tv, output_shape, dtype)
+
+    # Compute linear index
+    ndims = length(output_shape)
+    stride0_tile = broadcast_scalar_to_shape!(cb, tt, stride0, output_shape, idx_dtype)
+    stride1_tile = broadcast_scalar_to_shape!(cb, tt, stride1, output_shape, idx_dtype)
+
+    term0 = encode_MulIOp!(cb, idx_tile_type, idx0, stride0_tile)
+    term1 = encode_MulIOp!(cb, idx_tile_type, idx1, stride1_tile)
+    linear_idx = encode_AddIOp!(cb, idx_tile_type, term0, term1)
+
+    # Broadcast base pointer
+    base_ptr_tile = broadcast_scalar_to_shape!(cb, tt, base_ptr, output_shape, ptr_dtype)
+
+    # Compute offset pointers
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, linear_idx)
+
+    # Compute bounds masks
+    size0_tile = broadcast_scalar_to_shape!(cb, tt, size0, output_shape, idx_dtype)
+    size1_tile = broadcast_scalar_to_shape!(cb, tt, size1, output_shape, idx_dtype)
+    zero_tile = broadcast_constant_to_shape!(cb, tt, Int32(0), output_shape, idx_dtype)
+
+    ge_zero_0 = encode_CmpIOp!(cb, bool_tile_type, idx0, zero_tile;
+                               predicate=CmpGreaterThanOrEqual, signedness=SignednessSigned)
+    lt_size_0 = encode_CmpIOp!(cb, bool_tile_type, idx0, size0_tile;
+                               predicate=CmpLessThan, signedness=SignednessSigned)
+    mask_0 = encode_AndIOp!(cb, bool_tile_type, ge_zero_0, lt_size_0)
+
+    ge_zero_1 = encode_CmpIOp!(cb, bool_tile_type, idx1, zero_tile;
+                               predicate=CmpGreaterThanOrEqual, signedness=SignednessSigned)
+    lt_size_1 = encode_CmpIOp!(cb, bool_tile_type, idx1, size1_tile;
+                               predicate=CmpLessThan, signedness=SignednessSigned)
+    mask_1 = encode_AndIOp!(cb, bool_tile_type, ge_zero_1, lt_size_1)
+
+    mask = encode_AndIOp!(cb, bool_tile_type, mask_0, mask_1)
+
+    # Store with mask
+    new_token = encode_StorePtrTkoOp!(cb, token_type, pointers, value;
+                                       mask=mask, token=ctx.token)
+    ctx.token = new_token
+
+    nothing
+end
+
+# Helper: broadcast a scalar Value to a tile shape
+function broadcast_scalar_to_shape!(cb::CodeBuilder, tt::TypeTable, scalar::Value,
+                                     target_shape::Vector{Int}, dtype::TypeId)
+    ndims = length(target_shape)
+    if ndims == 0
+        return scalar
+    end
+
+    ones_shape = fill(1, ndims)
+    reshaped_type = tile_type!(tt, dtype, ones_shape)
+    reshaped = encode_ReshapeOp!(cb, reshaped_type, scalar)
+
+    target_type = tile_type!(tt, dtype, target_shape)
+    encode_BroadcastOp!(cb, target_type, reshaped)
+end
+
+# Helper: create a constant and broadcast to shape
+function broadcast_constant_to_shape!(cb::CodeBuilder, tt::TypeTable, @nospecialize(value),
+                                       target_shape::Vector{Int}, dtype::TypeId)
+    scalar_type = tile_type!(tt, dtype, Int[])
+    bytes = if value isa Int32
+        collect(reinterpret(UInt8, [value]))
+    elseif value isa Float32
+        collect(reinterpret(UInt8, [value]))
+    elseif value isa Float64
+        collect(reinterpret(UInt8, [value]))
+    else
+        collect(reinterpret(UInt8, [Int32(value)]))
+    end
+    scalar = encode_ConstantOp!(cb, scalar_type, bytes)
+
+    broadcast_scalar_to_shape!(cb, tt, scalar, target_shape, dtype)
+end
+
+# Helper: get zero value for a type
+function zero_value(@nospecialize(T::Type))
+    if T === Float32
+        Float32(0)
+    elseif T === Float64
+        Float64(0)
+    elseif T <: Integer
+        Int32(0)
+    else
+        Float32(0)
+    end
+end
