@@ -3,7 +3,7 @@
 export code_structured, structurize!, StructuredCodeInfo
 
 """
-    code_structured(f, argtypes; validate=true, kwargs...) -> StructuredCodeInfo
+    code_structured(f, argtypes; validate=true, kwargs...) -> Pair{StructuredCodeInfo, DataType}
 
 Get the structured IR for a function with the given argument types.
 
@@ -23,35 +23,29 @@ ForOp is created directly during CFG analysis for loops that match counting patt
 loops that don't match counting patterns. LoopOp is used for general cyclic regions.
 
 # Returns
-A `StructuredCodeInfo` that displays with MLIR SCF-style syntax showing
-nested control flow structure.
+A `Pair{StructuredCodeInfo, DataType}` where the first element is the structured IR
+and the second is the return type. Displays with MLIR SCF-style syntax.
 
 # Example
 ```julia
 julia> f(x) = x > 0 ? x + 1 : x - 1
 
 julia> code_structured(f, Tuple{Int})
-StructuredCodeInfo {
-  %1 = Base.slt_int(0, x) : Bool
-  scf.if %1 {
-    %3 = Base.add_int(x, 1) : Int64
-    scf.yield %3
-  } else {
-    %5 = Base.sub_int(x, 1) : Int64
-    scf.yield %5
-  }
-  return %3
-}
+StructuredCodeInfo(
+│ %1 = Base.slt_int(0, x)::Bool
+│ ...
+└ return %3
+) => Int64
 
-julia> code_structured(f, Tuple{Int}; validate=false)  # skip validation
+julia> sci, ret_type = code_structured(f, Tuple{Int})  # destructure
 ```
 """
 function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          validate::Bool=true, kwargs...)
-    ci, _ = only(code_typed(f, argtypes; kwargs...))
+    ci, ret_type = only(code_typed(f, argtypes; kwargs...))
     sci = StructuredCodeInfo(ci)
     structurize!(sci; validate)
-    return sci
+    return sci => ret_type
 end
 
 """
@@ -86,6 +80,7 @@ function structurize!(sci::StructuredCodeInfo; validate::Bool=true)
     validate && validate_scf(entry)
     validate && validate_no_phis(entry)
     sci.entry = entry
+    sci.max_ssa_idx = ctx.next_ssa_idx - 1  # Update to include synthesized indices
 
     return sci
 end

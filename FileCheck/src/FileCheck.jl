@@ -30,9 +30,9 @@ function filecheck(f, input)
         write(input_io, input)
         close(input_io)
 
-        # get the output of `f` and write it into a temporary buffer
+        # get the output of `f` and print it into a temporary buffer
         output_io = IOBuffer()
-        write(output_io, f(input))
+        print(output_io, f(input))
         println(output_io)
 
         # determine some useful prefixes for FileCheck

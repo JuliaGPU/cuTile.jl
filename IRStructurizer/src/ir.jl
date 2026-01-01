@@ -420,6 +420,7 @@ then call `structurize!(sci)` to convert control flow to structured ops.
 mutable struct StructuredCodeInfo
     const code::CodeInfo                      # For metadata (slotnames, argtypes, etc.)
     entry::Block                              # Structured IR
+    max_ssa_idx::Int                          # Max SSA index (may exceed length(code.code) after structurization)
 end
 
 """
@@ -448,7 +449,7 @@ function StructuredCodeInfo(code::CodeInfo)
         end
     end
 
-    return StructuredCodeInfo(code, entry)
+    return StructuredCodeInfo(code, entry, n)
 end
 
 #=============================================================================

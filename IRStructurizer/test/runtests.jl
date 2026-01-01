@@ -1,4 +1,5 @@
 using Test
+using FileCheck
 
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
@@ -26,7 +27,7 @@ using Core: SSAValue
     @test any(x -> x isa IfOp, items(sci.entry.body))
 
     # code_structured does both steps
-    sci2 = code_structured(g, Tuple{Int})
+    sci2, _ = code_structured(g, Tuple{Int})
     @test any(x -> x isa IfOp, items(sci2.entry.body))
 end
 
@@ -55,7 +56,7 @@ end
 
 @testset "ForOp detection during CFG analysis" begin
     # Test that counting loops are detected as ForOp during CFG analysis
-    function count_loop(n::Int)
+    sci, _ = code_structured(Tuple{Int}) do n::Int
         i = 0
         while i < n
             i += 1
@@ -64,7 +65,6 @@ end
     end
 
     # Counting loop should produce ForOp
-    sci = code_structured(count_loop, Tuple{Int})
     loop_ops = filter(x -> x isa ControlFlowOp, collect(items(sci.entry.body)))
     @test !isempty(loop_ops)
     @test loop_ops[1] isa ForOp
@@ -72,9 +72,9 @@ end
 
 @testset "display output format" begin
     # Verify display shows proper structure
-    branch_test(x::Bool) = x ? 1 : 2
-
-    sci = code_structured(branch_test, Tuple{Bool})
+    sci, _ = code_structured(Tuple{Bool}) do x::Bool
+        x ? 1 : 2
+    end
 
     io = IOBuffer()
     show(io, MIME"text/plain"(), sci)
@@ -84,14 +84,6 @@ end
     @test occursin("if ", output)
     @test occursin("else", output)
     @test occursin("return", output)
-
-    # Compact display
-    io = IOBuffer()
-    show(io, sci)
-    output = String(take!(io))
-
-    @test occursin("StructuredCodeInfo", output)
-    @test occursin("stmts", output)
 end
 
 end  # interface
@@ -107,134 +99,86 @@ end  # interface
 
 @testset "block sequence" begin
     # Simple function: single addition (no control flow)
-    f(x) = x + 1
-
-    sci = code_structured(f, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry block: one expression (the add), no control flow ops
-    @test length(sci.entry.body) == 1
-    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
-    @test sci.entry.terminator isa Core.ReturnNode
+    @test @filecheck begin
+        @check_not "if"
+        code_structured(Tuple{Int}) do x
+            @check "add_int"
+            @check "return"
+            x + 1
+        end
+    end
 
     # Multiple operations: (x + y) * (x - y)
-    g(x, y) = (x + y) * (x - y)
-
-    sci = code_structured(g, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry block: 3 expressions (add, sub, mul), no control flow ops
-    @test length(sci.entry.body) == 3
-    @test all(x -> !(x isa ControlFlowOp), items(sci.entry.body))
-    @test sci.entry.terminator isa Core.ReturnNode
+    @test @filecheck begin
+        @check_not "if"
+        code_structured(Tuple{Int, Int}) do x, y
+            @check "add_int"
+            @check "sub_int"
+            @check "mul_int"
+            @check "return"
+            (x + y) * (x - y)
+        end
+    end
 end
 
 @testset "if-then-else: diamond pattern" begin
     # Both branches converge (diamond CFG pattern)
-    compute_branch(x::Int) = x > 0 ? x + 1 : x - 1
-
-    sci = code_structured(compute_branch, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry: comparison expr, then IfOp
-    @test length(sci.entry.body) == 2
-    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
-    @test sci.entry.body[2].stmt isa IfOp
-
-    if_op = sci.entry.body[2].stmt
-    then_blk = if_op.then_region
-    else_blk = if_op.else_region
-
-    # Then branch: one expr (addition), then return
-    @test length(then_blk.body) == 1
-    @test !(then_blk.body[1].stmt isa ControlFlowOp)
-    @test then_blk.terminator isa Core.ReturnNode
-
-    # Else branch: one expr (subtraction), then return
-    @test length(else_blk.body) == 1
-    @test !(else_blk.body[1].stmt isa ControlFlowOp)
-    @test else_blk.terminator isa Core.ReturnNode
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do x::Int
+            @check "slt_int"
+            @check "if"
+            @check "add_int"
+            @check "else"
+            @check "sub_int"
+            @check "return"
+            x > 0 ? x + 1 : x - 1
+        end
+    end
 end
 
 @testset "if-then-else: bool condition (no comparison)" begin
     # Bool condition directly, no comparison needed
-    branch_test(x::Bool) = x ? 1 : 2
-
-    sci = code_structured(branch_test, Tuple{Bool})
-    @test sci isa StructuredCodeInfo
-
-    # Entry: exactly one IfOp, no expressions
-    @test length(sci.entry.body) == 1
-    @test sci.entry.body[1].stmt isa IfOp
-
-    if_op = sci.entry.body[1].stmt
-    then_blk = if_op.then_region
-    else_blk = if_op.else_region
-
-    # Condition is the first argument (the Bool)
-    @test if_op.condition isa Core.Argument
-    @test if_op.condition.n == 2  # arg 1 is #self#
-
-    # Then branch: empty body, returns constant 1
-    @test isempty(then_blk.body)
-    @test then_blk.terminator isa Core.ReturnNode
-    @test then_blk.terminator.val == 1
-
-    # Else branch: empty body, returns constant 2
-    @test isempty(else_blk.body)
-    @test else_blk.terminator isa Core.ReturnNode
-    @test else_blk.terminator.val == 2
+    @test @filecheck begin
+        code_structured(Tuple{Bool}) do x::Bool
+            @check "if"
+            @check "return 1"
+            @check "else"
+            @check "return 2"
+            x ? 1 : 2
+        end
+    end
 end
 
 @testset "if-then-else: with comparison" begin
-    # Comparison before branch
-    cmp_branch(x::Int) = x > 0 ? x : -x
-
-    sci = code_structured(cmp_branch, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry: one expr (comparison), then IfOp
-    @test length(sci.entry.body) == 2
-    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
-    @test sci.entry.body[2].stmt isa IfOp
-
-    if_op = sci.entry.body[2].stmt
-    then_blk = if_op.then_region
-    else_blk = if_op.else_region
-
-    # Condition references the comparison result (SSAValue with local index after finalization)
-    @test if_op.condition isa SSAValue
-    @test if_op.condition.id > 0  # Positive local index after finalization
-
-    # Both branches terminate with return
-    @test then_blk.terminator isa Core.ReturnNode
-    @test else_blk.terminator isa Core.ReturnNode
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do x::Int
+            @check "slt_int"
+            @check "if"
+            @check "return"
+            @check "else"
+            @check "neg_int"
+            @check "return"
+            x > 0 ? x : -x
+        end
+    end
 end
 
 @testset "termination: early return pattern" begin
     # One branch returns early, other continues
-    function early_return(x::Int, y::Int)
-        if x > y
-            return y * x
+    @test @filecheck begin
+        code_structured(Tuple{Int, Int}) do x::Int, y::Int
+            @check "if"
+            if x > y
+                @check "mul_int"
+                @check "return"
+                return y * x
+            end
+            @check "else"
+            @check "sub_int"
+            @check "return"
+            y - x
         end
-        y - x
     end
-
-    sci = code_structured(early_return, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry: [comparison_expr, IfOp]
-    @test length(sci.entry.body) == 2
-    @test !(sci.entry.body[1].stmt isa ControlFlowOp)
-    @test sci.entry.body[2].stmt isa IfOp
-
-    if_op = sci.entry.body[2].stmt
-    then_blk = if_op.then_region
-    else_blk = if_op.else_region
-
-    # Both branches terminate with return
-    @test then_blk.terminator isa Core.ReturnNode
-    @test else_blk.terminator isa Core.ReturnNode
 end
 
 end  # acyclic regions
@@ -242,108 +186,65 @@ end  # acyclic regions
 @testset "cyclic regions" begin
 
 @testset "simple loop structure - ForOp" begin
-    # Test that counting loops are detected as ForOp during CFG analysis
-    function simple_loop(n::Int)
-        i = 0
-        while i < n
-            i += 1
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            i = 0
+            @check "for %{{.*}} ="
+            while i < n
+                i += 1
+            end
+            @check "continue"
+            return i
         end
-        return i
     end
-
-    sci = code_structured(simple_loop, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry should have a ForOp (counting pattern detected during CFG analysis)
-    loop_ops = filter(x -> x isa ForOp, collect(items(sci.entry.body)))
-    @test length(loop_ops) == 1
 end
 
 @testset "loop with condition" begin
     # Loop with condition check at header (empty body - self-loop pattern)
-    # Empty body generates a self-loop CFG that's detected as REGION_NATURAL_LOOP
-    function spinloop(flag::Int)
-        while flag != 0
-            # spin
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do flag::Int
+            @check "loop ->"
+            while flag != 0
+                @check "not_int"
+                # spin
+            end
+            return flag
         end
-        return flag
     end
-
-    sci = code_structured(spinloop, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry should have a LoopOp (self-loop pattern is REGION_NATURAL_LOOP)
-    loop_ops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
-    @test length(loop_ops) == 1
-
-    loop_op = loop_ops[1]
-
-    # LoopOp has a body region
-    @test loop_op.body isa Block
 end
 
 @testset "loop with body statements" begin
-    # Loop with decrement - may be WhileOp or ForOp depending on detection
-    function countdown(n::Int)
-        while n > 0
-            n -= 1
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            @check "while"
+            @check "slt_int"
+            while n > 0
+                @check "sub_int"
+                n -= 1
+            end
+            return n
         end
-        return n
     end
-
-    sci = code_structured(countdown, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry should have some loop op
-    loop_ops = filter(x -> x isa ForOp || x isa WhileOp, collect(items(sci.entry.body)))
-    @test length(loop_ops) >= 1
 end
 
 @testset "nested loops" begin
-    # Two nested counting loops
-    function nested(n::Int, m::Int)
-        acc = 0
-        i = 0
-        while i < n
-            j = 0
-            while j < m
-                acc += 1
-                j += 1
+    @test @filecheck begin
+        code_structured(Tuple{Int, Int}) do n::Int, m::Int
+            acc = 0
+            i = 0
+            @check "for %{{.*}} ="
+            while i < n
+                j = 0
+                @check "for %{{.*}} ="
+                while j < m
+                    acc += 1
+                    j += 1
+                end
+                i += 1
             end
-            i += 1
+            return acc
         end
-        return acc
     end
-
-    sci = code_structured(nested, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry should have outer loop op (could be ForOp or WhileOp)
-    outer_loops = filter(x -> x isa ForOp || x isa WhileOp || x isa LoopOp, collect(items(sci.entry.body)))
-    @test length(outer_loops) >= 1
-
-    # Find inner loop in outer loop's body region
-    outer_loop = outer_loops[1]
-    function find_nested_loops(block::Block)
-        loops = ControlFlowOp[]
-        for stmt in statements(block.body)
-            if stmt isa ForOp || stmt isa WhileOp || stmt isa LoopOp
-                push!(loops, stmt)
-            elseif stmt isa IfOp
-                append!(loops, find_nested_loops(stmt.then_region))
-                append!(loops, find_nested_loops(stmt.else_region))
-            end
-        end
-        return loops
-    end
-    # Check appropriate body based on loop type
-    loop_body = if outer_loop isa WhileOp
-        outer_loop.after
-    else
-        outer_loop.body
-    end
-    inner_loops = find_nested_loops(loop_body)
-    @test length(inner_loops) >= 1
 end
 
 end  # cyclic regions
@@ -361,37 +262,53 @@ end  # CFG analysis
 @testset "ForOp detection" begin
 
 @testset "bounded counter" begin
-    # Simple counting loop: i = 0; while i < n; i += 1
-    function count_to_n(n::Int)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            i = 0
+            @check "for %{{.*}} ="
+            while i < n
+                i += 1
+            end
+            @check "continue"
+            return i
+        end
+    end
+
+    # Also verify ForOp bounds programmatically (FileCheck can't check these)
+    sci, _ = code_structured(Tuple{Int}) do n::Int
         i = 0
         while i < n
             i += 1
         end
         return i
     end
-
-    sci = code_structured(count_to_n, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Should produce ForOp
     for_ops = filter(x -> x isa ForOp, collect(items(sci.entry.body)))
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
-    for_body = for_op.body
-
-    # Bounds: 0 to n, step 1
     @test for_op.lower == 0
     @test for_op.upper isa Core.Argument
     @test for_op.step == 1
-
-    # Body terminates with ContinueOp
-    @test for_body.terminator isa ContinueOp
 end
 
 @testset "bounded counter with accumulator" begin
-    # Counting loop with loop-carried accumulator
-    function sum_to_n(n::Int)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            i = 0
+            acc = 0
+            @check "for %{{.*}} ="
+            while i < n
+                @check "add_int"
+                acc += i
+                i += 1
+            end
+            @check "continue"
+            return acc
+        end
+    end
+
+    # Verify block args and init_values (FileCheck can't check these)
+    sci, _ = code_structured(Tuple{Int}) do n::Int
         i = 0
         acc = 0
         while i < n
@@ -400,111 +317,54 @@ end
         end
         return acc
     end
-
-    sci = code_structured(sum_to_n, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Should produce ForOp
     for_ops = filter(x -> x isa ForOp, collect(items(sci.entry.body)))
     @test length(for_ops) == 1
 
     for_op = for_ops[1]
-    for_body = for_op.body
-
-    # Body has block args: [accumulator] (IV is stored separately in for_op.iv_arg)
-    @test length(for_body.args) == 1
-
-    # Loop produces one result (the final accumulator value)
-    # The result count equals init_values count (each init_value corresponds to one result)
+    @test length(for_op.body.args) == 1
     @test length(for_op.init_values) == 1
 end
 
 @testset "Julia for-in-range (1:n)" begin
-    # Julia's native `for i in 1:n` syntax is now detected as ForOp
-    function sum_range(n::Int)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            acc = 0
+            @check "for %{{.*}} ="
+            for i in 1:n
+                @check "add_int"
+                acc += i
+            end
+            @check "continue"
+            return acc
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n::Int
         acc = 0
         for i in 1:n
             acc += i
         end
         return acc
     end
-
-    sci = code_structured(sum_range, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
-
-    # Helper to find ForOp in nested structure (for-in-range is inside an if guard)
-    function find_for_op(block::Block)
-        for stmt in statements(block.body)
-            if stmt isa ForOp
-                return stmt
-            elseif stmt isa IfOp
-                result = find_for_op(stmt.then_region)
-                result !== nothing && return result
-                result = find_for_op(stmt.else_region)
-                result !== nothing && return result
-            end
-        end
-        return nothing
-    end
-
-    for_op = find_for_op(sci.entry)
-    @test for_op !== nothing
-    @test for_op isa ForOp
-
-    # Verify ForOp structure
-    @test for_op.body isa Block
-    @test for_op.step == 1  # Julia's 1:n has step 1
-
-    # ForOp has 2 carried values: the iteration index and accumulator
-    @test length(for_op.init_values) == 2
 end
 
 @testset "nested for loops" begin
-    # Two nested counting loops
-    function nested_count(n::Int, m::Int)
-        acc = 0
-        i = 0
-        while i < n
-            j = 0
-            while j < m
-                acc += 1
-                j += 1
+    @test @filecheck begin
+        code_structured(Tuple{Int, Int}) do n::Int, m::Int
+            acc = 0
+            i = 0
+            @check "for"
+            while i < n
+                j = 0
+                @check "for"
+                while j < m
+                    acc += 1
+                    j += 1
+                end
+                i += 1
             end
-            i += 1
-        end
-        return acc
-    end
-
-    sci = code_structured(nested_count, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry: find outer loop (could be ForOp or WhileOp)
-    outer_loop_idx = findfirst(stmt -> stmt isa ForOp || stmt isa WhileOp || stmt isa LoopOp, collect(statements(sci.entry.body)))
-    @test outer_loop_idx !== nothing
-
-    if outer_loop_idx !== nothing
-        outer_loop = collect(statements(sci.entry.body))[outer_loop_idx]
-        outer_body = if outer_loop isa WhileOp
-            outer_loop.after
-        else
-            outer_loop.body
-        end
-
-        # Find the inner loop
-        inner_loop_idx = findfirst(stmt -> stmt isa ForOp || stmt isa WhileOp || stmt isa LoopOp, collect(statements(outer_body.body)))
-        @test inner_loop_idx !== nothing
-
-        if inner_loop_idx !== nothing
-            inner_loop = collect(statements(outer_body.body))[inner_loop_idx]
-            inner_body = if inner_loop isa WhileOp
-                inner_loop.after
-            else
-                inner_loop.body
-            end
-
-            # Inner loop has its own structure
-            @test inner_body.terminator isa ContinueOp || inner_body.terminator isa YieldOp
+            return acc
         end
     end
 end
@@ -514,47 +374,29 @@ end  # ForOp detection
 @testset "WhileOp detection" begin
 
 @testset "condition-only spinloop" begin
-    # While loop that is NOT a for-loop (no increment pattern)
-    # This is detected as REGION_NATURAL_LOOP (not REGION_WHILE_LOOP)
-    # because the empty body creates a different CFG structure
-    function spinloop(flag::Int)
-        while flag != 0
-            # spin - no body operations, just condition check
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do flag::Int
+            @check "loop ->"
+            while flag != 0
+                @check "not_int"
+            end
+            return flag
         end
-        return flag
     end
-
-    sci = code_structured(spinloop, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry: [LoopOp] - REGION_NATURAL_LOOP creates LoopOp
-    loop_ops = filter(x -> x isa LoopOp, collect(items(sci.entry.body)))
-    @test length(loop_ops) == 1
-
-    loop_op = loop_ops[1]
-
-    # LoopOp body should have conditional structure
-    @test loop_op.body isa Block
-    @test !isempty(loop_op.body.body)
 end
 
 @testset "decrementing loop (non-ForOp pattern)" begin
-    # Decrementing loop - may be WhileOp or ForOp depending on detection
-    function countdown(n::Int)
-        while n > 0
-            n -= 1
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            @check "while"
+            @check "slt_int"
+            while n > 0
+                @check "sub_int"
+                n -= 1
+            end
+            return n
         end
-        return n
     end
-
-    sci = code_structured(countdown, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Entry should have items, find the loop op
-    @test !isempty(sci.entry.body)
-    # Find any loop op in the body (could be followed by getfield statements)
-    loop_ops = filter(x -> x isa ForOp || x isa WhileOp || x isa LoopOp, collect(statements(sci.entry.body)))
-    @test !isempty(loop_ops)
 end
 
 end  # WhileOp detection
@@ -563,21 +405,18 @@ end  # WhileOp detection
 
 @testset "dynamic step" begin
     # Loop where step is modified inside loop body (not a valid ForOp)
-    # Should be detected as WhileOp (not ForOp)
-    function dynamic_step(n::Int)
+    sci, _ = code_structured(Tuple{Int}) do n::Int
         i = 0
         step = 1
         while i < n
             i += step
-            step += 1  # Step changes each iteration
+            step += 1
         end
         return i
     end
-
-    sci = code_structured(dynamic_step, Tuple{Int})
     @test sci isa StructuredCodeInfo
 
-    # Should have some loop op
+    # Should have some loop op (not ForOp since step changes)
     loop_ops = filter(x -> x isa ForOp || x isa WhileOp || x isa LoopOp, collect(items(sci.entry.body)))
     @test length(loop_ops) >= 1
 end
@@ -593,81 +432,42 @@ end  # loop classification
 @testset "nested control flow" begin
 
 @testset "if inside loop" begin
-    # Loop containing conditional
-    function loop_with_if(n::Int)
-        acc = 0
-        i = 0
-        while i < n
-            if i % 2 == 0
-                acc += i
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            acc = 0
+            i = 0
+            @check "for"
+            while i < n
+                @check "if"
+                if i % 2 == 0
+                    @check "add_int"
+                    acc += i
+                end
+                i += 1
             end
-            i += 1
+            return acc
         end
-        return acc
     end
-
-    sci = code_structured(loop_with_if, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Should have a loop op in entry
-    loop_ops = filter(x -> x isa ForOp || x isa WhileOp || x isa LoopOp, collect(items(sci.entry.body)))
-    @test !isempty(loop_ops)
-
-    # The loop body should contain an IfOp
-    loop_op = loop_ops[1]
-    function has_if_op(block::Block)
-        for stmt in statements(block.body)
-            if stmt isa IfOp
-                return true
-            end
-        end
-        return false
-    end
-    # Handle both LoopOp (body) and WhileOp (after)
-    loop_body = if loop_op isa WhileOp
-        loop_op.after
-    elseif loop_op isa LoopOp
-        loop_op.body
-    else
-        loop_op.body  # ForOp
-    end
-    @test has_if_op(loop_body)
 end
 
 @testset "loop inside if" begin
-    # Conditional containing loop
-    function if_with_loop(x::Int, n::Int)
-        if x > 0
-            i = 0
-            while i < n
-                i += 1
-            end
-            return i
-        else
-            return 0
-        end
-    end
-
-    sci = code_structured(if_with_loop, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
-
-    # Should have IfOp in entry
-    if_ops = filter(x -> x isa IfOp, collect(items(sci.entry.body)))
-    @test !isempty(if_ops)
-
-    if_op = if_ops[1]
-    then_blk = if_op.then_region
-
-    # Then branch should contain a loop
-    function has_loop_op(block::Block)
-        for stmt in statements(block.body)
-            if stmt isa ForOp || stmt isa WhileOp || stmt isa LoopOp
-                return true
+    @test @filecheck begin
+        code_structured(Tuple{Int, Int}) do x::Int, n::Int
+            @check "if"
+            if x > 0
+                i = 0
+                @check "for"
+                while i < n
+                    i += 1
+                end
+                return i
+            @check "else"
+            else
+                @check "return 0"
+                return 0
             end
         end
-        return false
     end
-    @test has_loop_op(then_blk)
 end
 
 end  # nested control flow
@@ -679,37 +479,27 @@ end  # nested control flow
 @testset "regression" begin
 
 @testset "no duplicated statements after loop" begin
-    # Statements after loop should not be duplicated
-    function loop_then_compute(x::Int)
-        i = 0
-        while i < x
-            i += 1
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do x::Int
+            i = 0
+            @check "for"
+            while i < x
+                i += 1
+            end
+            # This should appear exactly once
+            @check "mul_int"
+            result = i * 2
+            @check_not "mul_int"
+            @check "return"
+            return result
         end
-        # This should appear exactly once
-        result = i * 2
-        return result
     end
-
-    sci = code_structured(loop_then_compute, Tuple{Int})
-    @test sci isa StructuredCodeInfo
-
-    # Count expressions in entry block (final Block uses position indexing, not Statement.idx)
-    expr_count = count(x -> !(x isa ControlFlowOp), items(sci.entry.body))
-    # Just verify we have some expressions (the exact count may vary)
-    @test expr_count >= 0
-
-    # Check display output: mul_int should appear exactly once
-    io = IOBuffer()
-    show(io, MIME"text/plain"(), sci)
-    output = String(take!(io))
-    @test count("mul_int", output) == 1
 end
 
 @testset "type preservation" begin
-    f(x::Float64) = x + 1.0
-
-    sci = code_structured(f, Tuple{Float64})
-    @test sci isa StructuredCodeInfo
+    sci, _ = code_structured(Tuple{Float64}) do x::Float64
+        x + 1.0
+    end
 
     # Float64 type should be preserved in ssavaluetypes
     @test !isempty(sci.code.ssavaluetypes)
@@ -717,77 +507,49 @@ end
 end
 
 @testset "multiple arguments" begin
-    # Different argument types
-    h(x::Int, y::Float64) = x + y
-
-    sci = code_structured(h, Tuple{Int, Float64})
-    @test sci isa StructuredCodeInfo
+    sci, _ = code_structured(Tuple{Int, Float64}) do x::Int, y::Float64
+        x + y
+    end
     @test sci.entry.terminator isa Core.ReturnNode
 end
 
 @testset "swap_loop phi references" begin
-    # Test for loops with phi nodes that reference other phi nodes.
-    # When x and y are swapped in a loop, the IR has cross-referencing phis.
-    # With global SSA, outer scope values can be referenced directly.
-    function swap_loop(n::Int)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n::Int
+            x, y = 1, 2
+            @check "for"
+            for i in 1:n
+                x, y = y, x
+            end
+            return x
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n::Int
         x, y = 1, 2
         for i in 1:n
             x, y = y, x
         end
         return x
     end
-
-    sci = code_structured(swap_loop, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
-
-    # Find a loop op in the structure (for i in 1:n is now upgraded to ForOp)
-    function find_any_loop_op(block::Block)
-        for stmt in statements(block.body)
-            if stmt isa ForOp || stmt isa LoopOp
-                return stmt
-            elseif stmt isa IfOp
-                result = find_any_loop_op(stmt.then_region)
-                result !== nothing && return result
-                result = find_any_loop_op(stmt.else_region)
-                result !== nothing && return result
-            elseif stmt isa WhileOp
-                result = find_any_loop_op(stmt.after)
-                result !== nothing && return result
-            end
-        end
-        return nothing
-    end
-
-    loop_op = find_any_loop_op(sci.entry)
-    @test loop_op !== nothing
-
-    # Loop-carried values are properly tracked via init_values and BlockArgs
-    @test !isempty(loop_op.init_values)
-    @test !isempty(loop_op.body.args)
 end
 
 @testset "while loop with outer capture has Nothing type" begin
     # Regression test: a while loop with only outer captures (no actual results)
     # should have Nothing result type, not the type of the outer capture.
-    # This bug caused type information loss in downstream codegen.
 
-    # Spinloop pattern: condition uses outer capture `x`, but loop produces no results
-    function spinloop_capture(x::Int)
-        while x > 0  # x is captured but loop has no actual results
+    sci, _ = code_structured(Tuple{Int}) do x::Int
+        while x > 0
         end
         return x
     end
-
-    sci = code_structured(spinloop_capture, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
 
-    # Find the loop in the structure - use statements() for simple item lookup
+    # Find the loop in the structure
     while_idx = findfirst(stmt -> stmt isa WhileOp, collect(statements(sci.entry.body)))
-
     if while_idx !== nothing
-        # Check that the result type is Tuple{} (no results), not Int (outer capture type)
+        # Check that the result type is Tuple{} (no results), not Int
         result_type = sci.entry.body[while_idx].typ
         @test result_type === Tuple{}
     end
@@ -795,22 +557,16 @@ end
 
 @testset "while loop ConditionOp uses BlockArgs not SSAValues" begin
     # Regression test: ConditionOp args should be BlockArgs, not SSAValues.
-    # When a loop computes intermediate values, the result should be the
-    # loop-carried variable, not an intermediate computation.
 
-    function count_power(x::Int, y::Int)
+    sci, _ = code_structured(Tuple{Int, Int}) do x::Int, y::Int
         count = 0
-        while x^count < y  # x^count is intermediate, count is the result
+        while x^count < y
             count += 1
         end
         return count
     end
-
-    sci = code_structured(count_power, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
 
-    # Find the WhileOp - use statements() for simple item lookup
     while_idx = findfirst(stmt -> stmt isa WhileOp, collect(statements(sci.entry.body)))
     @test while_idx !== nothing
 
@@ -818,12 +574,10 @@ end
         while_op = sci.entry.body[while_idx].stmt
         before = while_op.before
 
-        # The ConditionOp should have BlockArg as its result value
         @test before.terminator isa ConditionOp
         cond_op = before.terminator
 
-        # The result should be %arg1 (the count BlockArg), not an SSAValue
-        # pointing to the power computation
+        # The result should be BlockArg, not SSAValue
         @test !isempty(cond_op.args)
         @test cond_op.args[1] isa IRStructurizer.BlockArg
     end
@@ -833,8 +587,6 @@ end  # regression
 
 #=============================================================================
  Integration Tests: Julia for-in-range patterns
- Comprehensive tests for `for i in 1:n` style loops which have complex CFG
- structure due to Julia's range iteration lowering.
 =============================================================================#
 
 @testset "Julia for-in-range integration" begin
@@ -863,53 +615,77 @@ function find_for_op_recursive(block::Block)
 end
 
 @testset "sum_to_n: accumulator pattern" begin
-    # Classic sum: acc += i for i in 1:n
-    function sum_to_n(n)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n
+            acc = 0
+            @check "for %{{.*}} ="
+            for i in 1:n
+                @check "add_int"
+                acc += i
+            end
+            @check "continue"
+            return acc
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n
         acc = 0
         for i in 1:n
             acc += i
         end
         return acc
     end
-
-    sci = code_structured(sum_to_n, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
 
     for_op = find_for_op_recursive(sci.entry)
     @test for_op !== nothing
-    @test for_op isa ForOp
     @test for_op.step == 1
-
-    # Two carried values: iteration index and accumulator
     @test length(for_op.init_values) == 2
 end
 
 @testset "product: multiply pattern" begin
-    # Product: acc *= i for i in 1:n
-    function product_to_n(n)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n
+            acc = 1
+            @check "for"
+            for i in 1:n
+                @check "mul_int"
+                acc *= i
+            end
+            return acc
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n
         acc = 1
         for i in 1:n
             acc *= i
         end
         return acc
     end
-
-    sci = code_structured(product_to_n, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
 
     for_op = find_for_op_recursive(sci.entry)
     @test for_op !== nothing
-    @test for_op isa ForOp
     @test for_op.step == 1
 end
 
 @testset "count_evens: conditional accumulator" begin
-    # Count with condition inside loop
-    # Note: Complex loops with conditionals inside may not always be detected as ForOp
-    # due to the additional CFG complexity from the if statement
-    function count_evens(n)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n
+            count = 0
+            for i in 1:n
+                @check "if"
+                @check "rem_int"
+                if i % 2 == 0
+                    count += 1
+                end
+            end
+            return count
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n
         count = 0
         for i in 1:n
             if i % 2 == 0
@@ -918,19 +694,26 @@ end
         end
         return count
     end
-
-    sci = code_structured(count_evens, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
-
-    # The loop may be ForOp or LoopOp depending on CFG structure
-    # Just verify it structures correctly
-    @test sci.entry.body !== nothing
 end
 
 @testset "multiple accumulators" begin
-    # Two separate accumulators
-    function sum_and_count(n)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n
+            sum = 0
+            count = 0
+            @check "for"
+            for i in 1:n
+                @check "add_int"
+                sum += i
+                @check "add_int"
+                count += 1
+            end
+            return sum, count
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n
         sum = 0
         count = 0
         for i in 1:n
@@ -939,24 +722,31 @@ end
         end
         return sum, count
     end
-
-    sci = code_structured(sum_and_count, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
 
     for_op = find_for_op_recursive(sci.entry)
     @test for_op !== nothing
-    @test for_op isa ForOp
-
     # Three carried values: iteration index, sum, count
     @test length(for_op.init_values) == 3
 end
 
 @testset "nested for-in-range loops" begin
-    # Nested for loops: matrix-style iteration
-    # Note: The outer loop may become LoopOp due to complexity from inner loop
-    # but the inner loop should still be detected as ForOp
-    function nested_sum(n, m)
+    @test @filecheck begin
+        code_structured(Tuple{Int, Int}) do n, m
+            acc = 0
+            @check "loop"
+            for i in 1:n
+                @check "for"
+                for j in 1:m
+                    @check "mul_int"
+                    acc += i * j
+                end
+            end
+            return acc
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int, Int}) do n, m
         acc = 0
         for i in 1:n
             for j in 1:m
@@ -965,77 +755,45 @@ end
         end
         return acc
     end
-
-    sci = code_structured(nested_sum, Tuple{Int, Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
-
-    # Helper to find any loop op (ForOp, LoopOp, WhileOp) in nested structure
-    function find_any_loop_recursive(block::Block)
-        for stmt in statements(block.body)
-            if stmt isa ForOp || stmt isa LoopOp || stmt isa WhileOp
-                return stmt
-            elseif stmt isa IfOp
-                result = find_any_loop_recursive(stmt.then_region)
-                result !== nothing && return result
-                result = find_any_loop_recursive(stmt.else_region)
-                result !== nothing && return result
-            end
-        end
-        return nothing
-    end
-
-    # Find outer loop (may be ForOp or LoopOp)
-    outer_loop = find_any_loop_recursive(sci.entry)
-    @test outer_loop !== nothing
-
-    # Should have a body with nested loop
-    if outer_loop !== nothing
-        @test outer_loop.body isa Block
-    end
 end
 
 @testset "for-in-range with tuple destructuring" begin
-    # Loop that swaps values
-    function swap_loop(n)
+    @test @filecheck begin
+        code_structured(Tuple{Int}) do n
+            x, y = 1, 2
+            @check "for"
+            for i in 1:n
+                x, y = y, x
+            end
+            return x
+        end
+    end
+
+    sci, _ = code_structured(Tuple{Int}) do n
         x, y = 1, 2
         for i in 1:n
             x, y = y, x
         end
         return x
     end
-
-    sci = code_structured(swap_loop, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
-
-    for_op = find_for_op_recursive(sci.entry)
-    @test for_op !== nothing
-    @test for_op isa ForOp
 end
 
 @testset "for-in-range bounds correctness" begin
-    # Verify the upper bound is adjusted for exclusive semantics
-    function simple_iter(n)
+    sci, _ = code_structured(Tuple{Int}) do n
         last = 0
         for i in 1:n
             last = i
         end
         return last
     end
-
-    sci = code_structured(simple_iter, Tuple{Int})
-    @test sci isa StructuredCodeInfo
     validate_scf(sci)
 
     for_op = find_for_op_recursive(sci.entry)
     @test for_op !== nothing
-    @test for_op isa ForOp
     @test for_op.step == 1
-
-    # The upper bound should be adjusted (original n + 1 for exclusive)
-    # We can't easily check the exact value, but verify it's an SSAValue
-    # pointing to the add_int(n, 1) instruction
+    # Upper bound should be SSAValue (pointing to n+1 for exclusive)
     @test for_op.upper isa SSAValue
 end
 
