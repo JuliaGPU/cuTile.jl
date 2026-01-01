@@ -34,6 +34,9 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)
 
     # K reduction loop - accumulate partial products
+    # NOTE: Uses while-loop pattern because Julia's for-loop generates complex
+    # iterator IR that isn't fully supported yet. The structurizer upgrades
+    # this counting while-loop to a ForOp in the bytecode.
     k = Int32(0)
     while k < num_k
         # Load and convert to TF32 for tensor cores (Float32 only)

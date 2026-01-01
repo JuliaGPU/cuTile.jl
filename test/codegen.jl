@@ -956,6 +956,9 @@ end
                 num_k = ct.num_tiles(A, 1, (tm[], tk[]))
                 check"CHECK: broadcast"
                 acc = ct.full((tm[], tn[]), zero(Float32), Float32)
+                # NOTE: Uses while-loop pattern because Julia's for-loop generates
+                # complex iterator IR with PhiNodes that isn't fully supported.
+                # The structurizer upgrades this counting while-loop to a ForOp.
                 check"CHECK: for"
                 k = Int32(0)
                 while k < num_k
