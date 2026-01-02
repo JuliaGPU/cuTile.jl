@@ -1,10 +1,9 @@
 # cuTile.jl
 
-A Julia package for writing GPU kernels using NVIDIA's tile-based programming model. Compiles Julia functions to Tile IR bytecode, which is then assembled to CUDA cubins.
+A Julia package for writing GPU kernels using NVIDIA's tile-based programming model.
 
-```
-Julia function → Julia SSA IR → Structured IR → Tile IR bytecode → CUBIN
-```
+**This package is under active development.** Not all Tile IR features are implemented, and
+support for the Julia language is limited and only verified on the examples provided here.
 
 
 ## Installation
