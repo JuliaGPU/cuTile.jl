@@ -1,4 +1,6 @@
 # Matrix transpose example - Julia port of cuTile Python's Transpose.py sample
+#
+# SPDX-License-Identifier: Apache-2.0
 
 using CUDA
 import cuTile as ct

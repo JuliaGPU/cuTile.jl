@@ -1,7 +1,9 @@
-# FFT Example - Fast Fourier Transform using cuTile
+# FFT Example - Julia port of cuTile Python's FFT.py sample
 #
-# This implements a 3-stage Cooley-Tukey FFT decomposition matching the Python cuTile FFT.
-# The FFT of size N is decomposed as N = F0 * F1 * F2, allowing efficient tensor factorization.
+# This implements a 3-stage Cooley-Tukey FFT decomposition. The FFT of size N is decomposed
+# as N = F0 * F1 * F2, allowing efficient tensor factorization.
+#
+# SPDX-License-Identifier: Apache-2.0
 
 using CUDA
 import cuTile as ct

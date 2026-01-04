@@ -1,4 +1,6 @@
-# Matrix multiplication example - Julia port of cuTile Python's matmul sample
+# Matrix multiplication example - Julia port of cuTile Python's MatMul.py sample
+#
+# SPDX-License-Identifier: Apache-2.0
 
 using CUDA
 import cuTile as ct
