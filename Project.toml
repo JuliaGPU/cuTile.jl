@@ -5,8 +5,8 @@ version = "0.1.0"
 
 [deps]
 CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
+CUDA_Tile_jll = "2068806d-a867-5dbd-af0e-42c2eb5d895d"
 IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
-Preferences = "21216c6a-2e73-6563-6e65-726566657250"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
@@ -19,7 +19,7 @@ CUDAExt = "CUDA"
 
 [compat]
 CUDA_Compiler_jll = "0.4"
-Preferences = "1.5.1"
+CUDA_Tile_jll = "13.1"
 
 [workspace]
 projects = ["test", "IRStructurizer", "FileCheck"]

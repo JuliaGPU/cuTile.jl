@@ -27,14 +27,12 @@ function emit_tileir(@nospecialize(f), @nospecialize(argtypes);
     return buf
 end
 
-const cuda_tile_translate = @load_preference("cuda_tile_translate_path", "cuda-tile-translate")
-
 function disassemble_tileir(bytecode::Vector{UInt8})::String
     mktempdir() do dir
         input_path = joinpath(dir, "kernel.tile")
         output_path = joinpath(dir, "kernel.disasm")
         write(input_path, bytecode)
-        read(`$cuda_tile_translate --cudatilebc-to-mlir $input_path`, String)
+        read(`$(cuda_tile_translate()) --cudatilebc-to-mlir $input_path`, String)
     end
 end
 

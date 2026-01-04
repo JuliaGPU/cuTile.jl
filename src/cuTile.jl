@@ -10,7 +10,7 @@ using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
 using Core.Compiler
 const CC = Core.Compiler
 
-using Preferences
+using CUDA_Tile_jll
 
 # Language definition
 include("types.jl")
