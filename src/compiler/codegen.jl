@@ -978,3 +978,65 @@ function resolve_function(ctx::CodegenContext, @nospecialize(ref))
 end
 
 
+#-----------------------------------------------------------------------------
+# Constant helpers
+#-----------------------------------------------------------------------------
+
+function emit_constant!(ctx::CodegenContext, @nospecialize(value), @nospecialize(result_type))
+    result_type_unwrapped = unwrap_type(result_type)
+
+    # Ghost types have no runtime representation
+    if is_ghost_type(result_type_unwrapped)
+        return ghost_value(result_type_unwrapped)
+    end
+
+    # Skip non-primitive types
+    if !(result_type_unwrapped <: Number || result_type_unwrapped === Bool)
+        return nothing
+    end
+
+    type_id = tile_type_for_julia!(ctx, result_type_unwrapped)
+    bytes = constant_to_bytes(value, result_type_unwrapped)
+    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+
+    CGVal(v, type_id, result_type_unwrapped)
+end
+
+function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
+    if T === Bool
+        return UInt8[value ? 0xff : 0x00]
+    elseif T === Int32 || T === UInt32
+        return collect(reinterpret(UInt8, [Int32(value)]))
+    elseif T === Int64 || T === UInt64
+        return collect(reinterpret(UInt8, [Int64(value)]))
+    elseif T === Float32
+        return collect(reinterpret(UInt8, [Float32(value)]))
+    elseif T === Float64
+        return collect(reinterpret(UInt8, [Float64(value)]))
+    else
+        error("Cannot convert $T to constant bytes")
+    end
+end
+
+#-----------------------------------------------------------------------------
+# Argument helpers
+#-----------------------------------------------------------------------------
+
+function extract_argument_index(@nospecialize(arg))
+    if arg isa SlotNumber
+        return arg.id - 1
+    elseif arg isa Argument
+        return arg.n - 1
+    end
+    nothing
+end
+
+function resolve_or_constant(ctx::CodegenContext, @nospecialize(arg), type_id::TypeId)
+    tv = emit_value!(ctx, arg)
+    # If we have a runtime value, use it
+    tv.v !== nothing && return tv.v
+    # Otherwise emit a constant from the compile-time value
+    val = @something tv.constant error("Cannot resolve argument")
+    bytes = reinterpret(UInt8, [Int32(val)])
+    encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
+end

@@ -1,13 +1,7 @@
-#=============================================================================
- User-Facing Operations
-
- This file provides the Julia-style 1-indexed API that users interact with.
- Each function calls the corresponding Intrinsics.* function with appropriate
- index conversions (Julia 1-indexed -> Tile IR 0-indexed).
-
- Organized per cuTile Python documentation structure:
- https://docs.nvidia.com/cuda/cutile-python/operations.html
-=============================================================================#
+# cuTile DSL operations
+#
+# Mimcs, and organized according to, the cuTile Python API:
+# https://docs.nvidia.com/cuda/cutile-python/operations.html
 
 # Helper: subtract 1 from each element of a tuple, preserving element types
 @inline _sub1(index::Tuple) = map(i -> i - one(i), index)
