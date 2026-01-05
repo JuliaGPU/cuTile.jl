@@ -61,22 +61,15 @@ end
 function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
                                    tile::ct.Constant{Int}) where {T}
     bid = ct.bid(1)
-    # Create index tile: [0, 1, 2, ..., tile-1] for this block's elements
-    # Note: gather/scatter use 0-indexed element positions (raw bytecode indices)
+    # Create index tile for this block's elements
     offsets = ct.arange((tile[],), Int32)
-    # Compute global indices: (bid-1) * tile + offsets
-    # bid is 1-indexed, so (bid-1) gives 0-indexed block offset
     base = ct.Tile((bid - Int32(1)) * Int32(tile[]))
     indices = ct.broadcast_to(base, (tile[],)) .+ offsets
 
-    # Gather elements using explicit indices (0-indexed element positions)
+    # Gather, add, scatter
     a_tile = ct.gather(a, indices)
     b_tile = ct.gather(b, indices)
-
-    # Perform addition
     sum_tile = a_tile + b_tile
-
-    # Scatter result back to output array (0-indexed element positions)
     ct.scatter(c, indices, sum_tile)
     return
 end

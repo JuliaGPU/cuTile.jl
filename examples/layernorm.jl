@@ -46,8 +46,8 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     j = Int32(1)
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-        # For masking, (j-1) * TILE_N gives the 0-indexed element offset
-        mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .< N, (1, TILE_N[]))
+        # Mask for valid elements
+        mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .<= N, (1, TILE_N[]))
         centered_tx = ct.where(mask, tx .- mean, ct.full((1, TILE_N[]), 0.0f0, Float32))
         var = var .+ (centered_tx .^ 2.0f0)
         j += Int32(1)
@@ -94,11 +94,11 @@ bid_m and j are 1-indexed (block ID and tile index).
     xhat = (tx .- mean) .* rstd
     wdy = tw .* tdy
 
-    # Mask for valid elements - (j-1) * TILE_N gives 0-indexed element offset
+    # Mask for valid elements
     indices = ct.arange((TILE_N,), Int32)
     offset = (j - Int32(1)) * Int32(TILE_N)
     global_indices = offset .+ indices
-    mask = ct.broadcast_to(global_indices .< N, (1, TILE_N))
+    mask = ct.broadcast_to(global_indices .<= N, (1, TILE_N))
 
     xhat_masked = ct.where(mask, xhat, ct.full((1, TILE_N), 0.0f0, Float32))
     wdy_masked = ct.where(mask, wdy, ct.full((1, TILE_N), 0.0f0, Float32))
@@ -185,10 +185,9 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
     bid_m = ct.bid(1)
     num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
     N = X.sizes[2]
-    # group_bid_m: 1-indexed group ID (1 to GROUP_SIZE_M)
     group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M[])) + Int32(1)
 
-    # Load mean and rstd for this row (bid_m is 1-indexed)
+    # Load mean and rstd for this row
     mean = ct.load(Mean, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
     rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
 
@@ -215,7 +214,7 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         partial_dw = tdy .* xhat
         partial_db = tdy
 
-        # Acquire spinlock (group_bid_m is 1-indexed)
+        # Acquire spinlock
         while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
                            memory_order=ct.MemoryOrder.Acquire) == Int32(1)
             # spin

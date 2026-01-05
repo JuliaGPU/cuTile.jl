@@ -1612,7 +1612,7 @@ end
  Tile Factory Operations
 =============================================================================#
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(arange), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_arange), args, @nospecialize(result_type))
     cb = ctx.cb
     tt = ctx.tt
 

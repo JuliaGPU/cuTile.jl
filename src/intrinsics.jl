@@ -237,7 +237,6 @@ tile = ct.load(arr, (1, 1, 1), (2, 3, 4))  # Shape (2, 3, 4)
 permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
 ```
 """
-# Internal function - receives 0-indexed permutation (for compiler)
 @noinline function _permute(tile::Tile{T, S}, ::Val{Perm}) where {T, S, Perm}
     Base.donotdelete(tile)
     # Compute permuted shape: for each position i in output, take S[Perm[i]+1]
@@ -246,7 +245,6 @@ permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
     Tile{T, permuted_shape}()
 end
 
-# Public API - both forms accept 1-indexed permutation
 @inline permute(tile::Tile{T, S}, ::Val{Perm}) where {T, S, Perm} =
     _permute(tile, Val(map(p -> p - 1, Perm)))
 @inline permute(tile::Tile{T, S}, perm::NTuple{N, Int}) where {T, S, N} =
@@ -283,13 +281,11 @@ real_part = ct.extract(tile, (1, 1, 1), (BS, N, 1))  # Slice 1 = real
 imag_part = ct.extract(tile, (1, 1, 2), (BS, N, 1))  # Slice 2 = imag
 ```
 """
-# Internal function - receives 0-indexed slice indices (for compiler)
 @noinline function _extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape}
     Base.donotdelete(tile)
     Tile{T, Shape}()
 end
 
-# Public API - both forms accept 1-indexed slice indices
 @inline extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape} =
     _extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
 @inline extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{M, Int}) where {T, S, N, M} =
@@ -313,11 +309,8 @@ combined = ct.cat((tile_a, tile_b), 1)
 combined_last = ct.cat((tile_a, tile_b), -1)
 ```
 """
-# Internal function - receives 0-indexed axis (for compiler)
 @noinline function _cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, ::Val{Axis}) where {T, S1, S2, Axis}
     Base.donotdelete(tiles)
-    # Compute output shape: dimensions must match except at the concatenation axis
-    # Axis is 0-indexed (from wrapper conversion)
     ndims = length(S1)
     axis = Axis < 0 ? ndims + Axis : Axis
     # Result shape: sum the sizes along axis, keep others same
@@ -331,7 +324,6 @@ combined_last = ct.cat((tile_a, tile_b), -1)
     Tile{T, result_shape}()
 end
 
-# Public API - both forms accept 1-indexed axis (negative stays as-is)
 @inline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, ::Val{Axis}) where {T, S1, S2, Axis}
     axis0 = Axis < 0 ? Axis : Axis - 1
     _cat(tiles, Val(axis0))
@@ -358,7 +350,6 @@ public bid, num_blocks, load, store
     bid(axis) -> Int32
 
 Get the block ID along the given axis (1=x, 2=y, 3=z).
-Returns a 1-indexed block ID (first block is 1, not 0).
 In kernel code, this is compiled to GetTileBlockIdOp.
 """
 @noinline _bid(axis::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
@@ -380,33 +371,28 @@ In kernel code, this is compiled to GetNumTileBlocksOp.
 """
     load(ptr, index, shape::NTuple{N, Int}) -> Tile{T, shape}
 
-Load a tile from a pointer at the given index (1-indexed) with the specified shape.
+Load a tile from a pointer at the given index with the specified shape.
 In kernel code, this is compiled to LoadViewTkoOp.
 
 Returns a `Tile{T, Shape}` where T is the pointer element type and Shape
 is the compile-time constant shape tuple.
 """
-# Internal function with shape as type parameter for proper type inference
-# Note: For Ptr, we also use variadic indices for consistency
 @noinline function _load(ptr::Ptr{T}, ::Val{shape}, indices...) where {T, shape}
     Tile{T, shape}()
 end
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline load(ptr::Ptr{T}, index, shape::NTuple{N, Int}) where {T, N} = _load(ptr, Val(shape), _sub1(index)...)
 @inline load(ptr::Ptr{T}, index::Integer, shape::NTuple{N, Int}) where {T, N} = _load(ptr, Val(shape), index - one(index))
 
 """
     store(ptr, index, tile::Tile) -> Nothing
 
-Store a tile to a pointer at the given index (1-indexed).
+Store a tile to a pointer at the given index.
 In kernel code, this is compiled to StoreViewTkoOp.
 """
-# Internal function with variadic indices for SROA
 @noinline function _store(ptr::Ptr{T}, tile::Tile{T}, indices...) where T
     Base.donotdelete(ptr, tile, indices...)
     nothing
 end
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline store(ptr::Ptr{T}, index, tile::Tile{T}) where T = _store(ptr, tile, _sub1(index)...)
 @inline store(ptr::Ptr{T}, index::Integer, tile::Tile{T}) where T = _store(ptr, tile, index - one(index))
 
@@ -421,7 +407,7 @@ The TileArray's sizes and strides are used to construct the TensorView.
 
 # Arguments
 - `arr`: The TileArray to load from
-- `index`: The tile index (1-indexed)
+- `index`: The tile index
 - `shape`: The tile shape (must be compile-time constants)
 - `padding_mode`: Behavior for out-of-bounds loads (default: Undetermined)
 
@@ -438,13 +424,10 @@ The TileArray's sizes and strides are used to construct the TensorView.
 tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
 ```
 """
-# Internal function with shape as type parameter for proper type inference
-# Indices are variadic at the end so Julia can SROA the tuple
 @noinline function _load(arr::TileArray{T, N}, ::Val{shape}, padding_mode::Int, indices...) where {T, N, shape}
     Base.donotdelete(arr, indices..., padding_mode)
     Tile{T, shape}()
 end
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
     _load(arr, Val(shape), padding_mode, _sub1(index)...)
@@ -490,15 +473,12 @@ end
 """
     store(arr::TileArray, index, tile::Tile) -> Nothing
 
-Store a tile to a TileArray at the given index (1-indexed).
+Store a tile to a TileArray at the given index.
 """
-# Internal function with variadic indices at the end for SROA
 @noinline function _store(arr::TileArray{T, N}, tile::Tile{T}, indices...) where {T, N}
     Base.donotdelete(arr, tile, indices...)
     nothing
 end
-
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function store(arr::TileArray{T, N}, index, tile::Tile{T}) where {T, N}
     _store(arr, tile, _sub1(index)...)
 end
@@ -766,17 +746,17 @@ public arange
 """
     arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
 
-Create a 1D tile with values [0, 1, 2, ..., shape[1]-1].
-Similar to Python's ct.arange() or np.arange().
+Create a 1D tile with values [1, 2, 3, ..., shape[1]] (1-indexed).
 
 # Example
 ```julia
-indices = ct.arange((16,), Int32)  # Creates Tile with [0, 1, 2, ..., 15]
+indices = ct.arange((16,), Int32)  # Creates Tile with [1, 2, 3, ..., 16]
 ```
 """
-@noinline function arange(shape::NTuple{1, Int}, ::Type{T}) where {T}
+@noinline function _arange(shape::NTuple{1, Int}, ::Type{T}) where {T}
     Tile{T, shape}()
 end
+@inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} = _arange(shape, T) .+ one(T)
 
 # Helper for integer constant shape
 @inline arange(shape::Tuple{Constant{Int, V}}, ::Type{T}) where {V, T} = arange((V,), T)
@@ -795,7 +775,7 @@ Returns a tile with the specified dimension removed.
 
 # Arguments
 - `tile`: Input tile to reduce
-- `axis`: Axis to reduce along (1-indexed). Must be a compile-time constant.
+- `axis`: Axis to reduce along. Must be a compile-time constant.
 
 # Example
 ```julia
@@ -803,15 +783,11 @@ Returns a tile with the specified dimension removed.
 sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
 ```
 """
-# Internal function - receives 0-indexed axis (for compiler)
 @noinline function _reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
-    # Compute the reduced shape by removing the reduced dimension
     reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
     Base.donotdelete(tile)
     Tile{T, reduced_shape}()
 end
-
-# Public API - both forms accept 1-indexed axis
 @inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
     _reduce_sum(tile, Val(axis - 1))
 end
@@ -826,16 +802,13 @@ Maximum reduction along the specified axis.
 
 # Arguments
 - `tile`: Input tile to reduce
-- `axis`: Axis to reduce along (1-indexed). Must be a compile-time constant.
+- `axis`: Axis to reduce along. Must be a compile-time constant.
 """
-# Internal function - receives 0-indexed axis (for compiler)
 @noinline function _reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
     reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
     Base.donotdelete(tile)
     Tile{T, reduced_shape}()
 end
-
-# Public API - both forms accept 1-indexed axis
 @inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
     _reduce_max(tile, Val(axis - 1))
 end
@@ -1056,14 +1029,12 @@ while ct.atomic_cas(locks, idx, Int32(0), Int32(1); memory_order=ct.MemoryOrder.
 end
 ```
 """
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function atomic_cas(array::TileArray{T, N}, index, expected, desired;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
     _atomic_cas(array, index - one(index), expected, desired, memory_order, memory_scope)::T
 end
 
-# Inner stub - @noinline, positional-only, appears in IR for codegen
 @noinline function _atomic_xchg(array::TileArray{T, N}, index, val,
                                 memory_order::Int, memory_scope::Int) where {T, N}
     Base.donotdelete(array, index, val)
@@ -1084,14 +1055,12 @@ Used for implementing locks (release) and other synchronization primitives.
 ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 ```
 """
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function atomic_xchg(array::TileArray{T, N}, index, val;
                              memory_order::Int=MemoryOrder.AcqRel,
                              memory_scope::Int=MemScope.Device) where {T, N}
     _atomic_xchg(array, index - one(index), val, memory_order, memory_scope)::T
 end
 
-# Inner stub - @noinline, positional-only, appears in IR for codegen
 @noinline function _atomic_add(array::TileArray{T, N}, index, val,
                                memory_order::Int, memory_scope::Int) where {T, N}
     Base.donotdelete(array, index, val)
@@ -1109,7 +1078,6 @@ the original value.
 old_val = ct.atomic_add(counters, idx, Int32(1))
 ```
 """
-# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function atomic_add(array::TileArray{T, N}, index, val;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
@@ -1132,19 +1100,17 @@ Out-of-bounds indices are handled with zero padding (elements outside bounds ret
 
 # Example
 ```julia
-indices = bid * TILE + ct.arange((TILE,), Int32)  # [bid*TILE, bid*TILE+1, ...]
-tile = ct.gather(arr, indices)  # Load elements at those indices
+base = (bid - 1) * TILE
+indices = base .+ ct.arange((TILE,), Int32)
+tile = ct.gather(arr, indices)
 ```
 """
-# Internal stub - captures index shape in type parameter
 @noinline function _gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
     Base.donotdelete(array, indices)
     Tile{T, S}()
 end
-
-# Public API for 1D array gather
 @inline function gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
-    _gather(array, indices)
+    _gather(array, indices .- one(I))
 end
 
 """
@@ -1155,24 +1121,20 @@ The index tiles are broadcast to a common shape, which becomes the output shape.
 
 # Example
 ```julia
-x = bid_x * TILE_X + ct.arange((TILE_X,), Int32)  # (TILE_X,)
-y = bid_y * TILE_Y + ct.arange((TILE_Y,), Int32)  # (TILE_Y,)
-# Reshape for broadcasting
-x = ct.reshape(x, (TILE_X, 1))  # (TILE_X, 1)
-y = ct.reshape(y, (1, TILE_Y))  # (1, TILE_Y)
-tile = ct.gather(arr, (x, y))   # (TILE_X, TILE_Y)
+x = (bid_x - 1) * TILE_X .+ ct.arange((TILE_X,), Int32)
+y = (bid_y - 1) * TILE_Y .+ ct.arange((TILE_Y,), Int32)
+x = ct.reshape(x, (TILE_X, 1))
+y = ct.reshape(y, (1, TILE_Y))
+tile = ct.gather(arr, (x, y))
 ```
 """
-# Internal stub for 2D gather - indices are two tiles that broadcast to common shape
 @noinline function _gather(array::TileArray{T, 2}, idx0::Tile{I0, S0}, idx1::Tile{I1, S1}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
     S = broadcast_shape(S0, S1)
     Base.donotdelete(array, idx0, idx1)
     Tile{T, S}()
 end
-
-# Public API for 2D array gather (tuple of indices)
 @inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
-    _gather(array, indices[1], indices[2])
+    _gather(array, indices[1] .- one(I0), indices[2] .- one(I1))
 end
 
 """
@@ -1183,19 +1145,17 @@ Out-of-bounds indices are ignored (no write for elements outside bounds).
 
 # Example
 ```julia
-indices = bid * TILE + ct.arange((TILE,), Int32)
+base = (bid - 1) * TILE
+indices = base .+ ct.arange((TILE,), Int32)
 ct.scatter(arr, indices, result_tile)
 ```
 """
-# Internal stub - captures shapes for codegen
 @noinline function _scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
     Base.donotdelete(array, indices, tile)
     nothing
 end
-
-# Public API for 1D array scatter
 @inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
-    _scatter(array, indices, tile)
+    _scatter(array, indices .- one(I), tile)
 end
 
 """
@@ -1206,20 +1166,17 @@ The index tiles and value tile must broadcast to the same shape.
 
 # Example
 ```julia
-x = ct.reshape(bid_x * TILE_X + ct.arange((TILE_X,), Int32), (TILE_X, 1))
-y = ct.reshape(bid_y * TILE_Y + ct.arange((TILE_Y,), Int32), (1, TILE_Y))
+x = ct.reshape((bid_x - 1) * TILE_X .+ ct.arange((TILE_X,), Int32), (TILE_X, 1))
+y = ct.reshape((bid_y - 1) * TILE_Y .+ ct.arange((TILE_Y,), Int32), (1, TILE_Y))
 ct.scatter(arr, (x, y), result_tile)
 ```
 """
-# Internal stub for 2D scatter
 @noinline function _scatter(array::TileArray{T, 2}, idx0::Tile{I0, S0}, idx1::Tile{I1, S1}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
     S = broadcast_shape(S0, S1)
     S == Stile || error("Tile shape $Stile doesn't match broadcast shape $S of indices")
     Base.donotdelete(array, idx0, idx1, tile)
     nothing
 end
-
-# Public API for 2D array scatter (tuple of indices)
 @inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
-    _scatter(array, indices[1], indices[2], tile)
+    _scatter(array, indices[1] .- one(I0), indices[2] .- one(I1), tile)
 end

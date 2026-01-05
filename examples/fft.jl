@@ -94,7 +94,6 @@ function fft_kernel(
     # --- Twiddle & Permute 0 ---
     X_r2 = T0_r .* X_r_ .- T0_i .* X_i_
     X_i2 = T0_i .* X_r_ .+ T0_r .* X_i_
-    # Permutation (1, 3, 4, 2) in 1-indexed = (0, 2, 3, 1) in 0-indexed
     X_r3 = ct.permute(ct.reshape(X_r2, (BS, F0, F1, F2)), (1, 3, 4, 2))
     X_i3 = ct.permute(ct.reshape(X_i2, (BS, F0, F1, F2)), (1, 3, 4, 2))
 
@@ -117,14 +116,12 @@ function fft_kernel(
     X_i9 = ct.matmul(W2_i, X_r8) + ct.matmul(W2_r, X_i8)
 
     # --- Final Permutation ---
-    # (1, 2, 4, 3) in 1-indexed = (0, 1, 3, 2) in 0-indexed
     X_r_out = ct.permute(ct.reshape(X_r9, (BS, F2, F0, F1)), (1, 2, 4, 3))
     X_i_out = ct.permute(ct.reshape(X_i9, (BS, F2, F0, F1)), (1, 2, 4, 3))
     X_r_final = ct.reshape(X_r_out, (BS, N, 1))
     X_i_final = ct.reshape(X_i_out, (BS, N, 1))
 
     # --- Concatenate and Store ---
-    # cat with -1 stays as -1 (negative axis unchanged)
     Y_ri = ct.reshape(ct.cat((X_r_final, X_i_final), -1), (BS, N2D, D))
     ct.store(y_packed_out, (bid, 1, 1), Y_ri)
 

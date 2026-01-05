@@ -262,7 +262,7 @@ end
  Matrix Multiplication
 =============================================================================#
 
-# 2D swizzle for better L2 cache locality
+# 2D swizzle for better L2 cache locality (using 0-indexed block IDs)
 @inline function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
     num_bid_m = ct.cdiv(M, Int32(tm))
     num_bid_n = ct.cdiv(N, Int32(tn))
@@ -281,9 +281,7 @@ function matmul_cutile_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.
     bid = ct.bid(1)
     M = A.sizes[1]
     N = B.sizes[2]
-    # swizzle_2d expects 0-indexed bid, returns 0-indexed tile coords
     bid_m_0, bid_n_0 = swizzle_2d(M, N, tm[], tn[], 8, bid - Int32(1))
-    # Convert to 1-indexed tile coordinates
     bid_m = bid_m_0 + Int32(1)
     bid_n = bid_n_0 + Int32(1)
 
@@ -423,8 +421,8 @@ function layernorm_cutile_kernel(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Fl
     j = Int32(1)
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
-        # For masking, (j-1) * TILE_N gives the 0-indexed element offset
-        mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .< N, (1, TILE_N[]))
+        # Mask for valid elements
+        mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .<= N, (1, TILE_N[]))
         centered_tx = ct.where(mask, tx .- mean, ct.full((1, TILE_N[]), 0.0f0, Float32))
         var = var .+ (centered_tx .^ 2.0f0)
         j += Int32(1)
