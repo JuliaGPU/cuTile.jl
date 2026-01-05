@@ -457,22 +457,4 @@ Compiled to cuda_tile.store_view_tko with TensorView.
     nothing
 end
 
-#=============================================================================
- cuTile.jl Extensions
- Higher-level abstractions not directly mapping to single Tile IR operations.
-=============================================================================#
-
-# Helper for compile-time broadcast shape computation
-@inline function _broadcast_shape(s1::Tuple, s2::Tuple)
-    max_ndim = max(length(s1), length(s2))
-    ntuple(max_ndim) do i
-        idx1 = length(s1) - max_ndim + i
-        idx2 = length(s2) - max_ndim + i
-        d1 = idx1 > 0 ? s1[idx1] : 1
-        d2 = idx2 > 0 ? s2[idx2] : 1
-        (d1 == d2 || d1 == 1 || d2 == 1) || error("Shapes $s1 and $s2 are not broadcastable")
-        max(d1, d2)
-    end
-end
-
 end # module Intrinsics
