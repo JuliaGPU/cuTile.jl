@@ -14,7 +14,7 @@
 
 module Intrinsics
 
-using ..cuTile: Tile, TileArray, Constant
+using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
 
 #=============================================================================
  8.3. Core
@@ -374,8 +374,42 @@ end
 
 #=============================================================================
  8.11. Views
- cuda_tile.load_view_tko, cuda_tile.store_view_tko
+ cuda_tile.make_tensor_view, cuda_tile.make_partition_view,
+ cuda_tile.get_index_space_shape, cuda_tile.load_view_tko, cuda_tile.store_view_tko
 =============================================================================#
+
+"""
+    make_tensor_view(arr::TileArray) -> TensorView
+
+Create a TensorView from a TileArray.
+Compiled to cuda_tile.make_tensor_view.
+"""
+@noinline function make_tensor_view(arr::TileArray{T, N})::TensorView{T, N} where {T, N}
+    Base.donotdelete(arr)
+    Base.inferencebarrier(TensorView{T, N}())
+end
+
+"""
+    make_partition_view(tv::TensorView, shape_val, padding_mode) -> PartitionView
+
+Create a PartitionView from a TensorView with the given tile shape.
+Compiled to cuda_tile.make_partition_view.
+"""
+@noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int)::PartitionView{T, N, Shape} where {T, N, Shape}
+    Base.donotdelete(tv)
+    Base.inferencebarrier(PartitionView{T, N, Shape}())
+end
+
+"""
+    get_index_space_shape(pv::PartitionView, axis) -> Int32
+
+Get the number of tiles along the given axis (0-indexed).
+Compiled to cuda_tile.get_index_space_shape.
+"""
+@noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer)::Int32 where {T, N, Shape}
+    Base.donotdelete(pv)
+    Base.inferencebarrier(zero(Int32))
+end
 
 """
     load(arr, shape_val, padding_mode, indices...)
@@ -404,16 +438,6 @@ end
  cuTile.jl Extensions
  Higher-level abstractions not directly mapping to single Tile IR operations.
 =============================================================================#
-
-"""
-    num_tiles(arr, axis, shape)
-
-Get number of tiles along 0-indexed axis, given tile shape.
-Equivalent to cdiv(arr.sizes[axis+1], shape[axis+1]).
-"""
-@noinline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{M, Int})::Int32 where {T, N, M}
-    Base.inferencebarrier(zero(Int32))
-end
 
 # Helper for compile-time broadcast shape computation
 @inline function _broadcast_shape(s1::Tuple, s2::Tuple)

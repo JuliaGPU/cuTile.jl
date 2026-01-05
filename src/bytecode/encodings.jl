@@ -368,6 +368,20 @@ function encode_MakePartitionViewOp!(cb::CodeBuilder, result_type::TypeId, tenso
 end
 
 """
+    encode_GetIndexSpaceShapeOp!(cb, result_types, partition_view) -> Tuple{Value...}
+
+Get the shape of the index space of a partition view.
+Returns one value per dimension.
+Opcode: 45
+"""
+function encode_GetIndexSpaceShapeOp!(cb::CodeBuilder, result_types::AbstractVector{TypeId}, partition_view::Value)
+    encode_varint!(cb.buf, Opcode.GetIndexSpaceShapeOp)
+    encode_typeid_seq!(cb.buf, result_types)
+    encode_operand!(cb.buf, partition_view)
+    return new_op!(cb, length(result_types))
+end
+
+"""
     encode_MakeTokenOp!(cb, result_type) -> Value
 
 Create an initial memory ordering token.

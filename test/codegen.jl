@@ -858,8 +858,9 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec}}) do a
-                    @check "addi"
-                    @check "divi"
+                    @check "make_tensor_view"
+                    @check "make_partition_view"
+                    @check "get_index_space_shape"
                     num = ct.num_tiles(a, 1, (32, 32))
                     return
                 end

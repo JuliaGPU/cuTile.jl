@@ -216,6 +216,30 @@ In kernel code, this is compiled to a ConstantOp.
     Tile{T, ()}()
 end
 
+#=============================================================================
+ View Types
+=============================================================================#
+
+"""
+    TensorView{T, N}
+
+Opaque type representing a TensorView in Tile IR.
+Created by `make_tensor_view` from a TileArray.
+
+Uses mutable struct to prevent constant folding by Julia.
+"""
+mutable struct TensorView{T, N} end
+
+"""
+    PartitionView{T, N, Shape}
+
+Opaque type representing a PartitionView in Tile IR.
+Created by `make_partition_view` from a TensorView with a tile shape.
+
+Uses mutable struct to prevent constant folding by Julia.
+"""
+mutable struct PartitionView{T, N, Shape} end
+
 
 """
     Constant{T, V}

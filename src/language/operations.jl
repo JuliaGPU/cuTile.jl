@@ -66,7 +66,9 @@ Axis is 1-indexed. Equivalent to cdiv(arr.sizes[axis], shape[axis]).
 ```
 """
 @inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{M, Int})::Int32 where {T, N, M}
-    Intrinsics.num_tiles(arr, axis - 1, shape)
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
+    Intrinsics.get_index_space_shape(pv, axis - 1)  # convert to 0-indexed
 end
 
 """
