@@ -1,157 +1,57 @@
-#=============================================================================
- Miscellaneous Intrinsics
- getfield/getindex for argument destructuring, scalar comparisons, no-ops
-=============================================================================#
+# miscellaneous intrinsics
 
-#-----------------------------------------------------------------------------
-# No-op dispatches
-#-----------------------------------------------------------------------------
 
-# Skip tuple construction
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Core.tuple), args, @nospecialize(result_type)) = nothing
+## cuda_tile.assume
 
-# Skip isa type assertions (inserted by Julia during inlining)
-emit_intrinsic!(ctx::CodegenContext, ::typeof(isa), args, @nospecialize(result_type)) = nothing
-
-#-----------------------------------------------------------------------------
-# getfield for destructured arguments (lazy chain extension)
-#-----------------------------------------------------------------------------
-
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @nospecialize(result_type))
-    length(args) >= 2 || return nothing
-
-    obj_arg = args[1]
-    field_arg = args[2]
-
-    # Extract field name or index
-    field = get_constant(ctx, field_arg)
-
-    # Try to get the object as a CGVal
-    obj_tv = emit_value!(ctx, obj_arg)
-
-    # If obj is a lazy arg_ref, extend the chain
-    if obj_tv !== nothing && is_arg_ref(obj_tv)
-        arg_idx, chain = obj_tv.arg_ref
-
-        if field isa Symbol
-            # Field access: extend chain with symbol
-            new_chain = Union{Symbol, Int}[chain..., field]
-            # Check if this resolves to a scalar field (auto-materialize leaf)
-            # Don't auto-materialize tuple types - they need indexing first
-            rt = unwrap_type(result_type)
-            if !(rt <: Tuple)
-                values = get_arg_flat_values(ctx, arg_idx, field)
-                if values !== nothing && length(values) == 1
-                    # Scalar field - materialize immediately
-                    type_id = tile_type_for_julia!(ctx, rt)
-                    return CGVal(values[1], type_id, rt)
-                end
-            end
-            return arg_ref_value(arg_idx, new_chain, rt)
-        elseif field isa Integer && !isempty(chain) && chain[end] isa Symbol
-            # Tuple indexing: chain ends with field name, now indexing into it
-            # This is a leaf - materialize immediately
-            field_name = chain[end]
-            values = get_arg_flat_values(ctx, arg_idx, field_name)
-            if values !== nothing && 1 <= field <= length(values)
-                type_id = tile_type_for_julia!(ctx, unwrap_type(result_type))
-                return CGVal(values[field], type_id, unwrap_type(result_type))
-            end
-        end
-    end
-
-    nothing
-end
-
-#-----------------------------------------------------------------------------
-# getindex for tuple field access (lazy chain extension)
-#-----------------------------------------------------------------------------
-
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getindex), args, @nospecialize(result_type))
-    length(args) >= 2 || return nothing
-
-    obj_arg = args[1]
-    index_arg = args[2]
-
-    # Extract constant index
-    index = get_constant(ctx, index_arg)
-    index isa Integer || return nothing
-
-    # Try to get the object as a CGVal
-    obj_tv = emit_value!(ctx, obj_arg)
-    obj_tv === nothing && return nothing
-
-    # If obj is a lazy arg_ref, try to materialize or extend the chain
-    if is_arg_ref(obj_tv)
-        arg_idx, chain = obj_tv.arg_ref
-
-        # If chain ends with a symbol (field name), we're indexing into a tuple field
-        # Try to materialize immediately
-        if !isempty(chain) && chain[end] isa Symbol
-            field_name = chain[end]
-            values = get_arg_flat_values(ctx, arg_idx, field_name)
-            if values !== nothing && 1 <= index <= length(values)
-                type_id = tile_type_for_julia!(ctx, unwrap_type(result_type))
-                return CGVal(values[index], type_id, unwrap_type(result_type))
-            end
-        end
-
-        # Otherwise extend the chain
-        new_chain = Union{Symbol, Int}[chain..., Int(index)]
-        return arg_ref_value(arg_idx, new_chain, unwrap_type(result_type))
-    end
-
-    # Not an arg_ref - not handled here
-    nothing
-end
-
-#-----------------------------------------------------------------------------
-# Scalar comparison operators
-#-----------------------------------------------------------------------------
-
-function emit_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
-    emit_int_cmp!(ctx, args, predicate, SignednessSigned)
-end
-
-function emit_int_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate, signedness::Signedness)
+# Used internally for optimization hints. Should probably become a pass.
+function emit_assume_ops!(ctx::CodegenContext, array_val::Value, size_vals::Vector{Value},
+                          stride_vals::Vector{Value}, array_spec::ArraySpec, dtype::TypeId, scalar_i32::TypeId;
+                          tv_strides::Union{Vector{Int64}, Nothing}=nothing)
     cb = ctx.cb
     tt = ctx.tt
 
-    lhs = emit_value!(ctx, args[1])
-    rhs = emit_value!(ctx, args[2])
+    # Pointer alignment
+    if array_spec.alignment > 0
+        ptr_dtype = pointer_type!(tt, dtype)
+        ptr_tile_type = tile_type!(tt, ptr_dtype, Int[])
+        array_val = encode_AssumeOp!(cb, ptr_tile_type, array_val, DivBy(array_spec.alignment))
+    end
 
-    lhs === nothing && error("Cannot resolve LHS operand for comparison")
-    rhs === nothing && error("Cannot resolve RHS operand for comparison")
+    # Bounds assumes for sizes
+    size_vals = Value[encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in size_vals]
 
-    # Result type is a boolean (i1) scalar
-    result_type = tile_type!(tt, I1(tt), Int[])
+    # Bounds assumes for strides - only for dynamic strides
+    if tv_strides !== nothing
+        stride_vals = Value[tv_strides[i] == DYNAMIC_SHAPE ?
+                       encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) : v
+                       for (i, v) in enumerate(stride_vals)]
+    else
+        stride_vals = Value[encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in stride_vals]
+    end
 
-    lhs_v = lhs isa CGVal ? lhs.v : lhs
-    rhs_v = rhs isa CGVal ? rhs.v : rhs
+    # Divisibility assumes for sizes
+    if hasproperty(array_spec, :shape_div_by)
+        for (i, div_by) in enumerate(array_spec.shape_div_by)
+            if div_by > 0 && i <= length(size_vals)
+                size_vals[i] = encode_AssumeOp!(cb, scalar_i32, size_vals[i], DivBy(div_by))
+            end
+        end
+    end
 
-    result_v = encode_CmpIOp!(cb, result_type, lhs_v, rhs_v;
-                              predicate=predicate, signedness=signedness)
+    # Divisibility assumes for strides - only for dynamic strides
+    if hasproperty(array_spec, :stride_div_by)
+        for (i, div_by) in enumerate(array_spec.stride_div_by)
+            if div_by > 0 && i <= length(stride_vals)
+                # Skip if this stride is static (not DYNAMIC_SHAPE)
+                if tv_strides === nothing || tv_strides[i] == DYNAMIC_SHAPE
+                    stride_vals[i] = encode_AssumeOp!(cb, scalar_i32, stride_vals[i], DivBy(div_by))
+                end
+            end
+        end
+    end
 
-    CGVal(result_v, result_type, Bool, Int[])
+    return array_val, size_vals, stride_vals
 end
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>)), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpGreaterThan)
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(<)), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpLessThan)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>=)), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpGreaterThanOrEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(<=)), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpLessThanOrEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(===), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(==)), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(!=)), args, @nospecialize(_)) =
-    emit_cmp!(ctx, args, CmpNotEqual)
+## TODO: cuda_tile.print_tko

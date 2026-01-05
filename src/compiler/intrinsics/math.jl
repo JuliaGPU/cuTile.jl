@@ -1,3 +1,5 @@
+# integer and floating-point math
+
 """
     emit_binop!(ctx, args, float_encoder, int_encoder)
 
@@ -88,19 +90,106 @@ function emit_binop_inner!(ctx::CodegenContext, lhs_tv::CGVal, rhs_tv::CGVal,
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
-#=============================================================================
- 8.7. Floating Point + 8.8. Integer Arithmetic
-=============================================================================#
 
-#=============================================================================
- 8.7. Floating Point
- cuda_tile.addf, cuda_tile.divf, cuda_tile.mulf, cuda_tile.pow,
- cuda_tile.rsqrt, cuda_tile.sqrt, cuda_tile.subf
-=============================================================================#
+## TODO: cuda_tile.absf
 
-#-----------------------------------------------------------------------------
-# cuda_tile.sqrt
-#-----------------------------------------------------------------------------
+
+## cuda_tile.addf
+# See arith intrinsic below
+
+
+## TODO: cuda_tile.atan2
+
+
+## TODO: cuda_tile.ceil
+
+
+## TODO: cuda_tile.cosh
+
+
+## TODO: cuda_tile.cos
+
+
+## cuda_tile.divf
+# See arith intrinsic below
+
+
+## TODO: cuda_tile.exp2
+
+
+## TODO: cuda_tile.exp
+
+
+## TODO: cuda_tile.floor
+
+
+## TODO: cuda_tile.fma
+
+
+## TODO: cuda_tile.log2
+
+
+## TODO: cuda_tile.log
+
+
+## TODO: cuda_tile.maxf
+
+
+## TODO: cuda_tile.minf
+
+
+## cuda_tile.mulf
+# See arith intrinsic below
+
+
+## TODO: cuda_tile.negf
+
+
+## cuda_tile.pow
+
+# Handled by arith intrinsic
+
+
+## TODO: cuda_tile.remf
+
+
+## cuda_tile.rsqrt
+
+@eval Intrinsics begin
+    """Element-wise reciprocal square root. Compiled to cuda_tile.rsqrt."""
+    @noinline function rsqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S}
+        Base.donotdelete(tile)
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.rsqrt), args, @nospecialize(result_type))
+    cb = ctx.cb
+
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve operand for rsqrt()")
+
+    result = encode_RSqrtOp!(cb, source.type_id, source.v)
+
+    CGVal(result, source.type_id, source.jltype, source.shape)
+end
+
+
+## TODO: cuda_tile.sinh
+
+
+## TODO: cuda_tile.sin
+
+
+## cuda_tile.sqrt
+
+@eval Intrinsics begin
+    """Element-wise square root. Compiled to cuda_tile.sqrt."""
+    @noinline function sqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S}
+        Base.donotdelete(tile)
+        Tile{T, S}()
+    end
+end
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.sqrt), args, @nospecialize(result_type))
     cb = ctx.cb
@@ -113,82 +202,31 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.sqrt), args, @
     CGVal(result, source.type_id, source.jltype, source.shape)
 end
 
-#=============================================================================
- 8.8. Integer
- cuda_tile.addi, cuda_tile.divi, cuda_tile.muli, cuda_tile.subi
-=============================================================================#
 
-#-----------------------------------------------------------------------------
-# cuda_tile.divi (cdiv, floordiv)
-#-----------------------------------------------------------------------------
+## cuda_tile.subf
+# See arith intrinsic below
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.cdiv), args, @nospecialize(result_type))
-    cb = ctx.cb
-    tt = ctx.tt
 
-    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+## TODO: cuda_tile.tanh
 
-    a = resolve_or_constant(ctx, args[1], scalar_i32)
-    b = resolve_or_constant(ctx, args[2], scalar_i32)
 
-    one_val = encode_ConstantOp!(cb, scalar_i32, collect(reinterpret(UInt8, [Int32(1)])))
+## TODO: cuda_tile.tan
 
-    sum1 = encode_AddIOp!(cb, scalar_i32, a, b)
-    sum2 = encode_SubIOp!(cb, scalar_i32, sum1, one_val)
-    result = encode_DivIOp!(cb, scalar_i32, sum2, b; signedness=SignednessSigned, rounding=RoundingZero)
 
-    CGVal(result, scalar_i32, Int32)
+## XXX: arith (unified arithmetic for addf/subf/mulf/divf/pow)
+
+@eval Intrinsics begin
+    """
+        arith(a, b, op)
+
+    Element-wise arithmetic. Op is +, -, *, /, or ^.
+    Compiled to cuda_tile.addf/addi, cuda_tile.subf/subi, etc. based on element type.
+    """
+    @noinline function arith(a::Tile{T, S}, b::Tile{T, S}, ::F) where {T, S, F<:Function}
+        Base.donotdelete(a, b)
+        Tile{T, S}()
+    end
 end
-
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.floordiv), args, @nospecialize(result_type))
-    cb = ctx.cb
-    tt = ctx.tt
-
-    scalar_i32 = tile_type!(tt, I32(tt), Int[])
-
-    a = resolve_or_constant(ctx, args[1], scalar_i32)
-    b = resolve_or_constant(ctx, args[2], scalar_i32)
-
-    result = encode_DivIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned, rounding=RoundingZero)
-
-    CGVal(result, scalar_i32, Int32)
-end
-
-#-----------------------------------------------------------------------------
-# Base.rem, Base.min (integer operations)
-#-----------------------------------------------------------------------------
-
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.rem), args, @nospecialize(result_type))
-    cb = ctx.cb
-    tt = ctx.tt
-
-    scalar_i32 = tile_type!(tt, I32(tt), Int[])
-
-    a = resolve_or_constant(ctx, args[1], scalar_i32)
-    b = resolve_or_constant(ctx, args[2], scalar_i32)
-
-    result = encode_RemIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
-
-    CGVal(result, scalar_i32, Int32)
-end
-
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.min), args, @nospecialize(result_type))
-    cb = ctx.cb
-    tt = ctx.tt
-
-    scalar_i32 = tile_type!(tt, I32(tt), Int[])
-
-    a = resolve_or_constant(ctx, args[1], scalar_i32)
-    b = resolve_or_constant(ctx, args[2], scalar_i32)
-
-    result = encode_MinIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
-
-    CGVal(result, scalar_i32, Int32)
-end
-
-#-----------------------------------------------------------------------------
-# Intrinsics.arith - unified arithmetic (dispatches on operator, branches on element type)
-#-----------------------------------------------------------------------------
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.arith), args, @nospecialize(_))
     cb = ctx.cb
@@ -238,9 +276,146 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.arith), args, 
     emit_binop_inner!(ctx, lhs_tv, rhs_tv, float_encoder, int_encoder)
 end
 
-#-----------------------------------------------------------------------------
-# Core.IntrinsicFunction - Julia's integer intrinsics
-#-----------------------------------------------------------------------------
+
+#=============================================================================
+ 8.8. Integer
+ cuda_tile.absi, cuda_tile.addi, cuda_tile.divi, cuda_tile.maxi,
+ cuda_tile.mini, cuda_tile.muli, cuda_tile.mulhii, cuda_tile.negi,
+ cuda_tile.ori, cuda_tile.remi, cuda_tile.shli, cuda_tile.shri,
+ cuda_tile.subi, cuda_tile.xori
+=============================================================================#
+
+
+## TODO: cuda_tile.absi
+
+
+## cuda_tile.addi
+# See arith intrinsic above and Core.IntrinsicFunction handlers below
+
+
+## cuda_tile.divi
+
+@eval Intrinsics begin
+    """Ceiling division: ceil(a/b). Compiled to cuda_tile.divi."""
+    @noinline cdiv(a::Integer, b::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
+
+    """Floor division: floor(a/b). Compiled to cuda_tile.divi."""
+    @noinline floordiv(a::Integer, b::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.cdiv), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    one_val = encode_ConstantOp!(cb, scalar_i32, collect(reinterpret(UInt8, [Int32(1)])))
+
+    sum1 = encode_AddIOp!(cb, scalar_i32, a, b)
+    sum2 = encode_SubIOp!(cb, scalar_i32, sum1, one_val)
+    result = encode_DivIOp!(cb, scalar_i32, sum2, b; signedness=SignednessSigned, rounding=RoundingZero)
+
+    CGVal(result, scalar_i32, Int32)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.floordiv), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    result = encode_DivIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned, rounding=RoundingZero)
+
+    CGVal(result, scalar_i32, Int32)
+end
+
+
+## cuda_tile.maxi
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.max), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    result = encode_MaxIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
+
+    CGVal(result, scalar_i32, Int32)
+end
+
+
+## cuda_tile.mini
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.min), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    result = encode_MinIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
+
+    CGVal(result, scalar_i32, Int32)
+end
+
+
+## cuda_tile.muli
+# See arith intrinsic above and Core.IntrinsicFunction handlers below
+
+
+## TODO: cuda_tile.mulhii
+
+
+## TODO: cuda_tile.negi
+
+
+## TODO: cuda_tile.ori
+
+
+## cuda_tile.remi
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.rem), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    a = resolve_or_constant(ctx, args[1], scalar_i32)
+    b = resolve_or_constant(ctx, args[2], scalar_i32)
+
+    result = encode_RemIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
+
+    CGVal(result, scalar_i32, Int32)
+end
+
+
+## TODO: cuda_tile.shli
+
+
+## TODO: cuda_tile.shri
+
+
+## cuda_tile.subi
+# See arith intrinsic above and Core.IntrinsicFunction handlers below
+
+
+## TODO: cuda_tile.xori
+
+
+## XXX: Core.IntrinsicFunction - Julia's integer intrinsics
+# These are Julia's internal integer arithmetic intrinsics.
+# They map to cuda_tile.addi, cuda_tile.subi, cuda_tile.muli, and comparison ops.
 
 function emit_intrinsic!(ctx::CodegenContext, func::Core.IntrinsicFunction, args, @nospecialize(_))
     # Integer arithmetic

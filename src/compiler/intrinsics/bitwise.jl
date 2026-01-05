@@ -1,13 +1,17 @@
-#=============================================================================
- 8.9. Bitwise
- cuda_tile.andi
-=============================================================================#
+# bitwise intrinsics
 
-#-----------------------------------------------------------------------------
-# cuda_tile.andi (Intrinsics.logical_and)
-#-----------------------------------------------------------------------------
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.logical_and), args, @nospecialize(result_type))
+## cuda_tile.andi
+
+@eval Intrinsics begin
+    """Element-wise logical AND for boolean tiles."""
+    @noinline function andi(a::Tile{Bool, S}, b::Tile{Bool, S}) where {S}
+        Base.donotdelete(a, b)
+        Tile{Bool, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.andi), args, @nospecialize(result_type))
     cb = ctx.cb
     tt = ctx.tt
 
@@ -27,9 +31,10 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.logical_and), 
     CGVal(result, bool_tile_type, result_type_unwrapped, tile_shape)
 end
 
-#-----------------------------------------------------------------------------
-# not_int (via XOrIOp) - used for boolean negation in loop bounds
-#-----------------------------------------------------------------------------
+
+## XXX: not_int via cuda_tile.xori
+# Boolean negation using XOR with true (1).
+# Called from Core.IntrinsicFunction handler in math.jl.
 
 function emit_not_int!(ctx::CodegenContext, args)
     cb = ctx.cb

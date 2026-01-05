@@ -742,7 +742,7 @@ end
 Element-wise logical AND for boolean tiles.
 """
 @inline Base.:(&)(a::Tile{Bool, S}, b::Tile{Bool, S}) where {S} =
-    Intrinsics.logical_and(a, b)
+    Intrinsics.andi(a, b)
 
 #=============================================================================
  Atomic

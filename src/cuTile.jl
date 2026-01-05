@@ -14,7 +14,6 @@ using CUDA_Tile_jll
 
 # Language definition
 include("language/types.jl")
-include("language/intrinsics.jl")
 include("language/broadcast.jl")
 include("language/operations.jl")
 

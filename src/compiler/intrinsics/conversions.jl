@@ -1,12 +1,24 @@
-#=============================================================================
- 8.4. Conversions
- cuda_tile.bitcast, cuda_tile.exti, cuda_tile.ftof, cuda_tile.ftoi,
- cuda_tile.itof, cuda_tile.trunci
-=============================================================================#
+# conversions
 
-#-----------------------------------------------------------------------------
-# cuda_tile.ftof, cuda_tile.ftoi, cuda_tile.itof, cuda_tile.exti, cuda_tile.trunci
-#-----------------------------------------------------------------------------
+
+## TODO: cuda_tile.bitcast
+
+
+## cuda_tile.exti, cuda_tile.ftof, cuda_tile.ftoi, cuda_tile.itof, cuda_tile.trunci
+
+@eval Intrinsics begin
+    """
+        astype(tile, T2)
+
+    Convert tile element type from T1 to T2.
+    Compiled to cuda_tile.ftof, cuda_tile.ftoi, cuda_tile.itof,
+    cuda_tile.exti, or cuda_tile.trunci based on source/target types.
+    """
+    @noinline function astype(tile::Tile{T1, Shape}, ::Type{T2}) where {T1, Shape, T2}
+        Base.donotdelete(tile)
+        Tile{T2, Shape}()
+    end
+end
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.astype), args, @nospecialize(result_type))
     cb = ctx.cb
@@ -73,9 +85,17 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.astype), args,
     CGVal(result, target_tile_type, Tile{target_elem, Tuple(tile_shape)}, tile_shape)
 end
 
-#-----------------------------------------------------------------------------
-# Core.IntrinsicFunction: sitofp, uitofp
-#-----------------------------------------------------------------------------
+
+## cuda_tile.int_to_ptr, cuda_tile.ptr_to_int
+# NOTE: Used internally by atomic operations, not exposed as user intrinsics
+
+
+## TODO: cuda_tile.ptr_to_ptr
+
+
+## XXX: Core.IntrinsicFunction: sitofp, uitofp
+# These are Julia's internal integer-to-float conversion intrinsics.
+# They map to cuda_tile.itof.
 
 # Signed integer to floating point conversion
 function emit_sitofp!(ctx::CodegenContext, args)
