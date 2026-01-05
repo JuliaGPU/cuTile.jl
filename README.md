@@ -3,7 +3,7 @@
 A Julia package for writing GPU kernels using NVIDIA's tile-based programming model.
 
 **This package is under active development.** Not all Tile IR features are implemented, and
-support for the Julia language is limited and only verified on the examples provided here.
+support for the Julia language is limited and only verified on the examples provided here. Interfaces and APIs may change without notice.
 
 
 ## Installation
@@ -47,6 +47,8 @@ ct.launch(vadd, (cld(vector_size, tile_size), 1, 1), a, b, c, ct.Constant(tile_s
 
 @assert c == a .+ b
 ```
+
+### Inspecting Generated Tile IR
 
 The generated Tile IR can be inspected using the `code_tiled` function:
 
@@ -162,36 +164,146 @@ while the latter needs valid `CuArray`s to be passed to the kernel.
 | `atomic_add(arr, idx, val)` | Atomic add |
 
 
-## Gotchas
+## Differences from cuTile Python
 
-**Use `while` loops instead of `for`:**
-The compiler recognizes simple while-loop patterns but not Julia's iterator-based `for` loops. Write loops as:
+cuTile.jl follows Julia conventions, which differ from the Python API in several ways:
+
+
+### Kernel definition syntax
+
+Kernels don't need a decorator, but do have to return `nothing`:
+
+```python
+# Python
+@ct.kernel
+def vadd(a, b, c):
+    pid = ct.bid(0)
+
+    a_tile = ct.load(a, index=(pid,), shape=(16,))
+    b_tile = ct.load(b, index=(pid,), shape=(16,))
+    result = a_tile + b_tile
+    ct.store(c, index=(pid, ), tile=result)
+```
+
+```julia
+# Julia
+function vadd(a, b, c)
+    pid = ct.bid(1)
+
+    a_tile = ct.load(a, pid, (16,))
+    b_tile = ct.load(b, pid, (16,))
+    result = a_tile + b_tile
+    ct.store(c, pid, result)
+
+    return
+end
+```
+
+### Launch Syntax
+
+```python
+# Python
+import cupy as cp
+ct.launch(cp.cuda.get_current_stream(), grid, vadd, (a, b, c))
+```
+
+```julia
+# Julia
+ct.launch(vadd, grid, a, b, c)
+```
+
+### 1-Based Indexing
+
+All index-based operations use Julia's 1-based convention:
+
+```python
+# Python
+bid_x = ct.bid(0)
+bid_y = ct.bid(1)
+ct.permute(tile, (2, 0, 1))
+```
+
+```julia
+# Julia
+bid_x = ct.bid(1)
+bid_y = ct.bid(2)
+ct.permute(tile, (3, 1, 2))
+```
+
+This applies to `bid`, `num_blocks`, `permute`, `reshape`, dimension arguments, etc.
+
+### `Val`-like constants
+
+CuTile.jl uses `ct.Constant{T}` to encode compile-time constant values in the type domain, similar to how `Val` works. An explicit `[]` is needed to extract the value at runtime:
+
+```python
+# Python
+@ct.kernel
+def kernel(a, b, tile_size):
+    tile = ct.load(a, index=(0,), shape=(tile_size,))
+
+ct.launch(stream, grid, kernel, (a, b, 16))
+```
+
+```julia
+# Julia
+function kernel(a, b, tile_size::ct.Constant{Int})
+    tile = ct.load(a, 1, (tile_size[],))
+end
+
+ct.launch(kernel, grid, a, b, ct.Constant(16))
+```
+
+### Broadcasting
+
+Python's binary operators automatically broadcast different shapes. Julia uses standard broadcast syntax:
+
+```python
+# Python
+a + b  # Automatically broadcasts (16,) + (1, 16) → (1, 16)
+```
+
+```julia
+# Julia
+a + b   # Same shape only
+a .+ b  # Broadcasts different shapes
+```
+
+This matches how regular Julia arrays behave.
+
+
+## Limitations
+
+### `for` loops
+
+The compiler recognizes simple while-loop patterns but not Julia's iterator-based `for` loops. Write such loops as:
 
 ```julia
 # Do this:
-i = 0
-while i < n
+i = 1
+while i <= n
     # ...
     i += 1
 end
 
 # Not this:
-for i in 0:n-1
+for i in 1:n
     # ...
 end
 ```
 
-**Tile shapes must be compile-time constants:**
-The shape argument to `load`, `zeros`, etc. must be known at compile time. Use `ct.Constant{Int}` for values that need to be passed as arguments but remain constant:
+### Keyword arguments
 
-```julia
-function kernel(arr, tile_size::ct.Constant{Int})
-    tile = ct.load(arr, 0, (tile_size[],))  # tile_size[] extracts the value
-end
+`load` and `store` use positional arguments instead of keyword arguments:
+
+```python
+# Python
+ct.load(arr, index=(i, j), shape=(m, n))
+ct.store(arr, index=(i, j), tile=t)
 ```
 
-**No scalar returns:**
-Kernels must return `nothing`. Use `store` to write results to arrays.
-
-**Broadcasting requires explicit shapes:**
-Same-shape operations use `+`, `-`, `*`, `/`. Different shapes require broadcast syntax `.+`, `.-`, `.*`, `./`.
+```julia
+# Julia
+ct.load(arr, (i, j), (m, n))
+ct.store(arr, (i, j), t)
+```
