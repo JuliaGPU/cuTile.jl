@@ -46,40 +46,55 @@ Iteration yields `(idx, entry)` pairs where `entry` is a `SSAEntry` named tuple.
 Indexing by position returns `SSAEntry`. Use `idx in v` to test presence by SSA index.
 """
 struct SSAVector <: AbstractVector{Tuple{Int, SSAEntry}}
-    data::Vector{Tuple{Int, Any, Any}}
+    ssa_idxes::Vector{Int}
+    stmts::Vector{Any}
+    types::Vector{Any}
 end
 
-SSAVector() = SSAVector(Tuple{Int,Any,Any}[])
+SSAVector() = SSAVector(Int[], Any[], Any[])
 
 # Iteration yields (idx, (; stmt, typ)) pairs
 function Base.iterate(v::SSAVector)
-    isempty(v.data) && return nothing
-    idx, stmt, typ = v.data[1]
+    isempty(v.ssa_idxes) && return nothing
+    idx = v.ssa_idxes[1]
+    stmt = v.stmts[1]
+    typ = v.types[1]
     return (idx, SSAEntry((stmt, typ))), 2
 end
 
 function Base.iterate(v::SSAVector, state::Int)
-    state > length(v.data) && return nothing
-    idx, stmt, typ = v.data[state]
+    state > length(v.ssa_idxes) && return nothing
+    idx = v.ssa_idxes[state]
+    stmt = v.stmts[state]
+    typ = v.types[state]
     return (idx, SSAEntry((stmt, typ))), state + 1
 end
 
-Base.length(v::SSAVector) = length(v.data)
-Base.size(v::SSAVector) = (length(v.data),)
+Base.length(v::SSAVector) = length(v.ssa_idxes)
+Base.size(v::SSAVector) = (length(v.ssa_idxes),)
 
 # Positional indexing returns SSAEntry
-Base.getindex(v::SSAVector, i::Int) = let (_, stmt, typ) = v.data[i]; SSAEntry((stmt, typ)) end
+function Base.getindex(v::SSAVector, i::Int)
+    stmt = v.stmts[i]
+    typ = v.types[i]
+    return SSAEntry((stmt, typ))
+end
 
 # Push raw tuple
-Base.push!(v::SSAVector, item::Tuple{Int,Any,Any}) = push!(v.data, item)
+function Base.push!(v::SSAVector, (idx, stmt, typ)::Tuple{Int,Any,Any})
+    push!(v.ssa_idxes, idx)
+    push!(v.stmts, stmt)
+    push!(v.types, typ)
+    return nothing
+end
 
 # Test if SSA index is present
-Base.in(ssa_idx::Int, v::SSAVector) = any(idx == ssa_idx for (idx, _, _) in v.data)
+Base.in(ssa_idx::Int, v::SSAVector) = any(==(ssa_idx), v.ssa_idxes)
 
 # Lazy iterators
-indices(v::SSAVector) = (idx for (idx, _, _) in v.data)
-statements(v::SSAVector) = (stmt for (_, stmt, _) in v.data)
-types(v::SSAVector) = (typ for (_, _, typ) in v.data)
+indices(v::SSAVector) = (idx for idx in v.ssa_idxes)
+statements(v::SSAVector) = (stmt for stmt in v.stmts)
+types(v::SSAVector) = (typ for typ in v.types)
 
 """
     find_by_ssa(v::SSAVector, ssa_idx::Int) -> Union{SSAEntry, Nothing}
@@ -87,10 +102,12 @@ types(v::SSAVector) = (typ for (_, _, typ) in v.data)
 Find a statement and its type by SSA index. Returns SSAEntry or nothing.
 """
 function find_by_ssa(v::SSAVector, ssa_idx::Int)
-    for (idx, stmt, typ) in v.data
-        idx == ssa_idx && return SSAEntry((stmt, typ))
+    i = findfirst(==(ssa_idx), v.ssa_idxes)
+    if i === nothing
+        return nothing
+    else
+        return SSAEntry((v.stmts[i], v.types[i]))
     end
-    nothing
 end
 
 #=============================================================================
