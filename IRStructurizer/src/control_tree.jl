@@ -126,7 +126,7 @@ end
     Some(termination_blocks)
 end
 
-function acyclic_region(g, v, ec, doms, domtrees, backedges)
+function acyclic_region(g, v, ec, doms, domtree, backedges)
     @match (g, v) begin
         block_region(vs) => return (REGION_BLOCK, vs)
         if_then_region(v, t, m) => return (REGION_IF_THEN, [v, t])
@@ -144,17 +144,16 @@ function acyclic_region(g, v, ec, doms, domtrees, backedges)
     # Test that we don't have a loop or improper region.
     any(u -> in(Edge(u, v), backedges), inneighbors(g, v)) && return nothing
 
-    domtree = domtrees[v]
-    pdom_indices = findall(children(domtree)) do tree
-        w = node_index(tree)
+    # Use Julia's DomTree directly - children are block indices
+    dom_children = domtree.nodes[v].children
+    pdom_indices = findall(dom_children) do w
         in(w, vertices(g)) && !in(w, outneighbors(g, v))
     end
     length(pdom_indices) ≥ 1 || return nothing
     vs = Int64[]
     ws = Int64[]
     for i in pdom_indices
-        pdomtree = domtree[i]
-        w = node_index(pdomtree)
+        w = dom_children[i]
         append!(vs, vertices_between(g, v, w))
         push!(ws, w)
     end
@@ -224,18 +223,20 @@ struct PhiAnalysisResult
 end
 
 """
-    analyze_header_phis(header_block, stmts) -> Dict{Int, PhiAnalysisResult}
+    analyze_header_phis(header_idx, ir) -> Dict{Int, PhiAnalysisResult}
 
 Analyze phi nodes in a loop header block, extracting entry and carried values.
 
-Uses edge position (not value definition location) to classify:
-- Entry edges: come from before the header block
-- Carried edges: come from after the header block (back-edge)
+In IRCode, PhiNode edges are BLOCK indices (not statement indices).
+- Entry edges: come from blocks before the header block index
+- Carried edges: come from blocks at or after the header block index (back-edge)
 """
-function analyze_header_phis(header_block, stmts)
+function analyze_header_phis(header_idx::Int, ir::IRCode)
     phi_info = Dict{Int, PhiAnalysisResult}()
+    stmts = ir.stmts.stmt
+    bb = ir.cfg.blocks[header_idx]
 
-    for si in header_block.range
+    for si in first(bb.stmts):last(bb.stmts)
         stmt = stmts[si]
         stmt isa PhiNode || continue
 
@@ -246,10 +247,12 @@ function analyze_header_phis(header_block, stmts)
             isassigned(stmt.values, edge_idx) || continue
             val = stmt.values[edge_idx]
 
-            # Classify by edge position relative to header
-            if edge > header_block.range.stop
+            # In IRCode, edge is a block index
+            # Carried values come from blocks >= header (back-edges)
+            # Entry values come from blocks < header
+            if edge >= header_idx
                 carried_val = val
-            elseif edge < header_block.range.start
+            else
                 entry_val = val
             end
         end
@@ -263,12 +266,14 @@ function analyze_header_phis(header_block, stmts)
 end
 
 """
-    extract_loop_condition(header_block, stmts) -> (SSAValue, Expr) | nothing
+    extract_loop_condition(header_idx, ir) -> (SSAValue, Expr) | nothing
 
 Extract the loop condition from a GotoIfNot in the header block.
 """
-function extract_loop_condition(header_block, stmts)
-    for si in header_block.range
+function extract_loop_condition(header_idx::Int, ir::IRCode)
+    stmts = ir.stmts.stmt
+    bb = ir.cfg.blocks[header_idx]
+    for si in first(bb.stmts):last(bb.stmts)
         stmt = stmts[si]
         if stmt isa GotoIfNot && stmt.cond isa SSAValue
             cond_stmt = stmts[stmt.cond.id]
@@ -281,13 +286,14 @@ function extract_loop_condition(header_block, stmts)
 end
 
 """
-    is_loop_invariant(value, header_block) -> Bool
+    is_loop_invariant(value, header_idx, ir) -> Bool
 
 Check if a value is loop-invariant (defined before the loop header).
 """
-function is_loop_invariant(value, header_block)
+function is_loop_invariant(value, header_idx::Int, ir::IRCode)
     if value isa SSAValue
-        return value.id < header_block.range.start
+        bb = ir.cfg.blocks[header_idx]
+        return value.id < first(bb.stmts)
     end
     # Arguments, constants, etc. are loop-invariant
     return true
@@ -439,7 +445,7 @@ function find_step_from_carried_value(stmts, carried_val, iv_candidate, depth=0)
 end
 
 """
-    try_detect_for_loop(header_idx, code, blocks; patterns=DEFAULT_CONDITION_PATTERNS)
+    try_detect_for_loop(header_idx, ir; patterns=DEFAULT_CONDITION_PATTERNS)
 
 Unified for-loop detection using pluggable condition patterns.
 
@@ -456,20 +462,19 @@ NOTE: Assumes SESE structure (single GotoIfNot in header). For non-SESE loops
 with multiple GotoIfNots, `extract_loop_condition` returns the first one found,
 which may be an internal branch rather than the loop exit condition.
 """
-function try_detect_for_loop(header_idx::Int, code::CodeInfo, blocks;
+function try_detect_for_loop(header_idx::Int, ir::IRCode;
                              patterns=DEFAULT_CONDITION_PATTERNS)
-    stmts = code.code
+    stmts = ir.stmts.stmt
 
     # Bounds check
-    (1 <= header_idx <= length(blocks)) || return nothing
-    header_block = blocks[header_idx]
+    (1 <= header_idx <= length(ir.cfg.blocks)) || return nothing
 
     # Step 1: Analyze phi nodes
-    phi_info = analyze_header_phis(header_block, stmts)
+    phi_info = analyze_header_phis(header_idx, ir)
     isempty(phi_info) && return nothing
 
     # Step 2: Extract condition
-    cond_result = extract_loop_condition(header_block, stmts)
+    cond_result = extract_loop_condition(header_idx, ir)
     cond_result === nothing && return nothing
     (_, cond_expr) = cond_result
 
@@ -487,7 +492,7 @@ function try_detect_for_loop(header_idx::Int, code::CodeInfo, blocks;
     step === nothing && return nothing
 
     # Step 5: Check loop-invariance of bound
-    is_loop_invariant(match.bound, header_block) || return nothing
+    is_loop_invariant(match.bound, header_idx, ir) || return nothing
 
     # Success: construct ForLoopInfo
     return ForLoopInfo(match.iv_phi_idx, phi.entry_val, match.bound, step, match.is_inclusive)
@@ -497,12 +502,12 @@ end
  Cyclic Region Detection
 =============================================================================#
 
-function cyclic_region!(sccs, g, v, ec, doms, domtrees, backedges, code, blocks)
+function cyclic_region!(sccs, g, v, ec, doms, domtree, backedges, ir)
     # Try to match while-loop pattern first
     matched = @match (g, v) begin
         while_loop(cond, body, merge) => begin
             # Try unified for-loop detection
-            for_info = try_detect_for_loop(cond, code, blocks)
+            for_info = try_detect_for_loop(cond, ir)
             if for_info !== nothing
                 (REGION_FOR_LOOP, [cond, body], for_info)
             else
@@ -533,17 +538,6 @@ function cyclic_region!(sccs, g, v, ec, doms, domtrees, backedges, code, blocks)
 
     # Irreducible control flow - not supported
     return nothing
-end
-
-function acyclic_region(g, v)
-    dfst = SpanningTreeDFS(g)
-    ec = EdgeClassification(g, dfst)
-    doms = dominators(g)
-    bedges = backedges(g, ec, doms)
-    domtree = DominatorTree(doms)
-    domtrees = sort(collect(PostOrderDFS(domtree)); by=x -> node_index(x))
-    domtrees_dict = Dict(node_index(dt) => dt for dt in domtrees)
-    acyclic_region(g, v, ec, doms, domtrees_dict, bedges)
 end
 
 """
@@ -596,32 +590,69 @@ is_switch(ctree::ControlTree) = region_type(ctree) == REGION_SWITCH
 is_single_entry_single_exit(g::AbstractGraph, v) = length(inneighbors(g, v)) == 1 && length(outneighbors(g, v)) == 1
 is_single_entry_single_exit(g::AbstractGraph) = is_weakly_connected(g) && length(sinks(g)) == length(sources(g)) == 1
 
-function ControlTree(cfg::AbstractGraph{T}, code::CodeInfo, blocks) where {T}
-    dfst = SpanningTreeDFS(cfg)
+"""
+    build_cfg_graph(ir::IRCode) -> SimpleDiGraph
+
+Build a SimpleDiGraph from IRCode's CFG for use in control tree construction.
+"""
+function build_cfg_graph(ir::IRCode)
+    nblocks = length(ir.cfg.blocks)
+    g = SimpleDiGraph(nblocks)
+    for (i, bb) in enumerate(ir.cfg.blocks)
+        for succ in bb.succs
+            add_edge!(g, i, succ)
+        end
+    end
+    g
+end
+
+function ControlTree(ir::IRCode)
+    # Build SimpleDiGraph from IRCode's CFG
+    cfg = build_cfg_graph(ir)
+    T = eltype(cfg)
+
+    # Use Julia's dominator tree directly
+    domtree = construct_domtree(ir)
+
     abstract_graph = DeltaGraph(cfg)
-    ec = EdgeClassification(cfg, dfst)
-    doms = dominators(cfg)
-    bedges = backedges(cfg, ec, doms)
-    domtree = DominatorTree(doms)
-    domtrees = sort(collect(PostOrderDFS(domtree)); by=x -> node_index(x))
-    domtrees_dict = Dict(node_index(dt) => dt for dt in domtrees)
+
+    # Build edge classification for retreating edges
+    ec = EdgeClassification(cfg)
+
+    # Build backedges using dominance
+    bedges = backedges(cfg, domtree)
+
+    # For acyclic_region compatibility - build doms dict from domtree
+    doms = Dict{Int, Set{Int}}()
+    for bb in 1:length(ir.cfg.blocks)
+        doms[bb] = Set{Int}([bb])
+        idom = bb
+        while true
+            idom == 1 && break
+            idom = domtree.idoms_bb[idom]
+            idom == 0 && break
+            push!(doms[bb], idom)
+        end
+    end
+
     sccs = strongly_connected_components(cfg)
 
     control_trees = Dict{T,ControlTree}(v => ControlTree(ControlNode(v, REGION_BLOCK)) for v in vertices(cfg))
-    next = post_ordering(dfst)
+    # Use reverse post-order traversal
+    next = reverse(traverse(cfg))
 
     while !isempty(next)
         start = popfirst!(next)
         haskey(control_trees, start) || continue
         # `v` can change if we follow a chain of blocks in a block region which starts before `v`, or if we need to find a dominator to an improper region.
         v = start
-        ret = acyclic_region(abstract_graph, v, ec, doms, domtrees_dict, bedges)
+        ret = acyclic_region(abstract_graph, v, ec, doms, domtree, bedges)
         region_meta = nothing
         ret = if !isnothing(ret)
             (region_type, (v, ws...)) = ret
             (region_type, ws)
         else
-            cyclic_ret = cyclic_region!(sccs, abstract_graph, v, ec, doms, domtrees_dict, bedges, code, blocks)
+            cyclic_ret = cyclic_region!(sccs, abstract_graph, v, ec, doms, domtree, bedges, ir)
             if !isnothing(cyclic_ret)
                 (region_type, (v, ws...), region_meta) = cyclic_ret
                 (region_type, ws)
@@ -631,7 +662,7 @@ function ControlTree(cfg::AbstractGraph{T}, code::CodeInfo, blocks) where {T}
         end
         isnothing(ret) && continue
         if region_type == REGION_TERMINATION
-            cyclic = cyclic_region!(sccs, abstract_graph, v, ec, doms, domtrees_dict, bedges, code, blocks)
+            cyclic = cyclic_region!(sccs, abstract_graph, v, ec, doms, domtree, bedges, ir)
             # Between a cyclic region and a termination region, choose
             # the cylic region; termination on the cycle's entry node
             # is not really a termination, just the natural program flow.

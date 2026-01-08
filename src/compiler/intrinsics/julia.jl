@@ -69,7 +69,7 @@ function emit_intrinsic!(ctx::CGCtx, func::Type{<:Tile}, args)
     elem_type = if func !== Tile && length(func.parameters) >= 1
         func.parameters[1]
     elseif source.constant !== nothing
-        typeof(source.constant)
+        typeof(something(source.constant))
     else
         unwrap_type(source.jltype)
     end

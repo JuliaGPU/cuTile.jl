@@ -127,18 +127,12 @@ Resolve a function reference to its actual value.
 """
 function resolve_function(ctx::CGCtx, @nospecialize(ref))
     if ref isa GlobalRef
-        val = getfield(ref.mod, ref.name)
-        # If it's a module, return it for chained lookups
-        return val
+        return getfield(ref.mod, ref.name)
     elseif ref isa QuoteNode
         return ref.value
     elseif ref isa SSAValue
-        stmt = code(ctx.target)[ref.id]
-        if stmt isa GlobalRef
-            return getfield(stmt.mod, stmt.name)
-        elseif stmt isa QuoteNode
-            return stmt.value
-        end
+        tv = ctx[ref]
+        tv !== nothing && tv.constant !== nothing && return something(tv.constant)
     end
     return ref
 end

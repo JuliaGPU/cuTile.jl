@@ -7,15 +7,16 @@ using AbstractTrees: PreOrderDFS
 =============================================================================#
 
 """
-    get_loop_blocks(tree::ControlTree, blocks::Vector{BlockInfo}) -> Set{Int}
+    get_loop_blocks(tree::ControlTree, ir::IRCode) -> Set{Int}
 
 Get all block indices contained in a loop control tree.
 """
-function get_loop_blocks(tree::ControlTree, blocks::Vector{BlockInfo})
+function get_loop_blocks(tree::ControlTree, ir::IRCode)
     loop_blocks = Set{Int}()
+    nblocks = length(ir.cfg.blocks)
     for subtree in PreOrderDFS(tree)
         idx = node_index(subtree)
-        if 1 <= idx <= length(blocks)
+        if 1 <= idx <= nblocks
             push!(loop_blocks, idx)
         end
     end
@@ -33,18 +34,18 @@ function convert_phi_value(val)
 end
 
 """
-    get_value_type(val, code::CodeInfo) -> Type
+    get_value_type(val, ir::IRCode) -> Type
 
 Get the Julia type of a value that could be SSAValue, SlotNumber, Argument, or a constant.
 """
-function get_value_type(val, code::CodeInfo)
+function get_value_type(val, ir::IRCode)
     if val isa SSAValue
-        return code.ssavaluetypes[val.id]
+        return ir.stmts.type[val.id]
     elseif val isa SlotNumber
-        return code.slottypes[val.id]
+        return ir.argtypes[val.id]
     elseif val isa Argument
         # Argument(n) maps directly to slottypes[n]
-        return code.slottypes[val.n]
+        return ir.argtypes[val.n]
     else
         # Constant value
         return typeof(val)
@@ -56,45 +57,44 @@ end
 =============================================================================#
 
 """
-    control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> Block
+    control_tree_to_structured_ir(ctree::ControlTree, ir::IRCode, ctx::StructurizationContext) -> Block
 
 Convert a control tree to structured IR entry block.
 All loops become LoopOp (no pattern matching yet, no substitutions).
 """
-function control_tree_to_structured_ir(ctree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function control_tree_to_structured_ir(ctree::ControlTree, ir::IRCode,
                                        ctx::StructurizationContext)
-    return tree_to_block(ctree, code, blocks, ctx)
+    return tree_to_block(ctree, ir, ctx)
 end
 
 """
-    tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext) -> Block
+    tree_to_block(tree::ControlTree, ir::IRCode, ctx::StructurizationContext) -> Block
 
 Convert a control tree node to a Block with raw expressions (no substitutions).
 """
-function tree_to_block(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                       ctx::StructurizationContext)
+function tree_to_block(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
     idx = node_index(tree)
     rtype = region_type(tree)
     block = Block()
 
     if rtype == REGION_BLOCK
-        handle_block_region!(block, tree, code, blocks, ctx)
+        handle_block_region!(block, tree, ir, ctx)
     elseif rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, ctx)
+        handle_if_then_else!(block, tree, ir, ctx)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, ctx)
+        handle_if_then!(block, tree, ir, ctx)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, ctx)
+        handle_termination!(block, tree, ir, ctx)
     elseif rtype == REGION_FOR_LOOP || rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, ctx)
+        handle_loop!(block, tree, ir, ctx)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, ctx)
+        handle_switch!(block, tree, ir, ctx)
     else
         error("Unknown region type: $rtype")
     end
 
     # Set terminator if not already set
-    set_block_terminator!(block, code, blocks)
+    set_block_terminator!(block, ir)
 
     return block
 end
@@ -104,65 +104,68 @@ end
 =============================================================================#
 
 """
-    handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_block_region!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle REGION_BLOCK - a linear sequence of blocks.
 """
-function handle_block_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_block_region!(block::Block, tree::ControlTree, ir::IRCode,
                               ctx::StructurizationContext)
+    nblocks = length(ir.cfg.blocks)
     if isempty(children(tree))
         # Leaf node - collect statements from the block
         idx = node_index(tree)
-        if 1 <= idx <= length(blocks)
-            collect_block_statements!(block, blocks[idx], code)
+        if 1 <= idx <= nblocks
+            collect_block_statements!(block, idx, ir)
         end
     else
         # Non-leaf - process children in order
         for child in children(tree)
             child_rtype = region_type(child)
             if child_rtype == REGION_BLOCK
-                handle_block_region!(block, child, code, blocks, ctx)
+                handle_block_region!(block, child, ir, ctx)
             else
                 # Nested control flow - create appropriate op
-                handle_nested_region!(block, child, code, blocks, ctx)
+                handle_nested_region!(block, child, ir, ctx)
             end
         end
     end
 end
 
 """
-    handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_nested_region!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle a nested control flow region.
 """
-function handle_nested_region!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_nested_region!(block::Block, tree::ControlTree, ir::IRCode,
                                ctx::StructurizationContext)
     rtype = region_type(tree)
 
     if rtype == REGION_IF_THEN_ELSE
-        handle_if_then_else!(block, tree, code, blocks, ctx)
+        handle_if_then_else!(block, tree, ir, ctx)
     elseif rtype == REGION_IF_THEN
-        handle_if_then!(block, tree, code, blocks, ctx)
+        handle_if_then!(block, tree, ir, ctx)
     elseif rtype == REGION_TERMINATION
-        handle_termination!(block, tree, code, blocks, ctx)
+        handle_termination!(block, tree, ir, ctx)
     elseif rtype == REGION_FOR_LOOP || rtype == REGION_WHILE_LOOP || rtype == REGION_NATURAL_LOOP
-        handle_loop!(block, tree, code, blocks, ctx)
+        handle_loop!(block, tree, ir, ctx)
     elseif rtype == REGION_SWITCH
-        handle_switch!(block, tree, code, blocks, ctx)
+        handle_switch!(block, tree, ir, ctx)
     else
         error("Unknown region type in nested region: $rtype")
     end
 end
 
 """
-    handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_if_then_else!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle REGION_IF_THEN_ELSE.
 """
-function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_if_then_else!(block::Block, tree::ControlTree, ir::IRCode,
                               ctx::StructurizationContext)
     tree_children = children(tree)
-    length(tree_children) >= 3 || return handle_block_region!(block, tree, code, blocks, ctx)
+    length(tree_children) >= 3 || return handle_block_region!(block, tree, ir, ctx)
+
+    nblocks = length(ir.cfg.blocks)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -170,32 +173,32 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
 
     # Find the GotoIfNot's SSA index for keying (fallback if no merge phi)
     gotoifnot_idx = nothing
-    if 1 <= cond_idx <= length(blocks)
-        cond_block = blocks[cond_idx]
-        for si in cond_block.range
-            stmt = code.code[si]
+    if 1 <= cond_idx <= nblocks
+        bb = ir.cfg.blocks[cond_idx]
+        for si in first(bb.stmts):last(bb.stmts)
+            stmt = ir.stmts.stmt[si]
             if stmt isa GotoIfNot
                 gotoifnot_idx = si
             end
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block, si, stmt, code.ssavaluetypes[si])
+                push!(block, si, stmt, ir.stmts.type[si])
             end
         end
     end
 
-    cond_value = find_condition_value(cond_idx, code, blocks)
+    cond_value = find_condition_value(cond_idx, ir)
 
     # Then and else blocks
     then_tree = tree_children[2]
     else_tree = tree_children[3]
 
-    then_blk = tree_to_block(then_tree, code, blocks, ctx)
-    else_blk = tree_to_block(else_tree, code, blocks, ctx)
+    then_blk = tree_to_block(then_tree, ir, ctx)
+    else_blk = tree_to_block(else_tree, ir, ctx)
 
     # Find merge block and detect merge phis
     then_block_idx = node_index(then_tree)
     else_block_idx = node_index(else_tree)
-    merge_phis = find_merge_phis(code, blocks, then_block_idx, else_block_idx)
+    merge_phis = find_merge_phis(ir, then_block_idx, else_block_idx)
 
     # Add YieldOp terminators with phi values
     if !isempty(merge_phis)
@@ -231,41 +234,40 @@ function handle_if_then_else!(block::Block, tree::ControlTree, code::CodeInfo, b
 end
 
 """
-    find_merge_phis(code, blocks, then_block_idx, else_block_idx)
+    find_merge_phis(ir, then_block_idx, else_block_idx)
 
 Find phis in the merge block (common successor of then and else blocks)
 that receive values from both branches.
 
 Returns a vector of NamedTuples: (ssa_idx, then_val, else_val)
 """
-function find_merge_phis(code::CodeInfo, blocks::Vector{BlockInfo},
-                         then_block_idx::Int, else_block_idx::Int)
+function find_merge_phis(ir::IRCode, then_block_idx::Int, else_block_idx::Int)
     merge_phis = NamedTuple{(:ssa_idx, :then_val, :else_val), Tuple{Int, Any, Any}}[]
+    nblocks = length(ir.cfg.blocks)
 
     # Find common successor (merge block)
-    then_succs = 1 <= then_block_idx <= length(blocks) ? blocks[then_block_idx].succs : Int[]
-    else_succs = 1 <= else_block_idx <= length(blocks) ? blocks[else_block_idx].succs : Int[]
+    then_succs = 1 <= then_block_idx <= nblocks ? ir.cfg.blocks[then_block_idx].succs : Int[]
+    else_succs = 1 <= else_block_idx <= nblocks ? ir.cfg.blocks[else_block_idx].succs : Int[]
     merge_blocks = intersect(then_succs, else_succs)
     isempty(merge_blocks) && return merge_phis
 
     merge_block_idx = first(merge_blocks)
-    1 <= merge_block_idx <= length(blocks) || return merge_phis
-    merge_block = blocks[merge_block_idx]
-
-    then_range = blocks[then_block_idx].range
-    else_range = blocks[else_block_idx].range
+    1 <= merge_block_idx <= nblocks || return merge_phis
+    merge_bb = ir.cfg.blocks[merge_block_idx]
 
     # Look for phis that have edges from both then and else blocks
-    for si in merge_block.range
-        stmt = code.code[si]
+    # In IRCode, phi edges are BLOCK indices directly
+    for si in first(merge_bb.stmts):last(merge_bb.stmts)
+        stmt = ir.stmts.stmt[si]
         stmt isa PhiNode || continue
 
         then_val = nothing
         else_val = nothing
         for (edge_idx, edge) in enumerate(stmt.edges)
-            if edge in then_range
+            # edge is a block index in IRCode
+            if edge == then_block_idx
                 then_val = stmt.values[edge_idx]
-            elseif edge in else_range
+            elseif edge == else_block_idx
                 else_val = stmt.values[edge_idx]
             end
         end
@@ -280,14 +282,16 @@ function find_merge_phis(code::CodeInfo, blocks::Vector{BlockInfo},
 end
 
 """
-    handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_if_then!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle REGION_IF_THEN.
 """
-function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_if_then!(block::Block, tree::ControlTree, ir::IRCode,
                          ctx::StructurizationContext)
     tree_children = children(tree)
-    length(tree_children) >= 2 || return handle_block_region!(block, tree, code, blocks, ctx)
+    length(tree_children) >= 2 || return handle_block_region!(block, tree, ir, ctx)
+
+    nblocks = length(ir.cfg.blocks)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -295,42 +299,45 @@ function handle_if_then!(block::Block, tree::ControlTree, code::CodeInfo, blocks
 
     # Find the GotoIfNot's SSA index for keying
     gotoifnot_idx = nothing
-    if 1 <= cond_idx <= length(blocks)
-        cond_block = blocks[cond_idx]
-        for si in cond_block.range
-            stmt = code.code[si]
+    if 1 <= cond_idx <= nblocks
+        bb = ir.cfg.blocks[cond_idx]
+        for si in first(bb.stmts):last(bb.stmts)
+            stmt = ir.stmts.stmt[si]
             if stmt isa GotoIfNot
                 gotoifnot_idx = si
             end
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block, si, stmt, code.ssavaluetypes[si])
+                push!(block, si, stmt, ir.stmts.type[si])
             end
         end
     end
 
-    cond_value = find_condition_value(cond_idx, code, blocks)
+    cond_value = find_condition_value(cond_idx, ir)
 
     # Then block
     then_tree = tree_children[2]
-    then_blk = tree_to_block(then_tree, code, blocks, ctx)
+    then_blk = tree_to_block(then_tree, ir, ctx)
 
     # Empty else block
     else_blk = Block()
 
     if_op = IfOp(cond_value, then_blk, else_blk)
-    result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
+    bb = ir.cfg.blocks[cond_idx]
+    result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(bb.stmts)
     push!(block, result_idx, if_op, Nothing)
 end
 
 """
-    handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_termination!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle REGION_TERMINATION - branches where some paths terminate.
 """
-function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_termination!(block::Block, tree::ControlTree, ir::IRCode,
                              ctx::StructurizationContext)
     tree_children = children(tree)
-    isempty(tree_children) && return handle_block_region!(block, tree, code, blocks, ctx)
+    isempty(tree_children) && return handle_block_region!(block, tree, ir, ctx)
+
+    nblocks = length(ir.cfg.blocks)
 
     # First child is the condition block
     cond_tree = tree_children[1]
@@ -338,33 +345,34 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
 
     # Find the GotoIfNot's SSA index for keying
     gotoifnot_idx = nothing
-    if 1 <= cond_idx <= length(blocks)
-        cond_block = blocks[cond_idx]
-        for si in cond_block.range
-            stmt = code.code[si]
+    if 1 <= cond_idx <= nblocks
+        bb = ir.cfg.blocks[cond_idx]
+        for si in first(bb.stmts):last(bb.stmts)
+            stmt = ir.stmts.stmt[si]
             if stmt isa GotoIfNot
                 gotoifnot_idx = si
             end
             if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                push!(block, si, stmt, code.ssavaluetypes[si])
+                push!(block, si, stmt, ir.stmts.type[si])
             end
         end
     end
 
-    cond_value = find_condition_value(cond_idx, code, blocks)
-    result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(blocks[cond_idx].range)
+    cond_value = find_condition_value(cond_idx, ir)
+    bb = ir.cfg.blocks[cond_idx]
+    result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(bb.stmts)
 
     # Build then and else blocks from remaining children
     if length(tree_children) >= 3
         then_tree = tree_children[2]
         else_tree = tree_children[3]
-        then_blk = tree_to_block(then_tree, code, blocks, ctx)
-        else_blk = tree_to_block(else_tree, code, blocks, ctx)
+        then_blk = tree_to_block(then_tree, ir, ctx)
+        else_blk = tree_to_block(else_tree, ir, ctx)
         if_op = IfOp(cond_value, then_blk, else_blk)
         push!(block, result_idx, if_op, Nothing)
     elseif length(tree_children) == 2
         then_tree = tree_children[2]
-        then_blk = tree_to_block(then_tree, code, blocks, ctx)
+        then_blk = tree_to_block(then_tree, ir, ctx)
         else_blk = Block()
         if_op = IfOp(cond_value, then_blk, else_blk)
         push!(block, result_idx, if_op, Nothing)
@@ -372,7 +380,7 @@ function handle_termination!(block::Block, tree::ControlTree, code::CodeInfo, bl
 end
 
 """
-    handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_loop!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle REGION_FOR_LOOP, REGION_WHILE_LOOP, and REGION_NATURAL_LOOP.
 
@@ -384,13 +392,13 @@ The loop is keyed at a synthesized SSA index, and getfield statements are genera
 at the original phi node indices. This ensures that references like `return %2`
 continue to work because getfield is placed at %2.
 """
-function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_loop!(block::Block, tree::ControlTree, ir::IRCode,
                       ctx::StructurizationContext)
     rtype = region_type(tree)
 
     # Dispatch based on region type
     if rtype == REGION_FOR_LOOP
-        for_op, phi_indices, phi_types, is_inclusive, original_upper = build_for_op(tree, code, blocks, ctx)
+        for_op, phi_indices, phi_types, is_inclusive, original_upper = build_for_op(tree, ir, ctx)
 
         # Handle inclusive bounds (Julia's for i in 1:n) by inserting add_int(upper, 1)
         if is_inclusive
@@ -400,7 +408,7 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::V
 
             # Insert add_int expression before the loop
             adj_upper = convert_phi_value(original_upper)
-            upper_type = get_value_type(original_upper, code)
+            upper_type = get_value_type(original_upper, ir)
             add_int_expr = Expr(:call, GlobalRef(Base, :add_int), adj_upper, one(upper_type))
             push!(block, adj_ssa_idx, add_int_expr, upper_type)
 
@@ -410,9 +418,9 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::V
 
         loop_op = for_op
     elseif rtype == REGION_WHILE_LOOP
-        loop_op, phi_indices, phi_types = build_while_op(tree, code, blocks, ctx)
+        loop_op, phi_indices, phi_types = build_while_op(tree, ir, ctx)
     else  # REGION_NATURAL_LOOP or other cyclic regions
-        loop_op, phi_indices, phi_types = build_loop_op(tree, code, blocks, ctx)
+        loop_op, phi_indices, phi_types = build_loop_op(tree, ir, ctx)
     end
 
     # Allocate new SSA index for loop's tuple result
@@ -435,15 +443,15 @@ function handle_loop!(block::Block, tree::ControlTree, code::CodeInfo, blocks::V
 end
 
 """
-    handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    handle_switch!(block::Block, tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
 
 Handle REGION_SWITCH by treating it as a nested if-else chain.
 """
-function handle_switch!(block::Block, tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
+function handle_switch!(block::Block, tree::ControlTree, ir::IRCode,
                         ctx::StructurizationContext)
     # For now, handle as a nested if-else chain
     # TODO: Implement proper switch handling if needed
-    handle_block_region!(block, tree, code, blocks, ctx)
+    handle_block_region!(block, tree, ir, ctx)
 end
 
 #=============================================================================
@@ -451,15 +459,16 @@ end
 =============================================================================#
 
 """
-    collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo)
+    collect_block_statements!(block::Block, block_idx::Int, ir::IRCode)
 
-Collect statements from a BlockInfo into a Block, excluding control flow.
+Collect statements from a basic block into a Block, excluding control flow.
 Stores raw expressions (no substitutions) with their SSA indices.
 """
-function collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo)
-    stmts = code.code
-    types = code.ssavaluetypes
-    for si in info.range
+function collect_block_statements!(block::Block, block_idx::Int, ir::IRCode)
+    stmts = ir.stmts.stmt
+    types = ir.stmts.type
+    bb = ir.cfg.blocks[block_idx]
+    for si in first(bb.stmts):last(bb.stmts)
         stmt = stmts[si]
         if stmt isa ReturnNode
             block.terminator = stmt
@@ -470,16 +479,17 @@ function collect_block_statements!(block::Block, info::BlockInfo, code::CodeInfo
 end
 
 """
-    find_condition_value(block_idx::Int, code::CodeInfo, blocks::Vector{BlockInfo}) -> IRValue
+    find_condition_value(block_idx::Int, ir::IRCode) -> IRValue
 
 Find the condition value for a GotoIfNot in the given block.
 """
-function find_condition_value(block_idx::Int, code::CodeInfo, blocks::Vector{BlockInfo})
-    @assert 1 <= block_idx <= length(blocks) "Invalid block index: $block_idx"
+function find_condition_value(block_idx::Int, ir::IRCode)
+    nblocks = length(ir.cfg.blocks)
+    @assert 1 <= block_idx <= nblocks "Invalid block index: $block_idx"
 
-    block = blocks[block_idx]
-    for si in block.range
-        stmt = code.code[si]
+    bb = ir.cfg.blocks[block_idx]
+    for si in first(bb.stmts):last(bb.stmts)
+        stmt = ir.stmts.stmt[si]
         if stmt isa GotoIfNot
             cond = stmt.cond
             @assert cond isa SSAValue || cond isa SlotNumber || cond isa Argument "Unexpected condition type: $(typeof(cond))"
@@ -519,11 +529,11 @@ function find_condition_chain(stmts, header_range, cond_ssa::SSAValue)
 end
 
 """
-    set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{BlockInfo})
+    set_block_terminator!(block::Block, ir::IRCode)
 
 Set the block terminator based on statements.
 """
-function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{BlockInfo})
+function set_block_terminator!(block::Block, ir::IRCode)
     block.terminator !== nothing && return
 
     last_idx = nothing
@@ -534,8 +544,8 @@ function set_block_terminator!(block::Block, code::CodeInfo, blocks::Vector{Bloc
             end
         end
     end
-    if last_idx !== nothing && last_idx < length(code.code)
-        next_stmt = code.code[last_idx + 1]
+    if last_idx !== nothing && last_idx < length(ir.stmts.stmt)
+        next_stmt = ir.stmts.stmt[last_idx + 1]
         if next_stmt isa ReturnNode
             block.terminator = next_stmt
         end
@@ -547,7 +557,7 @@ end
 =============================================================================#
 
 """
-    build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    build_while_op(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
         -> Tuple{WhileOp, Vector{Int}, Vector{Any}}
 
 Build a WhileOp from a REGION_WHILE_LOOP control tree.
@@ -560,16 +570,16 @@ The WhileOp structure:
 - before: header statements + ConditionOp(condition, carried_args)
 - after: body statements + YieldOp(carried_values)
 """
-function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                        ctx::StructurizationContext)
-    stmts = code.code
-    types = code.ssavaluetypes
+function build_while_op(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
+    stmts = ir.stmts.stmt
+    types = ir.stmts.type
     header_idx = node_index(tree)
-    loop_blocks = get_loop_blocks(tree, blocks)
+    loop_blocks = get_loop_blocks(tree, ir)
+    nblocks = length(ir.cfg.blocks)
 
-    @assert 1 <= header_idx <= length(blocks) "Invalid header_idx from control tree: $header_idx"
-    header_block = blocks[header_idx]
-    stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
+    @assert 1 <= header_idx <= nblocks "Invalid header_idx from control tree: $header_idx"
+    header_bb = ir.cfg.blocks[header_idx]
+    header_range = first(header_bb.stmts):last(header_bb.stmts)
 
     # Extract phi node information: init_values (from outside loop) and carried_values (from inside loop)
     init_values = IRValue[]
@@ -577,7 +587,7 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
     phi_indices = Int[]
     phi_types = Any[]
 
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if stmt isa PhiNode
             push!(phi_indices, si)
@@ -590,9 +600,8 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
             for (edge_idx, edge) in enumerate(phi.edges)
                 if isassigned(phi.values, edge_idx)
                     val = phi.values[edge_idx]
-                    # Check where control flow comes from, not where value is defined
-                    edge_block = stmt_to_blk[edge]
-                    if edge_block ∈ loop_blocks
+                    # In IRCode, edge IS the block index directly
+                    if edge ∈ loop_blocks
                         carried_val = val
                     else
                         entry_val = convert_phi_value(val)
@@ -607,7 +616,7 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
 
     # Find the condition for loop exit
     condition = nothing
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if stmt isa GotoIfNot
             condition = stmt.cond
@@ -617,7 +626,7 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
 
     # Build "before" region: header statements + ConditionOp
     before = Block()
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
             push!(before, si, stmt, types[si])
@@ -637,7 +646,7 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
     for child in children(tree)
         child_idx = node_index(child)
         if child_idx != header_idx
-            handle_block_region!(after, child, code, blocks, ctx)
+            handle_block_region!(after, child, ir, ctx)
         end
     end
 
@@ -660,7 +669,7 @@ function build_while_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockI
 end
 
 """
-    build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    build_loop_op(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
         -> Tuple{LoopOp, Vector{Int}, Vector{Any}}
 
 Build a LoopOp from a control tree and return phi node information.
@@ -669,23 +678,23 @@ Returns (loop_op, phi_indices, phi_types) where:
 - phi_indices: SSA indices of the header phi nodes (for getfield generation)
 - phi_types: Julia types of the header phi nodes
 """
-function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                                     ctx::StructurizationContext)
-    stmts = code.code
-    types = code.ssavaluetypes
+function build_loop_op(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
+    stmts = ir.stmts.stmt
+    types = ir.stmts.type
     header_idx = node_index(tree)
-    loop_blocks = get_loop_blocks(tree, blocks)
+    loop_blocks = get_loop_blocks(tree, ir)
+    nblocks = length(ir.cfg.blocks)
 
-    @assert 1 <= header_idx <= length(blocks) "Invalid header_idx from control tree: $header_idx"
-    header_block = blocks[header_idx]
-    stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
+    @assert 1 <= header_idx <= nblocks "Invalid header_idx from control tree: $header_idx"
+    header_bb = ir.cfg.blocks[header_idx]
+    header_range = first(header_bb.stmts):last(header_bb.stmts)
 
     init_values = IRValue[]
     carried_values = IRValue[]
     phi_indices = Int[]
     phi_types = Any[]
 
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if stmt isa PhiNode
             push!(phi_indices, si)
@@ -698,9 +707,8 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
             for (edge_idx, edge) in enumerate(phi.edges)
                 if isassigned(phi.values, edge_idx)
                     val = phi.values[edge_idx]
-                    # Check where control flow comes from, not where value is defined
-                    edge_block = stmt_to_blk[edge]
-                    if edge_block ∈ loop_blocks
+                    # In IRCode, edge IS the block index directly
+                    if edge ∈ loop_blocks
                         carried_val = val
                     else
                         entry_val = convert_phi_value(val)
@@ -718,7 +726,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
     # Find the condition for loop exit and its SSA index
     condition = nothing
     condition_idx = nothing
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if stmt isa GotoIfNot
             condition = stmt.cond
@@ -728,7 +736,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
     end
 
     # Collect header statements (excluding phi nodes and control flow)
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
             push!(body, si, stmt, types[si])
@@ -745,7 +753,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(then_blk, child, code, blocks, ctx)
+                handle_block_region!(then_blk, child, ir, ctx)
             end
         end
         then_blk.terminator = ContinueOp(copy(carried_values))
@@ -760,7 +768,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
         for child in children(tree)
             child_idx = node_index(child)
             if child_idx != header_idx
-                handle_block_region!(body, child, code, blocks, ctx)
+                handle_block_region!(body, child, ir, ctx)
             end
         end
         body.terminator = ContinueOp(copy(carried_values))
@@ -781,7 +789,7 @@ function build_loop_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockIn
 end
 
 """
-    build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo}, ctx::StructurizationContext)
+    build_for_op(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
         -> Tuple{ForOp, Vector{Int}, Vector{Any}}
 
 Build a ForOp directly from a REGION_FOR_LOOP control tree using metadata from CFG analysis.
@@ -798,17 +806,17 @@ The ForOp structure:
 - body: Loop body statements + ContinueOp with carried values
 - init_values: Non-IV loop-carried values
 """
-function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInfo},
-                             ctx::StructurizationContext)
-    stmts = code.code
-    types = code.ssavaluetypes
+function build_for_op(tree::ControlTree, ir::IRCode, ctx::StructurizationContext)
+    stmts = ir.stmts.stmt
+    types = ir.stmts.type
     header_idx = node_index(tree)
-    loop_blocks = get_loop_blocks(tree, blocks)
+    loop_blocks = get_loop_blocks(tree, ir)
     for_info = metadata(tree)::ForLoopInfo
+    nblocks = length(ir.cfg.blocks)
 
-    @assert 1 <= header_idx <= length(blocks) "Invalid header_idx from control tree: $header_idx"
-    header_block = blocks[header_idx]
-    stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
+    @assert 1 <= header_idx <= nblocks "Invalid header_idx from control tree: $header_idx"
+    header_bb = ir.cfg.blocks[header_idx]
+    header_range = first(header_bb.stmts):last(header_bb.stmts)
 
     # Extract phi info: separate IV from other loop-carried variables
     iv_phi_idx = for_info.iv_phi_idx
@@ -817,7 +825,7 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
     init_values = IRValue[]
     carried_values = IRValue[]
 
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if stmt isa PhiNode
             push!(all_phi_indices, si)
@@ -830,9 +838,8 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
             for (edge_idx, edge) in enumerate(phi.edges)
                 if isassigned(phi.values, edge_idx)
                     val = phi.values[edge_idx]
-                    # Check where control flow comes from, not where value is defined
-                    edge_block = stmt_to_blk[edge]
-                    if edge_block ∈ loop_blocks
+                    # In IRCode, edge IS the block index directly
+                    if edge ∈ loop_blocks
                         carried_val = val
                     else
                         entry_val = convert_phi_value(val)
@@ -869,7 +876,7 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
 
     # Find the condition SSA from GotoIfNot and compute the condition chain to exclude
     cond_ssa = nothing
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if stmt isa GotoIfNot && stmt.cond isa SSAValue
             cond_ssa = stmt.cond
@@ -877,10 +884,10 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
         end
     end
     excluded = cond_ssa !== nothing ?
-        find_condition_chain(stmts, header_block.range, cond_ssa) : Set{Int}()
+        find_condition_chain(stmts, header_range, cond_ssa) : Set{Int}()
 
     # Collect header statements (excluding phi nodes, control flow, and condition chain)
-    for si in header_block.range
+    for si in header_range
         stmt = stmts[si]
         if si ∉ excluded && !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
             push!(body, si, stmt, types[si])
@@ -891,7 +898,7 @@ function build_for_op(tree::ControlTree, code::CodeInfo, blocks::Vector{BlockInf
     for child in children(tree)
         child_idx = node_index(child)
         if child_idx != header_idx
-            handle_block_region!(body, child, code, blocks, ctx)
+            handle_block_region!(body, child, ir, ctx)
         end
     end
 

@@ -39,7 +39,7 @@ function validate_scf(entry::Block)
     return true
 end
 
-validate_scf(sci::StructuredCodeInfo) = validate_scf(sci.entry)
+validate_scf(sci::StructuredIRCode) = validate_scf(sci.entry)
 
 function validate_no_gotos!(bad::Vector{Int}, block::Block)
     for (idx, entry) in block.body
@@ -68,7 +68,7 @@ function validate_no_phis(entry::Block)
     return true
 end
 
-validate_no_phis(sci::StructuredCodeInfo) = validate_no_phis(sci.entry)
+validate_no_phis(sci::StructuredIRCode) = validate_no_phis(sci.entry)
 
 function validate_no_phis!(bad::Vector{Int}, block::Block)
     for (idx, entry) in block.body

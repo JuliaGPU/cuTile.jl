@@ -73,8 +73,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     axis = Int(axis)
 
     # Get ndim from the PartitionView constant field
-    ndim = pv_arg.constant
-    ndim === nothing && error("get_index_space_shape(): PartitionView missing ndim info")
+    pv_arg.constant === nothing && error("get_index_space_shape(): PartitionView missing ndim info")
+    ndim = something(pv_arg.constant)
 
     # Create result types for all dimensions
     scalar_i32 = tile_type!(tt, I32(tt), Int[])
@@ -118,8 +118,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     pv_arg.v === nothing && error("load_partition_view() requires a materialized PartitionView")
 
     # Get ndim from PartitionView constant field
-    ndim = pv_arg.constant
-    ndim === nothing && error("load_partition_view(): PartitionView missing ndim info")
+    pv_arg.constant === nothing && error("load_partition_view(): PartitionView missing ndim info")
+    ndim = something(pv_arg.constant)
 
     # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
     pv_type = unwrap_type(pv_arg.jltype)
@@ -193,7 +193,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, collect(0:ndim-1), padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple(tile_shape)}, Int[], nothing, ndim)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple(tile_shape)}, Int[], nothing, Some(ndim), nothing)
 end
 
 """
@@ -424,8 +424,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     pv_arg.v === nothing && error("store_partition_view() requires a materialized PartitionView")
 
     # Get ndim from PartitionView constant field
-    ndim = pv_arg.constant
-    ndim === nothing && error("store_partition_view(): PartitionView missing ndim info")
+    pv_arg.constant === nothing && error("store_partition_view(): PartitionView missing ndim info")
+    ndim = something(pv_arg.constant)
 
     # Get tile value
     tile_tv = emit_value!(ctx, args[2])

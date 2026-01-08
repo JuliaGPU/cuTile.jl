@@ -6,15 +6,9 @@
 Emit/resolve a value reference to a CGVal using multiple dispatch.
 """
 function emit_value!(ctx::CGCtx, ssa::SSAValue)
-    # First try to get from context (already processed)
     tv = ctx[ssa]
     tv !== nothing && return tv
-    # For block-local SSAs (id > code length), they must be in ctx.values_stack
-    code_stmts = code(ctx.target)
-    ssa.id <= length(code_stmts) || error("Block-local SSAValue %$(ssa.id) not found in context")
-    # Follow the SSA chain to the defining statement in CodeInfo
-    stmt = code_stmts[ssa.id]
-    emit_value!(ctx, stmt)
+    error("SSAValue %$(ssa.id) not found in context")
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
@@ -25,7 +19,7 @@ function emit_value!(ctx::CGCtx, val::Integer)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, jltype, Int[], nothing, val)
+    CGVal(v, type_id, jltype, Int[], nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, val::AbstractFloat)
@@ -33,7 +27,7 @@ function emit_value!(ctx::CGCtx, val::AbstractFloat)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, jltype, Int[], nothing, val)
+    CGVal(v, type_id, jltype, Int[], nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, node::QuoteNode)
@@ -44,16 +38,22 @@ function emit_value!(ctx::CGCtx, expr::Expr)
     # Try to extract constant from Expr (e.g., call to tuple or type assert)
     if expr.head === :call
         callee = expr.args[1]
-        # Handle Core.tuple - extract elements as constant tuple
+        # Handle Core.tuple - store component refs and extract constants if all available
         if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
-            elements = Any[]
-            for arg in expr.args[2:end]
-                tv = emit_value!(ctx, arg)
+            component_refs = collect(Any, expr.args[2:end])  # [SSAValue(3), SSAValue(4), ...]
+
+            # Emit each component and collect types/constants
+            component_types = Type[]
+            component_constants = Any[]
+            for ref in component_refs
+                tv = emit_value!(ctx, ref)
                 tv === nothing && return nothing
-                tv.constant === nothing && return nothing
-                push!(elements, tv.constant)
+                push!(component_types, tv.jltype)
+                push!(component_constants, tv.constant === nothing ? nothing : something(tv.constant))
             end
-            return ghost_value(typeof(Tuple(elements)), Tuple(elements))
+
+            jltype = Tuple{component_types...}
+            return tuple_value(jltype, component_refs, component_constants)
         end
     end
     nothing
@@ -89,7 +89,7 @@ function get_constant(ctx::CGCtx, @nospecialize(ref))
     end
     # IR references - extract constant through emit_value!
     tv = emit_value!(ctx, ref)
-    tv === nothing ? nothing : tv.constant
+    tv === nothing ? nothing : (tv.constant === nothing ? nothing : something(tv.constant))
 end
 
 # Symbols are compile-time only values

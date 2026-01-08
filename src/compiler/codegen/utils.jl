@@ -2,11 +2,18 @@
 # Argument helpers
 #-----------------------------------------------------------------------------
 
+"""
+    extract_argument_index(arg) -> Union{Int, Nothing}
+
+Extract the raw argument index from a SlotNumber or Argument.
+Returns the index that corresponds directly to `ir.argtypes[idx]`.
+Note: index 1 is the function itself; user args start at index 2.
+"""
 function extract_argument_index(@nospecialize(arg))
     if arg isa SlotNumber
-        return arg.id - 1
+        return arg.id
     elseif arg isa Argument
-        return arg.n - 1
+        return arg.n
     end
     nothing
 end
@@ -16,7 +23,8 @@ function resolve_or_constant(ctx::CGCtx, @nospecialize(arg), type_id::TypeId)
     # If we have a runtime value, use it
     tv.v !== nothing && return tv.v
     # Otherwise emit a constant from the compile-time value
-    val = @something tv.constant error("Cannot resolve argument")
+    tv.constant === nothing && error("Cannot resolve argument")
+    val = something(tv.constant)
     bytes = reinterpret(UInt8, [Int32(val)])
     encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
 end

@@ -1,35 +1,33 @@
 # TileTarget and CGCtx for cuTile compilation
 #
-# Holds the typed IR and compilation state for a kernel.
+# Holds compilation target and state for a kernel.
 
 #=============================================================================
- TileTarget: Compilation target wrapping Julia typed IR
+ TileTarget: Compilation target
 =============================================================================#
 
 """
     TileTarget
 
-Holds information about a function being compiled to Tile IR.
+Holds everything about a function being compiled to Tile IR:
+the structured IR and return type.
 """
 struct TileTarget
     mi::MethodInstance
-    ci::CodeInfo
+    sci::StructuredIRCode
     rettype::Type
-    argtypes::Vector{Any}
 end
 
 function TileTarget(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}))
-    ci, rettype = get_typed_ir(f, argtypes)
+    ir, rettype = get_ircode(f, argtypes)
     mi = get_method_instance(f, argtypes)
-    arg_types = argtypes === Tuple{} ? Any[] : collect(argtypes.parameters)
-    TileTarget(mi, ci, rettype, arg_types)
+    sci = StructuredIRCode(ir)
+    TileTarget(mi, sci, rettype)
 end
 
 # Accessors
-code(target::TileTarget) = target.ci.code
-ssatypes(target::TileTarget) = target.ci.ssavaluetypes
-slottypes(target::TileTarget) = target.ci.slottypes
-nargs(target::TileTarget) = length(target.argtypes)
+# Count non-ghost arguments (excludes function type for regular functions)
+nargs(target::TileTarget) = count(!is_ghost_type ∘ unwrap_type, target.sci.argtypes)
 
 #=============================================================================
  CGVal: Unified value representation (analogous to Julia's jl_cgval_t)
@@ -56,23 +54,24 @@ struct CGVal
     # Lazy argument reference: (arg_idx, [:field, index, ...])
     # e.g., (1, [:sizes, 2]) means "argument 1, field :sizes, index 2"
     arg_ref::Union{Tuple{Int, Vector{Union{Symbol, Int}}}, Nothing}
-    constant::Any             # Compile-time constant value (nothing if not known)
+    constant::Union{Some, Nothing}  # Nothing = no constant, Some(x) = constant value x
+    tuple::Union{Vector{Any}, Nothing}  # For tuples: component refs (SSAValue, etc.)
 end
 
 # Convenience constructors for concrete values
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    CGVal(v, type_id, jltype, Int[], nothing, nothing)
+    CGVal(v, type_id, jltype, Int[], nothing, nothing, nothing)
 
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Vector{Int}) =
-    CGVal(v, type_id, jltype, shape, nothing, nothing)
+    CGVal(v, type_id, jltype, shape, nothing, nothing, nothing)
 
 # Constructor for multi-value results (from loops, ifs)
 CGVal(v::Vector{Value}, @nospecialize(jltype)) =
-    CGVal(v, nothing, jltype, Int[], nothing, nothing)
+    CGVal(v, nothing, jltype, Int[], nothing, nothing, nothing)
 
 # Constructor for lazy argument references
 function arg_ref_value(arg_idx::Int, chain::Vector{Union{Symbol, Int}}, @nospecialize(jltype))
-    CGVal(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing)
+    CGVal(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing, nothing)
 end
 
 """
@@ -81,8 +80,24 @@ end
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, constant)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, Some(constant), nothing)
+
+"""
+    tuple_value(jltype, component_refs, component_constants) -> CGVal
+
+Create a tuple value with tracked component refs. Derives constant if all components have constants.
+Used by intrinsics like cat() that need to access individual tuple elements.
+"""
+function tuple_value(@nospecialize(jltype), component_refs::Vector{Any}, component_constants::Vector{Any})
+    # If all components have constants, derive the tuple constant
+    constant = if all(!isnothing, component_constants)
+        Some(Tuple(component_constants))
+    else
+        nothing
+    end
+    CGVal(nothing, TypeId(-1), jltype, Int[], nothing, constant, component_refs)
+end
 
 """
     is_ghost(tv::CGVal) -> Bool

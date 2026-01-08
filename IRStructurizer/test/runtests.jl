@@ -6,6 +6,7 @@ using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
                       validate_scf, statements
 using Core: SSAValue
+using Base: code_ircode
 
 @testset "IRStructurizer" verbose=true begin
 
@@ -17,16 +18,17 @@ using Core: SSAValue
 
 @testset "low-level API" begin
     g(x) = x > 0 ? x + 1 : x - 1
-    ci, _ = only(code_typed(g, (Int,)))
+    ir, _ = only(code_ircode(g, (Int,)))
 
-    # Create flat, then structurize
-    sci = StructuredCodeInfo(ci)
-    @test !any(x -> x isa IfOp, statements(sci.entry.body))
+    # Create flat view (no structurization)
+    sci_flat = StructuredIRCode(ir; structurize=false, validate=false)
+    @test !any(x -> x isa IfOp, statements(sci_flat.entry.body))
 
-    structurize!(sci)
+    # Create structured view
+    sci = StructuredIRCode(ir)
     @test any(x -> x isa IfOp, statements(sci.entry.body))
 
-    # code_structured does both steps
+    # code_structured is a convenience wrapper
     sci2, _ = code_structured(g, Tuple{Int})
     @test any(x -> x isa IfOp, statements(sci2.entry.body))
 end
@@ -34,22 +36,20 @@ end
 @testset "validation: UnstructuredControlFlowError" begin
     # Create unstructured view and verify validation fails
     g(x) = x > 0 ? x + 1 : x - 1
-    ci, _ = only(code_typed(g, (Int,)))
+    ir, _ = only(code_ircode(g, (Int,)))
 
     # Flat view has GotoIfNot
-    sci = StructuredCodeInfo(ci)
-    gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ci.code)
+    sci_flat = StructuredIRCode(ir; structurize=false, validate=false)
+    gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ir.stmts.stmt)
     @test gotoifnot_idx !== nothing
-    # Check that the GotoIfNot is in the body (before structurize!)
-    # Entry body is SSAVector, iterate as (idx, entry) pairs where entry has .stmt and .typ
-    @test any(((_, entry),) -> entry.stmt isa Core.GotoIfNot, sci.entry.body)
+    # Check that the GotoIfNot is in the body
+    @test any(((_, entry),) -> entry.stmt isa Core.GotoIfNot, sci_flat.entry.body)
 
-    # Validation should throw
-    @test_throws UnstructuredControlFlowError validate_scf(sci)
+    # Validation should throw on unstructured IR
+    @test_throws UnstructuredControlFlowError validate_scf(sci_flat)
 
-    # After structurize!, validation passes
-    structurize!(sci)
-    # GotoIfNot should no longer be in body (replaced by IfOp)
+    # Structured view passes validation
+    sci = StructuredIRCode(ir)
     @test !any(expr -> expr isa Core.GotoIfNot, statements(sci.entry.body))
     validate_scf(sci)  # Should not throw
 end
@@ -80,7 +80,7 @@ end
     show(io, MIME"text/plain"(), sci)
     output = String(take!(io))
 
-    @test occursin("StructuredCodeInfo", output)
+    @test occursin("StructuredIRCode", output)
     @test occursin("if ", output)
     @test occursin("else", output)
     @test occursin("return", output)
@@ -350,7 +350,7 @@ end
     validate_scf(sci)
 
     # Verify IR is valid (LoopOp is nested inside IfOps from iterator protocol)
-    @test sci isa StructuredCodeInfo
+    @test sci isa StructuredIRCode
 end
 
 @testset "nested for loops" begin
@@ -418,7 +418,7 @@ end  # WhileOp detection
         end
         return i
     end
-    @test sci isa StructuredCodeInfo
+    @test sci isa StructuredIRCode
 
     # Should have some loop op (not ForOp since step changes)
     loop_ops = filter(x -> x isa ForOp || x isa WhileOp || x isa LoopOp, collect(statements(sci.entry.body)))
@@ -505,9 +505,9 @@ end
         x + 1.0
     end
 
-    # Float64 type should be preserved in ssavaluetypes
-    @test !isempty(sci.code.ssavaluetypes)
-    @test any(t -> t isa Type && t <: AbstractFloat, sci.code.ssavaluetypes)
+    # Float64 type should be preserved in entry block types
+    @test !isempty(sci.entry.body)
+    @test any(((_, entry),) -> entry.typ isa Type && entry.typ <: AbstractFloat, sci.entry.body)
 end
 
 @testset "multiple arguments" begin
@@ -614,7 +614,7 @@ end
     end
     validate_scf(sci_for)
     # LoopOp will be nested inside IfOps, just verify the IR is valid
-    @test sci_for isa StructuredCodeInfo
+    @test sci_for isa StructuredIRCode
 end
 
 @testset "while-loop mimicking iterator protocol stays valid" begin

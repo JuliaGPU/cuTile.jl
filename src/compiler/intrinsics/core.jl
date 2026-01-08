@@ -111,28 +111,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args[1] is the tuple of tiles - need to trace back to Core.tuple call
-    tuple_ref = args[1]
-    if tuple_ref isa SSAValue
-        stmt = code(ctx.target)[tuple_ref.id]
-        if stmt isa Expr && stmt.head === :call
-            callee = stmt.args[1]
-            if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
-                tile1_ref = stmt.args[2]
-                tile2_ref = stmt.args[3]
-            else
-                error("cat() expects tuple created with Core.tuple, got call to $callee")
-            end
-        else
-            error("cat() expects tuple SSA value pointing to Core.tuple call")
-        end
-    else
-        error("cat() expects tuple SSA value, got $(typeof(tuple_ref))")
-    end
+    # Emit tuple value to get CGVal with component refs in .tuple
+    tuple_tv = emit_value!(ctx, args[1])
+    tuple_tv === nothing && error("cat() cannot resolve tuple argument")
 
-    # Emit the two tiles
-    lhs = emit_value!(ctx, tile1_ref)
-    rhs = emit_value!(ctx, tile2_ref)
+    # Extract component refs from .tuple field
+    tuple_tv.tuple !== nothing || error("cat() requires tuple with tracked components")
+    length(tuple_tv.tuple) == 2 || error("cat() expects exactly 2 tiles, got $(length(tuple_tv.tuple))")
+
+    # Emit tiles from refs (looks up ctx.values, not stmts!)
+    lhs = emit_value!(ctx, tuple_tv.tuple[1])
+    rhs = emit_value!(ctx, tuple_tv.tuple[2])
     (lhs === nothing || rhs === nothing) && error("Cannot resolve tile operands for cat()")
 
     # Get axis from Val{Axis}

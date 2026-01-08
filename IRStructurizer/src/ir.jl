@@ -399,54 +399,70 @@ function find_break_values(block::Block)
 end
 
 #=============================================================================
- StructuredCodeInfo - the structured IR for a function
+ StructuredIRCode - the structured IR for a function
 =============================================================================#
 
 """
-    StructuredCodeInfo
+    StructuredIRCode
 
 Represents a function's code with a structured view of control flow.
-The CodeInfo is kept for metadata (slotnames, argtypes, method info).
 
-After structurize!(), the entry Block contains the final structured IR with
-expressions and control flow ops.
-
-Create with `StructuredCodeInfo(ci)` for a flat (unstructured) view,
-then call `structurize!(sci)` to convert control flow to structured ops.
+The entry Block contains nested control flow ops (IfOp, ForOp, etc.) after
+structurization.
 """
-mutable struct StructuredCodeInfo
-    const code::CodeInfo                      # For metadata (slotnames, argtypes, etc.)
-    entry::Block                              # Structured IR
-    max_ssa_idx::Int                          # Max SSA index (may exceed length(code.code) after structurization)
+mutable struct StructuredIRCode
+    const argtypes::Vector{Any}
+    const sptypes::Vector{Any}
+    entry::Block
+    max_ssa_idx::Int
 end
 
 """
-    StructuredCodeInfo(code::CodeInfo)
+    StructuredIRCode(ir::IRCode; structurize=true, validate=true)
 
-Create a flat (unstructured) StructuredCodeInfo from Julia CodeInfo.
-All statements are placed sequentially in a single block,
-with control flow statements (GotoNode, GotoIfNot) included as-is.
+Create a StructuredIRCode from Julia IRCode.
 
-Call `structurize!(sci)` to convert to structured control flow.
+By default, converts control flow to structured ops (IfOp, ForOp, etc.) and
+validates that no unstructured control flow remains.
+
+# Arguments
+- `structurize`: If true (default), convert GotoNode/GotoIfNot to structured ops
+- `validate`: If true (default), throw `UnstructuredControlFlowError` if unstructured
+  control flow remains after structurization
 """
-function StructuredCodeInfo(code::CodeInfo)
-    stmts = code.code
-    types = code.ssavaluetypes
+function StructuredIRCode(ir::IRCode; structurize::Bool=true, validate::Bool=true)
+    argtypes = copy(ir.argtypes)
+    sptypes = copy(ir.sptypes)
+    stmts = ir.stmts.stmt
+    types = ir.stmts.type
     n = length(stmts)
 
+    # Build flat entry block
     entry = Block()
-
     for i in 1:n
         stmt = stmts[i]
         if stmt isa ReturnNode
             entry.terminator = stmt
         else
-            # Include ALL statements (no substitutions at entry level)
             push!(entry, i, stmt, types[i])
         end
     end
 
-    return StructuredCodeInfo(code, entry, n)
+    sci = StructuredIRCode(argtypes, sptypes, entry, n)
+
+    if structurize && n > 0
+        ctx = StructurizationContext(types, n + 1)
+        ctree = ControlTree(ir)
+        sci.entry = control_tree_to_structured_ir(ctree, ir, ctx)
+        sci.max_ssa_idx = ctx.next_ssa_idx - 1
+    end
+
+    if validate
+        validate_scf(sci.entry)
+        validate_no_phis(sci.entry)
+    end
+
+    return sci
 end
 
 #=============================================================================

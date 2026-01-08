@@ -79,28 +79,25 @@ end
 =============================================================================#
 
 """
-    get_typed_ir(f, argtypes; world=Base.get_world_counter(), optimize=true, always_inline=true) -> (CodeInfo, return_type)
+    get_ircode(f, argtypes; world=Base.get_world_counter(), always_inline=true) -> (IRCode, return_type)
 
-Get the typed SSA IR for a function with the given argument types.
+Get the optimized IRCode for a function with the given argument types.
 Uses cuTile's method overlay table to redirect Base operations to cuTile intrinsics.
-If optimize=true (default), returns optimized IR with clean SSA form.
-If optimize=false, returns IR that preserves all intermediate assignments.
 If always_inline=true (default), forces all functions to be inlined.
 """
-function get_typed_ir(@nospecialize(f), @nospecialize(argtypes);
-                      world::UInt = Base.get_world_counter(),
-                      optimize::Bool = true,
-                      always_inline::Bool = true)
-    sig = Base.signature_type(f, argtypes)
+function get_ircode(@nospecialize(f), @nospecialize(argtypes);
+                    world::UInt = Base.get_world_counter(),
+                    always_inline::Bool = true)
     interp = cuTileInterpreter(world; always_inline)
-    results = Base.code_typed_by_type(sig; optimize, world, interp)
+    mi = get_method_instance(f, argtypes; world)
+    result = CC.typeinf_ircode(interp, mi, nothing)
 
-    if isempty(results)
+    if result === nothing
         error("Type inference failed for $f with argument types $argtypes")
     end
 
-    ci, rettype = results[1]
-    return ci, rettype
+    ir, rettype = result
+    return ir, rettype
 end
 
 """
