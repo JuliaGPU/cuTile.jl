@@ -155,40 +155,6 @@ function print_type_annotation(p::IRPrinter, t)
     print_colored(p, string("::", format_type(t)), :cyan)
 end
 
-# Format result variables (string version for backwards compat)
-function format_results(p::IRPrinter, results::Vector{SSAValue})
-    if isempty(results)
-        ""
-    elseif length(results) == 1
-        r = results[1]
-        typ = p.types[r.id]
-        string(format_value(p, r), "::", format_type(typ))
-    else
-        parts = [string(format_value(p, r), "::", format_type(p.types[r.id]))
-                 for r in results]
-        string("(", join(parts, ", "), ")")
-    end
-end
-
-# Print result variables with types
-function print_results(p::IRPrinter, results::Vector{SSAValue})
-    if isempty(results)
-        return
-    elseif length(results) == 1
-        r = results[1]
-        print(p.io, "%", r.id)
-        print_colored(p, string("::", format_type(p.types[r.id])), :cyan)
-    else
-        print(p.io, "(")
-        for (i, r) in enumerate(results)
-            i > 1 && print(p.io, ", ")
-            print(p.io, "%", r.id)
-            print_colored(p, string("::", format_type(p.types[r.id])), :cyan)
-        end
-        print(p.io, ")")
-    end
-end
-
 # Check if a function reference is an intrinsic
 function is_intrinsic_call(func)
     if func isa GlobalRef
