@@ -13,10 +13,51 @@
 ## TODO: cuda_tile.cos
 
 
-## TODO: cuda_tile.exp2
+## cuda_tile.exp2
+
+@eval Intrinsics begin
+    """Element-wise base-2 exponential (2^x). Compiled to cuda_tile.exp2."""
+    @noinline function exp2(tile::Tile{T, S}; flush_to_zero::Bool=false) where {T <: AbstractFloat, S}
+        Base.donotdelete(tile)
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp2), args)
+    cb = ctx.cb
+
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve operand for exp2()")
+
+    # Check for flush_to_zero kwarg (default false)
+    flush_to_zero = length(args) > 1 ? args[2] : false
+
+    result = encode_Exp2Op!(cb, source.type_id, source.v; flush_to_zero)
+
+    CGVal(result, source.type_id, source.jltype, source.shape)
+end
 
 
-## TODO: cuda_tile.exp
+## cuda_tile.exp
+
+@eval Intrinsics begin
+    """Element-wise natural exponential (e^x). Compiled to cuda_tile.exp."""
+    @noinline function exp(tile::Tile{T, S}) where {T <: AbstractFloat, S}
+        Base.donotdelete(tile)
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp), args)
+    cb = ctx.cb
+
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve operand for exp()")
+
+    result = encode_ExpOp!(cb, source.type_id, source.v)
+
+    CGVal(result, source.type_id, source.jltype, source.shape)
+end
 
 
 ## TODO: cuda_tile.floor
@@ -25,10 +66,48 @@
 ## TODO: cuda_tile.fma
 
 
-## TODO: cuda_tile.log2
+## cuda_tile.log2
+
+@eval Intrinsics begin
+    """Element-wise base-2 logarithm. Compiled to cuda_tile.log2."""
+    @noinline function log2(tile::Tile{T, S}) where {T <: AbstractFloat, S}
+        Base.donotdelete(tile)
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log2), args)
+    cb = ctx.cb
+
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve operand for log2()")
+
+    result = encode_Log2Op!(cb, source.type_id, source.v)
+
+    CGVal(result, source.type_id, source.jltype, source.shape)
+end
 
 
-## TODO: cuda_tile.log
+## cuda_tile.log
+
+@eval Intrinsics begin
+    """Element-wise natural logarithm. Compiled to cuda_tile.log."""
+    @noinline function log(tile::Tile{T, S}) where {T <: AbstractFloat, S}
+        Base.donotdelete(tile)
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
+    cb = ctx.cb
+
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve operand for log()")
+
+    result = encode_LogOp!(cb, source.type_id, source.v)
+
+    CGVal(result, source.type_id, source.jltype, source.shape)
+end
 
 
 ## cuda_tile.maxf

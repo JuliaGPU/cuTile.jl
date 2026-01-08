@@ -648,6 +648,38 @@ Compute element-wise reciprocal square root (1/sqrt(x)) of a tile.
 @inline rsqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
     Intrinsics.rsqrt(tile)
 
+"""
+    exp(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise natural exponential (e^x) of a tile.
+"""
+@inline Base.exp(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.exp(tile)
+
+"""
+    exp2(tile::Tile{T, S}; flush_to_zero=false) -> Tile{T, S}
+
+Compute element-wise base-2 exponential (2^x) of a tile.
+"""
+@inline Base.exp2(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.exp2(tile)
+
+"""
+    log(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise natural logarithm of a tile.
+"""
+@inline Base.log(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.log(tile)
+
+"""
+    log2(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise base-2 logarithm of a tile.
+"""
+@inline Base.log2(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.log2(tile)
+
 # Broadcasting arithmetic - different shapes, broadcast then call intrinsic
 @inline function tile_add(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
     S = broadcast_shape(S1, S2)

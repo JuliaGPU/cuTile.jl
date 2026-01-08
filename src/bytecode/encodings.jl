@@ -810,6 +810,75 @@ function encode_SqrtOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
 end
 
 """
+    encode_RSqrtOp!(cb, result_type, source; flush_to_zero) -> Value
+
+Reciprocal square root operation.
+Opcode: 93
+"""
+function encode_RSqrtOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                         flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.RsqrtOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_ExpOp!(cb, result_type, source) -> Value
+
+Natural exponential (e^x) operation.
+Opcode: 23
+"""
+function encode_ExpOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.ExpOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_Exp2Op!(cb, result_type, source; flush_to_zero) -> Value
+
+Base-2 exponential (2^x) operation.
+Opcode: 24
+"""
+function encode_Exp2Op!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                        flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.Exp2Op)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_LogOp!(cb, result_type, source) -> Value
+
+Natural logarithm (ln) operation.
+Opcode: 63
+"""
+function encode_LogOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.LogOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_Log2Op!(cb, result_type, source) -> Value
+
+Base-2 logarithm operation.
+Opcode: 64
+"""
+function encode_Log2Op!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.Log2Op)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
     encode_IotaOp!(cb, result_type) -> Value
 
 Create a tile with values [0, 1, 2, ..., size-1] (arange).

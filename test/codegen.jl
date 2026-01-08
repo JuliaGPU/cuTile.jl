@@ -542,18 +542,13 @@
         # TODO: ceil - ceiling
         # TODO: cos - cosine
         # TODO: cosh - hyperbolic cosine
-        # TODO: exp - exponential
-        # TODO: exp2 - base-2 exponential
         # TODO: floor - floor
         # TODO: fma - fused multiply-add
-        # TODO: log - natural logarithm
-        # TODO: log2 - base-2 logarithm
         # TODO: maxf - element-wise maximum
         # TODO: minf - element-wise minimum
         # TODO: negf - negation
         # TODO: pow - power
         # TODO: remf - floating-point remainder
-        # TODO: rsqrt - reciprocal square root
         # TODO: sin - sine
         # TODO: sinh - hyperbolic sine
         # TODO: tan - tangent
@@ -627,6 +622,76 @@
                     tile = ct.load(a, pid, (16,))
                     @check "sqrt"
                     result = sqrt(tile)
+                    ct.store(b, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "rsqrt" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "rsqrt"
+                    result = ct.rsqrt(tile)
+                    ct.store(b, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "exp" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "exp"
+                    result = exp(tile)
+                    ct.store(b, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "exp2" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "exp2"
+                    result = exp2(tile)
+                    ct.store(b, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "log" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "log"
+                    result = log(tile)
+                    ct.store(b, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "log2" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "log2"
+                    result = log2(tile)
                     ct.store(b, pid, result)
                     return
                 end
