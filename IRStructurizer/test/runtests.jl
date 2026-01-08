@@ -27,7 +27,7 @@ using Core: SSAValue
     @test any(x -> x isa IfOp, statements(sci.entry.body))
 
     # code_structured does both steps
-    sci2, _ = code_structured(g, Tuple{Int})
+    sci2, _ = code_structured(g, Tuple{Int}) |> only
     @test any(x -> x isa IfOp, statements(sci2.entry.body))
 end
 
@@ -62,7 +62,7 @@ end
             i += 1
         end
         return i
-    end
+    end |> only
 
     # Counting loop should produce ForOp
     loop_ops = filter(x -> x isa ControlFlowOp, collect(statements(sci.entry.body)))
@@ -74,7 +74,7 @@ end
     # Verify display shows proper structure
     sci, _ = code_structured(Tuple{Bool}) do x::Bool
         x ? 1 : 2
-    end
+    end |> only
 
     io = IOBuffer()
     show(io, MIME"text/plain"(), sci)
@@ -281,7 +281,7 @@ end  # CFG analysis
             i += 1
         end
         return i
-    end
+    end |> only
     for_ops = filter(x -> x isa ForOp, collect(statements(sci.entry.body)))
     @test length(for_ops) == 1
 
@@ -316,7 +316,7 @@ end
             i += 1
         end
         return acc
-    end
+    end |> only
     for_ops = filter(x -> x isa ForOp, collect(statements(sci.entry.body)))
     @test length(for_ops) == 1
 
@@ -346,7 +346,7 @@ end
             acc += i
         end
         return acc
-    end
+    end |> only
     validate_scf(sci)
 
     # Verify IR is valid (LoopOp is nested inside IfOps from iterator protocol)
@@ -417,7 +417,7 @@ end  # WhileOp detection
             step += 1
         end
         return i
-    end
+    end |> only
     @test sci isa StructuredCodeInfo
 
     # Should have some loop op (not ForOp since step changes)
@@ -503,7 +503,7 @@ end
 @testset "type preservation" begin
     sci, _ = code_structured(Tuple{Float64}) do x::Float64
         x + 1.0
-    end
+    end |> only
 
     # Float64 type should be preserved in ssavaluetypes
     @test !isempty(sci.code.ssavaluetypes)
@@ -513,7 +513,7 @@ end
 @testset "multiple arguments" begin
     sci, _ = code_structured(Tuple{Int, Float64}) do x::Int, y::Float64
         x + y
-    end
+    end |> only
     @test sci.entry.terminator isa Core.ReturnNode
 end
 
@@ -536,7 +536,7 @@ end
             x, y = y, x
         end
         return x
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -548,7 +548,7 @@ end
         while x > 0
         end
         return x
-    end
+    end |> only
     validate_scf(sci)
 
     # Find the loop in the structure
@@ -569,7 +569,7 @@ end
             count += 1
         end
         return count
-    end
+    end |> only
     validate_scf(sci)
 
     while_idx = findfirst(stmt -> stmt isa WhileOp, collect(statements(sci.entry.body)))
@@ -598,7 +598,7 @@ end
             i += 1
         end
         return acc
-    end
+    end |> only
     validate_scf(sci_while)
     for_ops = filter(x -> x isa ForOp, collect(statements(sci_while.entry.body)))
     @test length(for_ops) == 1
@@ -611,7 +611,7 @@ end
             acc += i
         end
         return acc
-    end
+    end |> only
     validate_scf(sci_for)
     # LoopOp will be nested inside IfOps, just verify the IR is valid
     @test sci_for isa StructuredCodeInfo
@@ -638,7 +638,7 @@ end
             state += 1
         end
         return acc
-    end
+    end |> only
 
     # Should produce valid structured IR (no unstructured control flow)
     validate_scf(sci)
@@ -673,7 +673,7 @@ end  # regression
             acc += i
         end
         return acc
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -696,7 +696,7 @@ end
             acc *= i
         end
         return acc
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -723,7 +723,7 @@ end
             end
         end
         return count
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -751,7 +751,7 @@ end
             count += 1
         end
         return sum, count
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -780,7 +780,7 @@ end
             end
         end
         return acc
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -802,7 +802,7 @@ end
             x, y = y, x
         end
         return x
-    end
+    end |> only
     validate_scf(sci)
 end
 
@@ -825,7 +825,7 @@ end
             last = i
         end
         return last
-    end
+    end |> only
     validate_scf(sci)
 end
 

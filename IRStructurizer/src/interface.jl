@@ -5,7 +5,7 @@ export code_structured, structurize!, StructuredCodeInfo
 """
     code_structured(f, argtypes; validate=true, kwargs...) -> Pair{StructuredCodeInfo, DataType}
 
-Get the structured IR for a function with the given argument types.
+Returns an array of structured IR for the methods matching the given generic function and typesignature.
 
 This is analogous to `code_typed` but returns a `StructuredCodeInfo` with
 control flow restructured into nested SCF-style operations (if/for/while).
@@ -30,22 +30,23 @@ and the second is the return type. Displays with MLIR SCF-style syntax.
 ```julia
 julia> f(x) = x > 0 ? x + 1 : x - 1
 
-julia> code_structured(f, Tuple{Int})
+julia> code_structured(f, Tuple{Int}) |> only
 StructuredCodeInfo(
 │ %1 = Base.slt_int(0, x)::Bool
 │ ...
 └ return %3
 ) => Int64
 
-julia> sci, ret_type = code_structured(f, Tuple{Int})  # destructure
+julia> sci, ret_type = code_structured(f, Tuple{Int}) |> only # destructure
 ```
 """
 function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          validate::Bool=true, kwargs...)
-    ci, ret_type = only(code_typed(f, argtypes; kwargs...))
-    sci = StructuredCodeInfo(ci)
-    structurize!(sci; validate)
-    return sci => ret_type
+    map(code_typed(f, argtypes; kwargs...)) do (ci, ret)
+        sci = StructuredCodeInfo(ci)
+        structurize!(sci; validate)
+        return sci => ret
+    end
 end
 
 """
