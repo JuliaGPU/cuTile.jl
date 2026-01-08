@@ -20,14 +20,15 @@ using Base: code_ircode
     g(x) = x > 0 ? x + 1 : x - 1
     ir, _ = only(code_ircode(g, (Int,)))
 
-    # Create flat, then structurize
-    sci = StructuredIRCode(ir)
-    @test !any(x -> x isa IfOp, statements(sci.entry.body))
+    # Create flat view (no structurization)
+    sci_flat = StructuredIRCode(ir; structurize=false, validate=false)
+    @test !any(x -> x isa IfOp, statements(sci_flat.entry.body))
 
-    structurize!(sci)
+    # Create structured view
+    sci = StructuredIRCode(ir)
     @test any(x -> x isa IfOp, statements(sci.entry.body))
 
-    # code_structured does both steps
+    # code_structured is a convenience wrapper
     sci2, _ = code_structured(g, Tuple{Int})
     @test any(x -> x isa IfOp, statements(sci2.entry.body))
 end
@@ -38,19 +39,17 @@ end
     ir, _ = only(code_ircode(g, (Int,)))
 
     # Flat view has GotoIfNot
-    sci = StructuredIRCode(ir)
+    sci_flat = StructuredIRCode(ir; structurize=false, validate=false)
     gotoifnot_idx = findfirst(s -> s isa Core.GotoIfNot, ir.stmts.stmt)
     @test gotoifnot_idx !== nothing
-    # Check that the GotoIfNot is in the body (before structurize!)
-    # Entry body is SSAVector, iterate as (idx, entry) pairs where entry has .stmt and .typ
-    @test any(((_, entry),) -> entry.stmt isa Core.GotoIfNot, sci.entry.body)
+    # Check that the GotoIfNot is in the body
+    @test any(((_, entry),) -> entry.stmt isa Core.GotoIfNot, sci_flat.entry.body)
 
-    # Validation should throw
-    @test_throws UnstructuredControlFlowError validate_scf(sci)
+    # Validation should throw on unstructured IR
+    @test_throws UnstructuredControlFlowError validate_scf(sci_flat)
 
-    # After structurize!, validation passes
-    structurize!(sci)
-    # GotoIfNot should no longer be in body (replaced by IfOp)
+    # Structured view passes validation
+    sci = StructuredIRCode(ir)
     @test !any(expr -> expr isa Core.GotoIfNot, statements(sci.entry.body))
     validate_scf(sci)  # Should not throw
 end
@@ -506,9 +505,9 @@ end
         x + 1.0
     end
 
-    # Float64 type should be preserved in ssavaluetypes
-    @test !isempty(sci.ir.stmts.type)
-    @test any(t -> t isa Type && t <: AbstractFloat, sci.ir.stmts.type)
+    # Float64 type should be preserved in types
+    @test !isempty(sci.types)
+    @test any(t -> t isa Type && t <: AbstractFloat, sci.types)
 end
 
 @testset "multiple arguments" begin

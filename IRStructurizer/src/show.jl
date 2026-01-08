@@ -7,7 +7,7 @@ function Base.show(io::IO, ::MIME"text/plain", sci::StructuredIRCode)
     println(io, "StructuredIRCode(")
 
     # Create printer with │ prefix for the entry block (2 chars, not 4)
-    base_p = IRPrinter(io, ir(sci), sci.max_ssa_idx)
+    base_p = IRPrinter(io, sci.types, sci.max_ssa_idx)
     p = child_printer(base_p, sci.entry, "│ ")
 
     # Print entry block body - use is_closing_self=true so the last item
@@ -30,29 +30,29 @@ Uses Julia's IRCode style with box-drawing characters.
 """
 mutable struct IRPrinter
     io::IO
-    ir::IRCode
+    types::Vector{Any}     # SSA types for formatting
     indent::Int
     line_prefix::String    # Prefix for continuation lines (│, spaces)
     max_idx_width::Int     # Max width of "%N = " for alignment
     color::Bool            # Whether to use colors
 end
 
-function IRPrinter(io::IO, ir::IRCode, max_ssa_idx::Int)
+function IRPrinter(io::IO, types::Vector{Any}, max_ssa_idx::Int)
     # Compute max index width for alignment: "%N = " where N is the max index
     max_idx_width = ndigits(max_ssa_idx) + 4  # % + digits + space + = + space
     color = get(io, :color, false)::Bool
-    IRPrinter(io, ir, 0, "", max_idx_width, color)
+    IRPrinter(io, types, 0, "", max_idx_width, color)
 end
 
 function indent(p::IRPrinter, n::Int=1)
     new_prefix = p.line_prefix * "  "  # 2 spaces per indent level
-    return IRPrinter(p.io, p.ir, p.indent + n, new_prefix, p.max_idx_width, p.color)
+    return IRPrinter(p.io, p.types, p.indent + n, new_prefix, p.max_idx_width, p.color)
 end
 
 # Create a child printer for a nested Block
 function child_printer(p::IRPrinter, nested_block::Block, cont_prefix::String)
     # Use parent's max_idx_width since SSA indices are global
-    IRPrinter(p.io, p.ir, p.indent + 1, p.line_prefix * cont_prefix, p.max_idx_width, p.color)
+    IRPrinter(p.io, p.types, p.indent + 1, p.line_prefix * cont_prefix, p.max_idx_width, p.color)
 end
 
 # Print region header: "├ label:" or "└ label:" for last/empty region
@@ -161,10 +161,10 @@ function format_results(p::IRPrinter, results::Vector{SSAValue})
         ""
     elseif length(results) == 1
         r = results[1]
-        typ = p.ir.stmts.type[r.id]
+        typ = p.types[r.id]
         string(format_value(p, r), "::", format_type(typ))
     else
-        parts = [string(format_value(p, r), "::", format_type(p.ir.stmts.type[r.id]))
+        parts = [string(format_value(p, r), "::", format_type(p.types[r.id]))
                  for r in results]
         string("(", join(parts, ", "), ")")
     end
@@ -177,13 +177,13 @@ function print_results(p::IRPrinter, results::Vector{SSAValue})
     elseif length(results) == 1
         r = results[1]
         print(p.io, "%", r.id)
-        print_colored(p, string("::", format_type(p.ir.stmts.type[r.id])), :cyan)
+        print_colored(p, string("::", format_type(p.types[r.id])), :cyan)
     else
         print(p.io, "(")
         for (i, r) in enumerate(results)
             i > 1 && print(p.io, ", ")
             print(p.io, "%", r.id)
-            print_colored(p, string("::", format_type(p.ir.stmts.type[r.id])), :cyan)
+            print_colored(p, string("::", format_type(p.types[r.id])), :cyan)
         end
         print(p.io, ")")
     end

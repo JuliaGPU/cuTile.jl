@@ -133,7 +133,7 @@ function resolve_function(ctx::CGCtx, @nospecialize(ref))
     elseif ref isa QuoteNode
         return ref.value
     elseif ref isa SSAValue
-        stmt = code(ctx.target)[ref.id]
+        stmt = ctx.target.sci.stmts[ref.id]
         if stmt isa GlobalRef
             return getfield(stmt.mod, stmt.name)
         elseif stmt isa QuoteNode

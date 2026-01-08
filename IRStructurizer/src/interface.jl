@@ -1,6 +1,6 @@
 # public API
 
-export code_structured, structurize!, StructuredIRCode
+export code_structured, StructuredIRCode
 
 """
     code_structured(f, argtypes; validate=true, kwargs...) -> Pair{StructuredIRCode, DataType}
@@ -43,42 +43,6 @@ julia> sci, ret_type = code_structured(f, Tuple{Int})  # destructure
 function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          validate::Bool=true, kwargs...)
     ir, ret_type = only(code_ircode(f, argtypes; kwargs...))
-    sci = StructuredIRCode(ir)
-    structurize!(sci; validate)
+    sci = StructuredIRCode(ir; validate)
     return sci => ret_type
-end
-
-"""
-    structurize!(sci::StructuredIRCode; validate=true) -> StructuredIRCode
-
-Convert unstructured control flow in `sci` to structured control flow operations
-(IfOp, ForOp, WhileOp, LoopOp) in-place.
-
-This transforms GotoNode and GotoIfNot statements into nested structured ops
-that can be traversed hierarchically.
-
-ForOp is created directly during CFG analysis for loops matching counting patterns.
-WhileOp is used for condition-at-header loops. LoopOp is used for general cyclic regions.
-
-Returns `sci` for convenience (allows chaining).
-"""
-function structurize!(sci::StructuredIRCode; validate::Bool=true)
-    ircode = ir(sci)  # Get the underlying IRCode
-    types = ircode.stmts.type
-
-    n = length(ircode.stmts.stmt)
-    n == 0 && return sci
-    ctx = StructurizationContext(types, n + 1)
-
-    # Build control tree directly from IRCode
-    ctree = ControlTree(ircode)
-
-    # Build structured IR
-    entry = control_tree_to_structured_ir(ctree, ircode, ctx)
-    validate && validate_scf(entry)
-    validate && validate_no_phis(entry)
-    sci.entry = entry
-    sci.max_ssa_idx = ctx.next_ssa_idx - 1  # Update to include synthesized indices
-
-    return sci
 end

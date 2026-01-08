@@ -407,48 +407,60 @@ end
 
 Represents a function's code with a structured view of control flow.
 
-After structurize!(), the entry Block contains the final structured IR with
-expressions and control flow ops.
-
-Create with `StructuredIRCode(ir)` for a flat (unstructured) view,
-then call `structurize!(sci)` to convert control flow to structured ops.
+The entry Block contains nested control flow ops (IfOp, ForOp, etc.) after
+structurization.
 """
 mutable struct StructuredIRCode
-    const ir::IRCode                          # Julia IRCode
+    const stmts::Vector{Any}                  # Original statements (for lookups)
+    const types::Vector{Any}                  # Original types (for lookups/show)
     entry::Block                              # Structured IR
     max_ssa_idx::Int                          # Max SSA index (may exceed length after structurization)
 end
 
-# Accessor for consistency
-ir(sci::StructuredIRCode) = sci.ir
-
 """
-    StructuredIRCode(ir::IRCode)
+    StructuredIRCode(ir::IRCode; structurize=true, validate=true)
 
-Create a flat (unstructured) StructuredIRCode from Julia IRCode.
-All statements are placed sequentially in a single block,
-with control flow statements (GotoNode, GotoIfNot) included as-is.
+Create a StructuredIRCode from Julia IRCode.
 
-Call `structurize!(sci)` to convert to structured control flow.
+By default, converts control flow to structured ops (IfOp, ForOp, etc.) and
+validates that no unstructured control flow remains.
+
+# Arguments
+- `structurize`: If true (default), convert GotoNode/GotoIfNot to structured ops
+- `validate`: If true (default), throw `UnstructuredControlFlowError` if unstructured
+  control flow remains after structurization
 """
-function StructuredIRCode(ir::IRCode)
+function StructuredIRCode(ir::IRCode; structurize::Bool=true, validate::Bool=true)
     stmts = ir.stmts.stmt
     types = ir.stmts.type
     n = length(stmts)
 
+    # Build flat entry block
     entry = Block()
-
     for i in 1:n
         stmt = stmts[i]
         if stmt isa ReturnNode
             entry.terminator = stmt
         else
-            # Include ALL statements (no substitutions at entry level)
             push!(entry, i, stmt, types[i])
         end
     end
 
-    return StructuredIRCode(ir, entry, n)
+    sci = StructuredIRCode(stmts, types, entry, n)
+
+    if structurize && n > 0
+        ctx = StructurizationContext(types, n + 1)
+        ctree = ControlTree(ir)
+        sci.entry = control_tree_to_structured_ir(ctree, ir, ctx)
+        sci.max_ssa_idx = ctx.next_ssa_idx - 1
+    end
+
+    if validate
+        validate_scf(sci.entry)
+        validate_no_phis(sci.entry)
+    end
+
+    return sci
 end
 
 #=============================================================================

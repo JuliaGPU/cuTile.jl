@@ -9,11 +9,11 @@ function emit_value!(ctx::CGCtx, ssa::SSAValue)
     # First try to get from context (already processed)
     tv = ctx[ssa]
     tv !== nothing && return tv
-    # For block-local SSAs (id > code length), they must be in ctx.values_stack
-    code_stmts = code(ctx.target)
-    ssa.id <= length(code_stmts) || error("Block-local SSAValue %$(ssa.id) not found in context")
-    # Follow the SSA chain to the defining statement in CodeInfo
-    stmt = code_stmts[ssa.id]
+    # For block-local SSAs (id > stmts length), they must be in ctx.values_stack
+    stmts = ctx.target.sci.stmts
+    ssa.id <= length(stmts) || error("Block-local SSAValue %$(ssa.id) not found in context")
+    # Follow the SSA chain to the defining statement
+    stmt = stmts[ssa.id]
     emit_value!(ctx, stmt)
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]

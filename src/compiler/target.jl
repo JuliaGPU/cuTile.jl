@@ -1,19 +1,20 @@
 # TileTarget and CGCtx for cuTile compilation
 #
-# Holds the IRCode and compilation state for a kernel.
+# Holds compilation target and state for a kernel.
 
 #=============================================================================
- TileTarget: Compilation target wrapping Julia IRCode
+ TileTarget: Compilation target
 =============================================================================#
 
 """
     TileTarget
 
-Holds information about a function being compiled to Tile IR.
+Holds everything about a function being compiled to Tile IR:
+the structured IR, return type, and argument types.
 """
 struct TileTarget
     mi::MethodInstance
-    ir::CC.IRCode
+    sci::StructuredIRCode
     rettype::Type
     argtypes::Vector{Any}
 end
@@ -21,13 +22,12 @@ end
 function TileTarget(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}))
     ir, rettype = get_ircode(f, argtypes)
     mi = get_method_instance(f, argtypes)
+    sci = StructuredIRCode(ir)
     arg_types = argtypes === Tuple{} ? Any[] : collect(argtypes.parameters)
-    TileTarget(mi, ir, rettype, arg_types)
+    TileTarget(mi, sci, rettype, arg_types)
 end
 
 # Accessors
-code(target::TileTarget) = target.ir.stmts.stmt
-ssatypes(target::TileTarget) = target.ir.stmts.type
 nargs(target::TileTarget) = length(target.argtypes)
 
 #=============================================================================

@@ -114,7 +114,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     # args[1] is the tuple of tiles - need to trace back to Core.tuple call
     tuple_ref = args[1]
     if tuple_ref isa SSAValue
-        stmt = code(ctx.target)[tuple_ref.id]
+        stmt = ctx.target.sci.stmts[tuple_ref.id]
         if stmt isa Expr && stmt.head === :call
             callee = stmt.args[1]
             if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
