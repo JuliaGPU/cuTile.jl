@@ -2,11 +2,18 @@
 # Argument helpers
 #-----------------------------------------------------------------------------
 
+"""
+    extract_argument_index(arg) -> Union{Int, Nothing}
+
+Extract the raw argument index from a SlotNumber or Argument.
+Returns the index that corresponds directly to `ir.argtypes[idx]`.
+Note: index 1 is the function itself; user args start at index 2.
+"""
 function extract_argument_index(@nospecialize(arg))
     if arg isa SlotNumber
-        return arg.id - 1
+        return arg.id
     elseif arg isa Argument
-        return arg.n - 1
+        return arg.n
     end
     nothing
 end

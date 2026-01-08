@@ -411,6 +411,8 @@ The entry Block contains nested control flow ops (IfOp, ForOp, etc.) after
 structurization.
 """
 mutable struct StructuredIRCode
+    const argtypes::Vector{Any}
+    const sptypes::Vector{Any}
     entry::Block
     max_ssa_idx::Int
 end
@@ -429,6 +431,8 @@ validates that no unstructured control flow remains.
   control flow remains after structurization
 """
 function StructuredIRCode(ir::IRCode; structurize::Bool=true, validate::Bool=true)
+    argtypes = copy(ir.argtypes)
+    sptypes = copy(ir.sptypes)
     stmts = ir.stmts.stmt
     types = ir.stmts.type
     n = length(stmts)
@@ -444,7 +448,7 @@ function StructuredIRCode(ir::IRCode; structurize::Bool=true, validate::Bool=tru
         end
     end
 
-    sci = StructuredIRCode(entry, n)
+    sci = StructuredIRCode(argtypes, sptypes, entry, n)
 
     if structurize && n > 0
         ctx = StructurizationContext(types, n + 1)

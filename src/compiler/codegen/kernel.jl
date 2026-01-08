@@ -12,8 +12,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     ctx = CGCtx(writer, target)
     tt = ctx.tt
 
-    # Validate argument types are concrete
-    for (i, argtype) in enumerate(target.argtypes)
+    # Validate non-ghost argument types are concrete
+    for (i, argtype) in enumerate(target.sci.argtypes)
+        is_ghost_type(unwrap_type(argtype)) && continue
         require_concrete_type(argtype, "kernel argument $i")
     end
 
@@ -21,7 +22,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     param_types = TypeId[]
     param_mapping = Tuple{Int, Union{Nothing, Symbol}}[]
 
-    for (i, argtype) in enumerate(target.argtypes)
+    for (i, argtype) in enumerate(target.sci.argtypes)
         argtype_unwrapped = unwrap_type(argtype)
         if is_ghost_type(argtype_unwrapped)
             continue
@@ -75,6 +76,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # Store in context and set up slot/argument mappings
+    # arg_idx is the direct index into argtypes (2, 3, ...) which matches SlotNumber/Argument
     for (key, values) in field_values
         arg_idx, field = key
         ctx.arg_flat_values[key] = values
@@ -83,18 +85,18 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             # Regular argument - create concrete CGVal
             @assert length(values) == 1
             val = values[1]
-            type_id = tile_type_for_julia!(ctx, target.argtypes[arg_idx])
-            tv = CGVal(val, type_id, target.argtypes[arg_idx])
-            ctx[SlotNumber(arg_idx + 1)] = tv
-            ctx[Argument(arg_idx + 1)] = tv
+            type_id = tile_type_for_julia!(ctx, target.sci.argtypes[arg_idx])
+            tv = CGVal(val, type_id, target.sci.argtypes[arg_idx])
+            ctx[SlotNumber(arg_idx)] = tv
+            ctx[Argument(arg_idx)] = tv
         end
     end
 
     # For destructured args, create lazy CGVals that track the argument index
     for (arg_idx, argtype) in ctx.arg_types
         tv = arg_ref_value(arg_idx, Union{Symbol, Int}[], argtype)
-        ctx[SlotNumber(arg_idx + 1)] = tv
-        ctx[Argument(arg_idx + 1)] = tv
+        ctx[SlotNumber(arg_idx)] = tv
+        ctx[Argument(arg_idx)] = tv
     end
 
     # Create TensorViews for all TileArray arguments at kernel entry

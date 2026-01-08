@@ -10,25 +10,24 @@
     TileTarget
 
 Holds everything about a function being compiled to Tile IR:
-the structured IR, return type, and argument types.
+the structured IR and return type.
 """
 struct TileTarget
     mi::MethodInstance
     sci::StructuredIRCode
     rettype::Type
-    argtypes::Vector{Any}
 end
 
 function TileTarget(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}))
     ir, rettype = get_ircode(f, argtypes)
     mi = get_method_instance(f, argtypes)
     sci = StructuredIRCode(ir)
-    arg_types = argtypes === Tuple{} ? Any[] : collect(argtypes.parameters)
-    TileTarget(mi, sci, rettype, arg_types)
+    TileTarget(mi, sci, rettype)
 end
 
 # Accessors
-nargs(target::TileTarget) = length(target.argtypes)
+# Count non-ghost arguments (excludes function type for regular functions)
+nargs(target::TileTarget) = count(!is_ghost_type ∘ unwrap_type, target.sci.argtypes)
 
 #=============================================================================
  CGVal: Unified value representation (analogous to Julia's jl_cgval_t)
