@@ -179,9 +179,9 @@ tile = ct.gather(arr, indices)
     # Bounds mask: 0 <= indices_i32 < size
     zero_0d = Tile(Int32(0))
     size_0d = Tile(array.sizes[1])  # Already Int32
-    ge_zero = indices_i32 >= zero_0d
-    lt_size = indices_i32 < size_0d
-    mask = ge_zero & lt_size
+    ge_zero = indices_i32 .>= zero_0d
+    lt_size = indices_i32 .< size_0d
+    mask = ge_zero .& lt_size
 
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
@@ -227,9 +227,9 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     size0_bc = broadcast_to(Tile(array.sizes[1]), S)
     size1_bc = broadcast_to(Tile(array.sizes[2]), S)
 
-    mask0 = (idx0_i32 >= zero_bc) & (idx0_i32 < size0_bc)
-    mask1 = (idx1_i32 >= zero_bc) & (idx1_i32 < size1_bc)
-    mask = mask0 & mask1
+    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
+    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    mask = mask0 .& mask1
 
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
@@ -263,9 +263,9 @@ ct.scatter(arr, indices, result_tile)
     # Bounds mask: 0 <= indices_i32 < size
     zero_0d = Tile(Int32(0))
     size_0d = Tile(array.sizes[1])  # Already Int32
-    ge_zero = indices_i32 >= zero_0d
-    lt_size = indices_i32 < size_0d
-    mask = ge_zero & lt_size
+    ge_zero = indices_i32 .>= zero_0d
+    lt_size = indices_i32 .< size_0d
+    mask = ge_zero .& lt_size
 
     Intrinsics.store_ptr_tko(ptr_tile, tile, mask)
 end
@@ -309,9 +309,9 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     size0_bc = broadcast_to(Tile(array.sizes[1]), S)
     size1_bc = broadcast_to(Tile(array.sizes[2]), S)
 
-    mask0 = (idx0_i32 >= zero_bc) & (idx0_i32 < size0_bc)
-    mask1 = (idx1_i32 >= zero_bc) & (idx1_i32 < size1_bc)
-    mask = mask0 & mask1
+    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
+    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    mask = mask0 .& mask1
 
     Intrinsics.store_ptr_tko(ptr_tile, tile_bc, mask)
 end
