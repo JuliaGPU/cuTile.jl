@@ -62,26 +62,124 @@ Base.Broadcast.broadcastable(t::Tile) = t
 =============================================================================#
 
 # Tile-Tile arithmetic (a .+ b becomes broadcasted(+, a, b))
-for (op, tile_op) in ((:+, :tile_add), (:-, :tile_sub), (:*, :tile_mul), (:/, :tile_div))
-    @eval @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
-        $tile_op(a, b)
+# Float operations
+for (op, intrinsic) in ((:+, :addf), (:-, :subf), (:*, :mulf), (:/, :divf))
+    @eval @inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:AbstractFloat,S1,S2}
+        S = broadcast_shape(S1, S2)
+        Intrinsics.$intrinsic(broadcast_to(a, S), broadcast_to(b, S))
+    end
 end
-@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:AbstractFloat,S1,S2} =
-    tile_pow(a, b)
+# Integer operations (no division)
+for (op, intrinsic) in ((:+, :addi), (:-, :subi), (:*, :muli))
+    @eval @inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:Integer,S1,S2}
+        S = broadcast_shape(S1, S2)
+        Intrinsics.$intrinsic(broadcast_to(a, S), broadcast_to(b, S))
+    end
+end
+# Power (float only)
+@inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:AbstractFloat,S1,S2}
+    S = broadcast_shape(S1, S2)
+    Intrinsics.pow(broadcast_to(a, S), broadcast_to(b, S))
+end
 
-# Tile-Scalar arithmetic (tile .+ scalar, scalar .+ tile)
-for (op, tile_op) in ((:+, :tile_add), (:-, :tile_sub), (:*, :tile_mul), (:/, :tile_div))
+# Tile-Scalar arithmetic (tile .+ scalar, scalar .+ tile) - Float
+# Scalar is broadcast to match tile shape before calling intrinsic
+for (op, intrinsic) in ((:+, :addf), (:-, :subf), (:*, :mulf), (:/, :divf))
     @eval begin
-        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S}, b::Number) where {T,S} =
-            $tile_op(a, Tile(T(b)))
-        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Number, b::Tile{T,S}) where {T,S} =
-            $tile_op(Tile(T(a)), b)
+        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S}, b::Number) where {T<:AbstractFloat,S} =
+            Intrinsics.$intrinsic(a, broadcast_to(Tile(T(b)), S))
+        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Number, b::Tile{T,S}) where {T<:AbstractFloat,S} =
+            Intrinsics.$intrinsic(broadcast_to(Tile(T(a)), S), b)
+    end
+end
+# Tile-Scalar arithmetic - Integer (no division)
+for (op, intrinsic) in ((:+, :addi), (:-, :subi), (:*, :muli))
+    @eval begin
+        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S}, b::Number) where {T<:Integer,S} =
+            Intrinsics.$intrinsic(a, broadcast_to(Tile(T(b)), S))
+        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Number, b::Tile{T,S}) where {T<:Integer,S} =
+            Intrinsics.$intrinsic(broadcast_to(Tile(T(a)), S), b)
     end
 end
 @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T,S}, b::Number) where {T<:AbstractFloat,S} =
-    tile_pow(a, Tile(T(b)))
+    Intrinsics.pow(a, broadcast_to(Tile(T(b)), S))
 @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Number, b::Tile{T,S}) where {T<:AbstractFloat,S} =
-    tile_pow(Tile(T(a)), b)
+    Intrinsics.pow(broadcast_to(Tile(T(a)), S), b)
+
+#=============================================================================
+ Direct Scalar-Tile Operators (non-dotted syntax: tile * scalar)
+=============================================================================#
+
+# Scalar-tile operators (broadcast scalar to match tile shape)
+@inline Base.:(*)(a::Tile{T, S}, b::Number) where {T <: AbstractFloat, S} = Intrinsics.mulf(a, broadcast_to(Tile(T(b)), S))
+@inline Base.:(*)(a::Number, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.mulf(broadcast_to(Tile(T(a)), S), b)
+@inline Base.:(/)(a::Tile{T, S}, b::Number) where {T <: AbstractFloat, S} = Intrinsics.divf(a, broadcast_to(Tile(T(b)), S))
+
+#=============================================================================
+ Comparison Operators
+=============================================================================#
+
+# Integer tile comparisons (same shape)
+@inline Base.:(<)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
+    Intrinsics.cmpi(a, b, CmpLessThan, SignednessSigned)
+@inline Base.:(>)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
+    Intrinsics.cmpi(a, b, CmpGreaterThan, SignednessSigned)
+@inline Base.:(<=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
+    Intrinsics.cmpi(a, b, CmpLessThanOrEqual, SignednessSigned)
+@inline Base.:(>=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
+    Intrinsics.cmpi(a, b, CmpGreaterThanOrEqual, SignednessSigned)
+@inline Base.:(==)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
+    Intrinsics.cmpi(a, b, CmpEqual, SignednessSigned)
+@inline Base.:(!=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
+    Intrinsics.cmpi(a, b, CmpNotEqual, SignednessSigned)
+
+# Float tile comparisons (same shape)
+@inline Base.:(<)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
+    Intrinsics.cmpf(a, b, CmpLessThan)
+@inline Base.:(>)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
+    Intrinsics.cmpf(a, b, CmpGreaterThan)
+@inline Base.:(<=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
+    Intrinsics.cmpf(a, b, CmpLessThanOrEqual)
+@inline Base.:(>=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
+    Intrinsics.cmpf(a, b, CmpGreaterThanOrEqual)
+@inline Base.:(==)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
+    Intrinsics.cmpf(a, b, CmpEqual)
+@inline Base.:(!=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
+    Intrinsics.cmpf(a, b, CmpNotEqual)
+
+# Broadcasting versions - different shapes
+@inline Base.:(<)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
+    broadcast_to(a, broadcast_shape(S1, S2)) < broadcast_to(b, broadcast_shape(S1, S2))
+@inline Base.:(>)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
+    broadcast_to(a, broadcast_shape(S1, S2)) > broadcast_to(b, broadcast_shape(S1, S2))
+@inline Base.:(<=)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
+    broadcast_to(a, broadcast_shape(S1, S2)) <= broadcast_to(b, broadcast_shape(S1, S2))
+@inline Base.:(>=)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
+    broadcast_to(a, broadcast_shape(S1, S2)) >= broadcast_to(b, broadcast_shape(S1, S2))
+@inline Base.:(==)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
+    broadcast_to(a, broadcast_shape(S1, S2)) == broadcast_to(b, broadcast_shape(S1, S2))
+@inline Base.:(!=)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
+    broadcast_to(a, broadcast_shape(S1, S2)) != broadcast_to(b, broadcast_shape(S1, S2))
+
+# Mixed-type integer comparisons - promote to common type
+@inline _promote_cmp(op, a::Tile{T1, S1}, b::Tile{T2, S2}, ::Type{T}, ::Val{S}) where {T1, T2, S1, S2, T, S} =
+    op(astype(broadcast_to(a, S), T), astype(broadcast_to(b, S), T))
+
+for op in (:<, :>, :<=, :>=, :(==), :(!=))
+    @eval @inline function Base.$op(a::Tile{T1, S1}, b::Tile{T2, S2}) where {T1<:Integer, T2<:Integer, S1, S2}
+        _promote_cmp($op, a, b, promote_type(T1, T2), Val(broadcast_shape(S1, S2)))
+    end
+end
+
+#=============================================================================
+ Logical Operations
+=============================================================================#
+
+"""
+Element-wise logical AND for boolean tiles.
+"""
+@inline Base.:(&)(a::Tile{Bool, S}, b::Tile{Bool, S}) where {S} =
+    Intrinsics.andi(a, b)
 
 #=============================================================================
  Broadcasted Comparison Operators

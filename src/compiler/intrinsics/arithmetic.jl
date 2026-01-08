@@ -14,7 +14,7 @@ Handles:
 - Scalar + Scalar (for integer intrinsics on index calculations)
 
 Note: tile+scalar operations are handled at the intrinsic level via Tile(scalar) and
-broadcast_to(), so by the time we reach tile_add etc., both operands are already tiles.
+broadcast_to(), so by the time we reach the broadcasted methods, both operands are already tiles.
 """
 function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     cb = ctx.cb
