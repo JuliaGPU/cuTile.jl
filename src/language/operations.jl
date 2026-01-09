@@ -591,7 +591,7 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
  Math
 =============================================================================#
 
-public cdiv, floordiv, fma, muladd, mulhi
+public cdiv, floordiv, fma, mulhi
 
 """
     cdiv(a::Integer, b::Integer)
@@ -617,7 +617,6 @@ Equivalent to `a ÷ b` but provided for consistency with the cuTile API.
 
 Element-wise fused multiply-add: a * b + c.
 Provides strict FMA semantics - the intermediate result is not rounded.
-For matrix multiply-accumulate, use `Base.muladd(a, b, acc)` instead.
 
 # Example
 ```julia
@@ -625,21 +624,6 @@ result = ct.fma(a, b, c)  # Element-wise: a[i] * b[i] + c[i]
 ```
 """
 @inline fma(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) where {T <: AbstractFloat, S} =
-    Intrinsics.fma(a, b, c)
-
-"""
-    muladd(a::Tile, b::Tile, c::Tile) -> Tile
-
-Element-wise multiply-add: a * b + c.
-May use FMA or separate multiply and add, depending on what's efficient.
-For matrix multiply-accumulate, use `Base.muladd(a, b, acc)` instead.
-
-# Example
-```julia
-result = ct.muladd(a, b, c)  # Element-wise: a[i] * b[i] + c[i]
-```
-"""
-@inline muladd(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) where {T <: AbstractFloat, S} =
     Intrinsics.fma(a, b, c)
 
 """
