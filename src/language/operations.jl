@@ -44,13 +44,13 @@ Get the grid size along the given axis (1=x, 2=y, 3=z).
     num_tiles(arr::TileArray, axis::Integer, shape::NTuple{M, Int}) -> Int32
 
 Get the number of tiles along a specific axis of an array, given the tile shape.
-Axis is 1-indexed. Equivalent to cdiv(arr.sizes[axis], shape[axis]).
+Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
 
 # Example
 ```julia
 # For a 1024x768 matrix with 32x32 tiles:
-# num_tiles(arr, 1, (32, 32)) returns cdiv(1024, 32) = 32
-# num_tiles(arr, 2, (32, 32)) returns cdiv(768, 32) = 24
+# num_tiles(arr, 1, (32, 32)) returns cld(1024, 32) = 32
+# num_tiles(arr, 2, (32, 32)) returns cld(768, 32) = 24
 ```
 """
 @inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{<:Any, Int}) where {T, N}

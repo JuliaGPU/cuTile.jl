@@ -986,7 +986,7 @@
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "mulhii"
-                    result = ct.mulhi(tile_a, tile_b)
+                    result = ct.mul_hi.(tile_a, tile_b)
                     ct.store(c, pid, result)
                     return
                 end

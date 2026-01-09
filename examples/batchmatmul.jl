@@ -21,7 +21,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
 
     # Number of K tiles to iterate over
     K = A.sizes[2]
-    num_k = ct.cdiv(K, Int32(tk[]))
+    num_k = cld(K, Int32(tk[]))
 
     # Initialize accumulator with Float32 for precision
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)

@@ -221,6 +221,9 @@ end
 
 @eval Intrinsics begin
     """High bits of integer multiply (for extended precision arithmetic). Compiled to cuda_tile.mulhii."""
+    @noinline function mulhii(x::T, y::T, s::Signedness) where {T<:Integer}
+        ((widen(x) * widen(y)) >>> (8 * sizeof(T))) % T
+    end
     @noinline mulhii(a::Tile{T, S}, b::Tile{T, S}, s::Signedness) where {T<:Integer, S} =
         (Base.donotdelete(a, b); Tile{T, S}())
 end

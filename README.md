@@ -191,9 +191,10 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Integer Arithmetic
 | Operation | Description |
 |-----------|-------------|
-| `cdiv(a, b)` | Ceiling division |
-| `floordiv(a, b)` | Floor division |
-| `mulhi(a, b)` | High bits of integer multiply |
+| `cld(a, b)` | Ceiling division |
+| `fld(a, b)` | Floor division |
+| `div(a, b)` | Truncating division |
+| `mul_hi.(tile_a, tile_b)`, `mul_hi(x, y)` | High bits of integer multiply (use `Base.mul_hi` on Julia 1.13+) |
 
 ### Atomics
 | Operation | Description |

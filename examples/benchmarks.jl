@@ -264,14 +264,14 @@ end
 
 # 2D swizzle for better L2 cache locality (using 0-indexed block IDs)
 @inline function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
-    num_bid_m = ct.cdiv(M, Int32(tm))
-    num_bid_n = ct.cdiv(N, Int32(tn))
+    num_bid_m = cld(M, Int32(tm))
+    num_bid_n = cld(N, Int32(tn))
     num_bid_in_group = Int32(GROUP_SIZE_M) * num_bid_n
-    group_id = ct.floordiv(bid, num_bid_in_group)
+    group_id = fld(bid, num_bid_in_group)
     first_bid_m = group_id * Int32(GROUP_SIZE_M)
     group_size_m = min(num_bid_m - first_bid_m, Int32(GROUP_SIZE_M))
     bid_m = first_bid_m + rem(bid, group_size_m)
-    bid_n = ct.floordiv(rem(bid, num_bid_in_group), group_size_m)
+    bid_n = fld(rem(bid, num_bid_in_group), group_size_m)
     return bid_m, bid_n
 end
 
@@ -520,7 +520,7 @@ function batchmatmul_cutile_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C
     pid_batch = ct.bid(3)
 
     K = A.sizes[2]
-    num_k = ct.cdiv(K, Int32(tk[]))
+    num_k = cld(K, Int32(tk[]))
 
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)
 

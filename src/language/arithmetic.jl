@@ -1,7 +1,5 @@
 # Arithmetic operations
 
-public cdiv, floordiv, mulhi
-
 
 ## scalar arithmetic
 
@@ -13,8 +11,22 @@ public cdiv, floordiv, mulhi
 @overlay Base.:-(x::T, y::T) where {T <: ScalarInt} = Intrinsics.subi(x, y)
 @overlay Base.:*(x::T, y::T) where {T <: ScalarInt} = Intrinsics.muli(x, y)
 @overlay Base.:-(x::ScalarInt) = Intrinsics.negi(x)
+# div with default rounding (toward zero)
 @overlay Base.div(x::T, y::T) where {T <: Signed} = Intrinsics.divi(x, y, SignednessSigned)
 @overlay Base.div(x::T, y::T) where {T <: Unsigned} = Intrinsics.divi(x, y, SignednessUnsigned)
+
+# div with explicit RoundToZero
+@overlay Base.div(x::T, y::T, ::typeof(RoundToZero)) where {T <: Signed} = Intrinsics.divi(x, y, SignednessSigned)
+@overlay Base.div(x::T, y::T, ::typeof(RoundToZero)) where {T <: Unsigned} = Intrinsics.divi(x, y, SignednessUnsigned)
+
+# fld uses div with RoundDown
+# Note: for unsigned, floor division equals truncating division (values are non-negative)
+@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: Signed} = Intrinsics.fldi(x, y, SignednessSigned)
+@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: Unsigned} = Intrinsics.divi(x, y, SignednessUnsigned)
+
+# cld uses div with RoundUp
+@overlay Base.div(x::T, y::T, ::typeof(RoundUp)) where {T <: Signed} = Intrinsics.cldi(x, y, SignednessSigned)
+@overlay Base.div(x::T, y::T, ::typeof(RoundUp)) where {T <: Unsigned} = Intrinsics.cldi(x, y, SignednessUnsigned)
 @overlay Base.rem(x::T, y::T) where {T <: Signed} = Intrinsics.remi(x, y, SignednessSigned)
 @overlay Base.rem(x::T, y::T) where {T <: Unsigned} = Intrinsics.remi(x, y, SignednessUnsigned)
 
@@ -55,11 +67,6 @@ public cdiv, floordiv, mulhi
 @overlay Base.:>>(x::Signed, y::Integer) = Intrinsics.shri(x, y, SignednessSigned)
 @overlay Base.:>>(x::Unsigned, y::Integer) = Intrinsics.shri(x, y, SignednessUnsigned)
 @overlay Base.:>>>(x::ScalarInt, y::Integer) = Intrinsics.shri(x, y, SignednessUnsigned)
-
-# helpers
-@inline cdiv(a::Integer, b::Integer) = cld(a, b)
-@inline floordiv(a::Integer, b::Integer) = fld(a, b)
-
 
 ## tile arithmetic
 
@@ -121,11 +128,25 @@ end
 @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(&), a::Tile{Bool,S1}, b::Tile{Bool,S2}) where {S1,S2} =
     Intrinsics.andi(broadcast_to(a, broadcast_shape(S1, S2)), broadcast_to(b, broadcast_shape(S1, S2)))
 
-# mulhi (high bits of integer multiply)
-@inline mulhi(a::Tile{T, S}, b::Tile{T, S}) where {T <: Signed, S} =
-    Intrinsics.mulhii(a, b, SignednessSigned)
-@inline mulhi(a::Tile{T, S}, b::Tile{T, S}) where {T <: Unsigned, S} =
-    Intrinsics.mulhii(a, b, SignednessUnsigned)
+# mul_hi (high bits of integer multiply)
+# Base.mul_hi added in Julia 1.13; before that, use ct.mul_hi
+# Like cld/fld, requires broadcast for element-wise tile application: mul_hi.(a, b)
+@static if VERSION >= v"1.13-"
+    # Broadcasted for tiles (scalar uses Base.mul_hi directly):
+    @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(Base.mul_hi), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:Signed,S1,S2} =
+        Intrinsics.mulhii(broadcast_to(a, broadcast_shape(S1, S2)), broadcast_to(b, broadcast_shape(S1, S2)), SignednessSigned)
+    @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(Base.mul_hi), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:Unsigned,S1,S2} =
+        Intrinsics.mulhii(broadcast_to(a, broadcast_shape(S1, S2)), broadcast_to(b, broadcast_shape(S1, S2)), SignednessUnsigned)
+else
+    # Scalar definition (uses intrinsic for compilation to Tile IR)
+    @inline mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, SignednessSigned)
+    @inline mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, SignednessUnsigned)
+    # Broadcasted for tiles:
+    @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(mul_hi), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:Signed,S1,S2} =
+        Intrinsics.mulhii(broadcast_to(a, broadcast_shape(S1, S2)), broadcast_to(b, broadcast_shape(S1, S2)), SignednessSigned)
+    @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(mul_hi), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:Unsigned,S1,S2} =
+        Intrinsics.mulhii(broadcast_to(a, broadcast_shape(S1, S2)), broadcast_to(b, broadcast_shape(S1, S2)), SignednessUnsigned)
+end
 
 
 ## mixed arithmetic
