@@ -203,23 +203,26 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
     sizes_from_arg === nothing && error("TileArray at kernel entry requires explicit sizes")
     length(sizes_from_arg) < ndim && error("TileArray sizes don't match ndim")
 
-    scalar_i64 = tile_type!(tt, I64(tt), Int[])
+    # Deduce size/stride type from TileArray fields
+    size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
+    scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
 
-    # Extend Int32 sizes to I64
-    size_vals = Value[encode_ExtIOp!(cb, scalar_i64, sizes_from_arg[i]; signedness=SignednessSigned) for i in 1:ndim]
+    # Sizes are passed through directly from parameters
+    size_vals = Value[sizes_from_arg[i] for i in 1:ndim]
 
-    # Extend Int32 strides to I64, or compute for contiguous arrays
+    # Strides from parameters or compute for contiguous arrays
     if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
-        stride_vals = Value[encode_ExtIOp!(cb, scalar_i64, strides_from_arg[i]; signedness=SignednessSigned) for i in 1:ndim]
+        stride_vals = Value[strides_from_arg[i] for i in 1:ndim]
     else
-        # Compute row-major strides: stride[1]=1, stride[i]=stride[i-1]*size[i-1]
+        # Compute column-major strides: stride[1]=1, stride[i]=stride[i-1]*size[i-1]
+        # This matches Julia's memory layout where the first dimension is contiguous
         stride_vals = Value[]
         for dim in 1:ndim
             if dim == 1
-                stride_bytes = reinterpret(UInt8, [Int64(1)])
-                push!(stride_vals, encode_ConstantOp!(cb, scalar_i64, collect(stride_bytes)))
+                stride_bytes = reinterpret(UInt8, [size_elem_type(1)])
+                push!(stride_vals, encode_ConstantOp!(cb, scalar_size_type, collect(stride_bytes)))
             else
-                push!(stride_vals, encode_MulIOp!(cb, scalar_i64, stride_vals[end], size_vals[dim-1]))
+                push!(stride_vals, encode_MulIOp!(cb, scalar_size_type, stride_vals[end], size_vals[dim-1]))
             end
         end
     end
@@ -231,7 +234,7 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
 
     # Emit AssumeOps for optimization hints
     if array_spec !== nothing
-        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_i64; tv_strides)
+        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_size_type; tv_strides)
     end
 
     # Filter strides to only pass dynamic ones as operands
@@ -258,14 +261,14 @@ end
 Compute the stride values for a TensorView type based on ArraySpec.
 Returns static stride values where known, DYNAMIC_SHAPE where dynamic.
 
-For contiguous arrays (array_spec.contiguous == true), stride[1] = 1 is statically known.
-Higher dimensions are typically dynamic unless we have explicit info.
+For contiguous column-major arrays (matching Julia's memory layout),
+stride[1] = 1 is statically known. Higher dimensions are typically dynamic.
 """
 function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
     strides = fill(DYNAMIC_SHAPE, ndim)
 
     if array_spec !== nothing && array_spec.contiguous && ndim >= 1
-        # Contiguous array: first stride is statically known to be 1
+        # Contiguous column-major array: first stride is statically known to be 1
         strides[1] = 1
     end
 
@@ -286,61 +289,6 @@ function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{I
         end
     end
     return dynamic_vals
-end
-
-function get_size_stride_vals(ctx::CGCtx, arg_idx, is_tilearray::Bool, ndim::Int,
-                               tile_shape::Vector{Int}, index_vals::Vector{Value}, scalar_i64::TypeId)
-    cb = ctx.cb
-    tt = ctx.tt
-    size_vals = Value[]
-    stride_vals = Value[]
-
-    if is_tilearray
-        sizes_from_arg = get_arg_flat_values(ctx, arg_idx, :sizes)
-        strides_from_arg = get_arg_flat_values(ctx, arg_idx, :strides)
-
-        # TileArray sizes/strides are Int32, extend to I64 for large array support
-        if sizes_from_arg !== nothing && length(sizes_from_arg) >= ndim
-            size_vals = Value[encode_ExtIOp!(cb, scalar_i64, sizes_from_arg[i]; signedness=SignednessSigned) for i in 1:ndim]
-        end
-        if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
-            stride_vals = Value[encode_ExtIOp!(cb, scalar_i64, strides_from_arg[i]; signedness=SignednessSigned) for i in 1:ndim]
-        end
-    end
-
-    # Compute from grid if not available
-    if isempty(size_vals)
-        if ndim > 3
-            error("4D+ tile operations require TileArray with explicit sizes (grid only provides 3D)")
-        end
-        # Grid sizes are I32 (CUDA hardware), extend to I64 for array size calculation
-        scalar_i32 = tile_type!(tt, I32(tt), Int[])
-        nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(cb, scalar_i32, scalar_i32, scalar_i32)
-        grid_sizes_i32 = [nb_x, nb_y, nb_z]
-
-        for dim in 1:ndim
-            # Extend grid size to I64
-            grid_size_i64 = encode_ExtIOp!(cb, scalar_i64, grid_sizes_i32[dim]; signedness=SignednessSigned)
-            tile_size_bytes = reinterpret(UInt8, [Int64(tile_shape[dim])])
-            tile_size_val = encode_ConstantOp!(cb, scalar_i64, collect(tile_size_bytes))
-            size_val = encode_MulIOp!(cb, scalar_i64, grid_size_i64, tile_size_val)
-            push!(size_vals, size_val)
-        end
-    end
-
-    if isempty(stride_vals)
-        for dim in 1:ndim
-            if dim == 1
-                stride_bytes = reinterpret(UInt8, [Int64(1)])
-                stride_val = encode_ConstantOp!(cb, scalar_i64, collect(stride_bytes))
-            else
-                stride_val = encode_MulIOp!(cb, scalar_i64, stride_vals[end], size_vals[dim-1])
-            end
-            push!(stride_vals, stride_val)
-        end
-    end
-
-    return size_vals, stride_vals
 end
 
 # cuda_tile.make_tensor_view
