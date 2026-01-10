@@ -217,6 +217,154 @@ end
     end
 end
 
+@testset "reshape column-major semantics" begin
+    # These tests verify that ct.reshape matches Julia's column-major reshape behavior,
+    # not just that elements are preserved (which would pass even with wrong ordering).
+    # Note: tile shapes must be powers of 2.
+
+    @testset "1D → 2D matches Julia reshape exactly" begin
+        function reshape_1d_to_2d_exact_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,2},
+                                               n::ct.Constant{Int}, shape::ct.Constant{NTuple{2,Int}})
+            bid = ct.bid(1)
+            tile = ct.load(x, bid, (n[],))
+            reshaped = ct.reshape(tile, shape[])
+            ct.store(y, (bid, 1), reshaped)
+            return
+        end
+
+        n = 32
+        shape = (4, 8)
+        # Sequential values to detect any reordering
+        x = CuArray(Float32.(1:n))
+        y = CUDA.zeros(Float32, shape)
+
+        ct.launch(reshape_1d_to_2d_exact_kernel, 1, x, y, ct.Constant(n), ct.Constant(shape))
+
+        # Must match Julia's column-major reshape exactly (not just same elements)
+        expected = reshape(Float32.(1:n), shape)
+        @test Array(y) ≈ expected
+    end
+
+    @testset "2D → 1D matches Julia vec exactly" begin
+        function reshape_2d_to_1d_exact_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,1},
+                                               shape::ct.Constant{NTuple{2,Int}}, n::ct.Constant{Int})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), shape[])
+            reshaped = ct.reshape(tile, (n[],))
+            ct.store(y, bid, reshaped)
+            return
+        end
+
+        shape = (4, 8)
+        n = prod(shape)
+        # Create 2D array with sequential column-major values
+        x = CuArray(Float32.(reshape(1:n, shape)))
+        y = CUDA.zeros(Float32, n)
+
+        ct.launch(reshape_2d_to_1d_exact_kernel, 1, x, y, ct.Constant(shape), ct.Constant(n))
+
+        # Flattening should give column-major order: 1,2,3,4,...,32
+        expected = vec(Float32.(reshape(1:n, shape)))
+        @test Array(y) ≈ expected
+    end
+
+    @testset "2D → 2D reshape matches Julia reshape exactly" begin
+        function reshape_2d_to_2d_exact_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2},
+                                               src_shape::ct.Constant{NTuple{2,Int}},
+                                               tgt_shape::ct.Constant{NTuple{2,Int}})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), src_shape[])
+            reshaped = ct.reshape(tile, tgt_shape[])
+            ct.store(y, (bid, 1), reshaped)
+            return
+        end
+
+        src_shape = (4, 8)
+        tgt_shape = (8, 4)
+        n = prod(src_shape)
+        x = CuArray(Float32.(reshape(1:n, src_shape)))
+        y = CUDA.zeros(Float32, tgt_shape)
+
+        ct.launch(reshape_2d_to_2d_exact_kernel, 1, x, y,
+                  ct.Constant(src_shape), ct.Constant(tgt_shape))
+
+        expected = reshape(Float32.(reshape(1:n, src_shape)), tgt_shape)
+        @test Array(y) ≈ expected
+    end
+
+    @testset "3D → 2D reshape matches Julia reshape exactly" begin
+        function reshape_3d_to_2d_exact_kernel(x::ct.TileArray{Float32,3}, y::ct.TileArray{Float32,2},
+                                               src_shape::ct.Constant{NTuple{3,Int}},
+                                               tgt_shape::ct.Constant{NTuple{2,Int}})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1, 1), src_shape[])
+            reshaped = ct.reshape(tile, tgt_shape[])
+            ct.store(y, (bid, 1), reshaped)
+            return
+        end
+
+        src_shape = (2, 4, 4)
+        tgt_shape = (8, 4)
+        n = prod(src_shape)
+        x = CuArray(Float32.(reshape(1:n, src_shape)))
+        y = CUDA.zeros(Float32, tgt_shape)
+
+        ct.launch(reshape_3d_to_2d_exact_kernel, 1, x, y,
+                  ct.Constant(src_shape), ct.Constant(tgt_shape))
+
+        expected = reshape(Float32.(reshape(1:n, src_shape)), tgt_shape)
+        @test Array(y) ≈ expected
+    end
+
+    @testset "3D reshape round-trip with packing dim D=$D" for D in [2, 4]
+        # This is the atom_packing pattern: (BS, N, 2) → (BS, N*2/D, D) → (BS, N, 2)
+        function reshape_roundtrip_3d_kernel(x::ct.TileArray{Float32,3}, y::ct.TileArray{Float32,3},
+                                             orig_shape::ct.Constant{NTuple{3,Int}},
+                                             packed_shape::ct.Constant{NTuple{3,Int}})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1, 1), orig_shape[])
+            packed = ct.reshape(tile, packed_shape[])
+            unpacked = ct.reshape(packed, orig_shape[])
+            ct.store(y, (bid, 1, 1), unpacked)
+            return
+        end
+
+        BS, N = 1, 8
+        orig_shape = (BS, N, 2)
+        packed_shape = (BS, N * 2 ÷ D, D)
+
+        # Sequential values to detect any reordering
+        x = CuArray(Float32.(reshape(1:prod(orig_shape), orig_shape)))
+        y = CUDA.zeros(Float32, orig_shape)
+
+        ct.launch(reshape_roundtrip_3d_kernel, 1, x, y,
+                  ct.Constant(orig_shape), ct.Constant(packed_shape))
+
+        # Round-trip must preserve exact data, not just same elements
+        @test Array(y) ≈ Array(x)
+    end
+
+    @testset "2D → 1D → 2D round-trip preserves exact layout" begin
+        function reshape_2d_1d_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2},
+                                         shape::ct.Constant{NTuple{2,Int}})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), shape[])
+            flat = ct.reshape(tile, (prod(shape[]),))
+            back = ct.reshape(flat, shape[])
+            ct.store(y, (bid, 1), back)
+            return
+        end
+
+        shape = (4, 8)
+        x = CuArray(Float32.(reshape(1:prod(shape), shape)))
+        y = CUDA.zeros(Float32, shape)
+
+        ct.launch(reshape_2d_1d_2d_kernel, 1, x, y, ct.Constant(shape))
+
+        @test Array(y) ≈ Array(x)
+    end
+end
+
 @testset "permute" begin
     @testset "2D permute (transpose-like)" begin
         function permute_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
