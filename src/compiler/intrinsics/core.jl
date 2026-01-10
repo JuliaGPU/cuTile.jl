@@ -612,18 +612,47 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     target_shape_tuple isa Tuple || error("reshape() shape must be a compile-time constant tuple")
     target_shape = collect(Int, target_shape_tuple)
 
-    # Get element type
+    # Get element type and source shape
     source_type = unwrap_type(source.jltype)
     elem_type = source_type <: Tile ? source_type.parameters[1] : source_type
+    source_shape = source_type <: Tile ? collect(Int, source_type.parameters[2]) : Int[]
 
-    # Create target tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_type_id = tile_type!(tt, dtype, target_shape)
 
-    # Emit ReshapeOp
-    result_v = encode_ReshapeOp!(cb, result_type_id, source.v)
+    # Tile IR's ReshapeOp uses row-major element ordering, but Julia uses column-major.
+    # To achieve Julia's column-major reshape semantics, we need to:
+    # 1. Permute source to row-major order (reverse dims) if ndim > 1
+    # 2. Reshape with reversed target shape
+    # 3. Permute result back to column-major order (reverse dims) if ndim > 1
 
-    CGVal(result_v, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
+    current_val = source.v
+    current_shape = source_shape
+
+    # Step 1: Permute source if >1 dimension (column-major → row-major)
+    if length(current_shape) > 1
+        perm = collect(length(current_shape)-1:-1:0)  # 0-indexed reverse
+        permuted_shape = reverse(current_shape)
+        perm_type_id = tile_type!(tt, dtype, permuted_shape)
+        current_val = encode_PermuteOp!(cb, perm_type_id, current_val, perm)
+        current_shape = permuted_shape
+    end
+
+    # Step 2: ReshapeOp with reversed target shape
+    reversed_target = reverse(target_shape)
+    reshape_type_id = tile_type!(tt, dtype, reversed_target)
+    current_val = encode_ReshapeOp!(cb, reshape_type_id, current_val)
+    current_shape = reversed_target
+
+    # Step 3: Permute result back if >1 dimension (row-major → column-major)
+    if length(target_shape) > 1
+        perm = collect(length(target_shape)-1:-1:0)  # 0-indexed reverse
+        result_type_id = tile_type!(tt, dtype, target_shape)
+        current_val = encode_PermuteOp!(cb, result_type_id, current_val, perm)
+    else
+        result_type_id = tile_type!(tt, dtype, target_shape)
+    end
+
+    CGVal(current_val, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
 end
 
 # TODO: cuda_tile.scan
