@@ -101,6 +101,7 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080:
 | Matrix Multiplication | 48.3 TFLOPS | 48.6 TFLOPS | OK (=) |
 | Layer Normalization | 254 GB/s | 683 GB/s | https://github.com/JuliaGPU/cuTile.jl/issues/1 (-63%) |
 | Batch Matrix Multiply | 31.7 TFLOPS | 31.6 TFLOPS | OK (=) |
+| FFT (3-stage Cooley-Tukey) | 508 μs | 230 μs | (-55%) |
 
 Compute-intensive kernels (matmul, batch matmul) perform identically to Python. Memory-bound
 kernels (vadd, transpose) are within ~3% of Python. The layernorm kernel is slower due to
