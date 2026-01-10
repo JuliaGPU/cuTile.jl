@@ -22,7 +22,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
 
     # Get source element type
     source_type = unwrap_type(source.jltype)
-    source_elem = source_type <: Tile ? source_type.parameters[1] : source_type
+    source_elem = source_type.parameters[1]
 
     # Extract target shape from the constant tuple argument
     target_shape_tuple = get_constant(ctx, args[2])
@@ -132,10 +132,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     output_shape[axis + 1] += rhs_shape[axis + 1]  # 1-based indexing
 
     # Get element type
-    elem_type = unwrap_type(lhs.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(lhs.jltype).parameters[1]
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -229,10 +226,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     output_shape = collect(Int, shape_tuple)
 
     # Get element type
-    elem_type = unwrap_type(source.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(source.jltype).parameters[1]
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -450,10 +444,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     output_shape = [input_shape[p + 1] for p in permutation]
 
     # Get element type
-    elem_type = unwrap_type(source.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(source.jltype).parameters[1]
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -489,10 +480,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
 
     output_shape = reverse(input_shape)
 
-    elem_type = unwrap_type(source.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(source.jltype).parameters[1]
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     output_tile_type = tile_type!(tt, dtype, output_shape)
@@ -549,7 +537,7 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
 
     # Get element type and shapes
     input_type = unwrap_type(input_tv.jltype)
-    elem_type = input_type <: Tile ? input_type.parameters[1] : input_type
+    elem_type = input_type.parameters[1]
     input_shape = input_tv.shape
     isempty(input_shape) && error("Cannot reduce scalar tile")
 
@@ -614,8 +602,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
 
     # Get element type and source shape
     source_type = unwrap_type(source.jltype)
-    elem_type = source_type <: Tile ? source_type.parameters[1] : source_type
-    source_shape = source_type <: Tile ? collect(Int, source_type.parameters[2]) : Int[]
+    elem_type = source_type.parameters[1]
+    source_shape = collect(Int, source_type.parameters[2])
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
