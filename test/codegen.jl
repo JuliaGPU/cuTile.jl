@@ -1702,4 +1702,31 @@ end
             end
         end
     end
+
+    #=========================================================================
+     Constant Folding
+    =========================================================================#
+    @testset "constant folding" begin
+        spec = ct.ArraySpec{1}(16, true)
+
+        # XXX: This test verifies that store() returns the tile to enable constant
+        # folding. If this test fails after removing `return tile` from store(),
+        # Julia's optimizer will emit subi operations for constant index math.
+        # See operations.jl store() for the workaround.
+        @testset "store with constant index folds subtraction" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check "load_view_tko"
+                # Verify no subi appears between load and store - constant 1-1 should fold to 0
+                @check_not "subi"
+                @check "store_view_tko"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    idx = Int32(1)
+                    tile = ct.load(a, idx, (16,))
+                    ct.store(a, idx, tile)
+                    return
+                end
+            end
+        end
+    end
 end

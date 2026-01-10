@@ -111,21 +111,24 @@ end
 end
 
 """
-    store(arr::TileArray, index, tile::Tile) -> Nothing
+    store(arr::TileArray, index, tile::Tile) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
+Returns the stored tile (enables chaining and helps constant folding).
 """
 # Regular N-D tiles (N >= 1)
 @inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape}) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, (promote(index...) .- One())...)
+    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 @inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape}) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, index - One())
+    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 # Special case for 0D (scalar) tiles - reshape to 1D for partition view
@@ -135,6 +138,7 @@ end
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile_1d, (promote(index...) .- One())...)
+    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 @inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()}) where {T}
@@ -142,6 +146,7 @@ end
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile_1d, index - One())
+    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 # Keyword argument version - dispatch to positional version
