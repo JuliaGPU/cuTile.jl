@@ -1,5 +1,23 @@
 # core Tile IR intrinsics
 
+"""
+    validate_tile_shape(shape, context::String)
+
+Validate that all tile dimensions are powers of 2.
+Tile IR requires all tile dimensions to be powers of 2.
+Throws an error with a clear message if validation fails.
+"""
+function validate_tile_shape(shape, context::String)
+    for (i, dim) in enumerate(shape)
+        if dim <= 0
+            error("$context: tile dimension $i must be positive, got $dim")
+        end
+        if !ispow2(dim)
+            error("$context: tile dimension $i must be a power of 2, got $dim")
+        end
+    end
+end
+
 # cuda_tile.broadcast
 @eval Intrinsics begin
     """
@@ -28,6 +46,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || error("broadcast() shape must be a compile-time constant tuple")
     target_shape = collect(Int, target_shape_tuple)
+    validate_tile_shape(target_shape, "broadcast")
 
     # If already the right shape, return unchanged
     if source.shape == target_shape
@@ -130,6 +149,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     rhs_shape = rhs.shape
     output_shape = collect(Int, lhs_shape)
     output_shape[axis + 1] += rhs_shape[axis + 1]  # 1-based indexing
+    validate_tile_shape(output_shape, "cat")
 
     # Get element type
     elem_type = unwrap_type(lhs.jltype).parameters[1]
@@ -164,6 +184,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     shape = get_constant(ctx, args[1])
     shape isa Tuple || error("full() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
+    validate_tile_shape(tile_shape, "full")
 
     # Extract value
     value = @something get_constant(ctx, args[2]) error("full() value must be a compile-time constant")
@@ -224,6 +245,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     shape_tuple = get_constant(ctx, args[3])
     shape_tuple isa Tuple || error("extract() shape must be a compile-time constant tuple")
     output_shape = collect(Int, shape_tuple)
+    validate_tile_shape(output_shape, "extract")
 
     # Get element type
     elem_type = unwrap_type(source.jltype).parameters[1]
@@ -312,6 +334,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     shape = get_constant(ctx, args[1])
     shape isa Tuple || error("iota() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
+    validate_tile_shape(tile_shape, "arange")
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[2]) error("iota() requires a compile-time element type")
@@ -599,6 +622,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || error("reshape() shape must be a compile-time constant tuple")
     target_shape = collect(Int, target_shape_tuple)
+    validate_tile_shape(target_shape, "reshape")
 
     # Get element type and source shape
     source_type = unwrap_type(source.jltype)

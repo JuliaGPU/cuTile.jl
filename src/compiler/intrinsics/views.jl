@@ -17,7 +17,9 @@ Extract tile shape tuple from a Val{Shape} argument.
 function get_tile_shape_tuple(ctx::CGCtx, arg)
     shape = get_constant(ctx, arg)
     shape isa Tuple || error("make_partition_view() shape must be a compile-time constant tuple")
-    collect(Int, shape)
+    shape_vec = collect(Int, shape)
+    validate_tile_shape(shape_vec, "load")
+    shape_vec
 end
 
 """

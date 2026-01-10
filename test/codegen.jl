@@ -1737,6 +1737,90 @@ end
     end
 
     #=========================================================================
+     Tile Shape Validation
+    =========================================================================#
+    @testset "tile shape validation" begin
+        spec = ct.ArraySpec{1}(16, true)
+        spec2d = ct.ArraySpec{2}(16, true)
+
+        @testset "non-power-of-2 load shape rejected" begin
+            @test_throws "load: tile dimension 1 must be a power of 2, got 3" begin
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    ct.load(a, ct.bid(1), (3,))
+                end
+            end
+        end
+
+        @testset "non-power-of-2 full shape rejected" begin
+            @test_throws "full: tile dimension 1 must be a power of 2, got 5" begin
+                code_tiled(Tuple{}) do
+                    ct.full((5,), 0.0f0, Float32)
+                end
+            end
+        end
+
+        @testset "non-power-of-2 arange shape rejected" begin
+            @test_throws "arange: tile dimension 1 must be a power of 2, got 7" begin
+                code_tiled(Tuple{}) do
+                    ct.arange((7,), Int32)
+                end
+            end
+        end
+
+        @testset "non-power-of-2 reshape target rejected" begin
+            @test_throws "reshape: tile dimension 1 must be a power of 2, got 3" begin
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    tile = ct.load(a, ct.bid(1), (16,))
+                    ct.reshape(tile, (3,))
+                end
+            end
+        end
+
+        @testset "zero dimension rejected" begin
+            @test_throws "load: tile dimension 1 must be positive, got 0" begin
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    ct.load(a, ct.bid(1), (0,))
+                end
+            end
+        end
+
+        @testset "negative dimension rejected" begin
+            @test_throws "full: tile dimension 1 must be positive, got -4" begin
+                code_tiled(Tuple{}) do
+                    ct.full((-4,), 0.0f0, Float32)
+                end
+            end
+        end
+
+        @testset "valid power-of-2 shapes accepted" begin
+            # These should not throw - test a few key sizes
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                tile = ct.load(a, ct.bid(1), (16,))
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                tile = ct.load(a, ct.bid(1), (32,))
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                tile = ct.load(a, ct.bid(1), (128,))
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        @testset "multi-dim: all dimensions must be pow2" begin
+            @test_throws "load: tile dimension 2 must be a power of 2, got 3" begin
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    ct.load(a, (ct.bid(1), 1), (4, 3))
+                end
+            end
+        end
+    end
+
+    #=========================================================================
      Constant Folding
     =========================================================================#
     @testset "constant folding" begin
