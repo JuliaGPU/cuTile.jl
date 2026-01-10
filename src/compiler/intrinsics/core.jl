@@ -1,5 +1,23 @@
 # core Tile IR intrinsics
 
+"""
+    validate_tile_shape(shape, context::String)
+
+Validate that all tile dimensions are powers of 2.
+Tile IR requires all tile dimensions to be powers of 2.
+Throws an error with a clear message if validation fails.
+"""
+function validate_tile_shape(shape, context::String)
+    for (i, dim) in enumerate(shape)
+        if dim <= 0
+            error("$context: tile dimension $i must be positive, got $dim")
+        end
+        if !ispow2(dim)
+            error("$context: tile dimension $i must be a power of 2, got $dim")
+        end
+    end
+end
+
 # cuda_tile.broadcast
 @eval Intrinsics begin
     """
@@ -22,12 +40,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
 
     # Get source element type
     source_type = unwrap_type(source.jltype)
-    source_elem = source_type <: Tile ? source_type.parameters[1] : source_type
+    source_elem = source_type.parameters[1]
 
     # Extract target shape from the constant tuple argument
     target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || error("broadcast() shape must be a compile-time constant tuple")
     target_shape = collect(Int, target_shape_tuple)
+    validate_tile_shape(target_shape, "broadcast")
 
     # If already the right shape, return unchanged
     if source.shape == target_shape
@@ -130,12 +149,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     rhs_shape = rhs.shape
     output_shape = collect(Int, lhs_shape)
     output_shape[axis + 1] += rhs_shape[axis + 1]  # 1-based indexing
+    validate_tile_shape(output_shape, "cat")
 
     # Get element type
-    elem_type = unwrap_type(lhs.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(lhs.jltype).parameters[1]
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -167,6 +184,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     shape = get_constant(ctx, args[1])
     shape isa Tuple || error("full() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
+    validate_tile_shape(tile_shape, "full")
 
     # Extract value
     value = @something get_constant(ctx, args[2]) error("full() value must be a compile-time constant")
@@ -227,12 +245,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     shape_tuple = get_constant(ctx, args[3])
     shape_tuple isa Tuple || error("extract() shape must be a compile-time constant tuple")
     output_shape = collect(Int, shape_tuple)
+    validate_tile_shape(output_shape, "extract")
 
     # Get element type
-    elem_type = unwrap_type(source.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(source.jltype).parameters[1]
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -318,6 +334,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     shape = get_constant(ctx, args[1])
     shape isa Tuple || error("iota() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
+    validate_tile_shape(tile_shape, "arange")
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[2]) error("iota() requires a compile-time element type")
@@ -450,10 +467,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     output_shape = [input_shape[p + 1] for p in permutation]
 
     # Get element type
-    elem_type = unwrap_type(source.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(source.jltype).parameters[1]
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -489,10 +503,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
 
     output_shape = reverse(input_shape)
 
-    elem_type = unwrap_type(source.jltype)
-    if elem_type <: Tile
-        elem_type = elem_type.parameters[1]
-    end
+    elem_type = unwrap_type(source.jltype).parameters[1]
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     output_tile_type = tile_type!(tt, dtype, output_shape)
@@ -549,7 +560,7 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
 
     # Get element type and shapes
     input_type = unwrap_type(input_tv.jltype)
-    elem_type = input_type <: Tile ? input_type.parameters[1] : input_type
+    elem_type = input_type.parameters[1]
     input_shape = input_tv.shape
     isempty(input_shape) && error("Cannot reduce scalar tile")
 
@@ -611,19 +622,49 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || error("reshape() shape must be a compile-time constant tuple")
     target_shape = collect(Int, target_shape_tuple)
+    validate_tile_shape(target_shape, "reshape")
 
-    # Get element type
+    # Get element type and source shape
     source_type = unwrap_type(source.jltype)
-    elem_type = source_type <: Tile ? source_type.parameters[1] : source_type
+    elem_type = source_type.parameters[1]
+    source_shape = collect(Int, source_type.parameters[2])
 
-    # Create target tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_type_id = tile_type!(tt, dtype, target_shape)
 
-    # Emit ReshapeOp
-    result_v = encode_ReshapeOp!(cb, result_type_id, source.v)
+    # Tile IR's ReshapeOp uses row-major element ordering, but Julia uses column-major.
+    # To achieve Julia's column-major reshape semantics, we need to:
+    # 1. Permute source to row-major order (reverse dims) if ndim > 1
+    # 2. Reshape with reversed target shape
+    # 3. Permute result back to column-major order (reverse dims) if ndim > 1
 
-    CGVal(result_v, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
+    current_val = source.v
+    current_shape = source_shape
+
+    # Step 1: Permute source if >1 dimension (column-major → row-major)
+    if length(current_shape) > 1
+        perm = collect(length(current_shape)-1:-1:0)  # 0-indexed reverse
+        permuted_shape = reverse(current_shape)
+        perm_type_id = tile_type!(tt, dtype, permuted_shape)
+        current_val = encode_PermuteOp!(cb, perm_type_id, current_val, perm)
+        current_shape = permuted_shape
+    end
+
+    # Step 2: ReshapeOp with reversed target shape
+    reversed_target = reverse(target_shape)
+    reshape_type_id = tile_type!(tt, dtype, reversed_target)
+    current_val = encode_ReshapeOp!(cb, reshape_type_id, current_val)
+    current_shape = reversed_target
+
+    # Step 3: Permute result back if >1 dimension (row-major → column-major)
+    if length(target_shape) > 1
+        perm = collect(length(target_shape)-1:-1:0)  # 0-indexed reverse
+        result_type_id = tile_type!(tt, dtype, target_shape)
+        current_val = encode_PermuteOp!(cb, result_type_id, current_val, perm)
+    else
+        result_type_id = tile_type!(tt, dtype, target_shape)
+    end
+
+    CGVal(current_val, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
 end
 
 # TODO: cuda_tile.scan

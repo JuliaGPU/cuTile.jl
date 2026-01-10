@@ -24,7 +24,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
 
     # Get source element type and shape
     source_type = unwrap_type(source.jltype)
-    source_elem = source_type <: Tile ? source_type.parameters[1] : source_type
+    source_elem = source_type.parameters[1]
     tile_shape = source.shape
 
     # Get target element type from the Type argument
