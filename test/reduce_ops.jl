@@ -14,9 +14,10 @@ cpu_reduce_mul(a::AbstractArray, dims::Integer) = prod(a, dims=dims)
 cpu_reduce_max(a::AbstractArray, dims::Integer) = maximum(a, dims=dims)
 cpu_reduce_min(a::AbstractArray, dims::Integer) = minimum(a, dims=dims)
 
-cpu_reduce_and(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x & y, a, dims=dims)
-cpu_reduce_or(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x | y, a, dims=dims)
-cpu_reduce_xor(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x ⊻ y, a, dims=dims)
+cpu_reduce_and(a::AbstractArray{<:Unsigned}, dims::Integer) = reduce((x, y) -> x & y, a, init=typemax(eltype(a)), dims=dims)
+cpu_reduce_and(a::AbstractArray{<:Signed}, dims::Integer) = reduce((x, y) -> x & y, a, init=Int64(-1), dims=dims)
+cpu_reduce_or(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x | y, a, init=zero(eltype(a)), dims=dims)
+cpu_reduce_xor(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x ⊻ y, a, init=zero(eltype(a)), dims=dims)
 
 #======================================================================#
 # Float32 operations
