@@ -662,46 +662,46 @@ is_signed(::Type{T}) where T <: Integer = T <: SignedInteger
 is_signed(::Type{T}) where T <: AbstractFloat = false
 
 """
-    reduce_identity(reduce_fn, dtype, elem_type) -> ReduceIdentity
+    reduce_identity(reduce_fn, dtype, elem_type) -> IdentityOp
 
-Return the identity value for a reduction operation.
-Identity must satisfy: identity ⊕ x = x for the reduction operation.
+Return the identity value for a binary operation (reduce, scan, etc.).
+Identity must satisfy: identity ⊕ x = x for the operation.
 """
 # Addition identity: 0 + x = x
 reduce_identity(::Val{:add}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentity(0.0, dtype, T)
+    FloatIdentityOp(0.0, dtype, T)
 reduce_identity(::Val{:add}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(0, dtype, T, is_signed(T))
+    IntegerIdentityOp(0, dtype, T, is_signed(T))
 
 # Maximum identity: max(-Inf, x) = x
 reduce_identity(::Val{:max}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentity(-Inf, dtype, T)
+    FloatIdentityOp(-Inf, dtype, T)
 reduce_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(0, dtype, T, is_signed(T))  # For integers, use 0 as identity (max(0, x) = x)
+    IntegerIdentityOp(0, dtype, T, is_signed(T))  # For integers, use 0 as identity (max(0, x) = x)
 
 # Multiplication identity: 1 * x = x
 reduce_identity(::Val{:mul}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentity(1.0, dtype, T)
+    FloatIdentityOp(1.0, dtype, T)
 reduce_identity(::Val{:mul}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(1, dtype, T, is_signed(T))
+    IntegerIdentityOp(1, dtype, T, is_signed(T))
 
 # Minimum identity: min(+Inf, x) = x
 reduce_identity(::Val{:min}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentity(+Inf, dtype, T)
+    FloatIdentityOp(+Inf, dtype, T)
 reduce_identity(::Val{:min}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(typemax(Int64), dtype, T, is_signed(T))  # Use max int as +Inf proxy
+    IntegerIdentityOp(typemax(Int64), dtype, T, is_signed(T))  # Use max int as +Inf proxy
 
 # AND identity: all bits set (x & -1 == x)
 reduce_identity(::Val{:and}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(-1, dtype, T, is_signed(T))  # All bits set
+    IntegerIdentityOp(-1, dtype, T, is_signed(T))  # All bits set
 
 # OR identity: 0 | x = x
 reduce_identity(::Val{:or}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(0, dtype, T, is_signed(T))
+    IntegerIdentityOp(0, dtype, T, is_signed(T))
 
 # XOR identity: 0 ⊕ x = x
 reduce_identity(::Val{:xor}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentity(0, dtype, T, is_signed(T))
+    IntegerIdentityOp(0, dtype, T, is_signed(T))
 
 #=============================================================================
  Reduce Body Operations - dispatch on Val{fn} and elem_type
