@@ -280,12 +280,12 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
 end
 
 """
-    encode_tagged_int!(cb, identity::IntegerIdentity; is_reduce::Bool=true)
+    encode_tagged_int!(cb, identity::IntegerIdentity)
 
-Encode a tagged integer attribute for reduce identity.
+Encode a tagged integer identity attribute.
 Format: tag(Int=0x01) + typeid + ap_int(value)
 """
-function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentity; is_reduce::Bool=true)
+function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentity)
     # Tag for Int attribute
     push!(cb.buf, 0x01)
     # Type ID
