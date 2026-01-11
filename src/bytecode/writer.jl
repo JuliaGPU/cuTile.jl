@@ -313,6 +313,94 @@ function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:ReduceIden
     end
 end
 
+#=============================================================================
+ Tagged attributes for ScanOp identity values
+=============================================================================#
+
+"""
+    ScanIdentity
+
+Abstract type for scan identity attributes.
+"""
+abstract type ScanIdentity end
+
+"""
+    ScanFloatIdentity(value, type_id, dtype)
+
+Float identity value for scan operations.
+"""
+struct ScanFloatIdentity <: ScanIdentity
+    value::Float64
+    type_id::TypeId
+    dtype::Type  # Float16, Float32, Float64, etc.
+end
+
+"""
+    ScanIntegerIdentity(value, type_id, dtype)
+
+Integer identity value for scan operations.
+"""
+struct ScanIntegerIdentity <: ScanIdentity
+    value::Int64
+    type_id::TypeId
+    dtype::Type  # Int8, Int16, Int32, Int64
+    signed::Bool  # true for signed, false for unsigned
+end
+
+"""
+    encode_tagged_scan_identity!(cb, identity::ScanIdentity)
+
+Encode a scan identity attribute.
+"""
+function encode_tagged_scan_identity!(cb::CodeBuilder, identity::ScanIdentity)
+    if identity isa ScanFloatIdentity
+        encode_tagged_scan_float!(cb, identity)
+    elseif identity isa ScanIntegerIdentity
+        encode_tagged_scan_integer!(cb, identity)
+    else
+        error("Unsupported scan identity type: $(typeof(identity))")
+    end
+end
+
+"""
+    encode_tagged_scan_float!(cb, identity::ScanFloatIdentity)
+
+Encode a tagged float attribute for scan identity.
+"""
+function encode_tagged_scan_float!(cb::CodeBuilder, identity::ScanFloatIdentity)
+    push!(cb.buf, 0x02)  # Tag for Float attribute
+    encode_typeid!(cb.buf, identity.type_id)
+    bits = float_to_bits(identity.value, identity.dtype)
+    encode_signed_varint!(cb.buf, bits)
+end
+
+"""
+    encode_tagged_scan_integer!(cb, identity::ScanIntegerIdentity)
+
+Encode a tagged integer attribute for scan identity.
+"""
+function encode_tagged_scan_integer!(cb::CodeBuilder, identity::ScanIntegerIdentity)
+    push!(cb.buf, 0x01)  # Tag for Integer attribute
+    encode_typeid!(cb.buf, identity.type_id)
+    if identity.signed
+        encode_signed_varint!(cb.buf, identity.value)
+    else
+        encode_varint!(cb.buf, UInt64(identity.value))
+    end
+end
+
+"""
+    encode_scan_identity_array!(cb, identities)
+
+Encode an array of scan identity attributes.
+"""
+function encode_scan_identity_array!(cb::CodeBuilder, identities::Vector{<:ScanIdentity})
+    encode_varint!(cb.buf, length(identities))
+    for identity in identities
+        encode_tagged_scan_identity!(cb, identity)
+    end
+end
+
 """
     BytecodeWriter
 
