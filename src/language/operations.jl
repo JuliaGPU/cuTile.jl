@@ -529,6 +529,99 @@ end
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
 
+"""
+    reduce_mul(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Product reduction along the specified axis (1-indexed).
+Returns a tile with the specified dimension removed.
+
+# Example
+```julia
+# For a (128, 64) tile, reducing along axis 2:
+products = ct.reduce_mul(tile, 2)  # Returns (128,) tile
+```
+"""
+@inline function reduce_mul(tile::Tile{T, S}, axis::Integer) where {T, S}
+    Intrinsics.reduce_mul(tile, Val(axis - 1))
+end
+@inline function reduce_mul(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+    Intrinsics.reduce_mul(tile, Val(axis - 1))
+end
+
+"""
+    reduce_min(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Minimum reduction along the specified axis (1-indexed).
+
+# Example
+```julia
+mins = ct.reduce_min(tile, 2)  # Min along axis 2
+```
+"""
+@inline function reduce_min(tile::Tile{T, S}, axis::Integer) where {T, S}
+    Intrinsics.reduce_min(tile, Val(axis - 1))
+end
+@inline function reduce_min(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+    Intrinsics.reduce_min(tile, Val(axis - 1))
+end
+
+"""
+    reduce_and(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Bitwise AND reduction along the specified axis (1-indexed).
+Integer types only.
+
+# Example
+```julia
+# For an Int32 tile, reducing along axis 2:
+result = ct.reduce_and(tile, 2)  # Returns (128,) tile of Int32
+```
+"""
+@inline function reduce_and(tile::Tile{T, S}, axis::Integer) where {T <: Integer, S}
+    Intrinsics.reduce_and(tile, Val(axis - 1))
+end
+@inline function reduce_and(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+    Intrinsics.reduce_and(tile, Val(axis - 1))
+end
+
+"""
+    reduce_or(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Bitwise OR reduction along the specified axis (1-indexed).
+Integer types only.
+
+# Example
+```julia
+# For an Int32 tile, reducing along axis 2:
+result = ct.reduce_or(tile, 2)  # Returns (128,) tile of Int32
+```
+"""
+@inline function reduce_or(tile::Tile{T, S}, axis::Integer) where {T <: Integer, S}
+    Intrinsics.reduce_or(tile, Val(axis - 1))
+end
+@inline function reduce_or(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+    Intrinsics.reduce_or(tile, Val(axis - 1))
+end
+
+"""
+    reduce_xor(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Bitwise XOR reduction along the specified axis (1-indexed).
+Integer types only.
+
+# Example
+```julia
+# For an Int32 tile, reducing along axis 2:
+result = ct.reduce_xor(tile, 2)  # Returns (128,) tile of Int32
+```
+"""
+@inline function reduce_xor(tile::Tile{T, S}, axis::Integer) where {T <: Integer, S}
+    Intrinsics.reduce_xor(tile, Val(axis - 1))
+end
+@inline function reduce_xor(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+    Intrinsics.reduce_xor(tile, Val(axis - 1))
+end
+
 #=============================================================================
  Matmul
 =============================================================================#

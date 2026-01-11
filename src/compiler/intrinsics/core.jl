@@ -645,13 +645,11 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
 
     # Output tile type
     output_tile_type = tile_type!(tt, dtype, output_shape)
-
     # Scalar type for reduction body (0D tile)
     scalar_tile_type = tile_type!(tt, dtype, Int[])
 
-    # Create identity value - use simple dtype (f32), not tile type
-    identity_val = reduce_fn == :add ? -0.0 : (reduce_fn == :max ? -Inf : 0.0)
-    identity = FloatIdentity(identity_val, dtype, elem_type)
+    # Create identity value via dispatch on reduction function and element type
+    identity = reduce_identity(Val(reduce_fn), dtype, elem_type)
 
     # Emit ReduceOp
     results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
@@ -664,7 +662,56 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
-# Dispatch helpers for reduce body operations - dispatch on Val{fn} and elem_type
+#=============================================================================
+ Reduce Identity Values via Dispatch
+=============================================================================#
+
+"""
+    reduce_identity(reduce_fn, dtype, elem_type) -> ReduceIdentity
+
+Return the identity value for a reduction operation.
+Identity must satisfy: identity ⊕ x = x for the reduction operation.
+"""
+# Addition identity: 0 + x = x
+reduce_identity(::Val{:add}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentity(0.0, dtype, T)
+reduce_identity(::Val{:add}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(0.0, dtype, T)
+
+# Maximum identity: max(-Inf, x) = x
+reduce_identity(::Val{:max}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentity(-Inf, dtype, T)
+reduce_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(0.0, dtype, T)  # For integers, use 0 as identity (max(0, x) = x)
+
+# Multiplication identity: 1 * x = x
+reduce_identity(::Val{:mul}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentity(1.0, dtype, T)
+reduce_identity(::Val{:mul}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(1.0, dtype, T)
+
+# Minimum identity: min(+Inf, x) = x
+reduce_identity(::Val{:min}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentity(+Inf, dtype, T)
+reduce_identity(::Val{:min}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(typemax(Int64), dtype, T)  # Use max int as +Inf proxy
+
+# AND identity: all bits set (x & -1 == x)
+reduce_identity(::Val{:and}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(0.0, dtype, T)  # Will be interpreted as -1 bits by backend
+
+# OR identity: 0 | x = x
+reduce_identity(::Val{:or}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(0.0, dtype, T)
+
+# XOR identity: 0 ⊕ x = x
+reduce_identity(::Val{:xor}, dtype, ::Type{T}) where T <: Integer =
+    FloatIdentity(0.0, dtype, T)
+
+#=============================================================================
+ Reduce Body Operations - dispatch on Val{fn} and elem_type
+=============================================================================#
+
 encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: AbstractFloat =
     encode_AddFOp!(cb, type, acc, elem)
 encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
