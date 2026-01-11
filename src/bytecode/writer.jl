@@ -234,18 +234,18 @@ end
 =============================================================================#
 
 """
-    ReduceIdentity
+    OperationIdentity
 
-Abstract type for reduce identity attributes.
+Abstract type for binary operation identity attributes (reduce, scan, etc.).
 """
-abstract type ReduceIdentity end
+abstract type OperationIdentity end
 
 """
     FloatIdentity(value, type_id, dtype)
 
-Float identity value for reduce operations.
+Float identity value for binary operations.
 """
-struct FloatIdentity <: ReduceIdentity
+struct FloatIdentity <: OperationIdentity
     value::Float64
     type_id::TypeId
     dtype::Type  # Float16, Float32, Float64, etc.
@@ -254,9 +254,9 @@ end
 """
     IntegerIdentity(value, type_id, dtype, signed)
 
-Integer identity value for reduce operations (add, max, mul, min, and, or, xor).
+Integer identity value for binary operations.
 """
-struct IntegerIdentity <: ReduceIdentity
+struct IntegerIdentity <: OperationIdentity
     value::Int64  # Store as signed Int64, will be reinterpreted as unsigned
     type_id::TypeId
     dtype::Type   # Int8, Int16, Int32, Int64, UInt8, etc.
@@ -335,10 +335,10 @@ end
 """
     encode_identity_array!(cb, identities)
 
-Encode an array of reduce identity attributes.
+Encode an array of binary operation identity attributes.
 Dispatches on identity type to encode correctly.
 """
-function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:ReduceIdentity})
+function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:OperationIdentity})
     encode_varint!(cb.buf, length(identities))
     for identity in identities
         encode_identity!(cb, identity)
