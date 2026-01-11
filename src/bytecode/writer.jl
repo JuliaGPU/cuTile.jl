@@ -252,11 +252,11 @@ struct FloatIdentity <: ReduceIdentity
 end
 
 """
-    IntIdentity(value, type_id, dtype)
+    IntegerIdentity(value, type_id, dtype)
 
 Integer identity value for reduce operations (and, or, xor).
 """
-struct IntIdentity <: ReduceIdentity
+struct IntegerIdentity <: ReduceIdentity
     value::Int64  # Store as signed Int64, will be reinterpreted as unsigned
     type_id::TypeId
     dtype::Type  # Int8, Int16, Int32, Int64, UInt8, etc.
@@ -279,12 +279,12 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
 end
 
 """
-    encode_tagged_int!(cb, identity::IntIdentity)
+    encode_tagged_int!(cb, identity::IntegerIdentity)
 
 Encode a tagged integer attribute for reduce identity.
 Format: tag(Int=0x01) + typeid + ap_int(value)
 """
-function encode_tagged_int!(cb::CodeBuilder, identity::IntIdentity)
+function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentity)
     # Tag for Int attribute
     push!(cb.buf, 0x01)
     # Type ID
@@ -346,7 +346,7 @@ end
 Encode a single identity attribute, dispatching on type.
 """
 encode_identity!(cb::CodeBuilder, identity::FloatIdentity) = encode_tagged_float!(cb, identity)
-encode_identity!(cb::CodeBuilder, identity::IntIdentity) = encode_tagged_int!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::IntegerIdentity) = encode_tagged_int!(cb, identity)
 
 """
     BytecodeWriter
