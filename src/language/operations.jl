@@ -499,16 +499,18 @@ public reduce_sum, reduce_max, reduce_mul, reduce_min, reduce_and, reduce_or, re
 Sum reduction along the specified axis (1-indexed).
 Returns a tile with the specified dimension removed.
 
+Supports any numeric type (Float16, Float32, Float64, and integer types).
+
 # Example
 ```julia
 # For a (128, 64) tile, reducing along axis 2:
 sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
 ```
 """
-@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T, S}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
-@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
 
@@ -516,16 +518,17 @@ end
     reduce_max(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
 
 Maximum reduction along the specified axis (1-indexed).
+Supports any numeric type (Float16, Float32, Float64, and integer types).
 
 # Example
 ```julia
 maxes = ct.reduce_max(tile, 2)  # Max along axis 2
 ```
 """
-@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T, S}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
-@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
 
