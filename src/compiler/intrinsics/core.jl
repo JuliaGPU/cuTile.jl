@@ -512,7 +512,7 @@ end
     Sum reduction along 0-indexed axis.
     Compiled to cuda_tile.reduce with ADD.
     """
-    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
         reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
         Tile{T, reduced_shape}()
     end
@@ -523,7 +523,65 @@ end
     Maximum reduction along 0-indexed axis.
     Compiled to cuda_tile.reduce with MAX.
     """
-    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_mul(tile, axis_val)
+
+    Product reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with MUL.
+    """
+    @noinline function reduce_mul(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_min(tile, axis_val)
+
+    Minimum reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with MIN.
+    """
+    @noinline function reduce_min(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_and(tile, axis_val)
+
+    Bitwise AND reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with AND.
+    Integer types only.
+    """
+    @noinline function reduce_and(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_or(tile, axis_val)
+
+    Bitwise OR reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with OR.
+    Integer types only.
+    """
+    @noinline function reduce_or(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_xor(tile, axis_val)
+
+    Bitwise XOR reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with XOR.
+    Integer types only.
+    """
+    @noinline function reduce_xor(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
         reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
         Tile{T, reduced_shape}()
     end
@@ -534,6 +592,22 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_max), args)
     emit_reduce!(ctx, args, :max)
 end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_mul), args)
+    emit_reduce!(ctx, args, :mul)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_min), args)
+    emit_reduce!(ctx, args, :min)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_and), args)
+    emit_reduce!(ctx, args, :and)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_or), args)
+    emit_reduce!(ctx, args, :or)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_xor), args)
+    emit_reduce!(ctx, args, :xor)
+end
+
 function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     cb = ctx.cb
     tt = ctx.tt
@@ -570,20 +644,40 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
         acc, elem = block_args[1], block_args[2]
 
-        if reduce_fn == :add
-            res = encode_AddFOp!(cb, scalar_tile_type, acc, elem)
-        elseif reduce_fn == :max
-            res = encode_MaxFOp!(cb, scalar_tile_type, acc, elem)
-        else
-            error("Unsupported reduction function: $reduce_fn")
-        end
-
+        res = encode_reduce_body(cb, scalar_tile_type, acc, elem, Val(reduce_fn), elem_type)
         encode_YieldOp!(cb, [res])
     end
 
     CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
+# Dispatch helpers for reduce body operations - dispatch on Val{fn} and elem_type
+encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: AbstractFloat =
+    encode_AddFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
+    encode_MaxFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: AbstractFloat =
+    encode_MulFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: AbstractFloat =
+    encode_MinFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: Integer =
+    encode_AddIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
+    encode_MaxIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: Integer =
+    encode_MulIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: Integer =
+    encode_MinIOp!(cb, type, acc, elem)
+
+
+# less likely commutative/associative ops can be reduced too for whatever reason.
+# eg: and, or, xor.
+encode_reduce_body(cb, type, acc, elem, ::Val{:and}, ::Type{T}) where T <: Integer =
+    encode_AndIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:or}, ::Type{T}) where T <: Integer =
+    encode_OrIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:xor}, ::Type{T}) where T <: Integer =
+    encode_XOrIOp!(cb, type, acc, elem)
 
 # cuda_tile.reshape
 @eval Intrinsics begin
