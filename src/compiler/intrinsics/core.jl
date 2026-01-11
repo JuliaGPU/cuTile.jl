@@ -733,11 +733,11 @@ encode_reduce_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: Abstr
 encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: Integer =
     encode_AddIOp!(cb, type, acc, elem)
 encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
-    encode_MaxIOp!(cb, type, acc, elem)
+    encode_MaxIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
 encode_reduce_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: Integer =
     encode_MulIOp!(cb, type, acc, elem)
 encode_reduce_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: Integer =
-    encode_MinIOp!(cb, type, acc, elem)
+    encode_MinIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
 
 
 # less likely commutative/associative ops can be reduced too for whatever reason.
