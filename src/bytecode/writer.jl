@@ -252,6 +252,17 @@ struct FloatIdentity <: ReduceIdentity
 end
 
 """
+    IntIdentity(value, type_id, dtype)
+
+Integer identity value for reduce operations (and, or, xor).
+"""
+struct IntIdentity <: ReduceIdentity
+    value::Int64  # Store as signed Int64, will be reinterpreted as unsigned
+    type_id::TypeId
+    dtype::Type  # Int8, Int16, Int32, Int64, UInt8, etc.
+end
+
+"""
     encode_tagged_float!(cb, identity::FloatIdentity)
 
 Encode a tagged float attribute for reduce identity.
@@ -265,6 +276,21 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
     # Value as bits (using signed varint encoding for values <= 64 bits)
     bits = float_to_bits(identity.value, identity.dtype)
     encode_signed_varint!(cb.buf, bits)
+end
+
+"""
+    encode_tagged_int!(cb, identity::IntIdentity)
+
+Encode a tagged integer attribute for reduce identity.
+Format: tag(Int=0x01) + typeid + ap_int(value)
+"""
+function encode_tagged_int!(cb::CodeBuilder, identity::IntIdentity)
+    # Tag for Int attribute
+    push!(cb.buf, 0x01)
+    # Type ID
+    encode_typeid!(cb.buf, identity.type_id)
+    # Value as signed varint
+    encode_signed_varint!(cb.buf, identity.value)
 end
 
 """
@@ -305,13 +331,22 @@ end
     encode_identity_array!(cb, identities)
 
 Encode an array of reduce identity attributes.
+Dispatches on identity type to encode correctly.
 """
 function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:ReduceIdentity})
     encode_varint!(cb.buf, length(identities))
     for identity in identities
-        encode_tagged_float!(cb, identity)
+        encode_identity!(cb, identity)
     end
 end
+
+"""
+    encode_identity!(cb, identity)
+
+Encode a single identity attribute, dispatching on type.
+"""
+encode_identity!(cb::CodeBuilder, identity::FloatIdentity) = encode_tagged_float!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::IntIdentity) = encode_tagged_int!(cb, identity)
 
 """
     BytecodeWriter
