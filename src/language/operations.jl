@@ -507,10 +507,10 @@ Supports any numeric type (Float16, Float32, Float64, and integer types).
 sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
 ```
 """
-@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T, S}
+@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
-@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
 
@@ -525,10 +525,10 @@ Supports any numeric type (Float16, Float32, Float64, and integer types).
 maxes = ct.reduce_max(tile, 2)  # Max along axis 2
 ```
 """
-@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T, S}
+@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
-@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
 
@@ -544,10 +544,10 @@ Returns a tile with the specified dimension removed.
 products = ct.reduce_mul(tile, 2)  # Returns (128,) tile
 ```
 """
-@inline function reduce_mul(tile::Tile{T, S}, axis::Integer) where {T, S}
+@inline function reduce_mul(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_mul(tile, Val(axis - 1))
 end
-@inline function reduce_mul(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+@inline function reduce_mul(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_mul(tile, Val(axis - 1))
 end
 
@@ -561,10 +561,10 @@ Minimum reduction along the specified axis (1-indexed).
 mins = ct.reduce_min(tile, 2)  # Min along axis 2
 ```
 """
-@inline function reduce_min(tile::Tile{T, S}, axis::Integer) where {T, S}
+@inline function reduce_min(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_min(tile, Val(axis - 1))
 end
-@inline function reduce_min(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+@inline function reduce_min(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_min(tile, Val(axis - 1))
 end
 
