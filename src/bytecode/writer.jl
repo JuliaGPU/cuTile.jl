@@ -327,14 +327,8 @@ end
 Encode a signed integer as a variable-length integer.
 Uses zigzag encoding for signed values.
 """
-function encode_signed_varint!(buf::Vector{UInt8}, value::Int64)
-    # Zigzag encoding: (n << 1) ⊻ (n >> 63)
-    # This maps negative values to positive odd numbers
-    encoded = (UInt64(value) << 1) ⊻ (UInt64(value) >> 63)
-    encode_varint!(buf, encoded)
-end
 
-function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt16, UInt32, UInt64})
+function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt16, UInt32, UInt64, Int64})
     # For unsigned types, just encode as-is
     encode_varint!(buf, UInt64(value))
 end
