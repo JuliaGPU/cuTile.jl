@@ -511,6 +511,24 @@ end
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
 
+# Scan (Prefix Sum) Operations
+
+@inline function scan(tile::Tile{T, S}, ::Val{axis},
+                      fn::Symbol=:add,
+                      reverse::Bool=false) where {T, S, axis}
+    Intrinsics.scan(tile, Val(axis), fn, reverse)
+end
+
+@inline function cumsum(tile::Tile{T, S}, ::Val{axis},
+                        reverse::Bool=false) where {T, S, axis}
+    scan(tile, Val(axis), :add, reverse)
+end
+
+@inline function cumprod(tile::Tile{T, S}, ::Val{axis},
+                         reverse::Bool=false) where {T, S, axis}
+    scan(tile, Val(axis), :mul, reverse)
+end
+
 #=============================================================================
  Matmul
 =============================================================================#

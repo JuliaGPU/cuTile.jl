@@ -1331,6 +1331,78 @@ function encode_ReduceOp!(body::Function, cb::CodeBuilder,
     end
 end
 
+
+#=============================================================================
+ Scan operations
+=============================================================================#
+
+"""
+    encode_ScanOp!(body::Function, cb::CodeBuilder,
+                   result_types::Vector{TypeId},
+                   operands::Vector{Value},
+                   dim::Int,
+                   reverse::Bool,
+                   identities::Vector{<:ScanIdentity},
+                   body_scalar_types::Vector{TypeId})
+
+Encode a ScanOp (parallel prefix sum) operation.
+
+# Arguments
+- body: Function that takes block args and yields result(s)
+- cb: CodeBuilder for the bytecode
+- result_types: Output tile types
+- operands: Input tiles to scan
+- dim: Dimension to scan along (0-indexed)
+- reverse: Whether to scan in reverse order
+- identities: Identity values for each operand
+- body_scalar_types: 0D tile types for body arguments
+"""
+function encode_ScanOp!(body::Function, cb::CodeBuilder,
+                        result_types::Vector{TypeId},
+                        operands::Vector{Value},
+                        dim::Int,
+                        reverse::Bool,
+                        identities::Vector{<:ScanIdentity},
+                        body_scalar_types::Vector{TypeId})
+    encode_varint!(cb.buf, Opcode.ScanOp)
+
+    # Variadic result types
+    encode_typeid_seq!(cb.buf, result_types)
+
+    # Attributes: dim (int), reverse (bool), identities (array)
+    encode_opattr_int!(cb, dim)
+    encode_opattr_bool!(cb, reverse)
+    encode_scan_identity_array!(cb, identities)
+
+    # Variadic operands
+    encode_varint!(cb.buf, length(operands))
+    encode_operands!(cb.buf, operands)
+
+    # Number of regions
+    push!(cb.debug_attrs, cb.cur_debug_attr)
+    cb.num_ops += 1
+    encode_varint!(cb.buf, 1)  # 1 region: body
+
+    # Body region - block args are pairs of (acc, elem) for each operand
+    # The body operates on 0D tiles (scalars)
+    body_arg_types = TypeId[]
+    for scalar_type in body_scalar_types
+        push!(body_arg_types, scalar_type)  # accumulator
+        push!(body_arg_types, scalar_type)  # element
+    end
+    with_region(body, cb, body_arg_types)
+
+    # Create result values
+    num_results = length(result_types)
+    if num_results == 0
+        return Value[]
+    else
+        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
+        cb.next_value_id += num_results
+        return vals
+    end
+end
+
 #=============================================================================
  Comparison and selection operations
 =============================================================================#
