@@ -5,9 +5,9 @@ using Test
 
 @testset "reduce operations" begin
 
-#======================================================================
-CPU reference implementations
-======================================================================
+#======================================================================#
+# CPU reference implementations
+# =====================================================================#
 
 cpu_reduce_add(a::AbstractArray, dims::Integer) = sum(a, dims=dims)
 cpu_reduce_mul(a::AbstractArray, dims::Integer) = prod(a, dims=dims)
@@ -18,9 +18,9 @@ cpu_reduce_and(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x 
 cpu_reduce_or(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x | y, a, dims=dims)
 cpu_reduce_xor(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x ⊻ y, a, dims=dims)
 
-#======================================================================
-Float32 operations
-======================================================================
+#======================================================================#
+# Float32 operations
+#======================================================================#
 
 @testset "Float32 reduce_add" begin
     function reduce_add_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
@@ -110,9 +110,9 @@ end
     end
 end
 
-#======================================================================
-Float64 operations
-======================================================================
+#======================================================================#
+# Float64 operations
+#======================================================================#
 
 @testset "Float64 reduce_add" begin
     function reduce_add_f64_kernel(a::ct.TileArray{Float64,2}, b::ct.TileArray{Float64,1})
@@ -202,9 +202,9 @@ end
     end
 end
 
-#======================================================================
-Int32 operations
-======================================================================
+#======================================================================#
+# Int32 operations
+#======================================================================#
 
 @testset "Int32 reduce_add" begin
     function reduce_add_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
@@ -360,9 +360,9 @@ end
     end
 end
 
-#======================================================================
-UInt32 operations - tests AND identity encoding fix
-======================================================================
+#======================================================================#
+# UInt32 operations - tests AND identity encoding fix
+#======================================================================#
 
 @testset "UInt32 reduce_add" begin
     function reduce_add_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
@@ -518,9 +518,9 @@ end
     end
 end
 
-#======================================================================
-Int8 operations - smaller integer type for encoding tests
-======================================================================
+#======================================================================#
+# Int8 operations - smaller integer type for encoding tests
+#======================================================================#
 
 @testset "Int8 reduce_add" begin
     function reduce_add_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
@@ -654,9 +654,9 @@ end
     end
 end
 
-#======================================================================
-Axis 0 reductions - verify both axes work
-======================================================================
+#======================================================================#
+# Axis 0 reductions - verify both axes work
+#======================================================================#
 
 @testset "axis 0 reduce_sum Float32" begin
     function reduce_sum_axis0_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
