@@ -10,7 +10,7 @@
  Load/Store
 =============================================================================#
 
-public bid, num_blocks, num_tiles, load, store, gather, scatter
+public bid, num_blocks, num_tiles, axis, load, store, gather, scatter
 
 """
 Padding mode for load operations.
@@ -58,6 +58,24 @@ Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
     pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
 end
+
+"""
+    axis(i::Integer) -> Val{i-1}
+
+Return a compile-time axis selector for tile operations.
+Axis indices are 1-based (axis(1) = first dimension, axis(2) = second, etc.).
+Internally converts to 0-based for Tile IR.
+
+Use this instead of raw `Val` for self-documenting code.
+
+# Examples
+```julia
+ct.cumsum(tile, ct.axis(1))   # Scan along first axis
+ct.cumsum(tile, ct.axis(2))   # Scan along second axis
+ct.scan(tile, ct.axis(1), :add)
+```
+"""
+@inline axis(i::Integer) = Val(i - One())
 
 """
     load(arr::TileArray, index, shape; padding_mode=PaddingMode.Undetermined) -> Tile
@@ -473,7 +491,7 @@ result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
  Reduction
 =============================================================================#
 
-public reduce_sum, reduce_max
+public reduce_sum, reduce_max, reduce_mul, reduce_min, reduce_and, reduce_or, reduce_xor
 
 """
     reduce_sum(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
@@ -481,16 +499,18 @@ public reduce_sum, reduce_max
 Sum reduction along the specified axis (1-indexed).
 Returns a tile with the specified dimension removed.
 
+Supports any numeric type (Float16, Float32, Float64, and integer types).
+
 # Example
 ```julia
 # For a (128, 64) tile, reducing along axis 2:
 sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
 ```
 """
-@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
-@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
 
@@ -498,17 +518,111 @@ end
     reduce_max(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
 
 Maximum reduction along the specified axis (1-indexed).
+Supports any numeric type (Float16, Float32, Float64, and integer types).
 
 # Example
 ```julia
 maxes = ct.reduce_max(tile, 2)  # Max along axis 2
 ```
 """
-@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
-@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_max(tile, Val(axis - 1))
+end
+
+"""
+    reduce_mul(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Product reduction along the specified axis (1-indexed).
+Returns a tile with the specified dimension removed.
+
+# Example
+```julia
+# For a (128, 64) tile, reducing along axis 2:
+products = ct.reduce_mul(tile, 2)  # Returns (128,) tile
+```
+"""
+@inline function reduce_mul(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
+    Intrinsics.reduce_mul(tile, Val(axis - 1))
+end
+@inline function reduce_mul(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
+    Intrinsics.reduce_mul(tile, Val(axis - 1))
+end
+
+"""
+    reduce_min(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Minimum reduction along the specified axis (1-indexed).
+
+# Example
+```julia
+mins = ct.reduce_min(tile, 2)  # Min along axis 2
+```
+"""
+@inline function reduce_min(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
+    Intrinsics.reduce_min(tile, Val(axis - 1))
+end
+@inline function reduce_min(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
+    Intrinsics.reduce_min(tile, Val(axis - 1))
+end
+
+"""
+    reduce_and(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Bitwise AND reduction along the specified axis (1-indexed).
+Integer types only.
+
+# Example
+```julia
+# For an Int32 tile, reducing along axis 2:
+result = ct.reduce_and(tile, 2)  # Returns (128,) tile of Int32
+```
+"""
+@inline function reduce_and(tile::Tile{T, S}, axis::Integer) where {T <: Integer, S}
+    Intrinsics.reduce_and(tile, Val(axis - 1))
+end
+@inline function reduce_and(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+    Intrinsics.reduce_and(tile, Val(axis - 1))
+end
+
+"""
+    reduce_or(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Bitwise OR reduction along the specified axis (1-indexed).
+Integer types only.
+
+# Example
+```julia
+# For an Int32 tile, reducing along axis 2:
+result = ct.reduce_or(tile, 2)  # Returns (128,) tile of Int32
+```
+"""
+@inline function reduce_or(tile::Tile{T, S}, axis::Integer) where {T <: Integer, S}
+    Intrinsics.reduce_or(tile, Val(axis - 1))
+end
+@inline function reduce_or(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+    Intrinsics.reduce_or(tile, Val(axis - 1))
+end
+
+"""
+    reduce_xor(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Bitwise XOR reduction along the specified axis (1-indexed).
+Integer types only.
+
+# Example
+```julia
+# For an Int32 tile, reducing along axis 2:
+result = ct.reduce_xor(tile, 2)  # Returns (128,) tile of Int32
+```
+"""
+@inline function reduce_xor(tile::Tile{T, S}, axis::Integer) where {T <: Integer, S}
+    Intrinsics.reduce_xor(tile, Val(axis - 1))
+end
+@inline function reduce_xor(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+    Intrinsics.reduce_xor(tile, Val(axis - 1))
 end
 
 #=============================================================================

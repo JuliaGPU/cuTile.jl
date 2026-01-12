@@ -234,30 +234,42 @@ end
 =============================================================================#
 
 """
-    ReduceIdentity
+    IdentityOp
 
-Abstract type for reduce identity attributes.
+Abstract type for binary operation identity attributes (reduce, scan, etc.).
 """
-abstract type ReduceIdentity end
+abstract type IdentityOp end
 
 """
-    FloatIdentity(value, type_id, dtype)
+    FloatIdentityOp(value, type_id, dtype)
 
-Float identity value for reduce operations.
+Float identity value for binary operations.
 """
-struct FloatIdentity <: ReduceIdentity
+struct FloatIdentityOp <: IdentityOp
     value::Float64
     type_id::TypeId
     dtype::Type  # Float16, Float32, Float64, etc.
 end
 
 """
-    encode_tagged_float!(cb, identity::FloatIdentity)
+    IntegerIdentityOp(value, type_id, dtype, signed)
+
+Integer identity value for binary operations.
+"""
+struct IntegerIdentityOp <: IdentityOp
+    value::Int64  # Store as signed Int64, will be reinterpreted as unsigned
+    type_id::TypeId
+    dtype::Type   # Int8, Int16, Int32, Int64, UInt8, etc.
+    signed::Bool  # true for signed, false for unsigned
+end
+
+"""
+    encode_tagged_float!(cb, identity::FloatIdentityOp)
 
 Encode a tagged float attribute for reduce identity.
 Format: tag(Float=0x02) + typeid + ap_int(value_bits)
 """
-function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
+function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityOp)
     # Tag for Float attribute
     push!(cb.buf, 0x02)
     # Type ID
@@ -265,6 +277,25 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
     # Value as bits (using signed varint encoding for values <= 64 bits)
     bits = float_to_bits(identity.value, identity.dtype)
     encode_signed_varint!(cb.buf, bits)
+end
+
+"""
+    encode_tagged_int!(cb, identity::IntegerIdentityOp)
+
+Encode a tagged integer identity attribute.
+Format: tag(Int=0x01) + typeid + ap_int(value)
+"""
+function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityOp)
+    # Tag for Int attribute
+    push!(cb.buf, 0x01)
+    # Type ID
+    encode_typeid!(cb.buf, identity.type_id)
+    # Value: signed uses zigzag varint, unsigned uses plain varint
+    if identity.signed
+        encode_signed_varint!(cb.buf, identity.value)
+    else
+        encode_varint!(cb.buf, UInt64(identity.value))
+    end
 end
 
 """
@@ -296,6 +327,7 @@ end
 Encode a signed integer as a variable-length integer.
 Uses zigzag encoding for signed values.
 """
+
 function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt16, UInt32, UInt64, Int64})
     # For float bits, encode as unsigned varint
     encode_varint!(buf, UInt64(value))
@@ -304,14 +336,23 @@ end
 """
     encode_identity_array!(cb, identities)
 
-Encode an array of reduce identity attributes.
+Encode an array of binary operation identity attributes.
+Dispatches on identity type to encode correctly.
 """
-function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:ReduceIdentity})
+function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:IdentityOp})
     encode_varint!(cb.buf, length(identities))
     for identity in identities
-        encode_tagged_float!(cb, identity)
+        encode_identity!(cb, identity)
     end
 end
+
+"""
+    encode_identity!(cb, identity)
+
+Encode a single identity attribute, dispatching on type.
+"""
+encode_identity!(cb::CodeBuilder, identity::FloatIdentityOp) = encode_tagged_float!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::IntegerIdentityOp) = encode_tagged_int!(cb, identity)
 
 """
     BytecodeWriter

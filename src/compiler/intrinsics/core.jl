@@ -525,7 +525,7 @@ end
     Sum reduction along 0-indexed axis.
     Compiled to cuda_tile.reduce with ADD.
     """
-    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
         reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
         Tile{T, reduced_shape}()
     end
@@ -536,7 +536,65 @@ end
     Maximum reduction along 0-indexed axis.
     Compiled to cuda_tile.reduce with MAX.
     """
-    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_mul(tile, axis_val)
+
+    Product reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with MUL.
+    """
+    @noinline function reduce_mul(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_min(tile, axis_val)
+
+    Minimum reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with MIN.
+    """
+    @noinline function reduce_min(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_and(tile, axis_val)
+
+    Bitwise AND reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with AND.
+    Integer types only.
+    """
+    @noinline function reduce_and(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_or(tile, axis_val)
+
+    Bitwise OR reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with OR.
+    Integer types only.
+    """
+    @noinline function reduce_or(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
+        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        Tile{T, reduced_shape}()
+    end
+
+    """
+        reduce_xor(tile, axis_val)
+
+    Bitwise XOR reduction along 0-indexed axis.
+    Compiled to cuda_tile.reduce with XOR.
+    Integer types only.
+    """
+    @noinline function reduce_xor(tile::Tile{T, S}, ::Val{axis}) where {T <: Integer, S, axis}
         reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
         Tile{T, reduced_shape}()
     end
@@ -547,6 +605,22 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_max), args)
     emit_reduce!(ctx, args, :max)
 end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_mul), args)
+    emit_reduce!(ctx, args, :mul)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_min), args)
+    emit_reduce!(ctx, args, :min)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_and), args)
+    emit_reduce!(ctx, args, :and)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_or), args)
+    emit_reduce!(ctx, args, :or)
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_xor), args)
+    emit_reduce!(ctx, args, :xor)
+end
+
 function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     cb = ctx.cb
     tt = ctx.tt
@@ -571,32 +645,109 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
 
     # Output tile type
     output_tile_type = tile_type!(tt, dtype, output_shape)
-
     # Scalar type for reduction body (0D tile)
     scalar_tile_type = tile_type!(tt, dtype, Int[])
 
-    # Create identity value - use simple dtype (f32), not tile type
-    identity_val = reduce_fn == :add ? -0.0 : (reduce_fn == :max ? -Inf : 0.0)
-    identity = FloatIdentity(identity_val, dtype, elem_type)
+    # Create identity value via dispatch on reduction function and element type
+    identity = operation_identity(Val(reduce_fn), dtype, elem_type)
 
     # Emit ReduceOp
     results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
         acc, elem = block_args[1], block_args[2]
 
-        if reduce_fn == :add
-            res = encode_AddFOp!(cb, scalar_tile_type, acc, elem)
-        elseif reduce_fn == :max
-            res = encode_MaxFOp!(cb, scalar_tile_type, acc, elem)
-        else
-            error("Unsupported reduction function: $reduce_fn")
-        end
-
+        res = encode_reduce_body(cb, scalar_tile_type, acc, elem, Val(reduce_fn), elem_type)
         encode_YieldOp!(cb, [res])
     end
 
     CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
+#=============================================================================
+ Reduce Identity Values via Dispatch
+=============================================================================#
+
+"""
+    is_signed(::Type{T}) -> Bool
+
+Return true if type T is signed, false for unsigned types.
+"""
+is_signed(::Type{T}) where T <: Integer = T <: Integer && !(T <: Unsigned)
+is_signed(::Type{T}) where T <: AbstractFloat = false
+
+"""
+    operation_identity(fn, dtype, elem_type) -> IdentityOp
+
+Return the identity value for a binary operation (reduce, scan, etc.).
+Identity must satisfy: identity ⊕ x = x for the operation.
+"""
+# Addition identity: 0 + x = x
+operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityOp(zero(T), dtype, T)
+operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(zero(T), dtype, T, is_signed(T))
+
+# Maximum identity: max(typemin(T), x) = x
+operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityOp(typemin(T), dtype, T)
+operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(typemin(T), dtype, T, is_signed(T))
+
+# Multiplication identity: 1 * x = x
+operation_identity(::Val{:mul}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityOp(one(T), dtype, T)
+operation_identity(::Val{:mul}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(one(T), dtype, T, is_signed(T))
+
+# Minimum identity: min(typemax(T), x) = x
+operation_identity(::Val{:min}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityOp(typemax(T), dtype, T)
+operation_identity(::Val{:min}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(typemax(T), dtype, T, is_signed(T))
+
+# AND identity: all bits set (x & identity == x)
+# For signed: -one(T) has all bits set in two's complement
+# For unsigned: typemax(T) has all bits set
+operation_identity(::Val{:and}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(is_signed(T) ? -one(T) : typemax(T), dtype, T, is_signed(T))
+
+# OR identity: 0 | x = x
+operation_identity(::Val{:or}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(zero(T), dtype, T, is_signed(T))
+
+# XOR identity: 0 ⊕ x = x
+operation_identity(::Val{:xor}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(zero(T), dtype, T, is_signed(T))
+
+#=============================================================================
+ Reduce Body Operations - dispatch on Val{fn} and elem_type
+=============================================================================#
+
+encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: AbstractFloat =
+    encode_AddFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
+    encode_MaxFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: AbstractFloat =
+    encode_MulFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: AbstractFloat =
+    encode_MinFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: Integer =
+    encode_AddIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
+    encode_MaxIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
+encode_reduce_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: Integer =
+    encode_MulIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: Integer =
+    encode_MinIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
+
+
+# less likely commutative/associative ops can be reduced too for whatever reason.
+# eg: and, or, xor.
+encode_reduce_body(cb, type, acc, elem, ::Val{:and}, ::Type{T}) where T <: Integer =
+    encode_AndIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:or}, ::Type{T}) where T <: Integer =
+    encode_OrIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:xor}, ::Type{T}) where T <: Integer =
+    encode_XOrIOp!(cb, type, acc, elem)
 
 # cuda_tile.reshape
 @eval Intrinsics begin

@@ -159,7 +159,12 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 | Operation | Description |
 |-----------|-------------|
 | `reduce_sum(tile, axis)` | Sum along axis |
+| `reduce_mul(tile, axis)` | Product along axis |
 | `reduce_max(tile, axis)` | Maximum along axis |
+| `reduce_min(tile, axis)` | Minimum along axis |
+| `reduce_and(tile, axis)` | Bitwise AND along axis (integer) |
+| `reduce_or(tile, axis)` | Bitwise OR along axis (integer) |
+| `reduce_xor(tile, axis)` | Bitwise XOR along axis (integer) |
 
 ### Math
 | Operation | Description |
@@ -273,6 +278,11 @@ ct.permute(tile, (3, 1, 2))
 ```
 
 This applies to `bid`, `num_blocks`, `permute`, `reshape`, dimension arguments, etc.
+
+### axis convenience
+
+| `axis(i)` | Convert 1-based axis to 0-based (helper) |
+
 
 ### `Val`-like constants
 
