@@ -329,7 +329,7 @@ Uses zigzag encoding for signed values.
 """
 
 function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt16, UInt32, UInt64, Int64})
-    # For unsigned types, just encode as-is
+    # For float bits, encode as unsigned varint
     encode_varint!(buf, UInt64(value))
 end
 
