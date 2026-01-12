@@ -913,6 +913,14 @@ encode_scan_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: Abstrac
     encode_MulFOp!(cb, type, acc, elem)
 encode_scan_body(cb, type, acc, elem, ::Val{:mul}, ::Type{T}) where T <: Integer =
     encode_MulIOp!(cb, type, acc, elem)
+encode_scan_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: AbstractFloat =
+    encode_MinFOp!(cb, type, acc, elem)
+encode_scan_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
+    encode_MaxFOp!(cb, type, acc, elem)
+encode_scan_body(cb, type, acc, elem, ::Val{:min}, ::Type{T}) where T <: Integer =
+    encode_MinIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
+encode_scan_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
+    encode_MaxIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
 
 
 # cuda_tile.select
