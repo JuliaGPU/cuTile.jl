@@ -217,7 +217,7 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
-    linear_idx = idx0_i32 * stride0 + idx1_i32 * stride1
+    linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
 
     # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
@@ -299,7 +299,7 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
-    linear_idx = idx0_i32 * stride0 + idx1_i32 * stride1
+    linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
 
     # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
