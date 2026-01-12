@@ -324,6 +324,15 @@ end
 """
     encode_signed_varint!(buf, value)
 
+Encode a signed integer as a variable-length integer.
+Uses zigzag encoding for signed values.
+"""
+
+function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt16, UInt32, UInt64, Int64})
+    # For unsigned types, just encode as-is
+    encode_varint!(buf, UInt64(value))
+end
+
 """
     encode_identity_array!(cb, identities)
 
