@@ -57,37 +57,37 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     return nothing
 end
 
+# Run batch matmul - for benchmarking or programmatic use
+function run_batchmatmul(; M::Int, K::Int, N::Int, Batch::Int, tm::Int, tn::Int, tk::Int,
+                          T::DataType=Float32,
+                          A::Union{CuArray,Nothing}=nothing,
+                          B::Union{CuArray,Nothing}=nothing,
+                          C::Union{CuArray,Nothing}=nothing,
+                          validate::Bool=false)
+    A = something(A, CUDA.rand(T, M, K, Batch))
+    B = something(B, CUDA.rand(T, K, N, Batch))
+    C = something(C, CUDA.zeros(T, M, N, Batch))
+    grid = (cld(M, tm), cld(N, tn), Batch)
+    ct.launch(batch_matmul_kernel, grid, A, B, C,
+              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+    if validate
+        A_cpu = Array(A)
+        B_cpu = Array(B)
+        expected = similar(A_cpu, M, N, Batch)
+        for b in 1:Batch
+            expected[:, :, b] = A_cpu[:, :, b] * B_cpu[:, :, b]
+        end
+        result = Array(C)
+        @assert isapprox(result, expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(result - expected)))"
+    end
+    return (; A, B, C)
+end
+
 function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) where T
     name = something(name, "batch_matmul ($M x $K x $Batch) @ ($K x $N x $Batch), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
-
-    # Batch-last ordering for optimal column-major access
-    A = CUDA.rand(T, M, K, Batch)
-    B = CUDA.rand(T, K, N, Batch)
-    C = CUDA.zeros(T, M, N, Batch)
-
-    # 3D grid: (M_tiles, N_tiles, Batch)
-    grid = (cld(M, tm), cld(N, tn), Batch)
-
-    # Launch kernel
-    ct.launch(batch_matmul_kernel, grid, A, B, C,
-              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-
-    # Verify result - compute batched matmul on CPU
-    A_cpu = Array(A)
-    B_cpu = Array(B)
-    expected = similar(A_cpu, M, N, Batch)
-    for b in 1:Batch
-        expected[:, :, b] = A_cpu[:, :, b] * B_cpu[:, :, b]
-    end
-    result = Array(C)
-
-    if isapprox(result, expected, rtol=1e-2, atol=1e-2)
-        println("  passed")
-    else
-        max_diff = maximum(abs.(result - expected))
-        println("  FAILED (max diff: $max_diff)")
-    end
+    run_batchmatmul(; M, K, N, Batch, tm, tn, tk, T, validate=true)
+    println("  passed")
 end
 
 function main()

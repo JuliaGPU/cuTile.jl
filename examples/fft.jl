@@ -304,5 +304,4 @@ function main()
     println("\n--- cuTile FFT example execution complete ---")
 end
 
-# Run validation
-main()
+isinteractive() || main()

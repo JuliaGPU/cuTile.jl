@@ -62,33 +62,33 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     return nothing
 end
 
-function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
-    name = something(name, "matmul ($M x $K) @ ($K x $N), $T, tiles=$tm x $tn x $tk")
-    println("--- $name ---")
-
-    A = CUDA.rand(T, M, K)
-    B = CUDA.rand(T, K, N)
-    C = CUDA.zeros(T, M, N)
-
-    # Use 1D grid - swizzle_2d converts to 2D indices
+# Run matmul - for benchmarking or programmatic use
+function run_matmul(; M::Int, N::Int, K::Int, tm::Int, tn::Int, tk::Int, T::DataType=Float32,
+                     A::Union{CuArray,Nothing}=nothing,
+                     B::Union{CuArray,Nothing}=nothing,
+                     C::Union{CuArray,Nothing}=nothing,
+                     validate::Bool=false)
+    A = something(A, CUDA.rand(T, M, K))
+    B = something(B, CUDA.rand(T, K, N))
+    C = something(C, CUDA.zeros(T, M, N))
     grid_m = cld(M, tm)
     grid_n = cld(N, tn)
     grid = grid_m * grid_n
-
-    # Launch kernel
     ct.launch(matmul_kernel, grid, A, B, C,
               ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-
-    # Verify result
-    expected = Array(A) * Array(B)
-    result = Array(C)
-
-    if isapprox(result, expected, rtol=1e-2, atol=1e-2)
-        println("  passed")
-    else
-        max_diff = maximum(abs.(result - expected))
-        println("  FAILED (max diff: $max_diff)")
+    if validate
+        expected = Array(A) * Array(B)
+        result = Array(C)
+        @assert isapprox(result, expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(result - expected)))"
     end
+    return (; A, B, C)
+end
+
+function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
+    name = something(name, "matmul ($M x $K) @ ($K x $N), $T, tiles=$tm x $tn x $tk")
+    println("--- $name ---")
+    run_matmul(; M, N, K, tm, tn, tk, T, validate=true)
+    println("  passed")
 end
 
 function main()

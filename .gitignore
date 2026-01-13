@@ -5,3 +5,4 @@ LocalPreferences.toml
 CLAUDE.md
 AGENTS.md
 TODO.md
+__pycache__

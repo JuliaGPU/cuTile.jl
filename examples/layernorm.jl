@@ -273,6 +273,47 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
 end
 
 #=============================================================================
+ Run Functions (for benchmarking or programmatic use)
+=============================================================================#
+
+# Run layernorm forward pass
+function run_layernorm_fwd(; M::Int, N::Int, TILE_N::Int, eps::Float32=1f-5,
+                            X::Union{CuArray,Nothing}=nothing,
+                            W::Union{CuArray,Nothing}=nothing,
+                            B::Union{CuArray,Nothing}=nothing,
+                            Y::Union{CuArray,Nothing}=nothing,
+                            Mean::Union{CuArray,Nothing}=nothing,
+                            Rstd::Union{CuArray,Nothing}=nothing,
+                            validate::Bool=false)
+    X = something(X, -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N))
+    W = something(W, CUDA.randn(Float32, N))
+    B = something(B, CUDA.randn(Float32, N))
+    Y = something(Y, CUDA.zeros(Float32, M, N))
+    Mean = something(Mean, CUDA.zeros(Float32, M))
+    Rstd = something(Rstd, CUDA.zeros(Float32, M))
+
+    ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
+              ct.Constant(eps), ct.Constant(TILE_N))
+
+    if validate
+        X_cpu = Array(X)
+        W_cpu = Array(W)
+        B_cpu = Array(B)
+        expected_mean = vec(sum(X_cpu, dims=2) ./ N)
+        expected_var = vec(sum((X_cpu .- expected_mean) .^ 2, dims=2) ./ N)
+        expected_rstd = 1.0f0 ./ sqrt.(expected_var .+ eps)
+        normalized = (X_cpu .- expected_mean) .* expected_rstd
+        expected_Y = normalized .* W_cpu' .+ B_cpu'
+
+        atol, rtol = 1f-2, 1f-2
+        @assert isapprox(expected_mean, Array(Mean); rtol, atol) "Mean mismatch"
+        @assert isapprox(expected_rstd, Array(Rstd); rtol, atol) "Rstd mismatch"
+        @assert isapprox(expected_Y, Array(Y); rtol, atol) "Y mismatch"
+    end
+    return (; X, W, B, Y, Mean, Rstd)
+end
+
+#=============================================================================
  Test / Validation
 =============================================================================#
 

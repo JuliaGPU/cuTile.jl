@@ -12,6 +12,14 @@ import cuda.tile as ct
 import math
 from math import ceil, log2
 
+# Import kernels from example files
+from vadd import vadd_cutile_kernel
+from transpose import transpose_cutile_kernel
+from matmul import matmul_cutile_kernel, swizzle_2d
+from layernorm import layernorm_cutile_kernel
+from batchmatmul import batchmatmul_cutile_kernel
+from fft import fft_kernel, fft_make_twiddles
+
 #=============================================================================
 # Configuration
 #=============================================================================
@@ -123,14 +131,7 @@ def print_table(title: str, results: list, extra_col=None):
 # Vector Addition
 #=============================================================================
 
-@ct.kernel
-def vadd_cutile_kernel(a, b, c, tile_size: ct.Constant[int]):
-    pid = ct.bid(0)
-    tile_a = ct.load(a, index=(pid,), shape=(tile_size,))
-    tile_b = ct.load(b, index=(pid,), shape=(tile_size,))
-    result = tile_a + tile_b
-    ct.store(c, index=(pid,), tile=result)
-
+# cuTile kernel: use vadd_cutile_kernel from vadd.py
 
 def benchmark_vadd():
     print("\nBenchmarking Vector Addition...")
@@ -195,14 +196,7 @@ def benchmark_vadd():
 # Matrix Transpose
 #=============================================================================
 
-@ct.kernel
-def transpose_cutile_kernel(input, output, tile_m: ct.Constant[int], tile_n: ct.Constant[int]):
-    pid_m = ct.bid(0)
-    pid_n = ct.bid(1)
-    tile = ct.load(input, index=(pid_m, pid_n), shape=(tile_m, tile_n))
-    tile_t = ct.transpose(tile)
-    ct.store(output, index=(pid_n, pid_m), tile=tile_t)
-
+# cuTile kernel: use transpose_cutile_kernel from transpose.py
 
 def benchmark_transpose():
     print("\nBenchmarking Matrix Transpose...")
@@ -268,41 +262,7 @@ def benchmark_transpose():
 # Matrix Multiplication
 #=============================================================================
 
-def swizzle_2d(M, N, tm, tn, GROUP_SIZE_M):
-    """Get the global IDs of the current CUDA block in a 1D grid."""
-    bid = ct.bid(0)
-    num_bid_m = ct.cdiv(M, tm)
-    num_bid_n = ct.cdiv(N, tn)
-    num_bid_in_group = GROUP_SIZE_M * num_bid_n
-    group_id = bid // num_bid_in_group
-    first_bid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_bid_m - first_bid_m, GROUP_SIZE_M)
-    bid_m = first_bid_m + (bid % group_size_m)
-    bid_n = (bid % num_bid_in_group) // group_size_m
-    return bid_m, bid_n
-
-
-@ct.kernel
-def matmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk: ct.Constant[int]):
-    GROUP_SIZE_M = 8
-    M = A.shape[0]
-    N = B.shape[1]
-    bidx, bidy = swizzle_2d(M, N, tm, tn, GROUP_SIZE_M)
-
-    num_tiles_k = ct.num_tiles(A, axis=1, shape=(tm, tk))
-    accumulator = ct.full((tm, tn), 0, dtype=ct.float32)
-
-    # Convert fp32 to tf32 for tensor cores
-    dtype = ct.tfloat32 if A.dtype == ct.float32 else A.dtype
-
-    for k in range(num_tiles_k):
-        a = ct.load(A, index=(bidx, k), shape=(tm, tk)).astype(dtype)
-        b = ct.load(B, index=(k, bidy), shape=(tk, tn)).astype(dtype)
-        accumulator = ct.mma(a, b, accumulator)
-
-    accumulator = ct.astype(accumulator, C.dtype)
-    ct.store(C, index=(bidx, bidy), tile=accumulator)
-
+# cuTile kernel: use matmul_cutile_kernel and swizzle_2d from matmul.py
 
 def benchmark_matmul():
     print("\nBenchmarking Matrix Multiplication...")
@@ -392,41 +352,7 @@ BATCHMATMUL_TM = 128
 BATCHMATMUL_TN = 256
 BATCHMATMUL_TK = 64
 
-
-@ct.kernel
-def layernorm_cutile_kernel(X, W, B, Y, Mean, Rstd, eps: ct.Constant[float], TILE_N: ct.Constant[int]):
-    bid_m = ct.bid(0)
-    num_tiles = ct.num_tiles(X, axis=1, shape=(1, TILE_N))
-    N = X.shape[1]
-
-    # Compute mean
-    mean = ct.full((1, TILE_N), 0, dtype=ct.float32)
-    for j in range(num_tiles):
-        tx = ct.load(X, index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.ZERO)
-        mean += tx
-    mean = ct.sum(mean, axis=1) / N
-    ct.store(Mean, index=(bid_m,), tile=mean)
-
-    # Compute variance
-    var = ct.full((1, TILE_N), 0, dtype=ct.float32)
-    for j in range(num_tiles):
-        tx = ct.load(X, index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.ZERO)
-        mask = (j * TILE_N + ct.arange(TILE_N, dtype=ct.int32)) < N
-        centered_tx = ct.where(mask, tx - mean, 0)
-        var += centered_tx ** 2
-    var = ct.sum(var, axis=1) / N
-    rstd = 1 / ct.sqrt(var + eps)
-    ct.store(Rstd, index=(bid_m,), tile=rstd)
-
-    # Normalize and apply affine transformation
-    for j in range(num_tiles):
-        tx = ct.load(X, index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.ZERO)
-        tw = ct.load(W, index=(j,), shape=(TILE_N,), padding_mode=ct.PaddingMode.ZERO)
-        tb = ct.load(B, index=(j,), shape=(TILE_N,), padding_mode=ct.PaddingMode.ZERO)
-        ty = (tx - mean) * rstd
-        ty = ty * tw + tb
-        ct.store(Y, index=(bid_m, j), tile=ty.astype(Y.dtype))
-
+# cuTile kernel: use layernorm_cutile_kernel from layernorm.py
 
 def benchmark_layernorm():
     print("\nBenchmarking Layer Normalization...")
@@ -498,33 +424,7 @@ def benchmark_layernorm():
 # Batch Matrix Multiplication
 #=============================================================================
 
-@ct.kernel
-def batchmatmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk: ct.Constant[int]):
-    """CuTile kernel for batch matrix multiplication
-    A has shape (Batch, M, K), B has shape (Batch, K, N) and C has shape (Batch, M, N)
-    Grid: (Batch, M_tiles, N_tiles)
-    """
-    pid_batch = ct.bid(0)
-    bidx = ct.bid(1)
-    bidy = ct.bid(2)
-
-    num_k_tiles = ct.cdiv(A.shape[2], tk)
-    accumulator = ct.full((tm, tn), 0.0, dtype=ct.float32)
-    zero_pad = ct.PaddingMode.ZERO
-
-    for k in range(num_k_tiles):
-        a = ct.load(A, index=(pid_batch, bidx, k), shape=(1, tm, tk), padding_mode=zero_pad)
-        a = ct.reshape(a, (tm, tk))
-
-        b = ct.load(B, index=(pid_batch, k, bidy), shape=(1, tk, tn), padding_mode=zero_pad)
-        b = ct.reshape(b, (tk, tn))
-
-        accumulator = ct.mma(a, b, acc=accumulator)
-
-    result = ct.astype(accumulator, C.dtype)
-    result_3d = ct.reshape(result, (1, tm, tn))
-    ct.store(C, index=(pid_batch, bidx, bidy), tile=result_3d)
-
+# cuTile kernel: use batchmatmul_cutile_kernel from batchmatmul.py
 
 def benchmark_batchmatmul():
     print("\nBenchmarking Batch Matrix Multiplication...")
@@ -583,106 +483,7 @@ def benchmark_batchmatmul():
 # FFT (3-stage Cooley-Tukey)
 #=============================================================================
 
-@ct.kernel
-def fft_kernel(x_packed_in, y_packed_out,
-               W0, W1, W2, T0, T1,
-               N: ct.Constant[int], F0: ct.Constant[int], F1: ct.Constant[int], F2: ct.Constant[int],
-               BS: ct.Constant[int], D: ct.Constant[int]):
-    """cuTile kernel for 3-stage Cooley-Tukey FFT."""
-    F0F1 = F0 * F1
-    F1F2 = F1 * F2
-    F0F2 = F0 * F2
-
-    bid = ct.bid(0)
-
-    # Load input, reshape to separate real/imag
-    X_ri = ct.reshape(ct.load(x_packed_in, index=(bid, 0, 0), shape=(BS, N * 2 // D, D)), (BS, N, 2))
-    X_r = ct.reshape(ct.extract(X_ri, index=(0, 0, 0), shape=(BS, N, 1)), (BS, F0, F1, F2))
-    X_i = ct.reshape(ct.extract(X_ri, index=(0, 0, 1), shape=(BS, N, 1)), (BS, F0, F1, F2))
-
-    # Load W matrices (rotation matrices)
-    W0_ri = ct.reshape(ct.load(W0, index=(0, 0, 0), shape=(F0, F0, 2)), (F0, F0, 2))
-    W0_r = ct.reshape(ct.extract(W0_ri, index=(0, 0, 0), shape=(F0, F0, 1)), (1, F0, F0))
-    W0_i = ct.reshape(ct.extract(W0_ri, index=(0, 0, 1), shape=(F0, F0, 1)), (1, F0, F0))
-
-    W1_ri = ct.reshape(ct.load(W1, index=(0, 0, 0), shape=(F1, F1, 2)), (F1, F1, 2))
-    W1_r = ct.reshape(ct.extract(W1_ri, index=(0, 0, 0), shape=(F1, F1, 1)), (1, F1, F1))
-    W1_i = ct.reshape(ct.extract(W1_ri, index=(0, 0, 1), shape=(F1, F1, 1)), (1, F1, F1))
-
-    W2_ri = ct.reshape(ct.load(W2, index=(0, 0, 0), shape=(F2, F2, 2)), (F2, F2, 2))
-    W2_r = ct.reshape(ct.extract(W2_ri, index=(0, 0, 0), shape=(F2, F2, 1)), (1, F2, F2))
-    W2_i = ct.reshape(ct.extract(W2_ri, index=(0, 0, 1), shape=(F2, F2, 1)), (1, F2, F2))
-
-    # Load T matrices (twiddle factors)
-    T0_ri = ct.reshape(ct.load(T0, index=(0, 0, 0), shape=(F0, F1F2, 2)), (F0, F1F2, 2))
-    T0_r = ct.reshape(ct.extract(T0_ri, index=(0, 0, 0), shape=(F0, F1F2, 1)), (N, 1))
-    T0_i = ct.reshape(ct.extract(T0_ri, index=(0, 0, 1), shape=(F0, F1F2, 1)), (N, 1))
-
-    T1_ri = ct.reshape(ct.load(T1, index=(0, 0, 0), shape=(F1, F2, 2)), (F1, F2, 2))
-    T1_r = ct.reshape(ct.extract(T1_ri, index=(0, 0, 0), shape=(F1, F2, 1)), (F1F2, 1))
-    T1_i = ct.reshape(ct.extract(T1_ri, index=(0, 0, 1), shape=(F1, F2, 1)), (F1F2, 1))
-
-    # CT0: Contract over F0 dimension
-    X_r = ct.reshape(X_r, (BS, F0, F1F2))
-    X_i = ct.reshape(X_i, (BS, F0, F1F2))
-    X_r_ = ct.reshape(ct.matmul(W0_r, X_r) - ct.matmul(W0_i, X_i), (BS, N, 1))
-    X_i_ = ct.reshape(ct.matmul(W0_i, X_r) + ct.matmul(W0_r, X_i), (BS, N, 1))
-
-    # Twiddle & Permute 0
-    X_r = T0_r * X_r_ - T0_i * X_i_
-    X_i = T0_i * X_r_ + T0_r * X_i_
-    X_r = ct.permute(ct.reshape(X_r, (BS, F0, F1, F2)), (0, 2, 3, 1))
-    X_i = ct.permute(ct.reshape(X_i, (BS, F0, F1, F2)), (0, 2, 3, 1))
-
-    # CT1: Contract over F1 dimension
-    X_r = ct.reshape(X_r, (BS, F1, F0F2))
-    X_i = ct.reshape(X_i, (BS, F1, F0F2))
-    X_r_ = ct.reshape(ct.matmul(W1_r, X_r) - ct.matmul(W1_i, X_i), (BS, F1F2, F0))
-    X_i_ = ct.reshape(ct.matmul(W1_i, X_r) + ct.matmul(W1_r, X_i), (BS, F1F2, F0))
-
-    # Twiddle & Permute 1
-    X_r = T1_r * X_r_ - T1_i * X_i_
-    X_i = T1_i * X_r_ + T1_r * X_i_
-    X_r = ct.permute(ct.reshape(X_r, (BS, F1, F2, F0)), (0, 2, 3, 1))
-    X_i = ct.permute(ct.reshape(X_i, (BS, F1, F2, F0)), (0, 2, 3, 1))
-
-    # CT2: Contract over F2 dimension
-    X_r = ct.reshape(X_r, (BS, F2, F0F1))
-    X_i = ct.reshape(X_i, (BS, F2, F0F1))
-    X_r_ = ct.matmul(W2_r, X_r) - ct.matmul(W2_i, X_i)
-    X_i_ = ct.matmul(W2_i, X_r) + ct.matmul(W2_r, X_i)
-
-    # Final Permutation
-    X_r = ct.permute(ct.reshape(X_r_, (BS, F2, F0, F1)), (0, 1, 3, 2))
-    X_i = ct.permute(ct.reshape(X_i_, (BS, F2, F0, F1)), (0, 1, 3, 2))
-    X_r = ct.reshape(X_r, (BS, N, 1))
-    X_i = ct.reshape(X_i, (BS, N, 1))
-
-    # Concatenate and Store
-    Y_ri = ct.reshape(ct.cat((X_r, X_i), axis=-1), (BS, N * 2 // D, D))
-    ct.store(y_packed_out, index=(bid, 0, 0), tile=Y_ri)
-
-
-def fft_twiddles(rows: int, cols: int, factor: int, device, precision):
-    """Generate DFT twiddle factors."""
-    I, J = torch.meshgrid(torch.arange(rows, device=device),
-                          torch.arange(cols, device=device), indexing='ij')
-    W_complex = torch.exp(-2 * math.pi * 1j * (I * J) / factor)
-    return torch.view_as_real(W_complex).to(precision).contiguous()
-
-
-def fft_make_twiddles(factors, precision, device):
-    """Generate W and T matrices for FFT."""
-    F0, F1, F2 = factors
-    N = F0 * F1 * F2
-    F1F2 = F1 * F2
-    W0 = fft_twiddles(F0, F0, F0, device, precision)
-    W1 = fft_twiddles(F1, F1, F1, device, precision)
-    W2 = fft_twiddles(F2, F2, F2, device, precision)
-    T0 = fft_twiddles(F0, F1F2, N, device, precision)
-    T1 = fft_twiddles(F1, F2, F1F2, device, precision)
-    return (W0, W1, W2, T0, T1)
-
+# cuTile kernel: use fft_kernel and fft_make_twiddles from fft.py
 
 def benchmark_fft():
     print("\nBenchmarking FFT...")

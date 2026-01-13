@@ -17,20 +17,27 @@ function transpose_kernel(x::ct.TileArray{T,2}, y::ct.TileArray{T,2},
     return
 end
 
+# Run transpose - for benchmarking or programmatic use
+function run_transpose(; m::Int, n::Int, tm::Int, tn::Int, T::DataType=Float32,
+                        x::Union{CuArray,Nothing}=nothing,
+                        y::Union{CuArray,Nothing}=nothing,
+                        validate::Bool=false)
+    x = something(x, CUDA.rand(T, m, n))
+    y = something(y, CUDA.zeros(T, n, m))
+    grid_x = cld(m, tm)
+    grid_y = cld(n, tn)
+    ct.launch(transpose_kernel, (grid_x, grid_y), x, y,
+              ct.Constant(tm), ct.Constant(tn))
+    if validate
+        @assert Array(y) ≈ transpose(Array(x))
+    end
+    return (; x, y)
+end
+
 function test_transpose(::Type{T}, m, n, tm, tn; name=nothing) where T
     name = something(name, "transpose ($m x $n, $T, tiles=$tm x $tn)")
     println("--- $name ---")
-    x = CUDA.rand(T, m, n)
-    y = CUDA.zeros(T, n, m)
-
-    grid_x = cld(m, tm)
-    grid_y = cld(n, tn)
-
-    # Launch with ct.launch - CuArrays are auto-converted to TileArray
-    ct.launch(transpose_kernel, (grid_x, grid_y), x, y,
-              ct.Constant(tm), ct.Constant(tn))
-
-    @assert Array(y) ≈ transpose(Array(x))
+    run_transpose(; m, n, tm, tn, T, validate=true)
     println("✓ passed")
 end
 
