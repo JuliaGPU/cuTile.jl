@@ -1,14 +1,17 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, target; name, is_entry=true)
+    emit_kernel!(writer, func_buf, target; name, sm_arch, is_entry=true, num_ctas=nothing, occupancy=nothing)
 
 Compile a TileTarget to Tile IR bytecode.
 """
 function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       target::TileTarget;
                       name::String = string(target.mi.def.name),
-                      is_entry::Bool = true)
+                      sm_arch::String = "sm_100",
+                      is_entry::Bool = true,
+                      num_ctas::Union{Int, Nothing} = nothing,
+                      occupancy::Union{Int, Nothing} = nothing)
     ctx = CGCtx(writer, target)
     tt = ctx.tt
 
@@ -58,8 +61,12 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         push!(result_types, tile_type_for_julia!(ctx, target.rettype))
     end
 
+    # Create entry hints if provided
+    entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy))
+
     # Create function
-    cb = add_function!(writer, func_buf, name, param_types, result_types; is_entry)
+    cb = add_function!(writer, func_buf, name, param_types, result_types;
+                       is_entry, entry_hints)
     ctx.cb = cb
 
     # Set up argument values

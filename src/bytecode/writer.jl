@@ -507,9 +507,7 @@ function add_function!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     flags = 0x00
     if is_entry
         flags |= 0x02
-        if entry_hints !== nothing
-            flags |= 0x04
-        end
+        isnothing(entry_hints) || (flags |= 0x04)
     end
     push!(func_buf, UInt8(flags))
 
@@ -541,4 +539,69 @@ function finalize_function!(func_buf::Vector{UInt8}, cb::CodeBuilder,
     # Encode code length and append
     encode_varint!(func_buf, length(cb.buf))
     append!(func_buf, cb.buf)
+end
+
+#=============================================================================
+ EntryHints: Kernel-level compilation hints
+=============================================================================#
+
+"""
+Kernel-level compilation hints (num_ctas, occupancy).
+Encoded as a dictionary attribute in bytecode.
+"""
+@kwdef struct EntryHints
+    num_ctas::Union{Int, Nothing} = nothing    # 1, 2, 4, 8, 16
+    occupancy::Union{Int, Nothing} = nothing   # 1-32
+end
+
+function validate_num_ctas(num_ctas::Union{Int, Nothing})
+    isnothing(num_ctas) && return
+    1 <= num_ctas <= 16 || throw(ArgumentError("num_ctas must be between 1 and 16, got $num_ctas"))
+    ispow2(num_ctas) || throw(ArgumentError("num_ctas must be a power of 2, got $num_ctas"))
+end
+
+function validate_occupancy(occupancy::Union{Int, Nothing})
+    isnothing(occupancy) && return
+    1 <= occupancy <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $occupancy"))
+end
+
+"""
+Encode EntryHints as OptimizationHints format.
+Returns raw bytes for entry_hints parameter or nothing.
+"""
+function encode_entry_hints(writer::BytecodeWriter, sm_arch::String, hints::EntryHints)
+    validate_num_ctas(hints.num_ctas)
+    validate_occupancy(hints.occupancy)
+
+    # Build items list (only non-nothing values)
+    items = Tuple{String, Int}[]
+    isnothing(hints.num_ctas) || push!(items, ("num_cta_in_cga", hints.num_ctas))
+    isnothing(hints.occupancy) || push!(items, ("occupancy", hints.occupancy))
+    isempty(items) && return nothing
+
+    buf = UInt8[]
+
+    # Start with OptimizationHints tag
+    push!(buf, AttributeTag.OptimizationHints)
+
+    # Encode as architecture-specific dictionary
+    # Format: num_archs, then for each arch: arch_id, dictionary
+    encode_varint!(buf, 1)  # 1 architecture
+
+    # Architecture string ID
+    arch_id = writer.string_table[sm_arch]
+    encode_varint!(buf, arch_id.id)
+
+    # Encode dictionary
+    push!(buf, AttributeTag.Dictionary)
+    encode_varint!(buf, length(items))
+    for (key, value) in items
+        key_id = writer.string_table[key]
+        encode_varint!(buf, key_id.id)
+        push!(buf, AttributeTag.Integer)
+        encode_typeid!(buf, I32(writer.type_table))
+        encode_varint!(buf, UInt32(value))
+    end
+
+    return buf
 end

@@ -1,12 +1,15 @@
 export code_tiled, @code_tiled
 
 """
-    emit_tileir(f, argtypes; name=nothing) -> Vector{UInt8}
+    emit_tileir(f, argtypes; name=nothing, sm_arch="sm_100", num_ctas=nothing, occupancy=nothing) -> Vector{UInt8}
 
 Compile a Julia function to Tile IR bytecode.
 """
 function emit_tileir(@nospecialize(f), @nospecialize(argtypes);
-                     name::Union{String, Nothing} = nothing)
+                     name::Union{String, Nothing} = nothing,
+                     sm_arch::String = "sm_100",
+                     num_ctas::Union{Int, Nothing} = nothing,
+                     occupancy::Union{Int, Nothing} = nothing)
     target = TileTarget(f, argtypes)
     kernel_name = name === nothing ? string(target.mi.def.name) : name
 
@@ -15,7 +18,8 @@ function emit_tileir(@nospecialize(f), @nospecialize(argtypes);
     end
 
     buf = write_bytecode!(1) do writer, func_buf
-        emit_kernel!(writer, func_buf, target; name=kernel_name)
+        emit_kernel!(writer, func_buf, target; name=kernel_name, sm_arch,
+                     num_ctas, occupancy)
     end
 
     return buf

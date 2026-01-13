@@ -9,10 +9,10 @@ using CUDA_Compiler_jll
 public launch
 
 # Compilation cache - stores CuFunction directly to avoid re-loading CuModule
-const _compilation_cache = Dict{Any, Any}()  # (f, argtypes, sm_arch, opt_level) => CuFunction
+const _compilation_cache = Dict{Any, Any}()  # (f, argtypes, sm_arch, opt_level, num_ctas, occupancy) => CuFunction
 
 """
-    launch(f, grid, args...; name=nothing, sm_arch=default_sm_arch(), opt_level=3)
+    launch(f, grid, args...; name=nothing, sm_arch=default_sm_arch(), opt_level=3, num_ctas=nothing, occupancy=nothing)
 
 Compile and launch a kernel function with the given grid size and arguments.
 
@@ -26,6 +26,8 @@ are expanded to their constituent ptr, sizes, and strides parameters.
 - `name`: Optional kernel name for debugging
 - `sm_arch`: Target GPU architecture (default: current device's capability)
 - `opt_level`: Optimization level 0-3 (default: 3)
+- `num_ctas`: Number of CTAs in a CGA, 1-16, must be power of 2 (default: nothing)
+- `occupancy`: Expected active CTAs per SM, 1-32 (default: nothing)
 
 # Example
 ```julia
@@ -51,7 +53,9 @@ cuTile.launch(vadd_kernel, 64, a, b, c)
 function cuTile.launch(@nospecialize(f), grid, args...;
                        name::Union{String, Nothing}=nothing,
                        sm_arch::String=default_sm_arch(),
-                       opt_level::Int=3)
+                       opt_level::Int=3,
+                       num_ctas::Union{Int, Nothing}=nothing,
+                       occupancy::Union{Int, Nothing}=nothing)
     # Convert CuArray -> TileArray (and other conversions)
     tile_args = map(to_tile_arg, args)
 
@@ -62,10 +66,10 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     kernel_name = name !== nothing ? name : string(nameof(f))
 
     # Check compilation cache - returns CuFunction directly
-    cache_key = (f, argtypes, sm_arch, opt_level)
+    cache_key = (f, argtypes, sm_arch, opt_level, num_ctas, occupancy)
     cufunc = get(_compilation_cache, cache_key, nothing)
     if cufunc === nothing || cuTile.compile_hook[] !== nothing
-        cubin = compile(f, argtypes; name, sm_arch, opt_level)
+        cubin = compile(f, argtypes; name, sm_arch, opt_level, num_ctas, occupancy)
         if cufunc === nothing
             cumod = CuModule(cubin)
             cufunc = CuFunction(cumod, kernel_name)
@@ -98,15 +102,18 @@ function cuTile.launch(@nospecialize(f), grid, args...;
 end
 
 """
-    compile(f, argtypes; name=nothing, sm_arch=default_sm_arch(), opt_level=3) -> Vector{UInt8}
+    compile(f, argtypes; name=nothing, sm_arch=default_sm_arch(), opt_level=3, num_ctas=nothing, occupancy=nothing) -> Vector{UInt8}
 
 Compile a Julia kernel function to a CUDA binary.
 """
 function compile(@nospecialize(f), @nospecialize(argtypes);
                  name::Union{String, Nothing}=nothing,
                  sm_arch::String=default_sm_arch(),
-                 opt_level::Int=3)
-    tile_bytecode = emit_tileir(f, argtypes; name)
+                 opt_level::Int=3,
+                 num_ctas::Union{Int, Nothing}=nothing,
+                 occupancy::Union{Int, Nothing}=nothing)
+    tile_bytecode = emit_tileir(f, argtypes; name, sm_arch,
+                                 num_ctas, occupancy)
 
     # Dump bytecode if JULIA_CUTILE_DUMP_BYTECODE is set
     dump_dir = get(ENV, "JULIA_CUTILE_DUMP_BYTECODE", nothing)
