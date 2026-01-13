@@ -1,14 +1,14 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, target; name, sm_arch, is_entry=true, num_ctas=nothing, occupancy=nothing)
+    emit_kernel!(writer, func_buf, target; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing)
 
 Compile a TileTarget to Tile IR bytecode.
 """
 function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       target::TileTarget;
                       name::String = string(target.mi.def.name),
-                      sm_arch::String = "sm_100",
+                      sm_arch::Union{String, Nothing} = nothing,
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing)

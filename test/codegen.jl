@@ -1846,3 +1846,118 @@ end
         end
     end
 end
+
+#=============================================================================
+ Entry Hints (optimization_hints attribute)
+=============================================================================#
+
+@testset "Entry Hints" begin
+    # Common ArraySpecs for tests
+    spec1d = ct.ArraySpec{1}(16, true)
+
+    @testset "num_ctas only" begin
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=4) do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "occupancy only" begin
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {occupancy = 8}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=8) do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "both hints" begin
+        @test @filecheck begin
+            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 2, occupancy = 4}"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120", num_ctas=2, occupancy=4) do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "no hints" begin
+        @test @filecheck begin
+            @check_not "optimization_hints"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "architecture parameter" begin
+        @test @filecheck begin
+            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 4}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120", num_ctas=4) do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "num_ctas validation" begin
+        # Too small
+        @test_throws "num_ctas must be between 1 and 16" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=0)
+        end
+
+        # Too large
+        @test_throws "num_ctas must be between 1 and 16" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=17)
+        end
+
+        # Not power of 2
+        @test_throws "num_ctas must be a power of 2" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=3)
+        end
+
+        @test_throws "num_ctas must be a power of 2" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=5)
+        end
+
+        # Valid values should succeed
+        for num_ctas in [1, 2, 4, 8, 16]
+            bytecode = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas)
+            @test !isempty(bytecode)
+        end
+    end
+
+    @testset "occupancy validation" begin
+        # Too small
+        @test_throws "occupancy must be between 1 and 32" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=0)
+        end
+
+        # Too large
+        @test_throws "occupancy must be between 1 and 32" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=33)
+        end
+
+        # Valid boundaries
+        bytecode1 = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=1)
+        @test !isempty(bytecode1)
+
+        bytecode32 = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=32)
+        @test !isempty(bytecode32)
+    end
+end

@@ -1,13 +1,13 @@
 export code_tiled, @code_tiled
 
 """
-    emit_tileir(f, argtypes; name=nothing, sm_arch="sm_100", num_ctas=nothing, occupancy=nothing) -> Vector{UInt8}
+    emit_tileir(f, argtypes; name, sm_arch, num_ctas, occupancy) -> Vector{UInt8}
 
 Compile a Julia function to Tile IR bytecode.
 """
 function emit_tileir(@nospecialize(f), @nospecialize(argtypes);
                      name::Union{String, Nothing} = nothing,
-                     sm_arch::String = "sm_100",
+                     sm_arch::Union{String, Nothing} = nothing,
                      num_ctas::Union{Int, Nothing} = nothing,
                      occupancy::Union{Int, Nothing} = nothing)
     target = TileTarget(f, argtypes)
@@ -35,14 +35,14 @@ function disassemble_tileir(bytecode::Vector{UInt8})::String
 end
 
 """
-    code_tiled(f, argtypes; name=nothing) -> String
+    code_tiled(f, argtypes; name, sm_arch, num_ctas, occupancy) -> String
 
 Return the CUDA Tile IR for a Julia function as a textual MLIR representation.
 Analogous to `code_typed` or `code_structured`.
 """
 function code_tiled(@nospecialize(f), @nospecialize(argtypes);
-                   name::Union{String, Nothing} = nothing)
-    bytecode = emit_tileir(f, argtypes; name)
+                   kwargs...)
+    bytecode = emit_tileir(f, argtypes; kwargs...)
     disassemble_tileir(bytecode)
 end
 

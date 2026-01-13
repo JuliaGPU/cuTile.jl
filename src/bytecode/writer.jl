@@ -571,7 +571,7 @@ end
 Encode EntryHints as OptimizationHints format.
 Returns raw bytes for entry_hints parameter or nothing.
 """
-function encode_entry_hints(writer::BytecodeWriter, sm_arch::String, hints::EntryHints)
+function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{String, Nothing}, hints::EntryHints)
     validate_num_ctas(hints.num_ctas)
     validate_occupancy(hints.occupancy)
 
@@ -580,6 +580,9 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::String, hints::Entr
     isnothing(hints.num_ctas) || push!(items, ("num_cta_in_cga", hints.num_ctas))
     isnothing(hints.occupancy) || push!(items, ("occupancy", hints.occupancy))
     isempty(items) && return nothing
+
+    # Use default architecture if not specified and hints are present
+    arch = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
 
     buf = UInt8[]
 
@@ -591,7 +594,7 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::String, hints::Entr
     encode_varint!(buf, 1)  # 1 architecture
 
     # Architecture string ID
-    arch_id = writer.string_table[sm_arch]
+    arch_id = writer.string_table[arch]
     encode_varint!(buf, arch_id.id)
 
     # Encode dictionary

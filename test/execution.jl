@@ -1589,3 +1589,70 @@ end
 end
 
 end
+
+@testset "Entry Hints Integration" begin
+
+@testset "launch with num_ctas" begin
+    function vadd_kernel_num_ctas(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+@testset "launch with occupancy" begin
+    function vadd_kernel_occupancy(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_kernel_occupancy, 64, a, b, c; occupancy=4)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+@testset "launch with both hints" begin
+    function vadd_kernel_both_hints(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+end
