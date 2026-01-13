@@ -18,6 +18,7 @@ IRStructurizer = {path = "IRStructurizer"}
 CUDAExt = "CUDA"
 
 [compat]
+julia = "1.11"
 CUDA_Compiler_jll = "0.4"
 CUDA_Tile_jll = "13.1"
 

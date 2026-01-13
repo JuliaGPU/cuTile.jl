@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.11'
+          - '1.12'
+        os:
+          - Linux
+          - Windows
+          - macOS
+        arch:
+          - x64
+          - aarch64
+        exclude:
+          - os: Windows
+            arch: aarch64
+          - os: macOS
+            arch: x64
+        include:
+          - os: Linux
+            arch: x64
+            runner: ubuntu-latest
+          - os: Linux
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+          - os: Windows
+            arch: x64
+            runner: windows-latest
+          - os: macOS
+            arch: aarch64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          test_args: '--quickfail'
