@@ -195,22 +195,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
-    # Create scalar constant
-    scalar_type = tile_type!(tt, dtype, Int[])
+    # Create constant directly at target shape
     value_bytes = constant_to_bytes(value, elem_type)
-    scalar_val = encode_ConstantOp!(cb, scalar_type, value_bytes)
-
-    # Reshape and broadcast
-    ndims = length(tile_shape)
-    if ndims > 0
-        ones_shape = fill(1, ndims)
-        reshaped_type = tile_type!(tt, dtype, ones_shape)
-        reshaped_val = encode_ReshapeOp!(cb, reshaped_type, scalar_val)
-    else
-        reshaped_val = scalar_val
-    end
-
-    result = encode_BroadcastOp!(cb, tile_type, reshaped_val)
+    result = encode_ConstantOp!(cb, tile_type, value_bytes)
 
     CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
 end

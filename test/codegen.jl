@@ -1300,7 +1300,6 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.Constant{Int,32}, ct.Constant{Int,32}, ct.Constant{Int,16}}) do A, B, C, tm, tn, tk
                 bid = ct.bid(1)
                 num_k = ct.num_tiles(A, 2, (tm[], tk[]))
-                @check "broadcast"
                 acc = ct.full((tm[], tn[]), zero(Float32), Float32)
                 # NOTE: Uses while-loop pattern because Julia's for-loop generates
                 # complex iterator IR with PhiNodes that isn't fully supported.
