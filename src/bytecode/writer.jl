@@ -544,8 +544,74 @@ function finalize_function!(func_buf::Vector{UInt8}, cb::CodeBuilder,
 end
 
 #=============================================================================
- EntryHints: Kernel-level compilation hints
+ Optimization and Entry Hints 
 =============================================================================#
+
+"""
+    encode_tagged_value!(cb, value)
+
+Encode a value with its type tag.
+"""
+function encode_tagged_value!(buf::Vector{UInt8}, type_table::TypeTable, value::Bool)
+    push!(buf, AttributeTag.Bool)
+    push!(buf, value)
+end
+
+function encode_tagged_value!(buf::Vector{UInt8}, type_table::TypeTable, value::Integer)
+    push!(buf, AttributeTag.Integer)
+    encode_typeid!(buf, I32(type_table))
+    encode_varint!(buf, UInt32(value))
+end
+
+"""
+Optimization hints for load/store operations.
+- `latency`: Optional latency hint (1-10), or nothing for default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+"""
+@kwdef struct LoadStoreHints
+    latency::Union{Int, Nothing} = nothing
+    allow_tma::Bool = true
+end
+
+"""
+Optimization hints for load/store operations.
+- `hints_by_arch`: List of (SM architecture, load/store hints) pairs
+"""
+struct OptimizationHints
+    hints_by_arch::Vector{Tuple{String, LoadStoreHints}}
+end
+
+function make_load_store_hints(sm_arch::Union{String, Nothing}, hints::LoadStoreHints)
+    isnothing(sm_arch) && throw(ArgumentError("sm_arch must be explicitly passed when load/store hints are present"))
+    OptimizationHints([(sm_arch, hints)])
+end
+
+function encode_opattr_optimization_hints!(cb::CodeBuilder, hints::OptimizationHints)
+    # Outer dictionary: arch -> hints_dict
+    encode_varint!(cb.buf, length(hints.hints_by_arch))
+    for (arch, load_store_hints) in hints.hints_by_arch
+        arch_id = cb.string_table[arch]
+        encode_varint!(cb.buf, arch_id.id)
+        # Encode hints as inner dictionary (tagged)
+        encode_load_store_hints_dict!(cb, load_store_hints)
+    end
+end
+
+function encode_load_store_hints_dict!(cb::CodeBuilder, hints::LoadStoreHints)
+    # Build list of (key, value) pairs for non-default hints
+    items = Tuple{String, Any}[]
+    hints.allow_tma || push!(items, ("allow_tma", false))
+    isnothing(hints.latency) || push!(items, ("latency", hints.latency))
+
+    # Encode dictionary
+    push!(cb.buf, AttributeTag.Dictionary)
+    encode_varint!(cb.buf, length(items))
+    for (key, value) in items
+        key_id = cb.string_table[key]
+        encode_varint!(cb.buf, key_id.id)
+        encode_tagged_value!(cb.buf, cb.type_table, value)
+    end
+end
 
 """
 Kernel-level compilation hints (num_ctas, occupancy).
@@ -567,10 +633,6 @@ function validate_occupancy(occupancy::Union{Int, Nothing})
     1 <= occupancy <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $occupancy"))
 end
 
-"""
-Encode EntryHints as OptimizationHints format.
-Returns raw bytes for entry_hints parameter or nothing.
-"""
 function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{String, Nothing}, hints::EntryHints)
     validate_num_ctas(hints.num_ctas)
     validate_occupancy(hints.occupancy)
@@ -603,9 +665,7 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{String, Nothi
     for (key, value) in items
         key_id = writer.string_table[key]
         encode_varint!(buf, key_id.id)
-        push!(buf, AttributeTag.Integer)
-        encode_typeid!(buf, I32(writer.type_table))
-        encode_varint!(buf, UInt32(value))
+        encode_tagged_value!(buf, writer.type_table, value)
     end
 
     return buf

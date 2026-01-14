@@ -1848,7 +1848,7 @@ end
 end
 
 #=============================================================================
- Entry Hints (optimization_hints attribute)
+ Entry Hints (kernel-level optimization hints)
 =============================================================================#
 
 @testset "Entry Hints" begin
@@ -1959,5 +1959,163 @@ end
 
         bytecode32 = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=32)
         @test !isempty(bytecode32)
+    end
+end
+
+#=============================================================================
+ Load / Store Hints (operation-level optimization hints)
+=============================================================================#
+
+@testset "Load / Store Optimization Hints" begin
+    # Common ArraySpecs for tests
+    spec1d = ct.ArraySpec{1}(16, true)
+
+    @testset "latency only on load" begin
+        @test @filecheck begin
+            @check "load_view_tko"
+            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,); latency=5)
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "allow_tma=false only on load" begin
+        @test @filecheck begin
+            @check "load_view_tko"
+            @check "optimization_hints = <sm_120 = {allow_tma = false}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,); allow_tma=false)
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "both hints on load" begin
+        @test @filecheck begin
+            @check "load_view_tko"
+            @check "optimization_hints = <sm_120 = {allow_tma = false, latency = 7}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,); latency=7, allow_tma=false)
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+    end
+
+    @testset "latency only on store" begin
+        @test @filecheck begin
+            @check "store_view_tko"
+            @check "optimization_hints = <sm_120 = {latency = 3}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t; latency=3)
+                return nothing
+            end
+        end
+    end
+
+    @testset "allow_tma=false only on store" begin
+        @test @filecheck begin
+            @check "store_view_tko"
+            @check "optimization_hints = <sm_120 = {allow_tma = false}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t; allow_tma=false)
+                return nothing
+            end
+        end
+    end
+
+    @testset "both hints on store" begin
+        @test @filecheck begin
+            @check "store_view_tko"
+            @check "optimization_hints = <sm_120 = {allow_tma = false, latency = 2}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t; allow_tma=false, latency=2)
+                return nothing
+            end
+        end
+    end
+
+    @testset "latency validation" begin
+        @test_throws "latency must be between 1 and 10" begin
+            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                ct.load(a, pid, (16,); latency=11)
+            end
+        end
+
+        bytecode1 = code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,); latency=8)
+            ct.store(a, pid, t)
+            return nothing
+        end
+        @test !isempty(bytecode1)
+    end
+
+    @testset "multiple operations with mixed hints" begin
+        @test @filecheck begin
+            # First load with latency
+            @check "load_view_tko"
+            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            # Second load with allow_tma=false
+            @check "load_view_tko"
+            @check "optimization_hints = <sm_120 = {allow_tma = false}>"
+            # Third load with no hints
+            @check "load_view_tko"
+            @check_not "optimization_hints"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d},
+                               ct.TileArray{Float32, 1, spec1d},
+                               ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a, b, c
+                pid = ct.bid(1)
+                t1 = ct.load(a, pid, (16,); latency=5)
+                t2 = ct.load(b, pid, (16,); allow_tma=false)
+                t3 = ct.load(c, pid, (16,))
+                result = t1 + t2 + t3
+                ct.store(a, pid, result)
+                return nothing
+            end
+        end
+    end
+
+    # Pointer-based operations (gather/scatter) with latency hints
+    @testset "gather with latency hint" begin
+        @test @filecheck begin
+            @check "load_ptr_tko"
+            @check "optimization_hints = <sm_120 = {latency = 3}>"
+            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a, b
+                pid = ct.bid(1)
+                indices = ct.arange((16,), Int32)
+                tile = ct.gather(a, indices; latency=3)
+                ct.store(b, pid, tile)
+                return nothing
+            end
+        end
+    end
+
+    @testset "scatter with latency hint" begin
+        @test @filecheck begin
+            @check "store_ptr_tko"
+            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                indices = ct.arange((16,), Int32)
+                ct.scatter(b, indices, tile; latency=5)
+                return nothing
+            end
+        end
     end
 end

@@ -12,7 +12,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing)
-    ctx = CGCtx(writer, target)
+    ctx = CGCtx(writer, target, sm_arch)
     tt = ctx.tt
 
     # Validate non-ghost argument types are concrete

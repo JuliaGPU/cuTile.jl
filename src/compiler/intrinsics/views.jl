@@ -1,8 +1,5 @@
 # views
 
-"""
-Convert integer padding mode value to bytecode PaddingValue enum.
-"""
 function padding_mode_to_padding_value(mode::Int)
     mode == 0 ? PaddingMissing :
     mode == 1 ? PaddingZero :
@@ -83,13 +80,16 @@ end
 # cuda_tile.load_view_tko
 @eval Intrinsics begin
     """
-        load_partition_view(pv::PartitionView, index...) -> Tile
+        load_partition_view(pv::PartitionView, latency, allow_tma, index...) -> Tile
 
     Load a tile from a partition view at the given 0-indexed tile coordinates.
     Compiled to cuda_tile.load_view_tko.
     """
-    @noinline function load_partition_view(pv::PartitionView{T, N, Shape}, index::Vararg{Integer}) where {T, N, Shape}
-        donotdelete(pv)
+    @noinline function load_partition_view(pv::PartitionView{T, N, Shape},
+                                            latency::Union{Int, Nothing},
+                                            allow_tma::Bool,
+                                            index::Vararg{Integer}) where {T, N, Shape}
+        donotdelete(pv, latency, allow_tma)
         Tile{T, Shape}()
     end
 end
@@ -97,7 +97,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (partition_view, indices...)
+    # args: (partition_view, latency, allow_tma, indices...)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && error("load_partition_view() requires a PartitionView argument")
     pv_arg.v === nothing && error("load_partition_view() requires a materialized PartitionView")
@@ -115,10 +115,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 
-    # Extract indices from args[2:end] and infer index type
+    # Extract optimization hints (args[2] = latency, args[3] = allow_tma)
+    latency = get_constant(ctx, args[2])
+    allow_tma = get_constant(ctx, args[3])
+
+    # Verify we got compile-time constants
+    if latency === nothing && allow_tma === nothing
+        error("load_partition_view(): latency and allow_tma must be compile-time constants")
+    end
+    # allow_tma defaults to true if not provided
+    allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
+
+    # Extract indices from args[4:end] and infer index type
     index_vals = Value[]
     index_jl_types = Type[]
-    for i in 2:length(args)
+    for i in 4:length(args)
         tv = emit_value!(ctx, args[i])
         tv === nothing && error("load_partition_view(): cannot resolve index argument")
         push!(index_vals, tv.v)
@@ -133,8 +144,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Pad indices if needed
     index_vals = pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
 
+    # Create optimization hints if provided
+    optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
+
     # Load tile with token
-    tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, pv_arg.v, index_vals; token=ctx.token)
+    tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, pv_arg.v, index_vals;
+                                                 token=ctx.token, optimization_hints)
     ctx.token = new_token
 
     CGVal(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
@@ -327,14 +342,17 @@ end
 # cuda_tile.store_view_tko
 @eval Intrinsics begin
     """
-        store_partition_view(pv::PartitionView, tile, index...) -> Nothing
+        store_partition_view(pv::PartitionView, tile, latency, allow_tma, index...) -> Nothing
 
     Store a tile to a partition view at the given 0-indexed tile coordinates.
     Compiled to cuda_tile.store_view_tko.
     """
-    @noinline function store_partition_view(pv::PartitionView{T, N, Shape}, tile::Tile{T, Shape}, index::Vararg{Integer}) where {T, N, Shape}
-        donotdelete(pv)
-        donotdelete(tile)
+    @noinline function store_partition_view(pv::PartitionView{T, N, Shape},
+                                             tile::Tile{T, Shape},
+                                             latency::Union{Int, Nothing},
+                                             allow_tma::Bool,
+                                             index::Vararg{Integer}) where {T, N, Shape}
+        donotdelete(pv, tile, latency, allow_tma)
         nothing
     end
 end
@@ -342,7 +360,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (partition_view, tile, indices...)
+    # args: (partition_view, tile, latency, allow_tma, indices...)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && error("store_partition_view() requires a PartitionView argument")
     pv_arg.v === nothing && error("store_partition_view() requires a materialized PartitionView")
@@ -371,10 +389,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
         tile_val = encode_ReshapeOp!(cb, tile_1d_type, tile_val)
     end
 
-    # Extract indices from args[3:end] and infer index type
+    # Extract optimization hints (args[3] = latency, args[4] = allow_tma)
+    latency = get_constant(ctx, args[3])
+    allow_tma = get_constant(ctx, args[4])
+
+    # Verify we got compile-time constants
+    if latency === nothing && allow_tma === nothing
+        error("store_partition_view(): latency and allow_tma must be compile-time constants")
+    end
+    # allow_tma defaults to true if not provided
+    allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
+
+    # Extract indices from args[5:end] and infer index type
     index_vals = Value[]
     index_jl_types = Type[]
-    for i in 3:length(args)
+    for i in 5:length(args)
         tv = emit_value!(ctx, args[i])
         tv === nothing && error("store_partition_view(): cannot resolve index argument")
         push!(index_vals, tv.v)
@@ -389,9 +418,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     # Pad indices if needed
     index_vals = pad_indices(ctx, index_vals, actual_ndim, index_type, index_jl_type)
 
+    # Create optimization hints if provided
+    optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
+
     # Store tile with token
     token_type = Token(tt)
-    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, pv_arg.v, index_vals; token=ctx.token)
+    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, pv_arg.v, index_vals;
+                                        token=ctx.token, optimization_hints)
     ctx.token = new_token
 
     nothing
