@@ -1,5 +1,8 @@
 # views
 
+"""
+Convert integer padding mode value to bytecode PaddingValue enum.
+"""
 function padding_mode_to_padding_value(mode::Int)
     mode == 0 ? PaddingMissing :
     mode == 1 ? PaddingZero :

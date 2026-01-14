@@ -544,7 +544,7 @@ function finalize_function!(func_buf::Vector{UInt8}, cb::CodeBuilder,
 end
 
 #=============================================================================
- Optimization and Entry Hints 
+ Optimization Hints 
 =============================================================================#
 
 """
