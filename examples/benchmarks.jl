@@ -348,8 +348,8 @@ function benchmark_layernorm()
     M, N = LAYERNORM_M, LAYERNORM_N
     println("  Size: $(M)x$(N) ($(M * N * 4 / 1e6) MB)")
 
-    # Prepare data once (using layernorm.jl's prepare function)
-    data = layernorm_fwd_prepare(; M, N, T=Float32, eps=LAYERNORM_EPS)
+    # Prepare data once (using layernorm.jl's unified prepare function)
+    data = layernorm_prepare(; M, N, eps=LAYERNORM_EPS)
     (; X, W, B, Y, Mean, Rstd) = data
 
     # Reference result
@@ -373,17 +373,29 @@ function benchmark_layernorm()
     min_t, mean_t = benchmark_kernel(simt_f)
     push!(results, BenchmarkResult("SIMT naive", min_t, mean_t))
 
-    # cuTile (using layernorm.jl's run/verify functions)
-    result = layernorm_fwd_run(data; tile_n=LAYERNORM_TILE_N, nruns=NRUNS, warmup=WARMUP)
-    layernorm_fwd_verify(data, result)
-    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
-    push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
+    # cuTile (using layernorm.jl's unified run/verify functions)
+    result = layernorm_run(data; TILE_N=LAYERNORM_TILE_N, nruns=NRUNS, warmup=WARMUP)
+    layernorm_verify(data, result)
+
+    # Forward pass timing
+    min_t_fwd = minimum(result.times_fwd)
+    mean_t_fwd = sum(result.times_fwd) / length(result.times_fwd)
+    push!(results, BenchmarkResult("cuTile Fwd", min_t_fwd, mean_t_fwd))
+
+    # Backward pass timing
+    min_t_bwd = minimum(result.times_bwd)
+    mean_t_bwd = sum(result.times_bwd) / length(result.times_bwd)
 
     # Calculate bandwidth (rough estimate: 3 reads of X + W + B, 1 write of Y)
     bytes = (3 * M * N + N + N + M * N) * sizeof(Float32)
     bandwidths = [string(round(bytes / (r.min_ms / 1000) / 1e9, digits=1), " GB/s") for r in results]
 
-    print_table("Layer Normalization (Float32)", results; extra_col=("Bandwidth", bandwidths))
+    print_table("Layer Normalization Forward (Float32)", results; extra_col=("Bandwidth", bandwidths))
+
+    # Print backward results separately
+    bwd_results = [BenchmarkResult("cuTile Bwd", min_t_bwd, mean_t_bwd)]
+    print_table("Layer Normalization Backward (Float32)", bwd_results)
+
     return results
 end
 

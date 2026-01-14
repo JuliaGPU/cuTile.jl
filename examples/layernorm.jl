@@ -273,82 +273,41 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
 end
 
 #=============================================================================
- Forward Pass - prepare/run/verify pattern
+ Unified prepare/run/verify pattern (fwd + bwd)
 =============================================================================#
 
-function layernorm_fwd_prepare(; M::Int, N::Int, eps::Float32=1f-5)
+function layernorm_prepare(; M::Int, N::Int, eps::Float32=1f-5, GROUP_SIZE_M::Int=64)
     return (;
+        # Forward inputs/outputs
         X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N),
         W = CUDA.randn(Float32, N),
         B = CUDA.randn(Float32, N),
         Y = CUDA.zeros(Float32, M, N),
         Mean = CUDA.zeros(Float32, M),
         Rstd = CUDA.zeros(Float32, M),
-        M, N, eps
-    )
-end
-
-function layernorm_fwd_run(data; TILE_N::Int, nruns::Int=1, warmup::Int=0)
-    (; X, W, B, Y, Mean, Rstd, M, eps) = data
-
-    for _ in 1:warmup
-        ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
-                  ct.Constant(eps), ct.Constant(TILE_N))
-    end
-    CUDA.synchronize()
-
-    times = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
-                                    ct.Constant(eps), ct.Constant(TILE_N))
-        push!(times, t * 1000)  # ms
-    end
-
-    return (; Y, Mean, Rstd, times)
-end
-
-function layernorm_fwd_verify(data, result)
-    (; X, W, B, N, eps) = data
-    X_cpu = Array(X)
-    W_cpu = Array(W)
-    B_cpu = Array(B)
-    expected_mean = vec(sum(X_cpu, dims=2) ./ N)
-    expected_var = vec(sum((X_cpu .- expected_mean) .^ 2, dims=2) ./ N)
-    expected_rstd = 1.0f0 ./ sqrt.(expected_var .+ eps)
-    normalized = (X_cpu .- expected_mean) .* expected_rstd
-    expected_Y = normalized .* W_cpu' .+ B_cpu'
-
-    atol, rtol = 1f-2, 1f-2
-    @assert isapprox(expected_mean, Array(result.Mean); rtol, atol) "Mean mismatch"
-    @assert isapprox(expected_rstd, Array(result.Rstd); rtol, atol) "Rstd mismatch"
-    @assert isapprox(expected_Y, Array(result.Y); rtol, atol) "Y mismatch"
-end
-
-#=============================================================================
- Backward Pass - prepare/run/verify pattern
-=============================================================================#
-
-function layernorm_bwd_prepare(fwd_data, fwd_result; GROUP_SIZE_M::Int=64)
-    (; X, W, M, N) = fwd_data
-    (; Mean, Rstd) = fwd_result
-    return (;
-        X, W, Mean, Rstd,
-        DY = CUDA.randn(Float32, M, N),
+        # Backward inputs/outputs
+        DY = 0.1f0 .* CUDA.randn(Float32, M, N),
         DX = CUDA.zeros(Float32, M, N),
         DW_partial = CUDA.zeros(Float32, GROUP_SIZE_M, N),
         DB_partial = CUDA.zeros(Float32, GROUP_SIZE_M, N),
         Locks = CUDA.zeros(Int, GROUP_SIZE_M),
         FINAL_DW = CUDA.zeros(Float32, N),
         FINAL_DB = CUDA.zeros(Float32, N),
-        M, N, GROUP_SIZE_M
+        # Metadata
+        M, N, eps, GROUP_SIZE_M
     )
 end
 
-function layernorm_bwd_run(data; TILE_N::Int, TILE_M::Int=32, nruns::Int=1, warmup::Int=0)
-    (; X, W, Mean, Rstd, DY, DX, DW_partial, DB_partial, Locks, FINAL_DW, FINAL_DB, M, N, GROUP_SIZE_M) = data
+function layernorm_run(data; TILE_N::Int, TILE_M::Int=32, nruns::Int=1, warmup::Int=0)
+    (; X, W, B, Y, Mean, Rstd, DY, DX, DW_partial, DB_partial, Locks, FINAL_DW, FINAL_DB,
+       M, N, eps, GROUP_SIZE_M) = data
 
-    for _ in 1:warmup
-        # Reset partial buffers
+    function run_fwd()
+        ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
+                  ct.Constant(eps), ct.Constant(TILE_N))
+    end
+
+    function run_bwd()
         fill!(DW_partial, 0)
         fill!(DB_partial, 0)
         fill!(Locks, 0)
@@ -358,41 +317,50 @@ function layernorm_bwd_run(data; TILE_N::Int, TILE_M::Int=32, nruns::Int=1, warm
         ct.launch(layer_norm_bwd_dwdb, num_tiles_n, DW_partial, DB_partial, FINAL_DW, FINAL_DB,
                   ct.Constant(TILE_M), ct.Constant(TILE_N))
     end
+
+    # Warmup
+    for _ in 1:warmup
+        run_fwd()
+        run_bwd()
+    end
     CUDA.synchronize()
 
-    times = Float64[]
+    # Timed forward runs
+    times_fwd = Float64[]
     for _ in 1:nruns
-        # Reset partial buffers
-        fill!(DW_partial, 0)
-        fill!(DB_partial, 0)
-        fill!(Locks, 0)
-        t = CUDA.@elapsed begin
-            ct.launch(layer_norm_bwd_dx_partial_dwdb, M, DX, DY, DW_partial, DB_partial, X, W,
-                      Mean, Rstd, Locks, ct.Constant(GROUP_SIZE_M), ct.Constant(TILE_N))
-            num_tiles_n = cld(N, TILE_N)
-            ct.launch(layer_norm_bwd_dwdb, num_tiles_n, DW_partial, DB_partial, FINAL_DW, FINAL_DB,
-                      ct.Constant(TILE_M), ct.Constant(TILE_N))
-        end
-        push!(times, t * 1000)  # ms
+        t = CUDA.@elapsed run_fwd()
+        push!(times_fwd, t * 1000)  # ms
     end
 
-    return (; DX, FINAL_DW, FINAL_DB, times)
+    # Timed backward runs
+    times_bwd = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed run_bwd()
+        push!(times_bwd, t * 1000)  # ms
+    end
+
+    return (; Y, Mean, Rstd, DX, FINAL_DW, FINAL_DB, times_fwd, times_bwd)
 end
 
-function layernorm_bwd_verify(fwd_data, bwd_data, bwd_result)
-    (; X, W, N, eps) = fwd_data
-    (; DY, Mean, Rstd) = bwd_data
+function layernorm_verify(data, result)
+    (; X, W, B, DY, N, eps) = data
 
     X_cpu = Array(X)
     W_cpu = Array(W)
+    B_cpu = Array(B)
     DY_cpu = Array(DY)
 
-    # Compute expected values
+    # Forward verification
     expected_mean = vec(sum(X_cpu, dims=2) ./ N)
     expected_var = vec(sum((X_cpu .- expected_mean) .^ 2, dims=2) ./ N)
     expected_rstd = 1.0f0 ./ sqrt.(expected_var .+ eps)
     xhat = (X_cpu .- expected_mean) .* expected_rstd
+    expected_Y = xhat .* W_cpu' .+ B_cpu'
 
+    atol, rtol = 1f-2, 1f-2
+    @assert isapprox(expected_Y, Array(result.Y); rtol, atol) "Y mismatch"
+
+    # Backward verification
     wdy = W_cpu' .* DY_cpu
     c1 = sum(xhat .* wdy, dims=2) ./ N
     c2 = sum(wdy, dims=2) ./ N
@@ -400,10 +368,18 @@ function layernorm_bwd_verify(fwd_data, bwd_data, bwd_result)
     expected_DW = vec(sum(DY_cpu .* xhat, dims=1))
     expected_DB = vec(sum(DY_cpu, dims=1))
 
-    atol, rtol = 1f-2, 1f-2
-    @assert isapprox(expected_DX, Array(bwd_result.DX); rtol, atol) "dX mismatch"
-    @assert isapprox(expected_DW, Array(bwd_result.FINAL_DW); rtol, atol) "dW mismatch"
-    @assert isapprox(expected_DB, Array(bwd_result.FINAL_DB); rtol, atol) "dB mismatch"
+    @assert isapprox(expected_DX, Array(result.DX); rtol, atol) "dX mismatch"
+    @assert isapprox(expected_DW, Array(result.FINAL_DW); rtol, atol) "dW mismatch"
+    @assert isapprox(expected_DB, Array(result.FINAL_DB); rtol, atol) "dB mismatch"
+end
+
+function test_layernorm(M, N, TILE_N; TILE_M::Int=32, eps::Float32=1f-5, name=nothing)
+    name = something(name, "layernorm ($M x $N), tile_n=$TILE_N, tile_m=$TILE_M")
+    println("--- $name ---")
+    data = layernorm_prepare(; M, N, eps)
+    result = layernorm_run(data; TILE_N, TILE_M)
+    layernorm_verify(data, result)
+    println("  fwd passed, bwd passed")
 end
 
 #=============================================================================
@@ -411,42 +387,13 @@ end
 =============================================================================#
 
 function main()
-    println("=== cuTile LayerNorm Sample ===\n")
+    println("=== cuTile LayerNorm Examples (fwd+bwd) ===\n")
 
-    M, N = 1024, 2048
-    TILE_N = 1024
-    eps = 1f-5
+    test_layernorm(256, 256, 256)
+    test_layernorm(512, 512, 512)
+    test_layernorm(1024, 2048, 1024)
 
-    println("Input shape: ($M, $N), dtype: Float32, eps: $eps")
-
-    # =========================================================================
-    # Forward Pass
-    # =========================================================================
-    println("\n--- Forward Pass ---")
-    fwd_data = layernorm_fwd_prepare(; M, N, eps)
-    fwd_result = layernorm_fwd_run(fwd_data; TILE_N)
-    layernorm_fwd_verify(fwd_data, fwd_result)
-    println("Forward pass: PASSED")
-
-    # =========================================================================
-    # Backward Pass (Full: dX, dW, dB)
-    # =========================================================================
-    println("\n--- Backward Pass (Full: dX, dW, dB) ---")
-    GROUP_SIZE_M = 64
-    TILE_M = 32
-    bwd_data = layernorm_bwd_prepare(fwd_data, fwd_result; GROUP_SIZE_M)
-    bwd_result = layernorm_bwd_run(bwd_data; TILE_N, TILE_M)
-    layernorm_bwd_verify(fwd_data, bwd_data, bwd_result)
-    println("  dX: PASSED")
-    println("  dW: PASSED")
-    println("  dB: PASSED")
-
-    # =========================================================================
-    # Summary
-    # =========================================================================
-    println("\n=== Summary ===")
-    println("Forward pass:        PASSED")
-    println("Backward (dX/dW/dB): PASSED")
+    println("\n=== All layernorm examples completed ===")
 end
 
 isinteractive() || main()

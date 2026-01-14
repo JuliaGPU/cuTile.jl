@@ -377,17 +377,29 @@ def benchmark_layernorm():
     min_t, mean_t = benchmark_torch(torch_layernorm)
     results.append(BenchmarkResult("PyTorch", min_t, mean_t))
 
-    # cuTile - use prepare/run/verify pattern
+    # cuTile - use prepare/run/verify pattern (unified fwd+bwd)
     result = layernorm_run(data, tile_n=LAYERNORM_TILE_N, nruns=NRUNS, warmup=WARMUP)
     layernorm_verify(data, result)
-    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
-    results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
+
+    # Forward pass timing
+    min_t_fwd = min(result["times_fwd"])
+    mean_t_fwd = sum(result["times_fwd"]) / len(result["times_fwd"])
+    results.append(BenchmarkResult("cuTile Fwd", min_t_fwd, mean_t_fwd))
+
+    # Backward pass timing
+    min_t_bwd = min(result["times_bwd"])
+    mean_t_bwd = sum(result["times_bwd"]) / len(result["times_bwd"])
 
     # Calculate bandwidth (rough estimate: 3 reads of X + W + B, 1 write of Y)
     bytes_transferred = (3 * M * N + N + N + M * N) * 4
     bandwidths = [f"{bytes_transferred / (r.min_ms / 1000) / 1e9:.1f} GB/s" for r in results]
 
-    print_table("Layer Normalization (Float32)", results, extra_col=("Bandwidth", bandwidths))
+    print_table("Layer Normalization Forward (Float32)", results, extra_col=("Bandwidth", bandwidths))
+
+    # Print backward results separately
+    bwd_results = [BenchmarkResult("cuTile Bwd", min_t_bwd, mean_t_bwd)]
+    print_table("Layer Normalization Backward (Float32)", bwd_results)
+
     return results
 
 
