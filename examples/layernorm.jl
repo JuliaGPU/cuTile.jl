@@ -273,10 +273,13 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
 end
 
 #=============================================================================
- Unified prepare/run/verify pattern (fwd + bwd)
+ Example harness
 =============================================================================#
 
-function layernorm_prepare(; M::Int, N::Int, eps::Float32=1f-5, GROUP_SIZE_M::Int=64)
+function prepare(; benchmark::Bool=false,
+                  M::Int=benchmark ? 4096 : 256,
+                  N::Int=benchmark ? 4096 : 256,
+                  eps::Float32=1f-5, GROUP_SIZE_M::Int=64)
     return (;
         # Forward inputs/outputs
         X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N),
@@ -298,7 +301,7 @@ function layernorm_prepare(; M::Int, N::Int, eps::Float32=1f-5, GROUP_SIZE_M::In
     )
 end
 
-function layernorm_run(data; TILE_N::Int, TILE_M::Int=32, nruns::Int=1, warmup::Int=0)
+function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0)
     (; X, W, B, Y, Mean, Rstd, DY, DX, DW_partial, DB_partial, Locks, FINAL_DW, FINAL_DB,
        M, N, eps, GROUP_SIZE_M) = data
 
@@ -319,11 +322,10 @@ function layernorm_run(data; TILE_N::Int, TILE_M::Int=32, nruns::Int=1, warmup::
     end
 
     # Warmup
-    for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         run_fwd()
         run_bwd()
     end
-    CUDA.synchronize()
 
     # Timed forward runs
     times_fwd = Float64[]
@@ -342,7 +344,7 @@ function layernorm_run(data; TILE_N::Int, TILE_M::Int=32, nruns::Int=1, warmup::
     return (; Y, Mean, Rstd, DX, FINAL_DW, FINAL_DB, times_fwd, times_bwd)
 end
 
-function layernorm_verify(data, result)
+function verify(data, result)
     (; X, W, B, DY, N, eps) = data
 
     X_cpu = Array(X)
@@ -376,11 +378,13 @@ end
 function test_layernorm(M, N, TILE_N; TILE_M::Int=32, eps::Float32=1f-5, name=nothing)
     name = something(name, "layernorm ($M x $N), tile_n=$TILE_N, tile_m=$TILE_M")
     println("--- $name ---")
-    data = layernorm_prepare(; M, N, eps)
-    result = layernorm_run(data; TILE_N, TILE_M)
-    layernorm_verify(data, result)
+    data = prepare(; M, N, eps)
+    result = run(data; TILE_N, TILE_M)
+    verify(data, result)
     println("  fwd passed, bwd passed")
 end
+
+# No run_others for layernorm - no simple reference implementation to compare against
 
 #=============================================================================
  Main

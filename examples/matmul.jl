@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA
+using LinearAlgebra
 import cuTile as ct
 
 # 2D swizzle for better L2 cache locality
@@ -66,7 +67,11 @@ end
  Example harness
 =============================================================================#
 
-function matmul_prepare(; M::Int, N::Int, K::Int, T::DataType=Float32)
+function prepare(; benchmark::Bool=false,
+                  M::Int=benchmark ? 4096 : 256,
+                  N::Int=benchmark ? 4096 : 256,
+                  K::Int=benchmark ? 4096 : 256,
+                  T::DataType=Float32)
     return (;
         A = CUDA.rand(T, M, K),
         B = CUDA.rand(T, K, N),
@@ -75,15 +80,14 @@ function matmul_prepare(; M::Int, N::Int, K::Int, T::DataType=Float32)
     )
 end
 
-function matmul_run(data; tm::Int, tn::Int, tk::Int, nruns::Int=1, warmup::Int=0)
+function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int=0)
     (; A, B, C, M, N, K) = data
     grid = cld(M, tm) * cld(N, tn)
 
-    for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         ct.launch(matmul_kernel, grid, A, B, C,
                   ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
     end
-    CUDA.synchronize()
 
     times = Float64[]
     for _ in 1:nruns
@@ -95,9 +99,33 @@ function matmul_run(data; tm::Int, tn::Int, tk::Int, nruns::Int=1, warmup::Int=0
     return (; C, times)
 end
 
-function matmul_verify(data, result)
+function verify(data, result)
     expected = Array(data.A) * Array(data.B)
     @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
+end
+
+#=============================================================================
+ Reference implementations for benchmarking
+=============================================================================#
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; A, B) = data
+    results = Dict{String, Vector{Float64}}()
+
+    C_gpuarrays = similar(A, size(A, 1), size(B, 2))
+
+    # GPUArrays (uses cuBLAS under the hood via LinearAlgebra.mul!)
+    CUDA.@sync for _ in 1:warmup
+        mul!(C_gpuarrays, A, B)
+    end
+    times_gpuarrays = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed mul!(C_gpuarrays, A, B)
+        push!(times_gpuarrays, t * 1000)
+    end
+    results["cuBLAS"] = times_gpuarrays
+
+    return results
 end
 
 #=============================================================================
@@ -107,9 +135,9 @@ end
 function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     name = something(name, "matmul ($M x $K) @ ($K x $N), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
-    data = matmul_prepare(; M, N, K, T)
-    result = matmul_run(data; tm, tn, tk)
-    matmul_verify(data, result)
+    data = prepare(; M, N, K, T)
+    result = run(data; tm, tn, tk)
+    verify(data, result)
     println("  passed")
 end
 

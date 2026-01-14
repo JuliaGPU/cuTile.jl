@@ -128,8 +128,12 @@ def layernorm_bwd_dwdb_kernel(DW, DB, FINAL_DW, FINAL_DB, TILE_M: ct.Constant[in
 # Example harness
 #=============================================================================
 
-def layernorm_prepare(*, M: int, N: int, eps: float = 1e-5, GROUP_SIZE_M: int = 64, dtype=np.float32):
+def prepare(*, benchmark: bool = False, M: int = None, N: int = None, eps: float = 1e-5, GROUP_SIZE_M: int = 64, dtype=np.float32):
     """Allocate all data for forward and backward passes."""
+    if M is None:
+        M = 4096 if benchmark else 256
+    if N is None:
+        N = 4096 if benchmark else 256
     return {
         # Forward inputs/outputs
         "X": (-2.3 + 0.5 * cp.random.randn(M, N)).astype(dtype),
@@ -154,7 +158,7 @@ def layernorm_prepare(*, M: int, N: int, eps: float = 1e-5, GROUP_SIZE_M: int = 
     }
 
 
-def layernorm_run(data, *, tile_n: int, tile_m: int = 32, nruns: int = 1, warmup: int = 0):
+def run(data, *, tile_n: int = 1024, tile_m: int = 32, nruns: int = 1, warmup: int = 0):
     """Run both forward and backward passes with timing."""
     X, W, B, Y = data["X"], data["W"], data["B"], data["Y"]
     Mean, Rstd = data["Mean"], data["Rstd"]
@@ -215,7 +219,7 @@ def layernorm_run(data, *, tile_n: int, tile_m: int = 32, nruns: int = 1, warmup
     }
 
 
-def layernorm_verify(data, result):
+def verify(data, result):
     """Verify both forward and backward results."""
     X_np = cp.asnumpy(data["X"])
     W_np = cp.asnumpy(data["W"])
@@ -250,6 +254,8 @@ def layernorm_verify(data, result):
     assert np.allclose(cp.asnumpy(result["DB"]), expected_DB, rtol=rtol, atol=atol), \
         f"DB mismatch! max diff: {np.max(np.abs(cp.asnumpy(result['DB']) - expected_DB))}"
 
+# No run_others for layernorm - no simple reference implementation to compare against
+
 
 #=============================================================================
 # Main
@@ -259,9 +265,9 @@ def test_layernorm(M, N, tile_n, tile_m=32, eps=1e-5, dtype=np.float32, name=Non
     """Test layer normalization (fwd+bwd) with given parameters."""
     name = name or f"layernorm ({M}x{N}), tile_n={tile_n}, tile_m={tile_m}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    data = layernorm_prepare(M=M, N=N, eps=eps, dtype=dtype)
-    result = layernorm_run(data, tile_n=tile_n, tile_m=tile_m)
-    layernorm_verify(data, result)
+    data = prepare(M=M, N=N, eps=eps, dtype=dtype)
+    result = run(data, tile_n=tile_n, tile_m=tile_m)
+    verify(data, result)
     print("  fwd passed, bwd passed")
 
 

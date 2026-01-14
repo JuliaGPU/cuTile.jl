@@ -21,7 +21,10 @@ end
  Example harness
 =============================================================================#
 
-function transpose_prepare(; m::Int, n::Int, T::DataType=Float32)
+function prepare(; benchmark::Bool=false,
+                  m::Int=benchmark ? 8192 : 1024,
+                  n::Int=benchmark ? 8192 : 512,
+                  T::DataType=Float32)
     return (;
         x = CUDA.rand(T, m, n),
         y = CUDA.zeros(T, n, m),
@@ -29,15 +32,14 @@ function transpose_prepare(; m::Int, n::Int, T::DataType=Float32)
     )
 end
 
-function transpose_run(data; tm::Int, tn::Int, nruns::Int=1, warmup::Int=0)
+function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     (; x, y, m, n) = data
     grid = (cld(m, tm), cld(n, tn))
 
-    for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         ct.launch(transpose_kernel, grid, x, y,
                   ct.Constant(tm), ct.Constant(tn))
     end
-    CUDA.synchronize()
 
     times = Float64[]
     for _ in 1:nruns
@@ -49,8 +51,56 @@ function transpose_run(data; tm::Int, tn::Int, nruns::Int=1, warmup::Int=0)
     return (; y, times)
 end
 
-function transpose_verify(data, result)
+function verify(data, result)
     @assert Array(result.y) ≈ transpose(Array(data.x))
+end
+
+#=============================================================================
+ Reference implementations for benchmarking
+=============================================================================#
+
+# Simple SIMT transpose kernel (naive, no shared memory)
+function simt_naive_kernel(x, y, m, n)
+    i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    j = (blockIdx().y - 1) * blockDim().y + threadIdx().y
+    if i <= m && j <= n
+        @inbounds y[j, i] = x[i, j]
+    end
+    return
+end
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; x, m, n) = data
+    results = Dict{String, Vector{Float64}}()
+
+    y_gpuarrays = similar(x, n, m)
+    y_simt = similar(x, n, m)
+
+    # GPUArrays (permutedims)
+    CUDA.@sync for _ in 1:warmup
+        permutedims!(y_gpuarrays, x, (2, 1))
+    end
+    times_gpuarrays = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
+        push!(times_gpuarrays, t * 1000)
+    end
+    results["GPUArrays"] = times_gpuarrays
+
+    # SIMT naive kernel
+    threads = (16, 16)
+    blocks = (cld(m, threads[1]), cld(n, threads[2]))
+    CUDA.@sync for _ in 1:warmup
+        @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
+    end
+    times_simt = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
+        push!(times_simt, t * 1000)
+    end
+    results["SIMT naive"] = times_simt
+
+    return results
 end
 
 #=============================================================================
@@ -60,9 +110,9 @@ end
 function test_transpose(::Type{T}, m, n, tm, tn; name=nothing) where T
     name = something(name, "transpose ($m x $n, $T, tiles=$tm x $tn)")
     println("--- $name ---")
-    data = transpose_prepare(; m, n, T)
-    result = transpose_run(data; tm, tn)
-    transpose_verify(data, result)
+    data = prepare(; m, n, T)
+    result = run(data; tm, tn)
+    verify(data, result)
     println("✓ passed")
 end
 

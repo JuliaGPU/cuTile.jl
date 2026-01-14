@@ -215,7 +215,11 @@ end
  Example harness
 =============================================================================#
 
-function fft_prepare(; batch::Int, n::Int, factors::NTuple{3,Int}, atom_packing_dim::Int=2)
+function prepare(; benchmark::Bool=false,
+                  batch::Int=benchmark ? 64 : 2,
+                  n::Int=benchmark ? 512 : 8,
+                  factors::NTuple{3,Int}=benchmark ? (8, 8, 8) : (2, 2, 2),
+                  atom_packing_dim::Int=2)
     @assert factors[1] * factors[2] * factors[3] == n "Factors must multiply to N"
     @assert (n * 2) % atom_packing_dim == 0 "N*2 must be divisible by atom_packing_dim"
 
@@ -243,7 +247,7 @@ function fft_prepare(; batch::Int, n::Int, factors::NTuple{3,Int}, atom_packing_
     )
 end
 
-function fft_run(data; nruns::Int=1, warmup::Int=0)
+function run(data; nruns::Int=1, warmup::Int=0)
     (; x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
        factors, batch, n, D, N2D) = data
 
@@ -253,7 +257,7 @@ function fft_run(data; nruns::Int=1, warmup::Int=0)
     F0F2 = F0 * F2
     grid = (batch, 1, 1)
 
-    for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         ct.launch(fft_kernel, grid,
                   x_packed, y_packed,
                   W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
@@ -261,7 +265,6 @@ function fft_run(data; nruns::Int=1, warmup::Int=0)
                   ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
                   ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
     end
-    CUDA.synchronize()
 
     times = Float64[]
     for _ in 1:nruns
@@ -281,9 +284,34 @@ function fft_run(data; nruns::Int=1, warmup::Int=0)
     return (; output, times)
 end
 
-function fft_verify(data, result)
+function verify(data, result)
     reference = FFTW.fft(Array(data.input), 2)
     @assert isapprox(Array(result.output), reference, rtol=1e-4)
+end
+
+#=============================================================================
+ Reference implementations for benchmarking
+=============================================================================#
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; input, batch, n) = data
+    results = Dict{String, Vector{Float64}}()
+
+    output_cufft = similar(input)
+
+    # CUFFT via CUDA.CUFFT
+    CUDA.@sync for _ in 1:warmup
+        CUDA.CUFFT.fft!(copy(input), 2)
+    end
+    times_cufft = Float64[]
+    for _ in 1:nruns
+        input_copy = copy(input)
+        t = CUDA.@elapsed CUDA.CUFFT.fft!(input_copy, 2)
+        push!(times_cufft, t * 1000)
+    end
+    results["cuFFT"] = times_cufft
+
+    return results
 end
 
 #=============================================================================
@@ -306,13 +334,13 @@ function main()
     println("    Atom Packing Dim: $ATOM_PACKING_DIM")
 
     # Use prepare/run/verify pattern
-    data = fft_prepare(; batch=BATCH_SIZE, n=FFT_SIZE, factors=FFT_FACTORS, atom_packing_dim=ATOM_PACKING_DIM)
+    data = prepare(; batch=BATCH_SIZE, n=FFT_SIZE, factors=FFT_FACTORS, atom_packing_dim=ATOM_PACKING_DIM)
     println("\nInput data shape: $(size(data.input)), dtype: $(eltype(data.input))")
 
-    result = fft_run(data)
+    result = run(data)
     println("cuTile FFT Output shape: $(size(result.output)), dtype: $(eltype(result.output))")
 
-    fft_verify(data, result)
+    verify(data, result)
     println("\n✓ Correctness check PASSED")
 
     println("\n--- cuTile FFT example execution complete ---")

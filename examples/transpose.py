@@ -20,8 +20,12 @@ def transpose_cutile_kernel(input, output, tile_m: ct.Constant[int], tile_n: ct.
 # Example harness
 #=============================================================================
 
-def transpose_prepare(*, M: int, N: int, dtype=np.float32):
+def prepare(*, benchmark: bool = False, M: int = None, N: int = None, dtype=np.float32):
     """Allocate and initialize data for transpose."""
+    if M is None:
+        M = 8192 if benchmark else 1024
+    if N is None:
+        N = 8192 if benchmark else 512
     return {
         "input": cp.random.rand(M, N).astype(dtype),
         "output": cp.zeros((N, M), dtype=dtype),
@@ -30,7 +34,7 @@ def transpose_prepare(*, M: int, N: int, dtype=np.float32):
     }
 
 
-def transpose_run(data, *, tile_m: int, tile_n: int, nruns: int = 1, warmup: int = 0):
+def run(data, *, tile_m: int = 64, tile_n: int = 64, nruns: int = 1, warmup: int = 0):
     """Run transpose kernel with timing."""
     input_arr = data["input"]
     output_arr = data["output"]
@@ -58,10 +62,42 @@ def transpose_run(data, *, tile_m: int, tile_n: int, nruns: int = 1, warmup: int
     return {"output": output_arr, "times": times}
 
 
-def transpose_verify(data, result):
+def verify(data, result):
     """Verify transpose results."""
     expected = cp.asnumpy(data["input"]).T
     assert np.allclose(cp.asnumpy(result["output"]), expected), "transpose incorrect!"
+
+
+#=============================================================================
+# Reference implementations for benchmarking
+#=============================================================================
+
+def run_others(data, *, nruns: int = 1, warmup: int = 0):
+    """Run reference implementations for comparison."""
+    results = {}
+    input_arr = data["input"]
+    M, N = data["M"], data["N"]
+    output_cupy = cp.zeros((N, M), dtype=input_arr.dtype)
+
+    stream = cp.cuda.get_current_stream()
+
+    # CuPy transpose
+    for _ in range(warmup):
+        cp.copyto(output_cupy, input_arr.T)
+    cp.cuda.runtime.deviceSynchronize()
+
+    times_cupy = []
+    for _ in range(nruns):
+        start = cp.cuda.Event()
+        end = cp.cuda.Event()
+        start.record(stream)
+        cp.copyto(output_cupy, input_arr.T)
+        end.record(stream)
+        end.synchronize()
+        times_cupy.append(cp.cuda.get_elapsed_time(start, end))
+    results["CuPy"] = times_cupy
+
+    return results
 
 
 #=============================================================================
@@ -72,9 +108,9 @@ def test_transpose(M, N, tile_m, tile_n, dtype=np.float32, name=None):
     """Test transpose with given parameters."""
     name = name or f"transpose ({M}x{N}), tiles={tile_m}x{tile_n}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    data = transpose_prepare(M=M, N=N, dtype=dtype)
-    result = transpose_run(data, tile_m=tile_m, tile_n=tile_n)
-    transpose_verify(data, result)
+    data = prepare(M=M, N=N, dtype=dtype)
+    result = run(data, tile_m=tile_m, tile_n=tile_n)
+    verify(data, result)
     print("  passed")
 
 

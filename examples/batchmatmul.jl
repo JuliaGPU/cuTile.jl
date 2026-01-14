@@ -61,7 +61,12 @@ end
  Example harness
 =============================================================================#
 
-function batchmatmul_prepare(; M::Int, K::Int, N::Int, Batch::Int, T::DataType=Float32)
+function prepare(; benchmark::Bool=false,
+                  M::Int=benchmark ? 1024 : 256,
+                  K::Int=benchmark ? 512 : 128,
+                  N::Int=benchmark ? 2048 : 256,
+                  Batch::Int=benchmark ? 8 : 4,
+                  T::DataType=Float32)
     return (;
         A = CUDA.rand(T, M, K, Batch),
         B = CUDA.rand(T, K, N, Batch),
@@ -70,15 +75,14 @@ function batchmatmul_prepare(; M::Int, K::Int, N::Int, Batch::Int, T::DataType=F
     )
 end
 
-function batchmatmul_run(data; tm::Int, tn::Int, tk::Int, nruns::Int=1, warmup::Int=0)
+function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int=0)
     (; A, B, C, M, N, Batch) = data
     grid = (cld(M, tm), cld(N, tn), Batch)
 
-    for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         ct.launch(batch_matmul_kernel, grid, A, B, C,
                   ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
     end
-    CUDA.synchronize()
 
     times = Float64[]
     for _ in 1:nruns
@@ -90,7 +94,7 @@ function batchmatmul_run(data; tm::Int, tn::Int, tk::Int, nruns::Int=1, warmup::
     return (; C, times)
 end
 
-function batchmatmul_verify(data, result)
+function verify(data, result)
     (; A, B, M, N, Batch) = data
     A_cpu = Array(A)
     B_cpu = Array(B)
@@ -102,15 +106,39 @@ function batchmatmul_verify(data, result)
 end
 
 #=============================================================================
+ Reference implementations for benchmarking
+=============================================================================#
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; A, B, M, N, Batch) = data
+    results = Dict{String, Vector{Float64}}()
+
+    C_cublas = similar(A, M, N, Batch)
+
+    # cuBLAS batched gemm via CUBLAS.gemm_strided_batched!
+    CUDA.@sync for _ in 1:warmup
+        CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+    end
+    times_cublas = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+        push!(times_cublas, t * 1000)
+    end
+    results["cuBLAS batched"] = times_cublas
+
+    return results
+end
+
+#=============================================================================
  Main
 =============================================================================#
 
 function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) where T
     name = something(name, "batch_matmul ($M x $K x $Batch) @ ($K x $N x $Batch), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
-    data = batchmatmul_prepare(; M, K, N, Batch, T)
-    result = batchmatmul_run(data; tm, tn, tk)
-    batchmatmul_verify(data, result)
+    data = prepare(; M, K, N, Batch, T)
+    result = run(data; tm, tn, tk)
+    verify(data, result)
     println("  passed")
 end
 

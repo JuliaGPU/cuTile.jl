@@ -48,8 +48,14 @@ def matmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk
 # Example harness
 #=============================================================================
 
-def matmul_prepare(*, M: int, N: int, K: int, dtype=np.float32):
+def prepare(*, benchmark: bool = False, M: int = None, N: int = None, K: int = None, dtype=np.float32):
     """Allocate and initialize data for matmul."""
+    if M is None:
+        M = 4096 if benchmark else 256
+    if N is None:
+        N = 4096 if benchmark else 256
+    if K is None:
+        K = 4096 if benchmark else 256
     return {
         "A": cp.random.randn(M, K).astype(dtype),
         "B": cp.random.randn(K, N).astype(dtype),
@@ -60,7 +66,7 @@ def matmul_prepare(*, M: int, N: int, K: int, dtype=np.float32):
     }
 
 
-def matmul_run(data, *, tm: int, tn: int, tk: int, nruns: int = 1, warmup: int = 0):
+def run(data, *, tm: int = 64, tn: int = 64, tk: int = 64, nruns: int = 1, warmup: int = 0):
     """Run matmul kernel with timing."""
     A, B, C = data["A"], data["B"], data["C"]
     M, N = data["M"], data["N"]
@@ -89,12 +95,44 @@ def matmul_run(data, *, tm: int, tn: int, tk: int, nruns: int = 1, warmup: int =
     return {"C": C, "times": times}
 
 
-def matmul_verify(data, result):
+def verify(data, result):
     """Verify matmul results."""
     expected = cp.asnumpy(data["A"]) @ cp.asnumpy(data["B"])
     # TF32 has reduced precision
     assert np.allclose(cp.asnumpy(result["C"]), expected, rtol=1e-1, atol=1e-1), \
         f"matmul incorrect! max diff: {np.max(np.abs(cp.asnumpy(result['C']) - expected))}"
+
+
+#=============================================================================
+# Reference implementations for benchmarking
+#=============================================================================
+
+def run_others(data, *, nruns: int = 1, warmup: int = 0):
+    """Run reference implementations for comparison."""
+    results = {}
+    A, B = data["A"], data["B"]
+    M, N = data["M"], data["N"]
+    C_cupy = cp.zeros((M, N), dtype=A.dtype)
+
+    stream = cp.cuda.get_current_stream()
+
+    # CuPy matmul (uses cuBLAS)
+    for _ in range(warmup):
+        cp.matmul(A, B, out=C_cupy)
+    cp.cuda.runtime.deviceSynchronize()
+
+    times_cupy = []
+    for _ in range(nruns):
+        start = cp.cuda.Event()
+        end = cp.cuda.Event()
+        start.record(stream)
+        cp.matmul(A, B, out=C_cupy)
+        end.record(stream)
+        end.synchronize()
+        times_cupy.append(cp.cuda.get_elapsed_time(start, end))
+    results["cuBLAS"] = times_cupy
+
+    return results
 
 
 #=============================================================================
@@ -105,9 +143,9 @@ def test_matmul(M, N, K, tm, tn, tk, dtype=np.float32, name=None):
     """Test matmul with given parameters."""
     name = name or f"matmul ({M}x{K}) @ ({K}x{N}), tiles={tm}x{tn}x{tk}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    data = matmul_prepare(M=M, N=N, K=K, dtype=dtype)
-    result = matmul_run(data, tm=tm, tn=tn, tk=tk)
-    matmul_verify(data, result)
+    data = prepare(M=M, N=N, K=K, dtype=dtype)
+    result = run(data, tm=tm, tn=tn, tk=tk)
+    verify(data, result)
     print("  passed")
 
 

@@ -111,10 +111,16 @@ def fft_make_twiddles(factors, precision, device):
 # Example harness
 #=============================================================================
 
-def fft_prepare(*, batch: int, size: int, factors: tuple, atom_packing_dim: int = 2):
+def prepare(*, benchmark: bool = False, batch: int = None, size: int = None, factors: tuple = None, atom_packing_dim: int = 2):
     """Allocate and initialize data for FFT."""
+    if batch is None:
+        batch = 64 if benchmark else 2
+    if factors is None:
+        factors = (8, 8, 8) if benchmark else (2, 2, 2)
     F0, F1, F2 = factors
     N = F0 * F1 * F2
+    if size is None:
+        size = N
     assert size == N, f"size ({size}) must equal product of factors ({N})"
     D = atom_packing_dim
 
@@ -140,7 +146,7 @@ def fft_prepare(*, batch: int, size: int, factors: tuple, atom_packing_dim: int 
     }
 
 
-def fft_run(data, *, nruns: int = 1, warmup: int = 0):
+def run(data, *, nruns: int = 1, warmup: int = 0):
     """Run FFT kernel with timing."""
     x_packed = data["x_packed"]
     y_packed = data["y_packed"]
@@ -173,11 +179,39 @@ def fft_run(data, *, nruns: int = 1, warmup: int = 0):
     return {"output": output, "times": times}
 
 
-def fft_verify(data, result):
+def verify(data, result):
     """Verify FFT results."""
     reference = torch.fft.fft(data["input"], dim=-1)
     assert torch.allclose(result["output"], reference, rtol=1e-3, atol=1e-3), \
         f"FFT incorrect! max diff: {torch.max(torch.abs(result['output'] - reference))}"
+
+
+#=============================================================================
+# Reference implementations for benchmarking
+#=============================================================================
+
+def run_others(data, *, nruns: int = 1, warmup: int = 0):
+    """Run reference implementations for comparison."""
+    results = {}
+    input_data = data["input"]
+
+    # PyTorch FFT (uses cuFFT)
+    for _ in range(warmup):
+        torch.fft.fft(input_data, dim=-1)
+    torch.cuda.synchronize()
+
+    times_torch = []
+    for _ in range(nruns):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        torch.fft.fft(input_data, dim=-1)
+        end.record()
+        torch.cuda.synchronize()
+        times_torch.append(start.elapsed_time(end))
+    results["cuFFT"] = times_torch
+
+    return results
 
 
 #=============================================================================
@@ -188,9 +222,9 @@ def test_fft(batch, size, factors, name=None):
     """Test FFT with given parameters."""
     name = name or f"fft batch={batch}, size={size}, factors={factors}"
     print(f"--- {name} ---")
-    data = fft_prepare(batch=batch, size=size, factors=factors)
-    result = fft_run(data)
-    fft_verify(data, result)
+    data = prepare(batch=batch, size=size, factors=factors)
+    result = run(data)
+    verify(data, result)
     print("  passed")
 
 

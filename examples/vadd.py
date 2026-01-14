@@ -48,8 +48,10 @@ def vadd_kernel_1d_gather(a, b, c, tile_size: ct.Constant[int]):
 # Example harness
 #=============================================================================
 
-def vadd_prepare(*, shape: tuple, use_gather: bool = False, dtype=np.float32):
+def prepare(*, benchmark: bool = False, shape: tuple = None, use_gather: bool = False, dtype=np.float32):
     """Allocate and initialize data for vector addition."""
+    if shape is None:
+        shape = (2**27,) if benchmark else (1_024_000,)
     return {
         "a": cp.random.rand(*shape).astype(dtype),
         "b": cp.random.rand(*shape).astype(dtype),
@@ -59,7 +61,7 @@ def vadd_prepare(*, shape: tuple, use_gather: bool = False, dtype=np.float32):
     }
 
 
-def vadd_run(data, *, tile, nruns: int = 1, warmup: int = 0):
+def run(data, *, tile=1024, nruns: int = 1, warmup: int = 0):
     """Run vector addition kernel with timing."""
     a, b, c = data["a"], data["b"], data["c"]
     shape = data["shape"]
@@ -107,10 +109,44 @@ def vadd_run(data, *, tile, nruns: int = 1, warmup: int = 0):
     return {"c": c, "times": times}
 
 
-def vadd_verify(data, result):
+def verify(data, result):
     """Verify vector addition results."""
     expected = cp.asnumpy(data["a"]) + cp.asnumpy(data["b"])
     assert np.allclose(cp.asnumpy(result["c"]), expected), "vadd incorrect!"
+
+
+#=============================================================================
+# Reference implementations for benchmarking
+#=============================================================================
+
+def run_others(data, *, nruns: int = 1, warmup: int = 0):
+    """Run reference implementations for comparison."""
+    results = {}
+    shape = data["shape"]
+
+    if len(shape) == 1:
+        a, b = data["a"], data["b"]
+        c_cupy = cp.zeros_like(a)
+
+        stream = cp.cuda.get_current_stream()
+
+        # CuPy (broadcasting)
+        for _ in range(warmup):
+            cp.add(a, b, out=c_cupy)
+        cp.cuda.runtime.deviceSynchronize()
+
+        times_cupy = []
+        for _ in range(nruns):
+            start = cp.cuda.Event()
+            end = cp.cuda.Event()
+            start.record(stream)
+            cp.add(a, b, out=c_cupy)
+            end.record(stream)
+            end.synchronize()
+            times_cupy.append(cp.cuda.get_elapsed_time(start, end))
+        results["CuPy"] = times_cupy
+
+    return results
 
 
 #=============================================================================
@@ -127,9 +163,9 @@ def test_vadd(shape, tile, use_gather=False, dtype=np.float32, name=None):
         else:
             name = f"1D vadd size={shape[0]}, tile={tile}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    data = vadd_prepare(shape=shape, use_gather=use_gather, dtype=dtype)
-    result = vadd_run(data, tile=tile)
-    vadd_verify(data, result)
+    data = prepare(shape=shape, use_gather=use_gather, dtype=dtype)
+    result = run(data, tile=tile)
+    verify(data, result)
     print("  passed")
 
 

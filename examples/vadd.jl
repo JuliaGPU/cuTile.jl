@@ -48,7 +48,9 @@ end
 # Example harness
 =============================================================================#
 
-function vadd_prepare(; shape::Tuple, use_gather::Bool=false, T::DataType=Float32)
+function prepare(; benchmark::Bool=false,
+                  shape::Tuple=benchmark ? (2^27,) : (1_024_000,),
+                  use_gather::Bool=false, T::DataType=Float32)
     return (;
         a = CUDA.rand(T, shape...),
         b = CUDA.rand(T, shape...),
@@ -58,7 +60,7 @@ function vadd_prepare(; shape::Tuple, use_gather::Bool=false, T::DataType=Float3
     )
 end
 
-function vadd_run(data; tile::Union{Int, Tuple{Int,Int}}, nruns::Int=1, warmup::Int=0)
+function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::Int=0)
     (; a, b, c, shape, use_gather) = data
 
     if length(shape) == 2
@@ -67,11 +69,10 @@ function vadd_run(data; tile::Union{Int, Tuple{Int,Int}}, nruns::Int=1, warmup::
         tile_x, tile_y = tile isa Tuple ? tile : (tile, tile)
         grid = (cld(m, tile_x), cld(n, tile_y))
 
-        for _ in 1:warmup
+        CUDA.@sync for _ in 1:warmup
             ct.launch(vec_add_kernel_2d, grid, a, b, c,
                       ct.Constant(tile_x), ct.Constant(tile_y))
         end
-        CUDA.synchronize()
 
         times = Float64[]
         for _ in 1:nruns
@@ -86,10 +87,9 @@ function vadd_run(data; tile::Union{Int, Tuple{Int,Int}}, nruns::Int=1, warmup::
         grid = cld(n, tile_val)
         kernel = use_gather ? vec_add_kernel_1d_gather : vec_add_kernel_1d
 
-        for _ in 1:warmup
+        CUDA.@sync for _ in 1:warmup
             ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
         end
-        CUDA.synchronize()
 
         times = Float64[]
         for _ in 1:nruns
@@ -101,8 +101,59 @@ function vadd_run(data; tile::Union{Int, Tuple{Int,Int}}, nruns::Int=1, warmup::
     return (; c, times)
 end
 
-function vadd_verify(data, result)
+function verify(data, result)
     @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
+end
+
+
+#=============================================================================
+# Reference implementations for benchmarking
+=============================================================================#
+
+# Simple SIMT kernel for comparison
+function simt_kernel(a, b, c, n)
+    i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if i <= n
+        @inbounds c[i] = a[i] + b[i]
+    end
+    return
+end
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; a, b, c, shape) = data
+    results = Dict{String, Vector{Float64}}()
+
+    if length(shape) == 1
+        n = shape[1]
+        c_gpuarrays = similar(c)
+        c_simt = similar(c)
+
+        # GPUArrays (broadcasting)
+        CUDA.@sync for _ in 1:warmup
+            c_gpuarrays .= a .+ b
+        end
+        times_gpuarrays = Float64[]
+        for _ in 1:nruns
+            t = CUDA.@elapsed c_gpuarrays .= a .+ b
+            push!(times_gpuarrays, t * 1000)
+        end
+        results["GPUArrays"] = times_gpuarrays
+
+        # SIMT kernel
+        threads = 256
+        blocks = cld(n, threads)
+        CUDA.@sync for _ in 1:warmup
+            @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
+        end
+        times_simt = Float64[]
+        for _ in 1:nruns
+            t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
+            push!(times_simt, t * 1000)
+        end
+        results["SIMT"] = times_simt
+    end
+
+    return results
 end
 
 
@@ -121,9 +172,9 @@ function test_vadd(shape, tile; use_gather::Bool=false, T::DataType=Float32, nam
         end
     end
     println("--- $name ---")
-    data = vadd_prepare(; shape, use_gather, T)
-    result = vadd_run(data; tile)
-    vadd_verify(data, result)
+    data = prepare(; shape, use_gather, T)
+    result = run(data; tile)
+    verify(data, result)
     println("  passed")
 end
 
