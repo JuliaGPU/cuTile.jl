@@ -182,7 +182,7 @@ def benchmark_vadd():
     results.append(BenchmarkResult("PyTorch", min_t, mean_t))
 
     # cuTile - use prepare/run/verify pattern
-    data = vadd_prepare(n=VADD_SIZE, dtype=np.float32)
+    data = vadd_prepare(shape=(VADD_SIZE,), dtype=np.float32)
     # Copy expected data for apples-to-apples comparison
     data["a"] = a_cp
     data["b"] = b_cp

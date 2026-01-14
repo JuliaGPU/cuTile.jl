@@ -7,8 +7,9 @@ import cupy as cp
 import numpy as np
 import cuda.tile as ct
 
+# 1D kernel
 @ct.kernel
-def vadd_cutile_kernel(a, b, c, tile_size: ct.Constant[int]):
+def vadd_kernel_1d(a, b, c, tile_size: ct.Constant[int]):
     pid = ct.bid(0)
     tile_a = ct.load(a, index=(pid,), shape=(tile_size,))
     tile_b = ct.load(b, index=(pid,), shape=(tile_size,))
@@ -16,31 +17,80 @@ def vadd_cutile_kernel(a, b, c, tile_size: ct.Constant[int]):
     ct.store(c, index=(pid,), tile=result)
 
 
+# 2D kernel
+@ct.kernel
+def vadd_kernel_2d(a, b, c, tile_x: ct.Constant[int], tile_y: ct.Constant[int]):
+    pid_x = ct.bid(0)
+    pid_y = ct.bid(1)
+    tile_a = ct.load(a, index=(pid_x, pid_y), shape=(tile_x, tile_y))
+    tile_b = ct.load(b, index=(pid_x, pid_y), shape=(tile_x, tile_y))
+    result = tile_a + tile_b
+    ct.store(c, index=(pid_x, pid_y), tile=result)
+
+
+# 1D kernel with gather/scatter
+@ct.kernel
+def vadd_kernel_1d_gather(a, b, c, tile_size: ct.Constant[int]):
+    pid = ct.bid(0)
+    # Create index tile for this block's elements
+    offsets = ct.arange(tile_size, dtype=ct.int32)
+    base = pid * tile_size
+    indices = base + offsets
+
+    # Gather, add, scatter
+    tile_a = ct.gather(a, indices)
+    tile_b = ct.gather(b, indices)
+    result = tile_a + tile_b
+    ct.scatter(c, indices, result)
+
+
 #=============================================================================
-# prepare/run/verify pattern
+# Example harness
 #=============================================================================
 
-def vadd_prepare(*, n: int, dtype=np.float32):
+def vadd_prepare(*, shape: tuple, use_gather: bool = False, dtype=np.float32):
     """Allocate and initialize data for vector addition."""
     return {
-        "a": cp.random.rand(n).astype(dtype),
-        "b": cp.random.rand(n).astype(dtype),
-        "c": cp.zeros(n, dtype=dtype),
-        "n": n
+        "a": cp.random.rand(*shape).astype(dtype),
+        "b": cp.random.rand(*shape).astype(dtype),
+        "c": cp.zeros(shape, dtype=dtype),
+        "shape": shape,
+        "use_gather": use_gather
     }
 
 
-def vadd_run(data, *, tile: int, nruns: int = 1, warmup: int = 0):
+def vadd_run(data, *, tile, nruns: int = 1, warmup: int = 0):
     """Run vector addition kernel with timing."""
     a, b, c = data["a"], data["b"], data["c"]
-    n = data["n"]
+    shape = data["shape"]
+    use_gather = data["use_gather"]
 
-    grid = (ct.cdiv(n, tile), 1, 1)
     stream = cp.cuda.get_current_stream()
+
+    if len(shape) == 2:
+        # 2D case
+        m, n = shape
+        tile_x, tile_y = tile if isinstance(tile, tuple) else (tile, tile)
+        grid = (ct.cdiv(m, tile_x), ct.cdiv(n, tile_y), 1)
+
+        def run_kernel():
+            ct.launch(stream, grid, vadd_kernel_2d, (a, b, c, tile_x, tile_y))
+    else:
+        # 1D case
+        n = shape[0]
+        tile_val = tile[0] if isinstance(tile, tuple) else tile
+        grid = (ct.cdiv(n, tile_val), 1, 1)
+
+        if use_gather:
+            def run_kernel():
+                ct.launch(stream, grid, vadd_kernel_1d_gather, (a, b, c, tile_val))
+        else:
+            def run_kernel():
+                ct.launch(stream, grid, vadd_kernel_1d, (a, b, c, tile_val))
 
     # Warmup
     for _ in range(warmup):
-        ct.launch(stream, grid, vadd_cutile_kernel, (a, b, c, tile))
+        run_kernel()
     cp.cuda.runtime.deviceSynchronize()
 
     # Timed runs
@@ -49,7 +99,7 @@ def vadd_run(data, *, tile: int, nruns: int = 1, warmup: int = 0):
         start = cp.cuda.Event()
         end = cp.cuda.Event()
         start.record(stream)
-        ct.launch(stream, grid, vadd_cutile_kernel, (a, b, c, tile))
+        run_kernel()
         end.record(stream)
         end.synchronize()
         times.append(cp.cuda.get_elapsed_time(start, end))  # ms
@@ -64,14 +114,20 @@ def vadd_verify(data, result):
 
 
 #=============================================================================
-# Test function
+# Main
 #=============================================================================
 
-def test_vadd(n, tile, dtype=np.float32, name=None):
+def test_vadd(shape, tile, use_gather=False, dtype=np.float32, name=None):
     """Test vector addition with given parameters."""
-    name = name or f"vadd size={n}, tile={tile}, dtype={dtype.__name__}"
+    if name is None:
+        if len(shape) == 2:
+            name = f"2D vadd ({shape[0]}x{shape[1]}), tile={tile}, dtype={dtype.__name__}"
+        elif use_gather:
+            name = f"1D vadd gather size={shape[0]}, tile={tile}, dtype={dtype.__name__}"
+        else:
+            name = f"1D vadd size={shape[0]}, tile={tile}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    data = vadd_prepare(n=n, dtype=dtype)
+    data = vadd_prepare(shape=shape, use_gather=use_gather, dtype=dtype)
     result = vadd_run(data, tile=tile)
     vadd_verify(data, result)
     print("  passed")
@@ -80,9 +136,29 @@ def test_vadd(n, tile, dtype=np.float32, name=None):
 def main():
     print("--- cuTile Vector Addition Examples ---\n")
 
-    test_vadd(1_024_000, 1024)
-    test_vadd(2**20, 512)
-    test_vadd(2**20, 1024)
+    # 1D tests with float32
+    test_vadd((1_024_000,), 1024)
+    test_vadd((2**20,), 512)
+
+    # 1D tests with float64
+    test_vadd((2**18,), 512, dtype=np.float64)
+
+    # 1D tests with float16
+    test_vadd((1_024_000,), 1024, dtype=np.float16)
+
+    # 2D tests with float32
+    test_vadd((2048, 1024), (32, 32))
+    test_vadd((1024, 2048), (64, 64))
+
+    # 2D tests with float64
+    test_vadd((1024, 512), (32, 32), dtype=np.float64)
+
+    # 2D tests with float16
+    test_vadd((1024, 1024), (64, 64), dtype=np.float16)
+
+    # 1D gather/scatter tests
+    test_vadd((1_024_000,), 1024, use_gather=True)
+    test_vadd((2**20,), 512, use_gather=True)
 
     print("\n--- All vadd examples completed ---")
 

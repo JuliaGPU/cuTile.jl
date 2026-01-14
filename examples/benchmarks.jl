@@ -105,7 +105,7 @@ function benchmark_vadd()
     println("  Size: $VADD_SIZE elements ($(VADD_SIZE * 4 / 1e6) MB)")
 
     # Prepare data once (using vadd.jl's prepare function)
-    data = vadd_1d_prepare(; n=VADD_SIZE, T=Float32)
+    data = vadd_prepare(; shape=(VADD_SIZE,), T=Float32)
     (; a, b, c) = data
     expected = Array(a) .+ Array(b)
 
@@ -132,8 +132,8 @@ function benchmark_vadd()
     push!(results, BenchmarkResult("SIMT (CUDA.jl)", min_t, mean_t))
 
     # cuTile (using vadd.jl's run/verify functions)
-    result = vadd_1d_run(data; tile=VADD_TILE, nruns=NRUNS, warmup=WARMUP)
-    vadd_1d_verify(data, result)
+    result = vadd_run(data; tile=VADD_TILE, nruns=NRUNS, warmup=WARMUP)
+    vadd_verify(data, result)
     min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
