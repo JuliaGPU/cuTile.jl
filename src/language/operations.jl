@@ -512,16 +512,15 @@ end
 end
 
 #=============================================================================
- Matmul
+ Matrix multiplication
 =============================================================================#
 
 # Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
-# Uses tensor cores when available.
 @inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
     Intrinsics.mma(a, b, acc)
 
-# Internal matmul helper (used by * operator)
-@inline function matmul(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
+# Matrix multiplication (A * B like Julia arrays)
+@inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
     _matmul(a, b, Val(length(SA)))
 end
 
@@ -588,13 +587,3 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
 
-#=============================================================================
- Matrix Multiplication
-=============================================================================#
-
-# Matrix multiplication (A * B like Julia arrays)
-@inline Base.:(*)(a::Tile, b::Tile) = matmul(a, b)
-
-# Base overloads for Int32 (special intrinsics)
-@noinline Base.rem(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
-@noinline Base.min(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
