@@ -59,7 +59,7 @@ def prepare(*, benchmark: bool = False, M: int = None, N: int = None, K: int = N
     return {
         "A": cp.random.randn(M, K).astype(dtype),
         "B": cp.random.randn(K, N).astype(dtype),
-        "C": cp.zeros((M, N), dtype=dtype),
+        "C": cp.empty((M, N), dtype=dtype),
         "M": M,
         "N": N,
         "K": K

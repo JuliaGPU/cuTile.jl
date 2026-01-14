@@ -75,7 +75,7 @@ function prepare(; benchmark::Bool=false,
     return (;
         A = CUDA.rand(T, M, K),
         B = CUDA.rand(T, K, N),
-        C = CUDA.zeros(T, M, N),
+        C = CuArray{T}(undef, M, N),
         M, N, K
     )
 end

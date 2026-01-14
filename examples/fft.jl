@@ -238,7 +238,7 @@ function prepare(; benchmark::Bool=false,
     D = atom_packing_dim
     N2D = n * 2 ÷ D
     x_packed = reinterpret(reshape, Float32, input)
-    y_packed = CUDA.zeros(Float32, D, batch, N2D)
+    y_packed = CuArray{Float32}(undef, D, batch, N2D)
 
     return (;
         input, x_packed, y_packed,

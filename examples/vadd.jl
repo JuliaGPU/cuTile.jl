@@ -51,10 +51,11 @@ end
 function prepare(; benchmark::Bool=false,
                   shape::Tuple=benchmark ? (2^27,) : (1_024_000,),
                   use_gather::Bool=false, T::DataType=Float32)
+    a = CUDA.rand(T, shape...)
     return (;
-        a = CUDA.rand(T, shape...),
+        a,
         b = CUDA.rand(T, shape...),
-        c = CUDA.zeros(T, shape...),
+        c = similar(a),
         shape,
         use_gather
     )

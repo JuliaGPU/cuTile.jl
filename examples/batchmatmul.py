@@ -53,7 +53,7 @@ def prepare(*, benchmark: bool = False, Batch: int = None, M: int = None, K: int
     return {
         "A": cp.random.randn(Batch, M, K).astype(dtype),
         "B": cp.random.randn(Batch, K, N).astype(dtype),
-        "C": cp.zeros((Batch, M, N), dtype=dtype),
+        "C": cp.empty((Batch, M, N), dtype=dtype),
         "Batch": Batch,
         "M": M,
         "K": K,

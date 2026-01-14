@@ -28,7 +28,7 @@ def prepare(*, benchmark: bool = False, M: int = None, N: int = None, dtype=np.f
         N = 8192 if benchmark else 512
     return {
         "input": cp.random.rand(M, N).astype(dtype),
-        "output": cp.zeros((N, M), dtype=dtype),
+        "output": cp.empty((N, M), dtype=dtype),
         "M": M,
         "N": N
     }

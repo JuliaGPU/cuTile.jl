@@ -52,10 +52,11 @@ def prepare(*, benchmark: bool = False, shape: tuple = None, use_gather: bool = 
     """Allocate and initialize data for vector addition."""
     if shape is None:
         shape = (2**27,) if benchmark else (1_024_000,)
+    a = cp.random.rand(*shape).astype(dtype)
     return {
-        "a": cp.random.rand(*shape).astype(dtype),
+        "a": a,
         "b": cp.random.rand(*shape).astype(dtype),
-        "c": cp.zeros(shape, dtype=dtype),
+        "c": cp.empty_like(a),
         "shape": shape,
         "use_gather": use_gather
     }

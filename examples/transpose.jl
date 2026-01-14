@@ -25,9 +25,10 @@ function prepare(; benchmark::Bool=false,
                   m::Int=benchmark ? 8192 : 1024,
                   n::Int=benchmark ? 8192 : 512,
                   T::DataType=Float32)
+    x = CUDA.rand(T, m, n)
     return (;
-        x = CUDA.rand(T, m, n),
-        y = CUDA.zeros(T, n, m),
+        x,
+        y = similar(x, n, m),
         m, n
     )
 end
