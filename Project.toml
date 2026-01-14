@@ -4,6 +4,7 @@ authors = ["Tim Besard <tim.besard@gmail.com>"]
 version = "0.1.0"
 
 [deps]
+BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
 CUDA_Tile_jll = "2068806d-a867-5dbd-af0e-42c2eb5d895d"
 IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
@@ -19,6 +20,7 @@ CUDAExt = "CUDA"
 
 [compat]
 julia = "1.11"
+BFloat16s = "0.6"
 CUDA_Compiler_jll = "0.4"
 CUDA_Tile_jll = "13.1"
 

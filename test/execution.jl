@@ -788,6 +788,27 @@ end
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
+@testset "BFloat16" begin
+    function vadd_bf16(a::ct.TileArray{ct.BFloat16,1}, b::ct.TileArray{ct.BFloat16,1},
+                      c::ct.TileArray{ct.BFloat16,1})
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, tile_a + tile_b)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(ct.BFloat16, n)
+    b = CUDA.rand(ct.BFloat16, n)
+    c = CUDA.zeros(ct.BFloat16, n)
+
+    ct.launch(vadd_bf16, cld(n, tile_size), a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
 end
 
 @testset "compilation cache" begin

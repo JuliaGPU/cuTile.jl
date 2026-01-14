@@ -79,9 +79,10 @@ function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     ct.launch(matmul_kernel, grid, A, B, C,
               ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
 
-    # Verify result
-    expected = Array(A) * Array(B)
-    result = Array(C)
+    # Verify result in Float32 because
+    # cpu matmul accumulates with same type
+    expected = Array{Float32}(A) * Array{Float32}(B)
+    result = Array{Float32}(C)
 
     if isapprox(result, expected, rtol=1e-2, atol=1e-2)
         println("  passed")
@@ -91,19 +92,19 @@ function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     end
 end
 
-function main()
+function main(T=Float32)
     println("--- cuTile Matrix Multiplication Examples ---\n")
 
-    # Small matrices with Float32
-    test_matmul(Float32, 256, 256, 256, 32, 32, 32)
-    test_matmul(Float32, 512, 512, 512, 64, 64, 64)
+    # Small matrices
+    test_matmul(T, 256, 256, 256, 32, 32, 32)
+    test_matmul(T, 512, 512, 512, 64, 64, 64)
 
     # Non-square matrices
-    test_matmul(Float32, 256, 512, 128, 32, 32, 32)
-    test_matmul(Float32, 512, 256, 384, 64, 64, 64)
+    test_matmul(T, 256, 512, 128, 32, 32, 32)
+    test_matmul(T, 512, 256, 384, 64, 64, 64)
 
     # Larger matrices
-    test_matmul(Float32, 1024, 1024, 1024, 32, 32, 32)
+    test_matmul(T, 1024, 1024, 1024, 32, 32, 32)
 
     println("\n--- All matmul examples completed ---")
 end

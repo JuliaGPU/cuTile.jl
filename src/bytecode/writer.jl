@@ -276,6 +276,10 @@ function float_to_bits(value::Float64, ::Type{Float16})
     reinterpret(UInt16, Float16(value))
 end
 
+function float_to_bits(value::Float64, ::Type{BFloat16})
+    reinterpret(UInt16, BFloat16(value))
+end
+
 function float_to_bits(value::Float64, ::Type{Float32})
     reinterpret(UInt32, Float32(value))
 end
