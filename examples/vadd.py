@@ -16,29 +16,64 @@ def vadd_cutile_kernel(a, b, c, tile_size: ct.Constant[int]):
     ct.store(c, index=(pid,), tile=result)
 
 
-def run_vadd(*, size: int = 2**20, tile: int = 1024, dtype=np.float32, validate: bool = False):
-    """Run vector addition. Returns (a, b, c) arrays for benchmarking."""
-    a = cp.random.rand(size).astype(dtype)
-    b = cp.random.rand(size).astype(dtype)
-    c = cp.zeros(size, dtype=dtype)
+#=============================================================================
+# prepare/run/verify pattern
+#=============================================================================
 
-    grid = (ct.cdiv(size, tile), 1, 1)
+def vadd_prepare(*, n: int, dtype=np.float32):
+    """Allocate and initialize data for vector addition."""
+    return {
+        "a": cp.random.rand(n).astype(dtype),
+        "b": cp.random.rand(n).astype(dtype),
+        "c": cp.zeros(n, dtype=dtype),
+        "n": n
+    }
+
+
+def vadd_run(data, *, tile: int, nruns: int = 1, warmup: int = 0):
+    """Run vector addition kernel with timing."""
+    a, b, c = data["a"], data["b"], data["c"]
+    n = data["n"]
+
+    grid = (ct.cdiv(n, tile), 1, 1)
     stream = cp.cuda.get_current_stream()
-    ct.launch(stream, grid, vadd_cutile_kernel, (a, b, c, tile))
 
-    if validate:
-        cp.cuda.runtime.deviceSynchronize()
-        expected = cp.asnumpy(a) + cp.asnumpy(b)
-        assert np.allclose(cp.asnumpy(c), expected), "vadd incorrect!"
+    # Warmup
+    for _ in range(warmup):
+        ct.launch(stream, grid, vadd_cutile_kernel, (a, b, c, tile))
+    cp.cuda.runtime.deviceSynchronize()
 
-    return a, b, c
+    # Timed runs
+    times = []
+    for _ in range(nruns):
+        start = cp.cuda.Event()
+        end = cp.cuda.Event()
+        start.record(stream)
+        ct.launch(stream, grid, vadd_cutile_kernel, (a, b, c, tile))
+        end.record(stream)
+        end.synchronize()
+        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
+
+    return {"c": c, "times": times}
 
 
-def test_vadd(size, tile, dtype=np.float32, name=None):
+def vadd_verify(data, result):
+    """Verify vector addition results."""
+    expected = cp.asnumpy(data["a"]) + cp.asnumpy(data["b"])
+    assert np.allclose(cp.asnumpy(result["c"]), expected), "vadd incorrect!"
+
+
+#=============================================================================
+# Test function
+#=============================================================================
+
+def test_vadd(n, tile, dtype=np.float32, name=None):
     """Test vector addition with given parameters."""
-    name = name or f"vadd size={size}, tile={tile}, dtype={dtype.__name__}"
+    name = name or f"vadd size={n}, tile={tile}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    run_vadd(size=size, tile=tile, dtype=dtype, validate=True)
+    data = vadd_prepare(n=n, dtype=dtype)
+    result = vadd_run(data, tile=tile)
+    vadd_verify(data, result)
     print("  passed")
 
 

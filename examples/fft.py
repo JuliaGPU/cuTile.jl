@@ -87,6 +87,10 @@ def fft_kernel(x_packed_in, y_packed_out,
     ct.store(y_packed_out, index=(bid, 0, 0), tile=Y_ri)
 
 
+#=============================================================================
+# Helper functions
+#=============================================================================
+
 def fft_twiddles(rows: int, cols: int, factor: int, device, precision):
     """Generate DFT twiddle factors."""
     I, J = torch.meshgrid(torch.arange(rows, device=device),
@@ -108,48 +112,90 @@ def fft_make_twiddles(factors, precision, device):
     return (W0, W1, W2, T0, T1)
 
 
-def run_fft(*, batch: int = 64, size: int = 512, factors: tuple = (8, 8, 8),
-            atom_packing_dim: int = 2, input=None, validate: bool = False):
-    """Run FFT. Returns (input, output) tensors for benchmarking."""
+#=============================================================================
+# prepare/run/verify pattern
+#=============================================================================
+
+def fft_prepare(*, batch: int, size: int, factors: tuple, atom_packing_dim: int = 2):
+    """Allocate and initialize data for FFT."""
     F0, F1, F2 = factors
     N = F0 * F1 * F2
     assert size == N, f"size ({size}) must equal product of factors ({N})"
     D = atom_packing_dim
 
-    if input is None:
-        input = torch.randn(batch, N, dtype=torch.complex64, device='cuda')
-    else:
-        batch = input.shape[0]
-        N = input.shape[1]
+    input_data = torch.randn(batch, N, dtype=torch.complex64, device='cuda')
 
     # Pre-compute twiddles
-    W0, W1, W2, T0, T1 = fft_make_twiddles(factors, input.real.dtype, input.device)
+    W0, W1, W2, T0, T1 = fft_make_twiddles(factors, input_data.real.dtype, input_data.device)
 
     # Pack input
-    x_ri = torch.view_as_real(input)
+    x_ri = torch.view_as_real(input_data)
     x_packed = x_ri.reshape(batch, N * 2 // D, D).contiguous()
     y_packed = torch.empty_like(x_packed)
 
+    return {
+        "input": input_data,
+        "x_packed": x_packed,
+        "y_packed": y_packed,
+        "W0": W0, "W1": W1, "W2": W2, "T0": T0, "T1": T1,
+        "factors": factors,
+        "batch": batch,
+        "N": N,
+        "D": D
+    }
+
+
+def fft_run(data, *, nruns: int = 1, warmup: int = 0):
+    """Run FFT kernel with timing."""
+    x_packed = data["x_packed"]
+    y_packed = data["y_packed"]
+    W0, W1, W2, T0, T1 = data["W0"], data["W1"], data["W2"], data["T0"], data["T1"]
+    F0, F1, F2 = data["factors"]
+    batch, N, D = data["batch"], data["N"], data["D"]
+
     grid = (batch, 1, 1)
-    ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
-              (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
+
+    # Warmup
+    for _ in range(warmup):
+        ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
+                  (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
+    torch.cuda.synchronize()
+
+    # Timed runs
+    times = []
+    for _ in range(nruns):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
+                  (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))  # ms
 
     output = torch.view_as_complex(y_packed.reshape(batch, N, 2))
 
-    if validate:
-        torch.cuda.synchronize()
-        reference = torch.fft.fft(input, dim=-1)
-        assert torch.allclose(output, reference, rtol=1e-3, atol=1e-3), \
-            f"FFT incorrect! max diff: {torch.max(torch.abs(output - reference))}"
+    return {"output": output, "times": times}
 
-    return input, output
 
+def fft_verify(data, result):
+    """Verify FFT results."""
+    reference = torch.fft.fft(data["input"], dim=-1)
+    assert torch.allclose(result["output"], reference, rtol=1e-3, atol=1e-3), \
+        f"FFT incorrect! max diff: {torch.max(torch.abs(result['output'] - reference))}"
+
+
+#=============================================================================
+# Test function
+#=============================================================================
 
 def test_fft(batch, size, factors, name=None):
     """Test FFT with given parameters."""
     name = name or f"fft batch={batch}, size={size}, factors={factors}"
     print(f"--- {name} ---")
-    run_fft(batch=batch, size=size, factors=factors, validate=True)
+    data = fft_prepare(batch=batch, size=size, factors=factors)
+    result = fft_run(data)
+    fft_verify(data, result)
     print("  passed")
 
 

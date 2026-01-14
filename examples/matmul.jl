@@ -62,34 +62,56 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     return nothing
 end
 
-# Run matmul - for benchmarking or programmatic use
-function run_matmul(; M::Int, N::Int, K::Int, tm::Int, tn::Int, tk::Int, T::DataType=Float32,
-                     A::Union{CuArray,Nothing}=nothing,
-                     B::Union{CuArray,Nothing}=nothing,
-                     C::Union{CuArray,Nothing}=nothing,
-                     validate::Bool=false)
-    A = something(A, CUDA.rand(T, M, K))
-    B = something(B, CUDA.rand(T, K, N))
-    C = something(C, CUDA.zeros(T, M, N))
-    grid_m = cld(M, tm)
-    grid_n = cld(N, tn)
-    grid = grid_m * grid_n
-    ct.launch(matmul_kernel, grid, A, B, C,
-              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-    if validate
-        expected = Array(A) * Array(B)
-        result = Array(C)
-        @assert isapprox(result, expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(result - expected)))"
+#=============================================================================
+ Matmul - prepare/run/verify pattern
+=============================================================================#
+
+function matmul_prepare(; M::Int, N::Int, K::Int, T::DataType=Float32)
+    return (;
+        A = CUDA.rand(T, M, K),
+        B = CUDA.rand(T, K, N),
+        C = CUDA.zeros(T, M, N),
+        M, N, K
+    )
+end
+
+function matmul_run(data; tm::Int, tn::Int, tk::Int, nruns::Int=1, warmup::Int=0)
+    (; A, B, C, M, N, K) = data
+    grid = cld(M, tm) * cld(N, tn)
+
+    for _ in 1:warmup
+        ct.launch(matmul_kernel, grid, A, B, C,
+                  ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
     end
-    return (; A, B, C)
+    CUDA.synchronize()
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(matmul_kernel, grid, A, B, C,
+                                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; C, times)
+end
+
+function matmul_verify(data, result)
+    expected = Array(data.A) * Array(data.B)
+    @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
 function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     name = something(name, "matmul ($M x $K) @ ($K x $N), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
-    run_matmul(; M, N, K, tm, tn, tk, T, validate=true)
+    data = matmul_prepare(; M, N, K, T)
+    result = matmul_run(data; tm, tn, tk)
+    matmul_verify(data, result)
     println("  passed")
 end
+
+#=============================================================================
+ Main
+=============================================================================#
 
 function main()
     println("--- cuTile Matrix Multiplication Examples ---\n")

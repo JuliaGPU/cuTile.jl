@@ -9,16 +9,15 @@ import cupy as cp
 import numpy as np
 import torch
 import cuda.tile as ct
-import math
 from math import ceil, log2
 
-# Import kernels from example files
-from vadd import vadd_cutile_kernel
-from transpose import transpose_cutile_kernel
-from matmul import matmul_cutile_kernel, swizzle_2d
-from layernorm import layernorm_cutile_kernel
-from batchmatmul import batchmatmul_cutile_kernel
-from fft import fft_kernel, fft_make_twiddles
+# Import prepare/run/verify functions from example files
+from vadd import vadd_prepare, vadd_run, vadd_verify
+from transpose import transpose_prepare, transpose_run, transpose_verify
+from matmul import matmul_prepare, matmul_run, matmul_verify
+from layernorm import layernorm_prepare, layernorm_run, layernorm_verify
+from batchmatmul import batchmatmul_prepare, batchmatmul_run, batchmatmul_verify
+from fft import fft_prepare, fft_run, fft_verify
 
 #=============================================================================
 # Configuration
@@ -36,7 +35,6 @@ MATMUL_DIM = 4096           # 4096x4096x4096
 FFT_BATCH = 64
 FFT_SIZE = 512
 FFT_FACTORS = (8, 8, 8)
-FFT_ATOM_PACKING_DIM = 2
 
 # Tile sizes
 VADD_TILE = 1024
@@ -45,6 +43,21 @@ TRANSPOSE_TILE_N = 64
 MATMUL_TM = 64
 MATMUL_TN = 64
 MATMUL_TK = 64
+
+# Layer norm sizes
+LAYERNORM_M = 4096
+LAYERNORM_N = 4096
+LAYERNORM_TILE_N = 1024
+LAYERNORM_EPS = 1e-5
+
+# Batch matmul sizes
+BATCHMATMUL_BATCH = 8
+BATCHMATMUL_M = 1024
+BATCHMATMUL_K = 512
+BATCHMATMUL_N = 2048
+BATCHMATMUL_TM = 128
+BATCHMATMUL_TN = 256
+BATCHMATMUL_TK = 64
 
 #=============================================================================
 # Benchmark Utilities
@@ -131,13 +144,11 @@ def print_table(title: str, results: list, extra_col=None):
 # Vector Addition
 #=============================================================================
 
-# cuTile kernel: use vadd_cutile_kernel from vadd.py
-
 def benchmark_vadd():
     print("\nBenchmarking Vector Addition...")
     print(f"  Size: {VADD_SIZE} elements ({VADD_SIZE * 4 / 1e6} MB)")
 
-    # CuPy arrays
+    # CuPy arrays for CuPy/PyTorch benchmarks
     a_cp = cp.random.rand(VADD_SIZE).astype(np.float32)
     b_cp = cp.random.rand(VADD_SIZE).astype(np.float32)
     c_cp = cp.zeros(VADD_SIZE, dtype=np.float32)
@@ -170,18 +181,16 @@ def benchmark_vadd():
     min_t, mean_t = benchmark_torch(torch_vadd)
     results.append(BenchmarkResult("PyTorch", min_t, mean_t))
 
-    # cuTile
-    grid = (ct.cdiv(VADD_SIZE, VADD_TILE), 1, 1)
-    stream = cp.cuda.get_current_stream()
-    c_cp.fill(0)
+    # cuTile - use prepare/run/verify pattern
+    data = vadd_prepare(n=VADD_SIZE, dtype=np.float32)
+    # Copy expected data for apples-to-apples comparison
+    data["a"] = a_cp
+    data["b"] = b_cp
+    data["c"] = cp.zeros(VADD_SIZE, dtype=np.float32)
 
-    def cutile_vadd():
-        ct.launch(stream, grid, vadd_cutile_kernel, (a_cp, b_cp, c_cp, VADD_TILE))
-
-    cutile_vadd()
-    cp.cuda.runtime.deviceSynchronize()
-    assert np.allclose(cp.asnumpy(c_cp), expected), "cuTile incorrect!"
-    min_t, mean_t = benchmark_cupy(cutile_vadd)
+    result = vadd_run(data, tile=VADD_TILE, nruns=NRUNS, warmup=WARMUP)
+    vadd_verify(data, result)
+    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
     results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
 
     # Calculate bandwidth
@@ -195,8 +204,6 @@ def benchmark_vadd():
 #=============================================================================
 # Matrix Transpose
 #=============================================================================
-
-# cuTile kernel: use transpose_cutile_kernel from transpose.py
 
 def benchmark_transpose():
     print("\nBenchmarking Matrix Transpose...")
@@ -235,19 +242,16 @@ def benchmark_transpose():
     min_t, mean_t = benchmark_torch(torch_transpose)
     results.append(BenchmarkResult("PyTorch", min_t, mean_t))
 
-    # cuTile
-    output_cp.fill(0)
-    grid = (ct.cdiv(M, TRANSPOSE_TILE_M), ct.cdiv(N, TRANSPOSE_TILE_N), 1)
-    stream = cp.cuda.get_current_stream()
+    # cuTile - use prepare/run/verify pattern
+    data = transpose_prepare(M=M, N=N, dtype=np.float32)
+    # Copy input for apples-to-apples comparison
+    data["input"] = input_cp
+    data["output"] = cp.zeros((N, M), dtype=np.float32)
 
-    def cutile_transpose():
-        ct.launch(stream, grid, transpose_cutile_kernel,
-                  (input_cp, output_cp, TRANSPOSE_TILE_M, TRANSPOSE_TILE_N))
-
-    cutile_transpose()
-    cp.cuda.runtime.deviceSynchronize()
-    assert np.allclose(cp.asnumpy(output_cp), expected), "cuTile incorrect!"
-    min_t, mean_t = benchmark_cupy(cutile_transpose)
+    result = transpose_run(data, tile_m=TRANSPOSE_TILE_M, tile_n=TRANSPOSE_TILE_N,
+                           nruns=NRUNS, warmup=WARMUP)
+    transpose_verify(data, result)
+    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
     results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
 
     # Calculate bandwidth
@@ -261,8 +265,6 @@ def benchmark_transpose():
 #=============================================================================
 # Matrix Multiplication
 #=============================================================================
-
-# cuTile kernel: use matmul_cutile_kernel and swizzle_2d from matmul.py
 
 def benchmark_matmul():
     print("\nBenchmarking Matrix Multiplication...")
@@ -309,22 +311,17 @@ def benchmark_matmul():
     min_t, mean_t = benchmark_cupy(cupy_matmul)
     results.append(BenchmarkResult("CuPy (cuBLAS)", min_t, mean_t))
 
-    # cuTile
-    C_cp.fill(0)
-    grid_m = ceil(M / MATMUL_TM)
-    grid_n = ceil(N / MATMUL_TN)
-    grid = (grid_m * grid_n, 1, 1)
-    stream = cp.cuda.get_current_stream()
+    # cuTile - use prepare/run/verify pattern
+    data = matmul_prepare(M=M, N=N, K=K, dtype=np.float32)
+    # Copy input for apples-to-apples comparison
+    data["A"] = A_cp
+    data["B"] = B_cp
+    data["C"] = cp.zeros((M, N), dtype=np.float32)
 
-    def cutile_matmul():
-        ct.launch(stream, grid, matmul_cutile_kernel,
-                  (A_cp, B_cp, C_cp, MATMUL_TM, MATMUL_TN, MATMUL_TK))
-
-    cutile_matmul()
-    cp.cuda.runtime.deviceSynchronize()
-    # TF32 has reduced precision compared to FP32 cuBLAS
-    assert np.allclose(cp.asnumpy(C_cp), C_ref, rtol=1e-1, atol=1e-1), "cuTile incorrect!"
-    min_t, mean_t = benchmark_cupy(cutile_matmul)
+    result = matmul_run(data, tm=MATMUL_TM, tn=MATMUL_TN, tk=MATMUL_TK,
+                        nruns=NRUNS, warmup=WARMUP)
+    matmul_verify(data, result)
+    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
     results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
 
     # Calculate TFLOPS
@@ -338,34 +335,18 @@ def benchmark_matmul():
 # Layer Normalization
 #=============================================================================
 
-LAYERNORM_M = 4096
-LAYERNORM_N = 4096
-LAYERNORM_TILE_N = 1024
-LAYERNORM_EPS = 1e-5
-
-# Batch matmul sizes
-BATCHMATMUL_BATCH = 8
-BATCHMATMUL_M = 1024
-BATCHMATMUL_K = 512
-BATCHMATMUL_N = 2048
-BATCHMATMUL_TM = 128
-BATCHMATMUL_TN = 256
-BATCHMATMUL_TK = 64
-
-# cuTile kernel: use layernorm_cutile_kernel from layernorm.py
-
 def benchmark_layernorm():
     print("\nBenchmarking Layer Normalization...")
     M, N = LAYERNORM_M, LAYERNORM_N
     print(f"  Size: {M}x{N} ({M * N * 4 / 1e6} MB)")
 
-    # CuPy arrays
-    X_cp = -2.3 + 0.5 * cp.random.randn(M, N).astype(np.float32)
-    W_cp = cp.random.randn(N).astype(np.float32)
-    B_cp = cp.random.randn(N).astype(np.float32)
-    Y_cp = cp.zeros((M, N), dtype=np.float32)
-    Mean_cp = cp.zeros(M, dtype=np.float32)
-    Rstd_cp = cp.zeros(M, dtype=np.float32)
+    # cuTile - prepare data
+    data = layernorm_prepare(M=M, N=N, eps=LAYERNORM_EPS, dtype=np.float32)
+
+    # Extract CuPy/NumPy arrays for other benchmarks
+    X_cp = data["X"]
+    W_cp = data["W"]
+    B_cp = data["B"]
 
     # PyTorch tensors
     X_torch = torch.as_tensor(X_cp, device='cuda')
@@ -396,20 +377,10 @@ def benchmark_layernorm():
     min_t, mean_t = benchmark_torch(torch_layernorm)
     results.append(BenchmarkResult("PyTorch", min_t, mean_t))
 
-    # cuTile
-    Y_cp.fill(0)
-    Mean_cp.fill(0)
-    Rstd_cp.fill(0)
-    stream = cp.cuda.get_current_stream()
-
-    def cutile_layernorm():
-        ct.launch(stream, (M,), layernorm_cutile_kernel,
-                  (X_cp, W_cp, B_cp, Y_cp, Mean_cp, Rstd_cp, LAYERNORM_EPS, LAYERNORM_TILE_N))
-
-    cutile_layernorm()
-    cp.cuda.runtime.deviceSynchronize()
-    assert np.allclose(cp.asnumpy(Y_cp), expected_Y, rtol=1e-2, atol=1e-2), "cuTile incorrect!"
-    min_t, mean_t = benchmark_cupy(cutile_layernorm)
+    # cuTile - use prepare/run/verify pattern
+    result = layernorm_run(data, tile_n=LAYERNORM_TILE_N, nruns=NRUNS, warmup=WARMUP)
+    layernorm_verify(data, result)
+    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
     results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
 
     # Calculate bandwidth (rough estimate: 3 reads of X + W + B, 1 write of Y)
@@ -424,8 +395,6 @@ def benchmark_layernorm():
 # Batch Matrix Multiplication
 #=============================================================================
 
-# cuTile kernel: use batchmatmul_cutile_kernel from batchmatmul.py
-
 def benchmark_batchmatmul():
     print("\nBenchmarking Batch Matrix Multiplication...")
     Batch, M, K, N = BATCHMATMUL_BATCH, BATCHMATMUL_M, BATCHMATMUL_K, BATCHMATMUL_N
@@ -439,7 +408,6 @@ def benchmark_batchmatmul():
     # CuPy arrays (from same data)
     A_cp = cp.asarray(A_torch)
     B_cp = cp.asarray(B_torch)
-    C_cp = cp.zeros((Batch, M, N), dtype=np.float16)
 
     # Reference result (PyTorch bmm in fp32 for accuracy)
     C_ref = torch.bmm(A_torch.float(), B_torch.float()).cpu().numpy()
@@ -457,19 +425,17 @@ def benchmark_batchmatmul():
     min_t, mean_t = benchmark_torch(torch_bmm)
     results.append(BenchmarkResult("PyTorch bmm", min_t, mean_t))
 
-    # cuTile
-    C_cp.fill(0)
-    grid = (Batch, ceil(M / BATCHMATMUL_TM), ceil(N / BATCHMATMUL_TN))
-    stream = cp.cuda.get_current_stream()
+    # cuTile - use prepare/run/verify pattern
+    data = batchmatmul_prepare(Batch=Batch, M=M, K=K, N=N, dtype=np.float16)
+    # Copy input for apples-to-apples comparison
+    data["A"] = A_cp
+    data["B"] = B_cp
+    data["C"] = cp.zeros((Batch, M, N), dtype=np.float16)
 
-    def cutile_bmm():
-        ct.launch(stream, grid, batchmatmul_cutile_kernel,
-                  (A_cp, B_cp, C_cp, BATCHMATMUL_TM, BATCHMATMUL_TN, BATCHMATMUL_TK))
-
-    cutile_bmm()
-    cp.cuda.runtime.deviceSynchronize()
-    assert np.allclose(cp.asnumpy(C_cp).astype(np.float32), C_ref, rtol=1e-1, atol=1e-1), "cuTile incorrect!"
-    min_t, mean_t = benchmark_cupy(cutile_bmm)
+    result = batchmatmul_run(data, tm=BATCHMATMUL_TM, tn=BATCHMATMUL_TN, tk=BATCHMATMUL_TK,
+                              nruns=NRUNS, warmup=WARMUP)
+    batchmatmul_verify(data, result)
+    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
     results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
 
     # Calculate TFLOPS
@@ -483,43 +449,24 @@ def benchmark_batchmatmul():
 # FFT (3-stage Cooley-Tukey)
 #=============================================================================
 
-# cuTile kernel: use fft_kernel and fft_make_twiddles from fft.py
-
 def benchmark_fft():
     print("\nBenchmarking FFT...")
     BS, N = FFT_BATCH, FFT_SIZE
-    F0, F1, F2 = FFT_FACTORS
-    D = FFT_ATOM_PACKING_DIM
     print(f"  Size: {BS} batches × {N} FFT ({BS * N * 8 / 1e6} MB)")
 
-    # PyTorch complex input
-    input_torch = torch.randn(BS, N, dtype=torch.complex64, device='cuda')
+    # cuTile - use prepare/run/verify pattern
+    data = fft_prepare(batch=BS, size=N, factors=FFT_FACTORS)
 
-    # Reference result
-    reference = torch.fft.fft(input_torch, dim=-1)
+    # Reference result using torch
+    reference = torch.fft.fft(data["input"], dim=-1)
     torch.cuda.synchronize()
 
     results = []
 
-    # Pre-compute everything outside timing loop
-    x_ri = torch.view_as_real(input_torch)
-    x_packed = x_ri.reshape(BS, N * 2 // D, D).contiguous()
-    W0, W1, W2, T0, T1 = fft_make_twiddles(FFT_FACTORS, input_torch.real.dtype, input_torch.device)
-    y_packed = torch.empty_like(x_packed)
-    grid = (BS, 1, 1)
-
-    # Kernel launch function
-    def fft_launch():
-        ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
-                  (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, BS, D))
-
-    # Verify correctness
-    fft_launch()
-    torch.cuda.synchronize()
-    output = torch.view_as_complex(y_packed.reshape(BS, N, 2))
-    assert torch.allclose(output, reference, rtol=1e-3, atol=1e-3), "cuTile FFT incorrect!"
-
-    min_t, mean_t = benchmark_torch(fft_launch)
+    # cuTile FFT
+    result = fft_run(data, nruns=NRUNS, warmup=WARMUP)
+    fft_verify(data, result)
+    min_t, mean_t = min(result["times"]), sum(result["times"]) / len(result["times"])
     results.append(BenchmarkResult("cuTile Python", min_t, mean_t))
 
     # Calculate GFLOPS (5 * N * log2(N) ops per complex FFT)

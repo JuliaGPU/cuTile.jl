@@ -100,15 +100,13 @@ function vadd_simt_kernel!(a, b, c)
     return
 end
 
-# cuTile kernel: use vec_add_kernel_1d from vadd.jl
-
 function benchmark_vadd()
     println("\nBenchmarking Vector Addition...")
     println("  Size: $VADD_SIZE elements ($(VADD_SIZE * 4 / 1e6) MB)")
 
-    a = CUDA.rand(Float32, VADD_SIZE)
-    b = CUDA.rand(Float32, VADD_SIZE)
-    c = similar(a)
+    # Prepare data once (using vadd.jl's prepare function)
+    data = vadd_1d_prepare(; n=VADD_SIZE, T=Float32)
+    (; a, b, c) = data
     expected = Array(a) .+ Array(b)
 
     results = BenchmarkResult[]
@@ -133,13 +131,10 @@ function benchmark_vadd()
     min_t, mean_t = benchmark_kernel(simt_f)
     push!(results, BenchmarkResult("SIMT (CUDA.jl)", min_t, mean_t))
 
-    # cuTile (uses vec_add_kernel_1d from vadd.jl)
-    grid = (cld(VADD_SIZE, VADD_TILE), 1, 1)
-    cutile_f = () -> ct.launch(vec_add_kernel_1d, grid, a, b, c, ct.Constant(VADD_TILE))
-    cutile_f()
-    CUDA.synchronize()
-    @assert Array(c) ≈ expected "cuTile incorrect!"
-    min_t, mean_t = benchmark_kernel(cutile_f)
+    # cuTile (using vadd.jl's run/verify functions)
+    result = vadd_1d_run(data; tile=VADD_TILE, nruns=NRUNS, warmup=WARMUP)
+    vadd_1d_verify(data, result)
+    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
     # Calculate bandwidth
@@ -186,58 +181,52 @@ function transpose_simt_shared_kernel!(input, output, M, N)
     return
 end
 
-# cuTile kernel: use transpose_kernel from transpose.jl
-
 function benchmark_transpose()
     println("\nBenchmarking Matrix Transpose...")
     M, N = TRANSPOSE_DIM, TRANSPOSE_DIM
     println("  Size: $(M)x$(N) ($(M * N * 4 / 1e6) MB)")
 
-    input = CUDA.rand(Float32, M, N)
-    output = CUDA.zeros(Float32, N, M)
-    expected = Array(permutedims(input, (2, 1)))
+    # Prepare data once (using transpose.jl's prepare function)
+    data = transpose_prepare(; m=M, n=N, T=Float32)
+    (; x, y) = data
+    expected = Array(permutedims(x, (2, 1)))
 
     results = BenchmarkResult[]
 
     # GPUArrays (permutedims)
-    gpuarrays_f = () -> permutedims!(output, input, (2, 1))
+    gpuarrays_f = () -> permutedims!(y, x, (2, 1))
     gpuarrays_f()
     CUDA.synchronize()
-    @assert Array(output) ≈ expected "GPUArrays incorrect!"
+    @assert Array(y) ≈ expected "GPUArrays incorrect!"
     min_t, mean_t = benchmark_kernel(gpuarrays_f)
     push!(results, BenchmarkResult("GPUArrays", min_t, mean_t))
 
     # SIMT naive
-    fill!(output, 0)
+    fill!(y, 0)
     threads_naive = (16, 16)
     blocks_naive = (cld(M, 16), cld(N, 16))
-    simt_naive_f = () -> @cuda threads=threads_naive blocks=blocks_naive transpose_simt_naive_kernel!(input, output, M, N)
+    simt_naive_f = () -> @cuda threads=threads_naive blocks=blocks_naive transpose_simt_naive_kernel!(x, y, M, N)
     simt_naive_f()
     CUDA.synchronize()
-    @assert Array(output) ≈ expected "SIMT naive incorrect!"
+    @assert Array(y) ≈ expected "SIMT naive incorrect!"
     min_t, mean_t = benchmark_kernel(simt_naive_f)
     push!(results, BenchmarkResult("SIMT naive", min_t, mean_t))
 
     # SIMT shared
-    fill!(output, 0)
+    fill!(y, 0)
     threads_shared = (32, 32)
     blocks_shared = (cld(M, 32), cld(N, 32))
-    simt_shared_f = () -> @cuda threads=threads_shared blocks=blocks_shared transpose_simt_shared_kernel!(input, output, M, N)
+    simt_shared_f = () -> @cuda threads=threads_shared blocks=blocks_shared transpose_simt_shared_kernel!(x, y, M, N)
     simt_shared_f()
     CUDA.synchronize()
-    @assert Array(output) ≈ expected "SIMT shared incorrect!"
+    @assert Array(y) ≈ expected "SIMT shared incorrect!"
     min_t, mean_t = benchmark_kernel(simt_shared_f)
     push!(results, BenchmarkResult("SIMT shared", min_t, mean_t))
 
-    # cuTile (uses transpose_kernel from transpose.jl)
-    fill!(output, 0)
-    grid = (cld(M, TRANSPOSE_TILE_M), cld(N, TRANSPOSE_TILE_N), 1)
-    cutile_f = () -> ct.launch(transpose_kernel, grid, input, output,
-                               ct.Constant(TRANSPOSE_TILE_M), ct.Constant(TRANSPOSE_TILE_N))
-    cutile_f()
-    CUDA.synchronize()
-    @assert Array(output) ≈ expected "cuTile incorrect!"
-    min_t, mean_t = benchmark_kernel(cutile_f)
+    # cuTile (using transpose.jl's run/verify functions)
+    result = transpose_run(data; tm=TRANSPOSE_TILE_M, tn=TRANSPOSE_TILE_N, nruns=NRUNS, warmup=WARMUP)
+    transpose_verify(data, result)
+    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
     # Calculate bandwidth
@@ -252,16 +241,14 @@ end
  Matrix Multiplication
 =============================================================================#
 
-# cuTile kernel: use matmul_kernel and swizzle_2d from matmul.jl
-
 function benchmark_matmul()
     println("\nBenchmarking Matrix Multiplication...")
     M, N, K = MATMUL_DIM, MATMUL_DIM, MATMUL_DIM
     println("  Size: $(M)x$(K) * $(K)x$(N)")
 
-    A = CUDA.rand(Float32, M, K)
-    B = CUDA.rand(Float32, K, N)
-    C = CUDA.zeros(Float32, M, N)
+    # Prepare data once (using matmul.jl's prepare function)
+    data = matmul_prepare(; M, K, N, T=Float32)
+    (; A, B, C) = data
 
     # Reference result (cuBLAS)
     C_ref = similar(C)
@@ -287,17 +274,10 @@ function benchmark_matmul()
     min_t, mean_t = benchmark_kernel(cublas_f)
     push!(results, BenchmarkResult("cuBLAS", min_t, mean_t))
 
-    # cuTile (uses matmul_kernel from matmul.jl)
-    fill!(C, 0)
-    grid_m = cld(M, MATMUL_TM)
-    grid_n = cld(N, MATMUL_TN)
-    grid = (grid_m * grid_n, 1, 1)
-    cutile_f = () -> ct.launch(matmul_kernel, grid, A, B, C,
-                               ct.Constant(MATMUL_TM), ct.Constant(MATMUL_TN), ct.Constant(MATMUL_TK))
-    cutile_f()
-    CUDA.synchronize()
-    @assert isapprox(Array(C), Array(C_ref), rtol=1e-2, atol=1e-2) "cuTile incorrect!"
-    min_t, mean_t = benchmark_kernel(cutile_f)
+    # cuTile (using matmul.jl's run/verify functions)
+    result = matmul_run(data; tm=MATMUL_TM, tn=MATMUL_TN, tk=MATMUL_TK, nruns=NRUNS, warmup=WARMUP)
+    matmul_verify(data, result)
+    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
     # Calculate TFLOPS
@@ -363,19 +343,14 @@ function layernorm_simt_kernel!(X, W, B, Y, Mean, Rstd, N, eps)
     return
 end
 
-# cuTile kernel: use layer_norm_fwd from layernorm.jl
-
 function benchmark_layernorm()
     println("\nBenchmarking Layer Normalization...")
     M, N = LAYERNORM_M, LAYERNORM_N
     println("  Size: $(M)x$(N) ($(M * N * 4 / 1e6) MB)")
 
-    X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N)
-    W = CUDA.randn(Float32, N)
-    B = CUDA.randn(Float32, N)
-    Y = CUDA.zeros(Float32, M, N)
-    Mean = CUDA.zeros(Float32, M)
-    Rstd = CUDA.zeros(Float32, M)
+    # Prepare data once (using layernorm.jl's prepare function)
+    data = layernorm_fwd_prepare(; M, N, T=Float32, eps=LAYERNORM_EPS)
+    (; X, W, B, Y, Mean, Rstd) = data
 
     # Reference result
     X_cpu = Array(X)
@@ -398,14 +373,10 @@ function benchmark_layernorm()
     min_t, mean_t = benchmark_kernel(simt_f)
     push!(results, BenchmarkResult("SIMT naive", min_t, mean_t))
 
-    # cuTile (uses layer_norm_fwd from layernorm.jl)
-    fill!(Y, 0); fill!(Mean, 0); fill!(Rstd, 0)
-    cutile_f = () -> ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
-                               ct.Constant(LAYERNORM_EPS), ct.Constant(LAYERNORM_TILE_N))
-    cutile_f()
-    CUDA.synchronize()
-    @assert isapprox(Array(Y), expected_Y, rtol=1e-2, atol=1e-2) "cuTile incorrect!"
-    min_t, mean_t = benchmark_kernel(cutile_f)
+    # cuTile (using layernorm.jl's run/verify functions)
+    result = layernorm_fwd_run(data; tile_n=LAYERNORM_TILE_N, nruns=NRUNS, warmup=WARMUP)
+    layernorm_fwd_verify(data, result)
+    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
     # Calculate bandwidth (rough estimate: 3 reads of X + W + B, 1 write of Y)
@@ -420,17 +391,14 @@ end
  Batch Matrix Multiplication
 =============================================================================#
 
-# cuTile kernel: use batch_matmul_kernel from batchmatmul.jl
-
 function benchmark_batchmatmul()
     println("\nBenchmarking Batch Matrix Multiplication...")
     Batch, M, K, N = BATCHMATMUL_BATCH, BATCHMATMUL_M, BATCHMATMUL_K, BATCHMATMUL_N
     println("  Size: ($M x $K x $Batch) @ ($K x $N x $Batch), Float16")
 
-    # Batch-last ordering for optimal column-major access
-    A = CUDA.rand(Float16, M, K, Batch)
-    B = CUDA.rand(Float16, K, N, Batch)
-    C = CUDA.zeros(Float16, M, N, Batch)
+    # Prepare data once (using batchmatmul.jl's prepare function)
+    data = batchmatmul_prepare(; M, K, N, Batch, T=Float16)
+    (; A, B, C) = data
 
     # Reference result (batched matmul on CPU)
     A_cpu = Float32.(Array(A))
@@ -456,16 +424,11 @@ function benchmark_batchmatmul()
     min_t, mean_t = benchmark_kernel(cublas_f)
     push!(results, BenchmarkResult("cuBLAS (loop)", min_t, mean_t))
 
-    # cuTile (uses batch_matmul_kernel from batchmatmul.jl)
-    fill!(C, 0)
-    grid = (cld(M, BATCHMATMUL_TM), cld(N, BATCHMATMUL_TN), Batch)
-    cutile_f = () -> ct.launch(batch_matmul_kernel, grid, A, B, C,
-                               ct.Constant(BATCHMATMUL_TM), ct.Constant(BATCHMATMUL_TN),
-                               ct.Constant(BATCHMATMUL_TK))
-    cutile_f()
-    CUDA.synchronize()
-    @assert isapprox(Float32.(Array(C)), C_ref, rtol=1e-1, atol=1e-1) "cuTile incorrect!"
-    min_t, mean_t = benchmark_kernel(cutile_f)
+    # cuTile (using batchmatmul.jl's run/verify functions)
+    result = batchmatmul_run(data; tm=BATCHMATMUL_TM, tn=BATCHMATMUL_TN, tk=BATCHMATMUL_TK,
+                             nruns=NRUNS, warmup=WARMUP)
+    batchmatmul_verify(data, result)
+    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
     # Calculate TFLOPS
@@ -479,55 +442,20 @@ end
  FFT (3-stage Cooley-Tukey) - Column-Major Version
 =============================================================================#
 
-# cuTile kernel: use fft_kernel and make_twiddles from fft.jl
-
 function benchmark_fft()
     println("\nBenchmarking FFT...")
     BS, N = FFT_BATCH, FFT_SIZE
-    F0, F1, F2 = FFT_FACTORS
-    D = FFT_ATOM_PACKING_DIM
     println("  Size: $BS batches × $N FFT ($(BS * N * 8 / 1e6) MB)")
 
-    # Create complex input
-    CUDA.seed!(42)
-    input = CUDA.randn(ComplexF32, BS, N)
-
-    # Reference result (FFTW)
-    reference = FFTW.fft(Array(input), 2)
+    # Prepare data once (using fft.jl's prepare function)
+    data = fft_prepare(; batch=BS, n=N, factors=FFT_FACTORS, atom_packing_dim=FFT_ATOM_PACKING_DIM)
 
     results = BenchmarkResult[]
 
-    # Pre-compute twiddles (one-time CPU cost, uses make_twiddles from fft.jl)
-    W0, W1, W2, T0, T1 = make_twiddles(FFT_FACTORS)
-    W0_gpu, W1_gpu, W2_gpu = CuArray(W0), CuArray(W1), CuArray(W2)
-    T0_gpu, T1_gpu = CuArray(T0), CuArray(T1)
-
-    # Pre-pack input (zero-copy)
-    N2D = N * 2 ÷ D
-    x_packed = reinterpret(reshape, Float32, input)
-    y_packed = CUDA.zeros(Float32, D, BS, N2D)
-
-    # Kernel launch parameters
-    F0F1, F1F2, F0F2 = F0 * F1, F1 * F2, F0 * F2
-    grid = (BS, 1, 1)
-
-    # Kernel-only timing function
-    cutile_kernel_f = () -> ct.launch(fft_kernel, grid,
-        x_packed, y_packed,
-        W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
-        ct.Constant(N), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2),
-        ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
-        ct.Constant(BS), ct.Constant(D), ct.Constant(N2D))
-
-    # Verify correctness
-    cutile_kernel_f()
-    CUDA.synchronize()
-    y_complex = reinterpret(reshape, ComplexF32, y_packed)
-    output = copy(y_complex)
-    @assert isapprox(Array(output), reference, rtol=1e-3) "cuTile FFT incorrect!"
-
-    # Benchmark kernel only
-    min_t, mean_t = benchmark_kernel(cutile_kernel_f)
+    # cuTile (using fft.jl's run/verify functions)
+    result = fft_run(data; nruns=NRUNS, warmup=WARMUP)
+    fft_verify(data, result)
+    min_t, mean_t = minimum(result.times), sum(result.times) / length(result.times)
     push!(results, BenchmarkResult("cuTile.jl", min_t, mean_t))
 
     # Performance metric: GFLOPS (5 * N * log2(N) per complex FFT)

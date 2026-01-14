@@ -27,53 +27,6 @@ function vec_add_kernel_2d(a::ct.TileArray{T,2}, b::ct.TileArray{T,2}, c::ct.Til
     return
 end
 
-# Run 1D vector addition - for benchmarking or programmatic use
-function run_vadd_1d(; n::Int, tile::Int, T::DataType=Float32,
-                      a::Union{CuArray,Nothing}=nothing,
-                      b::Union{CuArray,Nothing}=nothing,
-                      c::Union{CuArray,Nothing}=nothing,
-                      validate::Bool=false)
-    a = something(a, CUDA.rand(T, n))
-    b = something(b, CUDA.rand(T, n))
-    c = something(c, CUDA.zeros(T, n))
-    ct.launch(vec_add_kernel_1d, cld(n, tile), a, b, c, ct.Constant(tile))
-    if validate
-        @assert Array(c) ≈ Array(a) + Array(b)
-    end
-    return (; a, b, c)
-end
-
-function test_add_1d(::Type{T}, n, tile; name=nothing) where T
-    name = something(name, "1D vec_add ($n elements, $T, tile=$tile)")
-    println("--- $name ---")
-    run_vadd_1d(; n, tile, T, validate=true)
-    println("✓ passed")
-end
-
-# Run 2D matrix addition - for benchmarking or programmatic use
-function run_vadd_2d(; m::Int, n::Int, tile_x::Int, tile_y::Int, T::DataType=Float32,
-                      a::Union{CuArray,Nothing}=nothing,
-                      b::Union{CuArray,Nothing}=nothing,
-                      c::Union{CuArray,Nothing}=nothing,
-                      validate::Bool=false)
-    a = something(a, CUDA.rand(T, m, n))
-    b = something(b, CUDA.rand(T, m, n))
-    c = something(c, CUDA.zeros(T, m, n))
-    ct.launch(vec_add_kernel_2d, (cld(m, tile_x), cld(n, tile_y)), a, b, c,
-              ct.Constant(tile_x), ct.Constant(tile_y))
-    if validate
-        @assert Array(c) ≈ Array(a) + Array(b)
-    end
-    return (; a, b, c)
-end
-
-function test_add_2d(::Type{T}, m, n, tile_x, tile_y; name=nothing) where T
-    name = something(name, "2D vec_add ($m x $n, $T, tiles=$tile_x x $tile_y)")
-    println("--- $name ---")
-    run_vadd_2d(; m, n, tile_x, tile_y, T, validate=true)
-    println("✓ passed")
-end
-
 # 1D kernel using gather/scatter (explicit index-based memory access)
 # This demonstrates the gather/scatter API for cases where you need
 # explicit control over indices (e.g., for non-contiguous access patterns)
@@ -93,28 +46,143 @@ function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c:
     return
 end
 
-# Run 1D gather/scatter vector addition - for benchmarking or programmatic use
-function run_vadd_1d_gather(; n::Int, tile::Int, T::DataType=Float32,
-                             a::Union{CuArray,Nothing}=nothing,
-                             b::Union{CuArray,Nothing}=nothing,
-                             c::Union{CuArray,Nothing}=nothing,
-                             validate::Bool=false)
-    a = something(a, CUDA.rand(T, n))
-    b = something(b, CUDA.rand(T, n))
-    c = something(c, CUDA.zeros(T, n))
-    ct.launch(vec_add_kernel_1d_gather, cld(n, tile), a, b, c, ct.Constant(tile))
-    if validate
-        @assert Array(c) ≈ Array(a) + Array(b)
+#=============================================================================
+ 1D Vector Addition - prepare/run/verify pattern
+=============================================================================#
+
+function vadd_1d_prepare(; n::Int, T::DataType=Float32)
+    return (;
+        a = CUDA.rand(T, n),
+        b = CUDA.rand(T, n),
+        c = CUDA.zeros(T, n),
+        n
+    )
+end
+
+function vadd_1d_run(data; tile::Int, nruns::Int=1, warmup::Int=0)
+    (; a, b, c, n) = data
+    grid = cld(n, tile)
+
+    for _ in 1:warmup
+        ct.launch(vec_add_kernel_1d, grid, a, b, c, ct.Constant(tile))
     end
-    return (; a, b, c)
+    CUDA.synchronize()
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(vec_add_kernel_1d, grid, a, b, c, ct.Constant(tile))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; c, times)
+end
+
+function vadd_1d_verify(data, result)
+    @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
+end
+
+function test_add_1d(::Type{T}, n, tile; name=nothing) where T
+    name = something(name, "1D vec_add ($n elements, $T, tile=$tile)")
+    println("--- $name ---")
+    data = vadd_1d_prepare(; n, T)
+    result = vadd_1d_run(data; tile)
+    vadd_1d_verify(data, result)
+    println("✓ passed")
+end
+
+#=============================================================================
+ 2D Matrix Addition - prepare/run/verify pattern
+=============================================================================#
+
+function vadd_2d_prepare(; m::Int, n::Int, T::DataType=Float32)
+    return (;
+        a = CUDA.rand(T, m, n),
+        b = CUDA.rand(T, m, n),
+        c = CUDA.zeros(T, m, n),
+        m, n
+    )
+end
+
+function vadd_2d_run(data; tile_x::Int, tile_y::Int, nruns::Int=1, warmup::Int=0)
+    (; a, b, c, m, n) = data
+    grid = (cld(m, tile_x), cld(n, tile_y))
+
+    for _ in 1:warmup
+        ct.launch(vec_add_kernel_2d, grid, a, b, c,
+                  ct.Constant(tile_x), ct.Constant(tile_y))
+    end
+    CUDA.synchronize()
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(vec_add_kernel_2d, grid, a, b, c,
+                                    ct.Constant(tile_x), ct.Constant(tile_y))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; c, times)
+end
+
+function vadd_2d_verify(data, result)
+    @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
+end
+
+function test_add_2d(::Type{T}, m, n, tile_x, tile_y; name=nothing) where T
+    name = something(name, "2D vec_add ($m x $n, $T, tiles=$tile_x x $tile_y)")
+    println("--- $name ---")
+    data = vadd_2d_prepare(; m, n, T)
+    result = vadd_2d_run(data; tile_x, tile_y)
+    vadd_2d_verify(data, result)
+    println("✓ passed")
+end
+
+#=============================================================================
+ 1D Gather/Scatter Vector Addition - prepare/run/verify pattern
+=============================================================================#
+
+function vadd_1d_gather_prepare(; n::Int, T::DataType=Float32)
+    return (;
+        a = CUDA.rand(T, n),
+        b = CUDA.rand(T, n),
+        c = CUDA.zeros(T, n),
+        n
+    )
+end
+
+function vadd_1d_gather_run(data; tile::Int, nruns::Int=1, warmup::Int=0)
+    (; a, b, c, n) = data
+    grid = cld(n, tile)
+
+    for _ in 1:warmup
+        ct.launch(vec_add_kernel_1d_gather, grid, a, b, c, ct.Constant(tile))
+    end
+    CUDA.synchronize()
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(vec_add_kernel_1d_gather, grid, a, b, c, ct.Constant(tile))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; c, times)
+end
+
+function vadd_1d_gather_verify(data, result)
+    @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
 end
 
 function test_add_1d_gather(::Type{T}, n, tile; name=nothing) where T
     name = something(name, "1D vec_add gather ($n elements, $T, tile=$tile)")
     println("--- $name ---")
-    run_vadd_1d_gather(; n, tile, T, validate=true)
+    data = vadd_1d_gather_prepare(; n, T)
+    result = vadd_1d_gather_run(data; tile)
+    vadd_1d_gather_verify(data, result)
     println("✓ passed")
 end
+
+#=============================================================================
+ Main
+=============================================================================#
 
 function main()
     println("--- cuTile Vector/Matrix Addition Examples ---\n")

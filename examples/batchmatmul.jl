@@ -57,38 +57,62 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     return nothing
 end
 
-# Run batch matmul - for benchmarking or programmatic use
-function run_batchmatmul(; M::Int, K::Int, N::Int, Batch::Int, tm::Int, tn::Int, tk::Int,
-                          T::DataType=Float32,
-                          A::Union{CuArray,Nothing}=nothing,
-                          B::Union{CuArray,Nothing}=nothing,
-                          C::Union{CuArray,Nothing}=nothing,
-                          validate::Bool=false)
-    A = something(A, CUDA.rand(T, M, K, Batch))
-    B = something(B, CUDA.rand(T, K, N, Batch))
-    C = something(C, CUDA.zeros(T, M, N, Batch))
+#=============================================================================
+ Batch Matmul - prepare/run/verify pattern
+=============================================================================#
+
+function batchmatmul_prepare(; M::Int, K::Int, N::Int, Batch::Int, T::DataType=Float32)
+    return (;
+        A = CUDA.rand(T, M, K, Batch),
+        B = CUDA.rand(T, K, N, Batch),
+        C = CUDA.zeros(T, M, N, Batch),
+        M, K, N, Batch
+    )
+end
+
+function batchmatmul_run(data; tm::Int, tn::Int, tk::Int, nruns::Int=1, warmup::Int=0)
+    (; A, B, C, M, N, Batch) = data
     grid = (cld(M, tm), cld(N, tn), Batch)
-    ct.launch(batch_matmul_kernel, grid, A, B, C,
-              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-    if validate
-        A_cpu = Array(A)
-        B_cpu = Array(B)
-        expected = similar(A_cpu, M, N, Batch)
-        for b in 1:Batch
-            expected[:, :, b] = A_cpu[:, :, b] * B_cpu[:, :, b]
-        end
-        result = Array(C)
-        @assert isapprox(result, expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(result - expected)))"
+
+    for _ in 1:warmup
+        ct.launch(batch_matmul_kernel, grid, A, B, C,
+                  ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
     end
-    return (; A, B, C)
+    CUDA.synchronize()
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(batch_matmul_kernel, grid, A, B, C,
+                                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; C, times)
+end
+
+function batchmatmul_verify(data, result)
+    (; A, B, M, N, Batch) = data
+    A_cpu = Array(A)
+    B_cpu = Array(B)
+    expected = similar(A_cpu, M, N, Batch)
+    for b in 1:Batch
+        expected[:, :, b] = A_cpu[:, :, b] * B_cpu[:, :, b]
+    end
+    @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
 function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) where T
     name = something(name, "batch_matmul ($M x $K x $Batch) @ ($K x $N x $Batch), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
-    run_batchmatmul(; M, K, N, Batch, tm, tn, tk, T, validate=true)
+    data = batchmatmul_prepare(; M, K, N, Batch, T)
+    result = batchmatmul_run(data; tm, tn, tk)
+    batchmatmul_verify(data, result)
     println("  passed")
 end
+
+#=============================================================================
+ Main
+=============================================================================#
 
 function main()
     println("--- cuTile Batch Matrix Multiplication Examples ---\n")

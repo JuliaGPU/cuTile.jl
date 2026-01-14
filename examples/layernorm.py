@@ -42,49 +42,80 @@ def layernorm_cutile_kernel(X, W, B, Y, Mean, Rstd, eps: ct.Constant[float], TIL
         ct.store(Y, index=(bid_m, j), tile=ty.astype(Y.dtype))
 
 
-def run_layernorm(*, M: int = 1024, N: int = 1024, tile_n: int = 1024, eps: float = 1e-5,
-                  X=None, W=None, B=None, Y=None, Mean=None, Rstd=None,
-                  dtype=np.float32, validate: bool = False):
-    """Run layer normalization. Returns (X, W, B, Y, Mean, Rstd) arrays for benchmarking."""
-    if X is None:
-        X = (-2.3 + 0.5 * cp.random.randn(M, N)).astype(dtype)
-    else:
-        M, N = X.shape
-    if W is None:
-        W = cp.random.randn(N).astype(dtype)
-    if B is None:
-        B = cp.random.randn(N).astype(dtype)
-    if Y is None:
-        Y = cp.zeros((M, N), dtype=dtype)
-    if Mean is None:
-        Mean = cp.zeros(M, dtype=np.float32)
-    if Rstd is None:
-        Rstd = cp.zeros(M, dtype=np.float32)
+#=============================================================================
+# prepare/run/verify pattern
+#=============================================================================
+
+def layernorm_prepare(*, M: int, N: int, eps: float = 1e-5, dtype=np.float32):
+    """Allocate and initialize data for layer normalization."""
+    return {
+        "X": (-2.3 + 0.5 * cp.random.randn(M, N)).astype(dtype),
+        "W": cp.random.randn(N).astype(dtype),
+        "B": cp.random.randn(N).astype(dtype),
+        "Y": cp.zeros((M, N), dtype=dtype),
+        "Mean": cp.zeros(M, dtype=np.float32),
+        "Rstd": cp.zeros(M, dtype=np.float32),
+        "eps": eps,
+        "M": M,
+        "N": N
+    }
+
+
+def layernorm_run(data, *, tile_n: int, nruns: int = 1, warmup: int = 0):
+    """Run layer normalization kernel with timing."""
+    X, W, B, Y = data["X"], data["W"], data["B"], data["Y"]
+    Mean, Rstd = data["Mean"], data["Rstd"]
+    eps, M = data["eps"], data["M"]
 
     stream = cp.cuda.get_current_stream()
-    ct.launch(stream, (M,), layernorm_cutile_kernel, (X, W, B, Y, Mean, Rstd, eps, tile_n))
 
-    if validate:
-        cp.cuda.runtime.deviceSynchronize()
-        X_np = cp.asnumpy(X)
-        W_np = cp.asnumpy(W)
-        B_np = cp.asnumpy(B)
-        expected_mean = np.mean(X_np, axis=1, keepdims=True)
-        expected_var = np.mean((X_np - expected_mean) ** 2, axis=1, keepdims=True)
-        expected_rstd = 1.0 / np.sqrt(expected_var + eps)
-        normalized = (X_np - expected_mean) * expected_rstd
-        expected_Y = normalized * W_np + B_np
-        assert np.allclose(cp.asnumpy(Y), expected_Y, rtol=1e-2, atol=1e-2), \
-            f"layernorm incorrect! max diff: {np.max(np.abs(cp.asnumpy(Y) - expected_Y))}"
+    # Warmup
+    for _ in range(warmup):
+        ct.launch(stream, (M,), layernorm_cutile_kernel, (X, W, B, Y, Mean, Rstd, eps, tile_n))
+    cp.cuda.runtime.deviceSynchronize()
 
-    return X, W, B, Y, Mean, Rstd
+    # Timed runs
+    times = []
+    for _ in range(nruns):
+        start = cp.cuda.Event()
+        end = cp.cuda.Event()
+        start.record(stream)
+        ct.launch(stream, (M,), layernorm_cutile_kernel, (X, W, B, Y, Mean, Rstd, eps, tile_n))
+        end.record(stream)
+        end.synchronize()
+        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
+    return {"Y": Y, "Mean": Mean, "Rstd": Rstd, "times": times}
+
+
+def layernorm_verify(data, result):
+    """Verify layer normalization results."""
+    X_np = cp.asnumpy(data["X"])
+    W_np = cp.asnumpy(data["W"])
+    B_np = cp.asnumpy(data["B"])
+    eps = data["eps"]
+
+    expected_mean = np.mean(X_np, axis=1, keepdims=True)
+    expected_var = np.mean((X_np - expected_mean) ** 2, axis=1, keepdims=True)
+    expected_rstd = 1.0 / np.sqrt(expected_var + eps)
+    normalized = (X_np - expected_mean) * expected_rstd
+    expected_Y = normalized * W_np + B_np
+
+    assert np.allclose(cp.asnumpy(result["Y"]), expected_Y, rtol=1e-2, atol=1e-2), \
+        f"layernorm incorrect! max diff: {np.max(np.abs(cp.asnumpy(result['Y']) - expected_Y))}"
+
+
+#=============================================================================
+# Test function
+#=============================================================================
 
 def test_layernorm(M, N, tile_n, eps=1e-5, dtype=np.float32, name=None):
     """Test layer normalization with given parameters."""
     name = name or f"layernorm ({M}x{N}), tile={tile_n}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    run_layernorm(M=M, N=N, tile_n=tile_n, eps=eps, dtype=dtype, validate=True)
+    data = layernorm_prepare(M=M, N=N, eps=eps, dtype=dtype)
+    result = layernorm_run(data, tile_n=tile_n)
+    layernorm_verify(data, result)
     print("  passed")
 
 

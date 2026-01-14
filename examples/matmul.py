@@ -44,42 +44,70 @@ def matmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk
     ct.store(C, index=(bidx, bidy), tile=accumulator)
 
 
-def run_matmul(*, M: int = 1024, N: int = 1024, K: int = 1024,
-               tm: int = 64, tn: int = 64, tk: int = 64,
-               dtype=np.float32, A=None, B=None, C=None, validate: bool = False):
-    """Run matrix multiplication. Returns (A, B, C) arrays for benchmarking."""
-    if A is None:
-        A = cp.random.randn(M, K).astype(dtype)
-    else:
-        M, K = A.shape
-    if B is None:
-        B = cp.random.randn(K, N).astype(dtype)
-    else:
-        K, N = B.shape
-    if C is None:
-        C = cp.zeros((M, N), dtype=dtype)
+#=============================================================================
+# prepare/run/verify pattern
+#=============================================================================
+
+def matmul_prepare(*, M: int, N: int, K: int, dtype=np.float32):
+    """Allocate and initialize data for matmul."""
+    return {
+        "A": cp.random.randn(M, K).astype(dtype),
+        "B": cp.random.randn(K, N).astype(dtype),
+        "C": cp.zeros((M, N), dtype=dtype),
+        "M": M,
+        "N": N,
+        "K": K
+    }
+
+
+def matmul_run(data, *, tm: int, tn: int, tk: int, nruns: int = 1, warmup: int = 0):
+    """Run matmul kernel with timing."""
+    A, B, C = data["A"], data["B"], data["C"]
+    M, N = data["M"], data["N"]
 
     grid_m = ceil(M / tm)
     grid_n = ceil(N / tn)
     grid = (grid_m * grid_n, 1, 1)
     stream = cp.cuda.get_current_stream()
-    ct.launch(stream, grid, matmul_cutile_kernel, (A, B, C, tm, tn, tk))
 
-    if validate:
-        cp.cuda.runtime.deviceSynchronize()
-        expected = cp.asnumpy(A) @ cp.asnumpy(B)
-        # TF32 has reduced precision
-        assert np.allclose(cp.asnumpy(C), expected, rtol=1e-1, atol=1e-1), \
-            f"matmul incorrect! max diff: {np.max(np.abs(cp.asnumpy(C) - expected))}"
+    # Warmup
+    for _ in range(warmup):
+        ct.launch(stream, grid, matmul_cutile_kernel, (A, B, C, tm, tn, tk))
+    cp.cuda.runtime.deviceSynchronize()
 
-    return A, B, C
+    # Timed runs
+    times = []
+    for _ in range(nruns):
+        start = cp.cuda.Event()
+        end = cp.cuda.Event()
+        start.record(stream)
+        ct.launch(stream, grid, matmul_cutile_kernel, (A, B, C, tm, tn, tk))
+        end.record(stream)
+        end.synchronize()
+        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
+    return {"C": C, "times": times}
+
+
+def matmul_verify(data, result):
+    """Verify matmul results."""
+    expected = cp.asnumpy(data["A"]) @ cp.asnumpy(data["B"])
+    # TF32 has reduced precision
+    assert np.allclose(cp.asnumpy(result["C"]), expected, rtol=1e-1, atol=1e-1), \
+        f"matmul incorrect! max diff: {np.max(np.abs(cp.asnumpy(result['C']) - expected))}"
+
+
+#=============================================================================
+# Test function
+#=============================================================================
 
 def test_matmul(M, N, K, tm, tn, tk, dtype=np.float32, name=None):
     """Test matmul with given parameters."""
     name = name or f"matmul ({M}x{K}) @ ({K}x{N}), tiles={tm}x{tn}x{tk}, dtype={dtype.__name__}"
     print(f"--- {name} ---")
-    run_matmul(M=M, N=N, K=K, tm=tm, tn=tn, tk=tk, dtype=dtype, validate=True)
+    data = matmul_prepare(M=M, N=N, K=K, dtype=dtype)
+    result = matmul_run(data, tm=tm, tn=tn, tk=tk)
+    matmul_verify(data, result)
     print("  passed")
 
 

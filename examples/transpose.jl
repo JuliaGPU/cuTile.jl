@@ -17,29 +17,54 @@ function transpose_kernel(x::ct.TileArray{T,2}, y::ct.TileArray{T,2},
     return
 end
 
-# Run transpose - for benchmarking or programmatic use
-function run_transpose(; m::Int, n::Int, tm::Int, tn::Int, T::DataType=Float32,
-                        x::Union{CuArray,Nothing}=nothing,
-                        y::Union{CuArray,Nothing}=nothing,
-                        validate::Bool=false)
-    x = something(x, CUDA.rand(T, m, n))
-    y = something(y, CUDA.zeros(T, n, m))
-    grid_x = cld(m, tm)
-    grid_y = cld(n, tn)
-    ct.launch(transpose_kernel, (grid_x, grid_y), x, y,
-              ct.Constant(tm), ct.Constant(tn))
-    if validate
-        @assert Array(y) ≈ transpose(Array(x))
+#=============================================================================
+ Transpose - prepare/run/verify pattern
+=============================================================================#
+
+function transpose_prepare(; m::Int, n::Int, T::DataType=Float32)
+    return (;
+        x = CUDA.rand(T, m, n),
+        y = CUDA.zeros(T, n, m),
+        m, n
+    )
+end
+
+function transpose_run(data; tm::Int, tn::Int, nruns::Int=1, warmup::Int=0)
+    (; x, y, m, n) = data
+    grid = (cld(m, tm), cld(n, tn))
+
+    for _ in 1:warmup
+        ct.launch(transpose_kernel, grid, x, y,
+                  ct.Constant(tm), ct.Constant(tn))
     end
-    return (; x, y)
+    CUDA.synchronize()
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(transpose_kernel, grid, x, y,
+                                    ct.Constant(tm), ct.Constant(tn))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; y, times)
+end
+
+function transpose_verify(data, result)
+    @assert Array(result.y) ≈ transpose(Array(data.x))
 end
 
 function test_transpose(::Type{T}, m, n, tm, tn; name=nothing) where T
     name = something(name, "transpose ($m x $n, $T, tiles=$tm x $tn)")
     println("--- $name ---")
-    run_transpose(; m, n, tm, tn, T, validate=true)
+    data = transpose_prepare(; m, n, T)
+    result = transpose_run(data; tm, tn)
+    transpose_verify(data, result)
     println("✓ passed")
 end
+
+#=============================================================================
+ Main
+=============================================================================#
 
 function main()
     println("--- cuTile Matrix Transposition Examples ---\n")
