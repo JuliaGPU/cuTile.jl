@@ -150,9 +150,12 @@ mutable struct CGCtx
 
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
+
+    # Target architecture (e.g., :sm_100)
+    sm_arch::Union{String, Nothing}
 end
 
-function CGCtx(writer::BytecodeWriter, target::TileTarget)
+function CGCtx(writer::BytecodeWriter, target::TileTarget, sm_arch::Union{String, Nothing}=nothing)
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -167,6 +170,7 @@ function CGCtx(writer::BytecodeWriter, target::TileTarget)
         nothing,
         nothing,
         Dict{Type, TypeId}(),
+        sm_arch,
     )
 end
 

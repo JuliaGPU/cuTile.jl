@@ -1590,42 +1590,7 @@ end
 
 end
 
-@testset "redefine kernel method" begin
-    mod = @eval module $(gensym())
-        import cuTile as ct
-        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            ta = ct.load(a, (pid,), (16,))
-            tb = ct.load(b, (pid,), (16,))
-            ct.store(c, (pid,), ta + tb)
-            return
-        end
-    end
-
-    a = CUDA.ones(Float32, 1024)
-    b = CUDA.ones(Float32, 1024)
-    c = CUDA.zeros(Float32, 1024)
-
-    ct.launch(mod.vadd_kernel, 64, a, b, c)
-
-    @test Array(c) ≈ Array(a) + Array(b)
-
-    @eval mod begin
-        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            ta = ct.load(a, (pid,), (16,))
-            tb = ct.load(b, (pid,), (16,))
-            ct.store(c, (pid,), ta + tb * 2)
-            return
-        end
-    end
-
-    ct.launch(mod.vadd_kernel, 64, a, b, c)
-
-    @test Array(c) ≈ Array(a) + Array(b) * 2
-end
-
-@testset "Entry Hints Integration" begin
+@testset "Entry Hints" begin
 
 @testset "launch with num_ctas" begin
     function vadd_kernel_num_ctas(a::ct.TileArray{Float32,1},
@@ -1691,3 +1656,382 @@ end
 end
 
 end
+
+@testset "Load / Store Optimization Hints" begin
+
+@testset "load with latency hint" begin
+    function vadd_with_load_latency(a::ct.TileArray{Float32,1},
+                                    b::ct.TileArray{Float32,1},
+                                    c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,); latency=5)
+        tb = ct.load(b, pid, (16,); latency=3)
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_with_load_latency, 64, a, b, c)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+@testset "load with allow_tma=false" begin
+    function vadd_no_tma(a::ct.TileArray{Float32,1},
+                         b::ct.TileArray{Float32,1},
+                         c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,); allow_tma=false)
+        tb = ct.load(b, pid, (16,); allow_tma=false)
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_no_tma, 64, a, b, c)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+@testset "load with both hints" begin
+    function vadd_both_load_hints(a::ct.TileArray{Float32,1},
+                                  b::ct.TileArray{Float32,1},
+                                  c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,); latency=7, allow_tma=false)
+        tb = ct.load(b, pid, (16,); latency=4, allow_tma=true)
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_both_load_hints, 64, a, b, c)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+@testset "store with latency hint" begin
+    function copy_with_store_latency(a::ct.TileArray{Float32,1},
+                                     b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        ct.store(b, pid, ta; latency=2)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(copy_with_store_latency, 64, a, b)
+    CUDA.synchronize()
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "store with allow_tma=false" begin
+    function copy_no_tma_store(a::ct.TileArray{Float32,1},
+                               b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        ct.store(b, pid, ta; allow_tma=false)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(copy_no_tma_store, 64, a, b)
+    CUDA.synchronize()
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "different hints on load and store" begin
+    function vadd_mixed_hints(a::ct.TileArray{Float32,1},
+                              b::ct.TileArray{Float32,1},
+                              c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        # Load with high latency, no TMA
+        ta = ct.load(a, pid, (16,); latency=8, allow_tma=false)
+        tb = ct.load(b, pid, (16,); latency=6, allow_tma=false)
+        # Store with low latency, allow TMA
+        ct.store(c, pid, ta + tb; latency=2, allow_tma=true)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_mixed_hints, 64, a, b, c)
+    CUDA.synchronize()
+    @test Array(c) ≈ ones(Float32, n) .* 3
+end
+
+@testset "2D matmul with hints" begin
+    function matmul_with_hints(a::ct.TileArray{Float32,2},
+                               b::ct.TileArray{Float32,2},
+                               c::ct.TileArray{Float32,2})
+        bidx = ct.bid(1)
+        bidy = ct.bid(2)
+        # Load with latency hints
+        tile_a = ct.load(a, (bidx, 1), (32, 16); latency=5)
+        tile_b = ct.load(b, (1, bidy), (16, 32); latency=5)
+        result = tile_a * tile_b
+        # Store with latency hint
+        ct.store(c, (bidx, bidy), result; latency=3)
+        return nothing
+    end
+
+    M, K, N = 64, 16, 64
+    a = CUDA.rand(Float32, M, K)
+    b = CUDA.rand(Float32, K, N)
+    c = CUDA.zeros(Float32, M, N)
+
+    grid_x = cld(M, 32)
+    grid_y = cld(N, 32)
+    ct.launch(matmul_with_hints, (grid_x, grid_y, 1), a, b, c)
+    CUDA.synchronize()
+
+    # Verify against CPU reference
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    c_cpu = Array(c)
+    c_ref = a_cpu * b_cpu
+
+    @test c_cpu ≈ c_ref rtol=1e-5
+end
+
+@testset "reduction with hints" begin
+    function reduce_with_hints(a::ct.TileArray{Float32,2},
+                               b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        # Load with hints
+        tile = ct.load(a, (pid, 1), (1, 128); latency=6, allow_tma=false)
+        sums = ct.reduce_sum(tile, 2)
+        # Store with hints
+        ct.store(b, pid, sums; latency=2)
+        return nothing
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(reduce_with_hints, m, a, b)
+    CUDA.synchronize()
+
+    # Each row should be summed
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
+    end
+end
+
+@testset "transpose with hints" begin
+    function transpose_with_hints(x::ct.TileArray{Float32,2},
+                                  y::ct.TileArray{Float32,2})
+        bidx = ct.bid(1)
+        bidy = ct.bid(2)
+        # Load with high latency
+        tile = ct.load(x, (bidx, bidy), (32, 32); latency=9)
+        transposed = ct.transpose(tile)
+        # Store with lower latency
+        ct.store(y, (bidy, bidx), transposed; latency=4)
+        return nothing
+    end
+
+    m, n = 256, 128
+    tile_size = 32
+    x = CUDA.rand(Float32, m, n)
+    y = CUDA.zeros(Float32, n, m)
+
+    ct.launch(transpose_with_hints, (cld(m, tile_size), cld(n, tile_size)), x, y)
+    CUDA.synchronize()
+
+    @test Array(y) ≈ transpose(Array(x))
+end
+
+@testset "complex kernel with multiple loads/stores with hints" begin
+    function complex_hints_kernel(a::ct.TileArray{Float32,1},
+                                  b::ct.TileArray{Float32,1},
+                                  c::ct.TileArray{Float32,1},
+                                  d::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        # Multiple loads with different hints
+        ta = ct.load(a, pid, (16,); latency=10, allow_tma=false)
+        tb = ct.load(b, pid, (16,); latency=5, allow_tma=true)
+        tc = ct.load(c, pid, (16,); latency=7)
+
+        # Compute result
+        result = ta + tb + tc
+
+        # Store with hint
+        ct.store(d, pid, result; latency=1, allow_tma=false)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.ones(Float32, n) .* 3
+    d = CUDA.zeros(Float32, n)
+
+    ct.launch(complex_hints_kernel, 64, a, b, c, d)
+    CUDA.synchronize()
+    @test Array(d) ≈ ones(Float32, n) .* 6
+end
+
+@testset "hints with Float64" begin
+    function vadd_f64_hints(a::ct.TileArray{Float64,1},
+                            b::ct.TileArray{Float64,1},
+                            c::ct.TileArray{Float64,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,); latency=8)
+        tb = ct.load(b, pid, (16,); latency=8)
+        ct.store(c, pid, ta + tb; latency=4)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float64, n)
+    b = CUDA.rand(Float64, n)
+    c = CUDA.zeros(Float64, n)
+
+    ct.launch(vadd_f64_hints, 64, a, b, c)
+    CUDA.synchronize()
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
+@testset "hints with Float16" begin
+    function vadd_f16_hints(a::ct.TileArray{Float16,1},
+                            b::ct.TileArray{Float16,1},
+                            c::ct.TileArray{Float16,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,); latency=3, allow_tma=false)
+        tb = ct.load(b, pid, (16,); latency=3, allow_tma=false)
+        ct.store(c, pid, ta + tb; latency=1)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float16, n)
+    b = CUDA.rand(Float16, n)
+    c = CUDA.zeros(Float16, n)
+
+    ct.launch(vadd_f16_hints, 64, a, b, c)
+    CUDA.synchronize()
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
+@testset "boundary latency values" begin
+    function test_boundary_latency(a::ct.TileArray{Float32,1},
+                                   b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        # Min and max valid latency values
+        ta = ct.load(a, pid, (16,); latency=1)
+        ct.store(b, pid, ta; latency=10)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(test_boundary_latency, 64, a, b)
+    CUDA.synchronize()
+    @test Array(b) ≈ Array(a)
+end
+
+# Pointer-based operations (gather/scatter) with latency hints
+@testset "gather with latency hint" begin
+    function gather_with_latency(a::ct.TileArray{Float32,1},
+                                 b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        base = (pid - 1) * 16
+        indices = base .+ ct.arange((16,), Int32)
+        tile = ct.gather(a, indices; latency=5)
+        ct.store(b, pid, tile)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(gather_with_latency, 64, a, b)
+    CUDA.synchronize()
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "scatter with latency hint" begin
+    function scatter_with_latency(a::ct.TileArray{Float32,1},
+                                  b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        base = (pid - 1) * 16
+        indices = base .+ ct.arange((16,), Int32)
+        ct.scatter(b, indices, tile; latency=3)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(scatter_with_latency, 64, a, b)
+    CUDA.synchronize()
+    @test Array(b) ≈ Array(a)
+end
+
+end
+
+@testset "redefine kernel method" begin
+    mod = @eval module $(gensym())
+        import cuTile as ct
+        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, (pid,), (16,))
+            tb = ct.load(b, (pid,), (16,))
+            ct.store(c, (pid,), ta + tb)
+            return
+        end
+    end
+
+    a = CUDA.ones(Float32, 1024)
+    b = CUDA.ones(Float32, 1024)
+    c = CUDA.zeros(Float32, 1024)
+
+    ct.launch(mod.vadd_kernel, 64, a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b)
+
+    @eval mod begin
+        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, (pid,), (16,))
+            tb = ct.load(b, (pid,), (16,))
+            ct.store(c, (pid,), ta + tb * 2)
+            return
+        end
+    end
+
+    ct.launch(mod.vadd_kernel, 64, a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b) * 2
+end
+

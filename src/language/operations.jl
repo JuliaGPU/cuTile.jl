@@ -60,7 +60,7 @@ Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
 end
 
 """
-    load(arr::TileArray, index, shape; padding_mode=PaddingMode.Undetermined) -> Tile
+    load(arr::TileArray, index, shape; padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=true) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -73,101 +73,131 @@ Index is 1-indexed. Shape must be compile-time constant.
 - `PaddingMode.PosInf`: Return positive infinity for OOB elements
 - `PaddingMode.NegInf`: Return negative infinity for OOB elements
 
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+
 # Example
 ```julia
-tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero, latency=3)
 ```
 """
 @inline function load(arr::TileArray{T, N}, index, shape::NTuple{<:Any, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
 @inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{<:Any, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, index - One())
+    Intrinsics.load_partition_view(pv, latency, allow_tma, index - One())
 end
 
 # Load with Constant shape tuple
 @inline function load(arr::TileArray{T, N}, index, shape::Tuple{Vararg{Constant{Int}}};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
 # Keyword argument version
 @inline function load(arr::TileArray{T, N}; index, shape,
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
 """
-    store(arr::TileArray, index, tile::Tile) -> Tile
+    store(arr::TileArray, index, tile::Tile; latency=nothing, allow_tma=true) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
 """
 # Regular N-D tiles (N >= 1)
-@inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape}) where {T, Shape}
+@inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape};
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, (promote(index...) .- One())...)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, (promote(index...) .- One())...)
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape}) where {T, Shape}
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape};
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, index - One())
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, index - One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 # Special case for 0D (scalar) tiles - reshape to 1D for partition view
-@inline function store(arr::TileArray{T}, index, tile::Tile{T, ()}) where {T}
+@inline function store(arr::TileArray{T}, index, tile::Tile{T, ()};
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T}
     tv = Intrinsics.make_tensor_view(arr)
     # Reshape 0D tile to 1D (partition views require at least 1D)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, (promote(index...) .- One())...)
+    Intrinsics.store_partition_view(pv, tile_1d, latency, allow_tma, (promote(index...) .- One())...)
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()}) where {T}
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()};
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T}
     tv = Intrinsics.make_tensor_view(arr)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, index - One())
+    Intrinsics.store_partition_view(pv, tile_1d, latency, allow_tma, index - One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 # Keyword argument version - dispatch to positional version
-@inline function store(arr::TileArray{T}; index, tile::Tile{T, Shape}) where {T, Shape}
-    store(arr, index, tile)
+@inline function store(arr::TileArray{T}; index, tile::Tile{T, Shape},
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T, Shape}
+    store(arr, index, tile; latency, allow_tma)
 end
 
 """
-    gather(array::TileArray{T, 1}, indices::Tile{I, S}) -> Tile{T, S}
+    gather(array::TileArray{T, 1}, indices::Tile{I, S}; latency=nothing) -> Tile{T, S}
 
 Gather elements from a 1D array using index tile.
 Indices are 1-indexed. Out-of-bounds indices return zero.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
 indices = base .+ ct.arange((TILE,), Int32)
-tile = ct.gather(arr, indices)
+tile = ct.gather(arr, indices; latency=3)
 ```
 """
-@inline function gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
+@inline function gather(array::TileArray{T, 1}, indices::Tile{I, S};
+                        latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     # Convert to 0-indexed
     indices_0 = indices .- one(I)
 
@@ -187,16 +217,20 @@ tile = ct.gather(arr, indices)
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
 
-    Intrinsics.load_ptr_tko(ptr_tile, mask, padding)
+    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
 end
 
 """
-    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}) -> Tile{T, S}
+    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}; latency=nothing) -> Tile{T, S}
 
 Gather elements from a 2D array using a tuple of index tiles.
 Indices are 1-indexed. Index tiles are broadcast to a common shape.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
+@inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}};
+                        latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
@@ -235,23 +269,27 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
 
-    Intrinsics.load_ptr_tko(ptr_tile, mask, padding)
+    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
 end
 
 """
-    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) -> Nothing
+    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}; latency=nothing) -> Nothing
 
 Scatter elements to a 1D array at index tile positions.
 Indices are 1-indexed. Out-of-bounds indices are ignored.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
 indices = base .+ ct.arange((TILE,), Int32)
-ct.scatter(arr, indices, result_tile)
+ct.scatter(arr, indices, result_tile; latency=3)
 ```
 """
-@inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
+@inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
+                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     # Convert to 0-indexed
     indices_0 = indices .- one(I)
 
@@ -268,16 +306,20 @@ ct.scatter(arr, indices, result_tile)
     lt_size = indices_i32 .< size_0d
     mask = ge_zero .& lt_size
 
-    Intrinsics.store_ptr_tko(ptr_tile, tile, mask)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, mask)
 end
 
 """
-    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile) -> Nothing
+    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile; latency=nothing) -> Nothing
 
 Scatter elements to a 2D array at index tile positions.
 Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
+@inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile};
+                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
@@ -314,7 +356,7 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
     mask = mask0 .& mask1
 
-    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, mask)
+    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, latency, mask)
 end
 
 #=============================================================================
@@ -512,16 +554,15 @@ end
 end
 
 #=============================================================================
- Matmul
+ Matrix multiplication
 =============================================================================#
 
 # Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
-# Uses tensor cores when available.
 @inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
     Intrinsics.mma(a, b, acc)
 
-# Internal matmul helper (used by * operator)
-@inline function matmul(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
+# Matrix multiplication (A * B like Julia arrays)
+@inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
     _matmul(a, b, Val(length(SA)))
 end
 
@@ -588,13 +629,3 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
 
-#=============================================================================
- Matrix Multiplication
-=============================================================================#
-
-# Matrix multiplication (A * B like Julia arrays)
-@inline Base.:(*)(a::Tile, b::Tile) = matmul(a, b)
-
-# Base overloads for Int32 (special intrinsics)
-@noinline Base.rem(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
-@noinline Base.min(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))

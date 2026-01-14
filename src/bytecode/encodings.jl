@@ -423,7 +423,7 @@ function encode_LoadViewTkoOp!(cb::CodeBuilder,
                                token::Union{Value, Nothing}=nothing,
                                memory_ordering::MemoryOrderingSemantics=MemoryWeak,
                                memory_scope::Union{MemoryScope, Nothing}=nothing,
-                               optimization_hints::Union{Vector{UInt8}, Nothing}=nothing)
+                               optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.LoadViewTkoOp)
     # Variadic result types
     encode_typeid_seq!(cb.buf, [tile_type, token_type])
@@ -447,7 +447,7 @@ function encode_LoadViewTkoOp!(cb::CodeBuilder,
         encode_enum!(cb.buf, memory_scope)
     end
     if optimization_hints !== nothing
-        append!(cb.buf, optimization_hints)
+        encode_opattr_optimization_hints!(cb, optimization_hints)
     end
 
     # Operands
@@ -472,7 +472,7 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
                                 token::Union{Value, Nothing}=nothing,
                                 memory_ordering::MemoryOrderingSemantics=MemoryWeak,
                                 memory_scope::Union{MemoryScope, Nothing}=nothing,
-                                optimization_hints::Union{Vector{UInt8}, Nothing}=nothing)
+                                optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.StoreViewTkoOp)
     # Variadic result types (just token)
     encode_typeid_seq!(cb.buf, [token_type])
@@ -496,7 +496,7 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
         encode_enum!(cb.buf, memory_scope)
     end
     if optimization_hints !== nothing
-        append!(cb.buf, optimization_hints)
+        encode_opattr_optimization_hints!(cb, optimization_hints)
     end
 
     # Operands
@@ -541,7 +541,7 @@ function encode_LoadPtrTkoOp!(cb::CodeBuilder,
                               token::Union{Value, Nothing}=nothing,
                               memory_ordering::MemoryOrderingSemantics=MemoryWeak,
                               memory_scope::Union{MemoryScope, Nothing}=nothing,
-                              optimization_hints::Union{Vector{UInt8}, Nothing}=nothing)
+                              optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.LoadPtrTkoOp)
     # Result types
     encode_typeid!(cb.buf, result_type)
@@ -572,7 +572,7 @@ function encode_LoadPtrTkoOp!(cb::CodeBuilder,
         encode_enum!(cb.buf, memory_scope)
     end
     if optimization_hints !== nothing
-        append!(cb.buf, optimization_hints)
+        encode_opattr_optimization_hints!(cb, optimization_hints)
     end
 
     # Operands
@@ -600,7 +600,7 @@ function encode_StorePtrTkoOp!(cb::CodeBuilder,
                                token::Union{Value, Nothing}=nothing,
                                memory_ordering::MemoryOrderingSemantics=MemoryWeak,
                                memory_scope::Union{MemoryScope, Nothing}=nothing,
-                               optimization_hints::Union{Vector{UInt8}, Nothing}=nothing)
+                               optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.StorePtrTkoOp)
     # Result type (token)
     encode_typeid!(cb.buf, token_type)
@@ -627,7 +627,7 @@ function encode_StorePtrTkoOp!(cb::CodeBuilder,
         encode_enum!(cb.buf, memory_scope)
     end
     if optimization_hints !== nothing
-        append!(cb.buf, optimization_hints)
+        encode_opattr_optimization_hints!(cb, optimization_hints)
     end
 
     # Operands
