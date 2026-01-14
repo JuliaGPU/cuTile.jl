@@ -18,7 +18,7 @@ function transpose_kernel(x::ct.TileArray{T,2}, y::ct.TileArray{T,2},
 end
 
 #=============================================================================
- Transpose - prepare/run/verify pattern
+ Example harness
 =============================================================================#
 
 function transpose_prepare(; m::Int, n::Int, T::DataType=Float32)
@@ -53,6 +53,10 @@ function transpose_verify(data, result)
     @assert Array(result.y) ≈ transpose(Array(data.x))
 end
 
+#=============================================================================
+ Main
+=============================================================================#
+
 function test_transpose(::Type{T}, m, n, tm, tn; name=nothing) where T
     name = something(name, "transpose ($m x $n, $T, tiles=$tm x $tn)")
     println("--- $name ---")
@@ -61,10 +65,6 @@ function test_transpose(::Type{T}, m, n, tm, tn; name=nothing) where T
     transpose_verify(data, result)
     println("✓ passed")
 end
-
-#=============================================================================
- Main
-=============================================================================#
 
 function main()
     println("--- cuTile Matrix Transposition Examples ---\n")

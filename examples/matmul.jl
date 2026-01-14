@@ -63,7 +63,7 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
 end
 
 #=============================================================================
- Matmul - prepare/run/verify pattern
+ Example harness
 =============================================================================#
 
 function matmul_prepare(; M::Int, N::Int, K::Int, T::DataType=Float32)
@@ -100,6 +100,10 @@ function matmul_verify(data, result)
     @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
+#=============================================================================
+ Main
+=============================================================================#
+
 function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     name = something(name, "matmul ($M x $K) @ ($K x $N), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
@@ -108,10 +112,6 @@ function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     matmul_verify(data, result)
     println("  passed")
 end
-
-#=============================================================================
- Main
-=============================================================================#
 
 function main()
     println("--- cuTile Matrix Multiplication Examples ---\n")

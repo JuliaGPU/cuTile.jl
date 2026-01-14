@@ -86,11 +86,6 @@ def fft_kernel(x_packed_in, y_packed_out,
     Y_ri = ct.reshape(ct.cat((X_r, X_i), axis=-1), (BS, N * 2 // D, D))
     ct.store(y_packed_out, index=(bid, 0, 0), tile=Y_ri)
 
-
-#=============================================================================
-# Helper functions
-#=============================================================================
-
 def fft_twiddles(rows: int, cols: int, factor: int, device, precision):
     """Generate DFT twiddle factors."""
     I, J = torch.meshgrid(torch.arange(rows, device=device),
@@ -113,7 +108,7 @@ def fft_make_twiddles(factors, precision, device):
 
 
 #=============================================================================
-# prepare/run/verify pattern
+# Example harness
 #=============================================================================
 
 def fft_prepare(*, batch: int, size: int, factors: tuple, atom_packing_dim: int = 2):
@@ -186,7 +181,7 @@ def fft_verify(data, result):
 
 
 #=============================================================================
-# Test function
+# Main
 #=============================================================================
 
 def test_fft(batch, size, factors, name=None):

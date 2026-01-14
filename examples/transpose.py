@@ -17,7 +17,7 @@ def transpose_cutile_kernel(input, output, tile_m: ct.Constant[int], tile_n: ct.
 
 
 #=============================================================================
-# prepare/run/verify pattern
+# Example harness
 #=============================================================================
 
 def transpose_prepare(*, M: int, N: int, dtype=np.float32):
@@ -65,7 +65,7 @@ def transpose_verify(data, result):
 
 
 #=============================================================================
-# Test function
+# Main
 #=============================================================================
 
 def test_transpose(M, N, tile_m, tile_n, dtype=np.float32, name=None):

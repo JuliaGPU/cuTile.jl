@@ -58,7 +58,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
 end
 
 #=============================================================================
- Batch Matmul - prepare/run/verify pattern
+ Example harness
 =============================================================================#
 
 function batchmatmul_prepare(; M::Int, K::Int, N::Int, Batch::Int, T::DataType=Float32)
@@ -101,6 +101,10 @@ function batchmatmul_verify(data, result)
     @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
+#=============================================================================
+ Main
+=============================================================================#
+
 function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) where T
     name = something(name, "batch_matmul ($M x $K x $Batch) @ ($K x $N x $Batch), $T, tiles=$tm x $tn x $tk")
     println("--- $name ---")
@@ -109,10 +113,6 @@ function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) 
     batchmatmul_verify(data, result)
     println("  passed")
 end
-
-#=============================================================================
- Main
-=============================================================================#
 
 function main()
     println("--- cuTile Batch Matrix Multiplication Examples ---\n")

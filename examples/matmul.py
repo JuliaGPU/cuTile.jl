@@ -45,7 +45,7 @@ def matmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk
 
 
 #=============================================================================
-# prepare/run/verify pattern
+# Example harness
 #=============================================================================
 
 def matmul_prepare(*, M: int, N: int, K: int, dtype=np.float32):
@@ -98,7 +98,7 @@ def matmul_verify(data, result):
 
 
 #=============================================================================
-# Test function
+# Main
 #=============================================================================
 
 def test_matmul(M, N, K, tm, tn, tk, dtype=np.float32, name=None):

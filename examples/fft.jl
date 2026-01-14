@@ -212,7 +212,7 @@ function make_twiddles(factors::NTuple{3, Int})
 end
 
 #=============================================================================
- FFT - prepare/run/verify pattern
+ Example harness
 =============================================================================#
 
 function fft_prepare(; batch::Int, n::Int, factors::NTuple{3,Int}, atom_packing_dim::Int=2)
@@ -284,37 +284,6 @@ end
 function fft_verify(data, result)
     reference = FFTW.fft(Array(data.input), 2)
     @assert isapprox(Array(result.output), reference, rtol=1e-4)
-end
-
-#=============================================================================
- Legacy wrapper for backward compatibility
-=============================================================================#
-
-function cutile_fft(x::CuMatrix{ComplexF32}, factors::NTuple{3, Int}; atom_packing_dim::Int=2)
-    BS = size(x, 1)
-    N = size(x, 2)
-
-    # Create data structure similar to prepare
-    D = atom_packing_dim
-    N2D = N * 2 ÷ D
-    W0, W1, W2, T0, T1 = make_twiddles(factors)
-    W0_gpu = CuArray(W0)
-    W1_gpu = CuArray(W1)
-    W2_gpu = CuArray(W2)
-    T0_gpu = CuArray(T0)
-    T1_gpu = CuArray(T1)
-
-    x_packed = reinterpret(reshape, Float32, x)
-    y_packed = CUDA.zeros(Float32, D, BS, N2D)
-
-    data = (;
-        input=x, x_packed, y_packed,
-        W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
-        factors, batch=BS, n=N, D, N2D
-    )
-
-    result = fft_run(data)
-    return result.output
 end
 
 #=============================================================================

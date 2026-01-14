@@ -37,7 +37,7 @@ def batchmatmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int
 
 
 #=============================================================================
-# prepare/run/verify pattern
+# Example harness
 #=============================================================================
 
 def batchmatmul_prepare(*, Batch: int, M: int, K: int, N: int, dtype=np.float16):
@@ -95,7 +95,7 @@ def batchmatmul_verify(data, result):
 
 
 #=============================================================================
-# Test function
+# Main
 #=============================================================================
 
 def test_batchmatmul(Batch, M, K, N, tm, tn, tk, dtype=np.float16, name=None):
