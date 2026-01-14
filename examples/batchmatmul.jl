@@ -57,37 +57,89 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     return nothing
 end
 
-function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) where T
-    name = something(name, "batch_matmul ($M x $K x $Batch) @ ($K x $N x $Batch), $T, tiles=$tm x $tn x $tk")
-    println("--- $name ---")
+#=============================================================================
+ Example harness
+=============================================================================#
 
-    # Batch-last ordering for optimal column-major access
-    A = CUDA.rand(T, M, K, Batch)
-    B = CUDA.rand(T, K, N, Batch)
-    C = CUDA.zeros(T, M, N, Batch)
+function prepare(; benchmark::Bool=false,
+                  M::Int=benchmark ? 1024 : 256,
+                  K::Int=benchmark ? 512 : 128,
+                  N::Int=benchmark ? 2048 : 256,
+                  Batch::Int=benchmark ? 8 : 4,
+                  T::DataType=Float32)
+    return (;
+        A = CUDA.rand(T, M, K, Batch),
+        B = CUDA.rand(T, K, N, Batch),
+        C = CuArray{T}(undef, M, N, Batch),
+        M, K, N, Batch
+    )
+end
 
-    # 3D grid: (M_tiles, N_tiles, Batch)
+function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int=0)
+    (; A, B, C, M, N, Batch) = data
     grid = (cld(M, tm), cld(N, tn), Batch)
 
-    # Launch kernel
-    ct.launch(batch_matmul_kernel, grid, A, B, C,
-              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+    CUDA.@sync for _ in 1:warmup
+        ct.launch(batch_matmul_kernel, grid, A, B, C,
+                  ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+    end
 
-    # Verify result - compute batched matmul on CPU
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(batch_matmul_kernel, grid, A, B, C,
+                                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+        push!(times, t * 1000)  # ms
+    end
+
+    return (; C, times)
+end
+
+function verify(data, result)
+    (; A, B, M, N, Batch) = data
     A_cpu = Array(A)
     B_cpu = Array(B)
     expected = similar(A_cpu, M, N, Batch)
     for b in 1:Batch
         expected[:, :, b] = A_cpu[:, :, b] * B_cpu[:, :, b]
     end
-    result = Array(C)
+    @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
+end
 
-    if isapprox(result, expected, rtol=1e-2, atol=1e-2)
-        println("  passed")
-    else
-        max_diff = maximum(abs.(result - expected))
-        println("  FAILED (max diff: $max_diff)")
+#=============================================================================
+ Reference implementations for benchmarking
+=============================================================================#
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; A, B, M, N, Batch) = data
+    results = Dict{String, Vector{Float64}}()
+
+    C_cublas = similar(A, M, N, Batch)
+
+    # cuBLAS batched gemm via CUBLAS.gemm_strided_batched!
+    CUDA.@sync for _ in 1:warmup
+        CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
     end
+    times_cublas = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+        push!(times_cublas, t * 1000)
+    end
+    results["cuBLAS batched"] = times_cublas
+
+    return results
+end
+
+#=============================================================================
+ Main
+=============================================================================#
+
+function test_batch_matmul(::Type{T}, M, K, N, Batch, tm, tn, tk; name=nothing) where T
+    name = something(name, "batch_matmul ($M x $K x $Batch) @ ($K x $N x $Batch), $T, tiles=$tm x $tn x $tk")
+    println("--- $name ---")
+    data = prepare(; M, K, N, Batch, T)
+    result = run(data; tm, tn, tk)
+    verify(data, result)
+    println("  passed")
 end
 
 function main()
