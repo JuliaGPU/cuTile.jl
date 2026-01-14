@@ -211,53 +211,113 @@ function make_twiddles(factors::NTuple{3, Int})
     return (W0, W1, W2, T0, T1)
 end
 
-# Main FFT function
-function cutile_fft(x::CuMatrix{ComplexF32}, factors::NTuple{3, Int}; atom_packing_dim::Int=2)
-    BS = size(x, 1)
-    N = size(x, 2)
-    F0, F1, F2 = factors
+#=============================================================================
+ Example harness
+=============================================================================#
 
-    @assert F0 * F1 * F2 == N "Factors must multiply to N"
-    @assert (N * 2) % atom_packing_dim == 0 "N*2 must be divisible by atom_packing_dim"
+function prepare(; benchmark::Bool=false,
+                  batch::Int=benchmark ? 64 : 2,
+                  n::Int=benchmark ? 512 : 8,
+                  factors::NTuple{3,Int}=benchmark ? (8, 8, 8) : (2, 2, 2),
+                  atom_packing_dim::Int=2)
+    @assert factors[1] * factors[2] * factors[3] == n "Factors must multiply to N"
+    @assert (n * 2) % atom_packing_dim == 0 "N*2 must be divisible by atom_packing_dim"
 
-    D = atom_packing_dim
+    CUDA.seed!(42)
+    input = CUDA.randn(ComplexF32, batch, n)
 
-    # Generate W and T matrices (CPU, one-time cost)
+    # Pre-compute twiddles (one-time CPU cost)
     W0, W1, W2, T0, T1 = make_twiddles(factors)
-
-    # Upload to GPU
     W0_gpu = CuArray(W0)
     W1_gpu = CuArray(W1)
     W2_gpu = CuArray(W2)
     T0_gpu = CuArray(T0)
     T1_gpu = CuArray(T1)
 
-    # Pack input: complex (BS, N) → real (D, BS, N2D) - zero-copy view
-    N2D = N * 2 ÷ D
-    x_packed = reinterpret(reshape, Float32, x)  # (2, BS, N) = (D, BS, N2D)
+    # Pack input
+    D = atom_packing_dim
+    N2D = n * 2 ÷ D
+    x_packed = reinterpret(reshape, Float32, input)
+    y_packed = CuArray{Float32}(undef, D, batch, N2D)
 
-    # Allocate output
-    y_packed = CUDA.zeros(Float32, D, BS, N2D)
+    return (;
+        input, x_packed, y_packed,
+        W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
+        factors, batch, n, D, N2D
+    )
+end
 
-    # Launch kernel
+function run(data; nruns::Int=1, warmup::Int=0)
+    (; x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
+       factors, batch, n, D, N2D) = data
+
+    F0, F1, F2 = factors
     F0F1 = F0 * F1
     F1F2 = F1 * F2
     F0F2 = F0 * F2
-    grid = (BS, 1, 1)
-    ct.launch(fft_kernel, grid,
-              x_packed, y_packed,
-              W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
-              ct.Constant(N), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2),
-              ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
-              ct.Constant(BS), ct.Constant(D), ct.Constant(N2D))
+    grid = (batch, 1, 1)
 
-    # Unpack output: real (D, BS, N2D) → complex (BS, N) - zero-copy view
+    CUDA.@sync for _ in 1:warmup
+        ct.launch(fft_kernel, grid,
+                  x_packed, y_packed,
+                  W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
+                  ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2),
+                  ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
+                  ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
+    end
+
+    times = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed ct.launch(fft_kernel, grid,
+                                    x_packed, y_packed,
+                                    W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
+                                    ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2),
+                                    ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
+                                    ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
+        push!(times, t * 1000)  # ms
+    end
+
+    # Unpack output
     y_complex = reinterpret(reshape, ComplexF32, y_packed)
+    output = copy(y_complex)
 
-    return copy(y_complex)
+    return (; output, times)
 end
 
-# Validation and example
+function verify(data, result)
+    reference = FFTW.fft(Array(data.input), 2)
+    @assert isapprox(Array(result.output), reference, rtol=1e-4)
+end
+
+#=============================================================================
+ Reference implementations for benchmarking
+=============================================================================#
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; input, batch, n) = data
+    results = Dict{String, Vector{Float64}}()
+
+    output_cufft = similar(input)
+
+    # CUFFT via CUDA.CUFFT
+    CUDA.@sync for _ in 1:warmup
+        CUDA.CUFFT.fft!(copy(input), 2)
+    end
+    times_cufft = Float64[]
+    for _ in 1:nruns
+        input_copy = copy(input)
+        t = CUDA.@elapsed CUDA.CUFFT.fft!(input_copy, 2)
+        push!(times_cufft, t * 1000)
+    end
+    results["cuFFT"] = times_cufft
+
+    return results
+end
+
+#=============================================================================
+ Main
+=============================================================================#
+
 function main()
     println("--- Running cuTile FFT Example ---")
 
@@ -273,36 +333,17 @@ function main()
     println("    FFT Factors: $FFT_FACTORS")
     println("    Atom Packing Dim: $ATOM_PACKING_DIM")
 
-    # Create sample input
-    CUDA.seed!(42)
-    input_complex = CUDA.randn(ComplexF32, BATCH_SIZE, FFT_SIZE)
+    # Use prepare/run/verify pattern
+    data = prepare(; batch=BATCH_SIZE, n=FFT_SIZE, factors=FFT_FACTORS, atom_packing_dim=ATOM_PACKING_DIM)
+    println("\nInput data shape: $(size(data.input)), dtype: $(eltype(data.input))")
 
-    println("\nInput data shape: $(size(input_complex)), dtype: $(eltype(input_complex))")
+    result = run(data)
+    println("cuTile FFT Output shape: $(size(result.output)), dtype: $(eltype(result.output))")
 
-    # Perform FFT using cuTile kernel
-    output_cutile = cutile_fft(input_complex, FFT_FACTORS; atom_packing_dim=ATOM_PACKING_DIM)
-
-    println("cuTile FFT Output shape: $(size(output_cutile)), dtype: $(eltype(output_cutile))")
-
-    # Verify against reference (FFTW)
-    input_cpu = Array(input_complex)
-    reference_output = FFTW.fft(input_cpu, 2)
-
-    output_cpu = Array(output_cutile)
-
-    if isapprox(output_cpu, reference_output, rtol=1e-4)
-        println("\n✓ Correctness check PASSED")
-    else
-        max_diff = maximum(abs.(output_cpu .- reference_output))
-        println("\n✗ Correctness check FAILED - max difference: $max_diff")
-        println("\nExpected (first 4):")
-        println(reference_output[1, 1:4])
-        println("\nGot (first 4):")
-        println(output_cpu[1, 1:4])
-    end
+    verify(data, result)
+    println("\n✓ Correctness check PASSED")
 
     println("\n--- cuTile FFT example execution complete ---")
 end
 
-# Run validation
-main()
+isinteractive() || main()

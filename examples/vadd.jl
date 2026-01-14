@@ -5,8 +5,7 @@
 using CUDA
 import cuTile as ct
 
-# 1D kernel with TileArray and constant tile size
-# TileArray carries size/stride metadata, Constant is a ghost type
+# 1D kernel
 function vec_add_kernel_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
                            tile::ct.Constant{Int}) where {T}
     bid = ct.bid(1)
@@ -16,7 +15,7 @@ function vec_add_kernel_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.Til
     return
 end
 
-# 2D kernel with TileArray and constant tile sizes
+# 2D kernel
 function vec_add_kernel_2d(a::ct.TileArray{T,2}, b::ct.TileArray{T,2}, c::ct.TileArray{T,2},
                            tile_x::ct.Constant{Int}, tile_y::ct.Constant{Int}) where {T}
     bid_x = ct.bid(1)
@@ -27,37 +26,7 @@ function vec_add_kernel_2d(a::ct.TileArray{T,2}, b::ct.TileArray{T,2}, c::ct.Til
     return
 end
 
-function test_add_1d(::Type{T}, n, tile; name=nothing) where T
-    name = something(name, "1D vec_add ($n elements, $T, tile=$tile)")
-    println("--- $name ---")
-    a, b = CUDA.rand(T, n), CUDA.rand(T, n)
-    c = CUDA.zeros(T, n)
-
-    # Launch with ct.launch - CuArrays are auto-converted to TileArray
-    # Constant parameters are ghost types - filtered out at launch time
-    ct.launch(vec_add_kernel_1d, cld(n, tile), a, b, c, ct.Constant(tile))
-
-    @assert Array(c) ≈ Array(a) + Array(b)
-    println("✓ passed")
-end
-
-function test_add_2d(::Type{T}, m, n, tile_x, tile_y; name=nothing) where T
-    name = something(name, "2D vec_add ($m x $n, $T, tiles=$tile_x x $tile_y)")
-    println("--- $name ---")
-    a, b = CUDA.rand(T, m, n), CUDA.rand(T, m, n)
-    c = CUDA.zeros(T, m, n)
-
-    # Launch with ct.launch - CuArrays are auto-converted to TileArray
-    ct.launch(vec_add_kernel_2d, (cld(m, tile_x), cld(n, tile_y)), a, b, c,
-              ct.Constant(tile_x), ct.Constant(tile_y))
-
-    @assert Array(c) ≈ Array(a) + Array(b)
-    println("✓ passed")
-end
-
-# 1D kernel using gather/scatter (explicit index-based memory access)
-# This demonstrates the gather/scatter API for cases where you need
-# explicit control over indices (e.g., for non-contiguous access patterns)
+# 1D kernel using gather/scatter
 function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
                                    tile::ct.Constant{Int}) where {T}
     bid = ct.bid(1)
@@ -74,45 +43,169 @@ function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c:
     return
 end
 
-function test_add_1d_gather(::Type{T}, n, tile; name=nothing) where T
-    name = something(name, "1D vec_add gather ($n elements, $T, tile=$tile)")
+
+#=============================================================================
+# Example harness
+=============================================================================#
+
+function prepare(; benchmark::Bool=false,
+                  shape::Tuple=benchmark ? (2^27,) : (1_024_000,),
+                  use_gather::Bool=false, T::DataType=Float32)
+    a = CUDA.rand(T, shape...)
+    return (;
+        a,
+        b = CUDA.rand(T, shape...),
+        c = similar(a),
+        shape,
+        use_gather
+    )
+end
+
+function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::Int=0)
+    (; a, b, c, shape, use_gather) = data
+
+    if length(shape) == 2
+        # 2D case
+        m, n = shape
+        tile_x, tile_y = tile isa Tuple ? tile : (tile, tile)
+        grid = (cld(m, tile_x), cld(n, tile_y))
+
+        CUDA.@sync for _ in 1:warmup
+            ct.launch(vec_add_kernel_2d, grid, a, b, c,
+                      ct.Constant(tile_x), ct.Constant(tile_y))
+        end
+
+        times = Float64[]
+        for _ in 1:nruns
+            t = CUDA.@elapsed ct.launch(vec_add_kernel_2d, grid, a, b, c,
+                                        ct.Constant(tile_x), ct.Constant(tile_y))
+            push!(times, t * 1000)  # ms
+        end
+    else
+        # 1D case
+        n = shape[1]
+        tile_val = tile isa Tuple ? tile[1] : tile
+        grid = cld(n, tile_val)
+        kernel = use_gather ? vec_add_kernel_1d_gather : vec_add_kernel_1d
+
+        CUDA.@sync for _ in 1:warmup
+            ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
+        end
+
+        times = Float64[]
+        for _ in 1:nruns
+            t = CUDA.@elapsed ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
+            push!(times, t * 1000)  # ms
+        end
+    end
+
+    return (; c, times)
+end
+
+function verify(data, result)
+    @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
+end
+
+
+#=============================================================================
+# Reference implementations for benchmarking
+=============================================================================#
+
+# Simple SIMT kernel for comparison
+function simt_kernel(a, b, c, n)
+    i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if i <= n
+        @inbounds c[i] = a[i] + b[i]
+    end
+    return
+end
+
+function run_others(data; nruns::Int=1, warmup::Int=0)
+    (; a, b, c, shape) = data
+    results = Dict{String, Vector{Float64}}()
+
+    if length(shape) == 1
+        n = shape[1]
+        c_gpuarrays = similar(c)
+        c_simt = similar(c)
+
+        # GPUArrays (broadcasting)
+        CUDA.@sync for _ in 1:warmup
+            c_gpuarrays .= a .+ b
+        end
+        times_gpuarrays = Float64[]
+        for _ in 1:nruns
+            t = CUDA.@elapsed c_gpuarrays .= a .+ b
+            push!(times_gpuarrays, t * 1000)
+        end
+        results["GPUArrays"] = times_gpuarrays
+
+        # SIMT kernel
+        threads = 256
+        blocks = cld(n, threads)
+        CUDA.@sync for _ in 1:warmup
+            @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
+        end
+        times_simt = Float64[]
+        for _ in 1:nruns
+            t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
+            push!(times_simt, t * 1000)
+        end
+        results["SIMT"] = times_simt
+    end
+
+    return results
+end
+
+
+#=============================================================================
+# Main
+=============================================================================#
+
+function test_vadd(shape, tile; use_gather::Bool=false, T::DataType=Float32, name=nothing)
+    if name === nothing
+        if length(shape) == 2
+            name = "2D vec_add ($(shape[1]) x $(shape[2]), $T, tile=$tile)"
+        elseif use_gather
+            name = "1D vec_add gather ($(shape[1]) elements, $T, tile=$tile)"
+        else
+            name = "1D vec_add ($(shape[1]) elements, $T, tile=$tile)"
+        end
+    end
     println("--- $name ---")
-    a, b = CUDA.rand(T, n), CUDA.rand(T, n)
-    c = CUDA.zeros(T, n)
-
-    ct.launch(vec_add_kernel_1d_gather, cld(n, tile), a, b, c, ct.Constant(tile))
-
-    @assert Array(c) ≈ Array(a) + Array(b)
-    println("✓ passed")
+    data = prepare(; shape, use_gather, T)
+    result = run(data; tile)
+    verify(data, result)
+    println("  passed")
 end
 
 function main()
     println("--- cuTile Vector/Matrix Addition Examples ---\n")
 
     # 1D tests with Float32
-    test_add_1d(Float32, 1_024_000, 1024)
-    test_add_1d(Float32, 2^20, 512)
+    test_vadd((1_024_000,), 1024)
+    test_vadd((2^20,), 512)
 
     # 1D tests with Float64
-    test_add_1d(Float64, 2^18, 512)
+    test_vadd((2^18,), 512; T=Float64)
 
     # 1D tests with Float16
-    test_add_1d(Float16, 1_024_000, 1024)
+    test_vadd((1_024_000,), 1024; T=Float16)
 
     # 2D tests with Float32
-    test_add_2d(Float32, 2048, 1024, 32, 32)
-    test_add_2d(Float32, 1024, 2048, 64, 64)
+    test_vadd((2048, 1024), (32, 32))
+    test_vadd((1024, 2048), (64, 64))
 
     # 2D tests with Float64
-    test_add_2d(Float64, 1024, 512, 32, 32)
+    test_vadd((1024, 512), (32, 32); T=Float64)
 
     # 2D tests with Float16
-    test_add_2d(Float16, 1024, 1024, 64, 64)
+    test_vadd((1024, 1024), (64, 64); T=Float16)
 
     # 1D gather/scatter tests with Float32
     # Uses explicit index-based memory access instead of tiled loads/stores
-    test_add_1d_gather(Float32, 1_024_000, 1024)
-    test_add_1d_gather(Float32, 2^20, 512)
+    test_vadd((1_024_000,), 1024; use_gather=true)
+    test_vadd((2^20,), 512; use_gather=true)
 
     println("\n--- All addition examples completed ---")
 end
