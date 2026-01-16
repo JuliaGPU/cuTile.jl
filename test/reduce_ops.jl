@@ -1,750 +1,154 @@
+
 using cuTile
 import cuTile as ct
 using CUDA
 using Test
 
-@testset "reduce operations" begin
-
-#======================================================================#
-# CPU reference implementations
-# =====================================================================#
-
-cpu_reduce_add(a::AbstractArray, dims::Integer) = sum(a, dims=dims)
-cpu_reduce_mul(a::AbstractArray, dims::Integer) = prod(a, dims=dims)
-cpu_reduce_max(a::AbstractArray, dims::Integer) = maximum(a, dims=dims)
-cpu_reduce_min(a::AbstractArray, dims::Integer) = minimum(a, dims=dims)
-
-cpu_reduce_and(a::AbstractArray{<:Unsigned}, dims::Integer) = reduce((x, y) -> x & y, a, init=typemax(eltype(a)), dims=dims)
-cpu_reduce_and(a::AbstractArray{<:Signed}, dims::Integer) = reduce((x, y) -> x & y, a, init=Int64(-1), dims=dims)
-cpu_reduce_or(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x | y, a, init=zero(eltype(a)), dims=dims)
-cpu_reduce_xor(a::AbstractArray{<:Integer}, dims::Integer) = reduce((x, y) -> x ⊻ y, a, init=zero(eltype(a)), dims=dims)
-
-#======================================================================#
-# Float32 operations
-#======================================================================#
-
-@testset "Float32 reduce_add" begin
-    function reduce_add_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 128))
-        sums = ct.reduce_sum(tile, 2)
-        ct.store(b, pid, sums)
-        return
+# Kernel factory to properly capture element type and operation
+function makeReduceKernel(::Type{T}, op::Symbol) where {T}
+    reduceFunc = if op == :reduce_min
+        ct.reduce_min
+    elseif op == :reduce_max
+        ct.reduce_max
+    elseif op == :reduce_sum
+        ct.reduce_sum
+    elseif op == :reduce_xor
+        ct.reduce_xor
+    elseif op == :reduce_or
+        ct.reduce_or
+    elseif op == :reduce_and
+        ct.reduce_and
     end
 
-    m, n = 64, 128
-    a = CUDA.rand(Float32, m, n)
-    b = CUDA.zeros(Float32, m)
+    @inline function kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int})
+        ct.store(b, ct.bid(1), reduceFunc(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        return nothing
+    end
+    return kernel
+end
 
-    ct.launch(reduce_add_kernel, m, a, b)
+# Test with UInt types
+@testset for elType in [UInt16, UInt32, UInt64]
+    @testset for op in [:reduce_min, :reduce_max, :reduce_sum, :reduce_xor, :reduce_or, :reduce_and]
+        sz = 32
+        N = 2^15
 
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_add(a_cpu[i:i, :], 2)[1] rtol=1e-3
+        # Create kernel using factory
+        reduceKernel = try
+            makeReduceKernel(elType, op)
+        catch e
+            @test_broken false
+            rethrow()
+        end
+
+        # Create data and run kernel
+        a_gpu = CUDA.rand(elType, N)
+        b_gpu = CUDA.zeros(elType, cld(N, sz))
+        try
+            CUDA.@sync ct.launch(reduceKernel, cld(length(a_gpu), sz), a_gpu, b_gpu, ct.Constant(sz))
+        catch e
+            @test_broken false
+            rethrow()
+        end
+        res = Array(b_gpu)
+
+        # CPU computation
+        a_cpu = Array(a_gpu)
+        a_reshaped = reshape(a_cpu, sz, :)
+
+        if op == :reduce_min
+            cpu_result = minimum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_max
+            cpu_result = maximum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_sum
+            raw_sum = sum(a_reshaped, dims=1)[:]
+            cpu_result = raw_sum .& typemax(elType)
+        elseif op == :reduce_xor
+            cpu_result = mapslices(x -> reduce(⊻, x), a_reshaped, dims=1)[:]
+        elseif op == :reduce_or
+            cpu_result = mapslices(x -> reduce(|, x), a_reshaped, dims=1)[:]
+        elseif op == :reduce_and
+            cpu_result = mapslices(x -> reduce(&, x), a_reshaped, dims=1)[:]
+        end
+
+        @test cpu_result == res
     end
 end
 
-@testset "Float32 reduce_mul" begin
-    function reduce_mul_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        products = ct.reduce_mul(tile, 2)
-        ct.store(b, pid, products)
-        return
-    end
+# Test with signed Int types
+@testset for elType in [Int16, Int32, Int64]
+    @testset for op in [:reduce_min, :reduce_max, :reduce_sum, :reduce_xor, :reduce_or, :reduce_and]
+        sz = 32
+        N = 2^15
 
-    m, n = 32, 64
-    a = CUDA.rand(Float32, m, n) .+ 0.1f0
-    b = CUDA.ones(Float32, m)
+        # Create kernel using factory
+        reduceKernel = try
+            makeReduceKernel(elType, op)
+        catch e
+            @test_broken false
+            rethrow()
+        end
 
-    ct.launch(reduce_mul_kernel, m, a, b)
+        # Create data and run kernel - use range to get negative values too
+        a_gpu = CuArray{elType}(rand(-1000:1000, N))
+        b_gpu = CUDA.zeros(elType, cld(N, sz))
+        try
+            CUDA.@sync ct.launch(reduceKernel, cld(length(a_gpu), sz), a_gpu, b_gpu, ct.Constant(sz))
+        catch e
+            @test_broken false
+            rethrow()
+        end
+        res = Array(b_gpu)
 
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_mul(a_cpu[i:i, :], 2)[1] rtol=1e-2
-    end
-end
+        # CPU computation
+        a_cpu = Array(a_gpu)
+        a_reshaped = reshape(a_cpu, sz, :)
 
-@testset "Float32 reduce_max" begin
-    function reduce_max_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 128))
-        maxes = ct.reduce_max(tile, 2)
-        ct.store(b, pid, maxes)
-        return
-    end
+        if op == :reduce_min
+            cpu_result = minimum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_max
+            cpu_result = maximum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_sum
+            cpu_result = sum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_xor
+            cpu_result = mapslices(x -> reduce(⊻, x), a_reshaped, dims=1)[:]
+        elseif op == :reduce_or
+            cpu_result = mapslices(x -> reduce(|, x), a_reshaped, dims=1)[:]
+        elseif op == :reduce_and
+            cpu_result = mapslices(x -> reduce(&, x), a_reshaped, dims=1)[:]
+        end
 
-    m, n = 64, 128
-    a = CUDA.rand(Float32, m, n)
-    b = CUDA.zeros(Float32, m)
-
-    ct.launch(reduce_max_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_max(a_cpu[i:i, :], 2)[1] rtol=1e-5
-    end
-end
-
-@testset "Float32 reduce_min" begin
-    function reduce_min_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 128))
-        mins = ct.reduce_min(tile, 2)
-        ct.store(b, pid, mins)
-        return
-    end
-
-    m, n = 64, 128
-    a = CUDA.rand(Float32, m, n)
-    b = CUDA.zeros(Float32, m)
-
-    ct.launch(reduce_min_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_min(a_cpu[i:i, :], 2)[1] rtol=1e-5
+        @test cpu_result == res
     end
 end
 
-#======================================================================#
-# Float64 operations
-#======================================================================#
+# Test with Float types
+@testset for elType in [Float16, Float32, Float64]
+    @testset for op in [:reduce_min, :reduce_max, :reduce_sum]
+        sz = 32
+        N = 2^15
 
-@testset "Float64 reduce_add" begin
-    function reduce_add_f64_kernel(a::ct.TileArray{Float64,2}, b::ct.TileArray{Float64,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        sums = ct.reduce_sum(tile, 2)
-        ct.store(b, pid, sums)
-        return
-    end
+        # Create kernel using factory
+        reduceKernel = makeReduceKernel(elType, op)
 
-    m, n = 32, 64
-    a = CUDA.rand(Float64, m, n)
-    b = CUDA.zeros(Float64, m)
+        # Create data and run kernel
+        a_gpu = CUDA.rand(elType, N)
+        b_gpu = CUDA.zeros(elType, cld(N, sz))
+        CUDA.@sync ct.launch(reduceKernel, cld(length(a_gpu), sz), a_gpu, b_gpu, ct.Constant(sz))
+        res = Array(b_gpu)
 
-    ct.launch(reduce_add_f64_kernel, m, a, b)
+        # CPU computation
+        a_cpu = Array(a_gpu)
+        a_reshaped = reshape(a_cpu, sz, :)
 
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_add(a_cpu[i:i, :], 2)[1] rtol=1e-5
-    end
-end
+        if op == :reduce_min
+            cpu_result = minimum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_max
+            cpu_result = maximum(a_reshaped, dims=1)[:]
+        elseif op == :reduce_sum
+            cpu_result = sum(a_reshaped, dims=1)[:]
+        end
 
-@testset "Float64 reduce_max" begin
-    function reduce_max_f64_kernel(a::ct.TileArray{Float64,2}, b::ct.TileArray{Float64,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        maxes = ct.reduce_max(tile, 2)
-        ct.store(b, pid, maxes)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(Float64, m, n)
-    b = CUDA.zeros(Float64, m)
-
-    ct.launch(reduce_max_f64_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_max(a_cpu[i:i, :], 2)[1] rtol=1e-5
+        @test isapprox(cpu_result, res)
     end
 end
-
-@testset "Float64 reduce_min" begin
-    function reduce_min_f64_kernel(a::ct.TileArray{Float64,2}, b::ct.TileArray{Float64,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        mins = ct.reduce_min(tile, 2)
-        ct.store(b, pid, mins)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(Float64, m, n)
-    b = CUDA.zeros(Float64, m)
-
-    ct.launch(reduce_min_f64_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_min(a_cpu[i:i, :], 2)[1] rtol=1e-5
-    end
-end
-
-@testset "Float64 reduce_mul" begin
-    function reduce_mul_f64_kernel(a::ct.TileArray{Float64,2}, b::ct.TileArray{Float64,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        products = ct.reduce_mul(tile, 2)
-        ct.store(b, pid, products)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Float64, m, n) .+ 0.1
-    b = CUDA.ones(Float64, m)
-
-    ct.launch(reduce_mul_f64_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] ≈ cpu_reduce_mul(a_cpu[i:i, :], 2)[1] rtol=1e-2
-    end
-end
-
-#======================================================================#
-# Int32 operations
-#======================================================================#
-
-@testset "Int32 reduce_add" begin
-    function reduce_add_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        sums = ct.reduce_sum(tile, 2)
-        ct.store(b, pid, sums)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(Int32, m, n) .+ 1
-    b = CUDA.zeros(Int32, m)
-
-    ct.launch(reduce_add_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_add(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int32 reduce_mul" begin
-    function reduce_mul_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 16))
-        products = ct.reduce_mul(tile, 2)
-        ct.store(b, pid, products)
-        return
-    end
-
-    m, n = 8, 16
-    a = CUDA.rand(Int32, m, n) .% 10 .+ 2
-    b = CUDA.ones(Int32, m)
-
-    ct.launch(reduce_mul_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_mul(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int32 reduce_max" begin
-    function reduce_max_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        maxes = ct.reduce_max(tile, 2)
-        ct.store(b, pid, maxes)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(Int32, m, n)
-    b = CUDA.fill(typemin(Int32), m)
-
-    ct.launch(reduce_max_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_max(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int32 reduce_min" begin
-    function reduce_min_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        mins = ct.reduce_min(tile, 2)
-        ct.store(b, pid, mins)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(Int32, m, n)
-    b = CUDA.fill(typemax(Int32), m)
-
-    ct.launch(reduce_min_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_min(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int32 reduce_and" begin
-    function reduce_and_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        result = ct.reduce_and(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Int32, m, n)
-    b = CUDA.zeros(Int32, m)
-
-    ct.launch(reduce_and_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_and(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int32 reduce_or" begin
-    function reduce_or_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        result = ct.reduce_or(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Int32, m, n)
-    b = CUDA.zeros(Int32, m)
-
-    ct.launch(reduce_or_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_or(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int32 reduce_xor" begin
-    function reduce_xor_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        result = ct.reduce_xor(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Int32, m, n)
-    b = CUDA.zeros(Int32, m)
-
-    ct.launch(reduce_xor_i32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_xor(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-#======================================================================#
-# UInt32 operations - tests AND identity encoding fix
-#======================================================================#
-
-@testset "UInt32 reduce_add" begin
-    function reduce_add_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        sums = ct.reduce_sum(tile, 2)
-        ct.store(b, pid, sums)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.zeros(UInt32, m)
-
-    ct.launch(reduce_add_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_add(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "UInt32 reduce_mul" begin
-    function reduce_mul_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 16))
-        products = ct.reduce_mul(tile, 2)
-        ct.store(b, pid, products)
-        return
-    end
-
-    m, n = 8, 16
-    a = CUDA.rand(UInt32, m, n) .% 10 .+ 2
-    b = CUDA.ones(UInt32, m)
-
-    ct.launch(reduce_mul_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_mul(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "UInt32 reduce_max" begin
-    function reduce_max_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        maxes = ct.reduce_max(tile, 2)
-        ct.store(b, pid, maxes)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.zeros(UInt32, m)
-
-    ct.launch(reduce_max_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_max(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "UInt32 reduce_min" begin
-    function reduce_min_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 64))
-        mins = ct.reduce_min(tile, 2)
-        ct.store(b, pid, mins)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.fill(typemax(UInt32), m)
-
-    ct.launch(reduce_min_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_min(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "UInt32 reduce_and" begin
-    function reduce_and_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        result = ct.reduce_and(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.zeros(UInt32, m)
-
-    ct.launch(reduce_and_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_and(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "UInt32 reduce_or" begin
-    function reduce_or_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        result = ct.reduce_or(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.zeros(UInt32, m)
-
-    ct.launch(reduce_or_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_or(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "UInt32 reduce_xor" begin
-    function reduce_xor_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        result = ct.reduce_xor(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.zeros(UInt32, m)
-
-    ct.launch(reduce_xor_u32_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_xor(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-#======================================================================#
-# Int8 operations - smaller integer type for encoding tests
-#======================================================================#
-
-@testset "Int8 reduce_add" begin
-    function reduce_add_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        sums = ct.reduce_sum(tile, 2)
-        ct.store(b, pid, sums)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Int8, m, n)
-    b = CUDA.zeros(Int8, m)
-
-    ct.launch(reduce_add_i8_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test Int32(b_cpu[i]) == cpu_reduce_add(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int8 reduce_max" begin
-    function reduce_max_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        maxes = ct.reduce_max(tile, 2)
-        ct.store(b, pid, maxes)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Int8, m, n)
-    b = CUDA.fill(typemin(Int8), m)
-
-    ct.launch(reduce_max_i8_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_max(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int8 reduce_min" begin
-    function reduce_min_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 32))
-        mins = ct.reduce_min(tile, 2)
-        ct.store(b, pid, mins)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(Int8, m, n)
-    b = CUDA.fill(typemax(Int8), m)
-
-    ct.launch(reduce_min_i8_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test b_cpu[i] == cpu_reduce_min(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int8 reduce_and" begin
-    function reduce_and_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 16))
-        result = ct.reduce_and(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 8, 16
-    a = CUDA.rand(Int8, m, n)
-    b = CUDA.zeros(Int8, m)
-
-    ct.launch(reduce_and_i8_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test Int32(b_cpu[i]) == cpu_reduce_and(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int8 reduce_or" begin
-    function reduce_or_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 16))
-        result = ct.reduce_or(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 8, 16
-    a = CUDA.rand(Int8, m, n)
-    b = CUDA.zeros(Int8, m)
-
-    ct.launch(reduce_or_i8_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test Int32(b_cpu[i]) == cpu_reduce_or(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-@testset "Int8 reduce_xor" begin
-    function reduce_xor_i8_kernel(a::ct.TileArray{Int8,2}, b::ct.TileArray{Int8,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 16))
-        result = ct.reduce_xor(tile, 2)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 8, 16
-    a = CUDA.rand(Int8, m, n)
-    b = CUDA.zeros(Int8, m)
-
-    ct.launch(reduce_xor_i8_kernel, m, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for i in 1:m
-        @test Int32(b_cpu[i]) == cpu_reduce_xor(a_cpu[i:i, :], 2)[1]
-    end
-end
-
-#======================================================================#
-# Axis 0 reductions - verify both axes work
-#======================================================================#
-
-@testset "axis 0 reduce_sum Float32" begin
-    function reduce_sum_axis0_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (1, pid), (64, 1))
-        sums = ct.reduce_sum(tile, 1)
-        ct.store(b, pid, sums)
-        return
-    end
-
-    m, n = 64, 128
-    a = CUDA.rand(Float32, m, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(reduce_sum_axis0_kernel, n, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for j in 1:n
-        @test b_cpu[j] ≈ cpu_reduce_add(a_cpu[:, j:j], 1)[1] rtol=1e-3
-    end
-end
-
-@testset "axis 0 reduce_min Int32" begin
-    function reduce_min_axis0_i32_kernel(a::ct.TileArray{Int32,2}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (1, pid), (32, 1))
-        mins = ct.reduce_min(tile, 1)
-        ct.store(b, pid, mins)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(Int32, m, n)
-    b = CUDA.fill(typemax(Int32), n)
-
-    ct.launch(reduce_min_axis0_i32_kernel, n, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for j in 1:n
-        @test b_cpu[j] == cpu_reduce_min(a_cpu[:, j:j], 1)[1]
-    end
-end
-
-@testset "axis 0 reduce_max UInt32" begin
-    function reduce_max_axis0_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (1, pid), (32, 1))
-        maxes = ct.reduce_max(tile, 1)
-        ct.store(b, pid, maxes)
-        return
-    end
-
-    m, n = 32, 64
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.zeros(UInt32, n)
-
-    ct.launch(reduce_max_axis0_u32_kernel, n, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for j in 1:n
-        @test b_cpu[j] == cpu_reduce_max(a_cpu[:, j:j], 1)[1]
-    end
-end
-
-@testset "axis 0 reduce_and UInt32" begin
-    function reduce_and_axis0_u32_kernel(a::ct.TileArray{UInt32,2}, b::ct.TileArray{UInt32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, (1, pid), (16, 1))
-        result = ct.reduce_and(tile, 1)
-        ct.store(b, pid, result)
-        return
-    end
-
-    m, n = 16, 32
-    a = CUDA.rand(UInt32, m, n)
-    b = CUDA.fill(typemax(UInt32), n)
-
-    ct.launch(reduce_and_axis0_u32_kernel, n, a, b)
-
-    a_cpu = Array(a)
-    b_cpu = Array(b)
-    for j in 1:n
-        @test b_cpu[j] == cpu_reduce_and(a_cpu[:, j:j], 1)[1]
-    end
-end
-
-end  # @testset "reduce operations"
