@@ -1842,6 +1842,107 @@ end
     end
 end
 
+# Kernel factory for reduce operations - extendable pattern
+function makeReduceKernel(::Type{T}, op::Symbol) where {T}
+    reduceFunc = if op == :reduce_sum
+        ct.reduce_sum
+    elseif op == :reduce_max
+        ct.reduce_max
+    # ADD NEW OPERATIONS HERE
+    # elseif op == :reduce_min
+    #     ct.reduce_min
+    # elseif op == :reduce_mul
+    #     ct.reduce_mul
+    end
+
+    @inline function kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int})
+        ct.store(b, ct.bid(1), reduceFunc(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        return nothing
+    end
+    return kernel
+end
+
+# CPU reference implementation for reduce operations - extendable pattern
+function cpu_reduce(a_reshaped::AbstractArray{T}, op::Symbol) where {T}
+    if op == :reduce_sum
+        result = sum(a_reshaped, dims=1)[:]
+        # For unsigned types, apply mask to handle overflow
+        if T <: Unsigned
+            result .= result .& typemax(T)
+        end
+        return result
+    elseif op == :reduce_max
+        return maximum(a_reshaped, dims=1)[:]
+    # ADD NEW OPERATIONS HERE
+    # elseif op == :reduce_min
+    #     return minimum(a_reshaped, dims=1)[:]
+    # elseif op == :reduce_mul
+    #     return prod(a_reshaped, dims=1)[:]
+    end
+end
+
+@testset "1D reduce operations (extendable)" begin
+    # Test parameters - easily extendable
+    TILE_SIZE = 32
+    N = 1024
+    
+    # Supported types - add new types here
+    TEST_TYPES = [Int8, Int16, Int32, Int64, UInt16, UInt32, UInt64, Float16, Float32, Float64]
+    
+    # Supported operations - add new operations here
+    TEST_OPS = [:reduce_sum, :reduce_max]
+    
+    @testset "Type: $elType, Operation: $op" for elType in TEST_TYPES, op in TEST_OPS
+        # Create kernel using factory
+        reduceKernel = try
+            makeReduceKernel(elType, op)
+        catch e
+            @test_broken false
+            rethrow()
+        end
+        
+        # Generate input data with type-appropriate ranges
+        # Int8: -3 to 3 (32 * 3 = 96, safely within Int8 range -128 to 127)
+        # Int16: -800 to 800 (32 * 800 = 25,600, safely within Int16 range -32,768 to 32,767)
+        # UInt16: 1 to 2000 (32 * 2000 = 64,000, safely within UInt16 range 0 to 65,535)
+        # Larger types: -1000 to 1000 (arbitrary but covers positive/negative)
+        # Floats: 0 to 1 (CUDA.rand default)
+        if elType == Int8
+            a_gpu = CuArray{Int8}(rand(-3:3, N))
+        elseif elType == Int16
+            a_gpu = CuArray{Int16}(rand(-800:800, N))
+        elseif elType == UInt16
+            a_gpu = CuArray{UInt16}(rand(1:2000, N))
+        elseif elType <: Integer && elType <: Signed
+            a_gpu = CuArray{elType}(rand(-1000:1000, N))
+        else
+            a_gpu = CUDA.rand(elType, N)
+        end
+        b_gpu = CUDA.zeros(elType, cld(N, TILE_SIZE))
+        
+        # Launch kernel
+        try
+            CUDA.@sync ct.launch(reduceKernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
+        catch e
+            @test_broken false
+            rethrow()
+        end
+        
+        # Verify results
+        a_cpu = Array(a_gpu)
+        b_cpu = Array(b_gpu)
+        a_reshaped = reshape(a_cpu, TILE_SIZE, :)
+        cpu_result = cpu_reduce(a_reshaped, op)
+        
+        # Use appropriate comparison based on type
+        if elType <: AbstractFloat
+            @test b_cpu ≈ cpu_result rtol=1e-3
+        else
+            @test b_cpu == cpu_result
+        end
+    end
+end
+
 @testset "transpose with hints" begin
     function transpose_with_hints(x::ct.TileArray{Float32,2},
                                   y::ct.TileArray{Float32,2})

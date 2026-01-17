@@ -40,4 +40,7 @@ include("language/atomics.jl")
 public launch
 launch() = error("Please import CUDA.jl before using `cuTile.launch`.")
 
+# Export identity types for reduction operations
+public IdentityOp, FloatIdentityOp, IntegerIdentityOp
+
 end # module cuTile
