@@ -529,10 +529,10 @@ Returns a tile with the specified dimension removed.
 sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
 ```
 """
-@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T, S}
+@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
-@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_sum(tile, Val(axis - 1))
 end
 
@@ -546,10 +546,10 @@ Maximum reduction along the specified axis (1-indexed).
 maxes = ct.reduce_max(tile, 2)  # Max along axis 2
 ```
 """
-@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T, S}
+@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
-@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
+@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
 
@@ -649,4 +649,3 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
     Intrinsics.extract(tile, Val(map(i -> i - 1, index)), Val(shape))
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
-
