@@ -289,14 +289,9 @@ function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityOp)
     push!(cb.buf, 0x01)
     # Type ID
     encode_typeid!(cb.buf, identity.type_id)
-    # Value: signed uses zigzag varint, unsigned uses plain varint
-    # Mask value to correct bit width and apply zigzag if signed
+    # Mask value to correct bit width and apply zigzag encoding for signed types
     masked_value = mask_to_width(identity.value, identity.dtype)
-    if identity.dtype <: Signed
-        encode_signed_varint!(cb.buf, masked_value)
-    else
-        encode_varint!(cb.buf, masked_value)
-    end
+    encode_varint!(cb.buf, masked_value)
 end
 
 """
@@ -311,7 +306,7 @@ function mask_to_width(value::UInt128, ::Type{T}) where T <: Integer
     masked = value & mask
     U = unsigned(T)
     unsigned_masked = U(masked)
-    if T <: Signed
+    if T <: Signed # do zig-zag encoding
         U((unsigned_masked << 1) ⊻ (unsigned_masked >>> (bits - 1)))
     else
         unsigned_masked
