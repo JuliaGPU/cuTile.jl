@@ -6,6 +6,7 @@ version = "0.1.0"
 [deps]
 CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
 CUDA_Tile_jll = "2068806d-a867-5dbd-af0e-42c2eb5d895d"
+DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 
 [weakdeps]
@@ -21,6 +22,7 @@ CUDAExt = "CUDA"
 julia = "1.11"
 CUDA_Compiler_jll = "0.4"
 CUDA_Tile_jll = "13.1"
+DLFP8Types = "0.1"
 
 [workspace]
 projects = ["test", "IRStructurizer", "FileCheck"]

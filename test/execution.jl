@@ -788,6 +788,58 @@ end
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
+@testset "Float8" begin
+
+    @testset "Float8_E4M3FN" begin
+        # Float8 addition not supported
+        function vadd_f8e4m3fn(a::ct.TileArray{ct.Float8_E4M3FN,1}, b::ct.TileArray{ct.Float8_E4M3FN,1},
+                        c::ct.TileArray{ct.Float8_E4M3FN,1})
+            pid = ct.bid(1)
+            tile_a = ct.astype(ct.load(a, pid, (16,)), Float16)
+            tile_b = ct.astype(ct.load(b, pid, (16,)), Float16)
+            tile_c = ct.astype(tile_a + tile_b, ct.Float8_E4M3FN)
+            ct.store(c, pid, tile_c)
+            return
+        end
+
+        n = 1024
+        tile_size = 16
+        T = ct.Float8_E4M3FN
+        a = T.(CUDA.rand(n))
+        b = T.(CUDA.rand(n))
+        c = CUDA.zeros(T, n)
+
+        ct.launch(vadd_f8e4m3fn, cld(n, tile_size), a, b, c)
+
+        @test Array(c) ≈ Array(a) + Array(b)
+    end
+    
+    @testset "Float8_E5M2" begin
+        # Float8 addition not supported
+        function vadd_f8e5m2(a::ct.TileArray{ct.Float8_E5M2,1}, b::ct.TileArray{ct.Float8_E5M2,1},
+                        c::ct.TileArray{ct.Float8_E5M2,1})
+            pid = ct.bid(1)
+            tile_a = ct.astype(ct.load(a, pid, (16,)), Float16)
+            tile_b = ct.astype(ct.load(b, pid, (16,)), Float16)
+            tile_c = ct.astype(tile_a + tile_b, ct.Float8_E5M2)
+            ct.store(c, pid, tile_c)
+            return
+        end
+
+        n = 1024
+        tile_size = 16
+        T = ct.Float8_E5M2
+        a = T.(CUDA.rand(n))
+        b = T.(CUDA.rand(n))
+        c = CUDA.zeros(T, n)
+
+        ct.launch(vadd_f8e5m2, cld(n, tile_size), a, b, c)
+
+        @test Array(c) ≈ Array(a) + Array(b)
+    end
+
+end
+
 end
 
 @testset "compilation cache" begin

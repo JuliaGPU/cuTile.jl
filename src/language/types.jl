@@ -309,8 +309,8 @@ primitive type TFloat32 <: AbstractFloat 32 end
 """Scalar integer types supported by Tile IR (i8, i16, i32, i64)."""
 const ScalarInt = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64}
 
-"""Scalar floating-point types supported by Tile IR (f16, tf32, f32, f64)."""
-const ScalarFloat = Union{Float16, Float32, Float64, TFloat32}
+"""Scalar floating-point types supported by Tile IR (f16, tf32, f32, f64, f8e4m3fn, f8e5m2)."""
+const ScalarFloat = Union{Float16, TFloat32, Float32, Float64, Float8_E4M3FN, Float8_E5M2}
 
 """Integer tile types."""
 const TileInt{S} = Tile{T, S} where {T <: ScalarInt}
