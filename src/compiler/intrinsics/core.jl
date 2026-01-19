@@ -569,7 +569,7 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
         acc, elem = block_args[1], block_args[2]
 
-        res = encode_reduce_body(cb, scalar_tile_type, acc, elem, Val(reduce_fn), elem_type)
+        res = encode_reduce_body(cb, scalar_tile_type, acc, elem, reduce_fn, elem_type)
         encode_YieldOp!(cb, [res])
     end
 
@@ -620,19 +620,18 @@ operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
 #=============================================================================#
 # Reduce Body Operations
 #=============================================================================#
-
-function encode_reduce_body(cb, type, acc, elem, op::Val, ::Type{T}) where T
+function encode_reduce_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
     if T <: AbstractFloat
-        if op == Val{:add}
+        if op == :add
             encode_AddFOp!(cb, type, acc, elem)
-        else  # Val{:max}
+        else  # :max
             encode_MaxFOp!(cb, type, acc, elem)
         end
     else  # Integer
         signedness = T <: Signed ? SignednessSigned : SignednessUnsigned
-        if op == Val{:add}
+        if op == :add
             encode_AddIOp!(cb, type, acc, elem)
-        else  # Val{:max}
+        else  # :max
             encode_MaxIOp!(cb, type, acc, elem; signedness)
         end
     end
