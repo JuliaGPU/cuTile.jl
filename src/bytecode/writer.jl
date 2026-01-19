@@ -291,7 +291,7 @@ function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityOp)
     encode_typeid!(cb.buf, identity.type_id)
     # Mask value to correct bit width and apply zigzag encoding for signed types
     masked_value = mask_to_width(identity.value, identity.dtype)
-    encode_varint!(cb.buf, masked_value)
+    encode_varint!(cb.buf, masked_value) # masked_value are already zigzag encoded
 end
 
 """

@@ -618,17 +618,25 @@ operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
     IntegerIdentityOp(to_uint128(typemin(T)), dtype, T)
 
 #=============================================================================#
-# Reduce Body Operations - dispatch on Val{fn} and elem_type
+# Reduce Body Operations
 #=============================================================================#
 
-encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: AbstractFloat =
-    encode_AddFOp!(cb, type, acc, elem)
-encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
-    encode_MaxFOp!(cb, type, acc, elem)
-encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: Integer =
-    encode_AddIOp!(cb, type, acc, elem)
-encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
-    encode_MaxIOp!(cb, type, acc, elem; signedness=T <: Signed ? SignednessSigned : SignednessUnsigned)
+function encode_reduce_body(cb, type, acc, elem, op::Val, ::Type{T}) where T
+    if T <: AbstractFloat
+        if op == Val{:add}
+            encode_AddFOp!(cb, type, acc, elem)
+        else  # Val{:max}
+            encode_MaxFOp!(cb, type, acc, elem)
+        end
+    else  # Integer
+        signedness = T <: Signed ? SignednessSigned : SignednessUnsigned
+        if op == Val{:add}
+            encode_AddIOp!(cb, type, acc, elem)
+        else  # Val{:max}
+            encode_MaxIOp!(cb, type, acc, elem; signedness)
+        end
+    end
+end
 
 
 # cuda_tile.reshape
