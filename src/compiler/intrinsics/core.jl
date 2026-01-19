@@ -624,14 +624,14 @@ function encode_reduce_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
     if T <: AbstractFloat
         if op == :add
             encode_AddFOp!(cb, type, acc, elem)
-        else  # :max
+        elseif op == :max
             encode_MaxFOp!(cb, type, acc, elem)
         end
     else  # Integer
         signedness = T <: Signed ? SignednessSigned : SignednessUnsigned
         if op == :add
             encode_AddIOp!(cb, type, acc, elem)
-        else  # :max
+        elseif op == :max
             encode_MaxIOp!(cb, type, acc, elem; signedness)
         end
     end
