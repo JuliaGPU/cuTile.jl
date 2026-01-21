@@ -1,15 +1,41 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, emit_tileir
+using cuTile: TileArray, Constant, CGOpts, emit_ir, emit_code
+
+using CompilerCaching: CacheHandle, cached_compilation, method_instance
 
 using CUDA: CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
 public launch
 
-# Compilation cache - stores CuFunction directly to avoid re-loading CuModule
-const _compilation_cache = Dict{Any, Any}()  # (method, argtypes, sm_arch, opt_level, num_ctas, occupancy) => CuFunction
+"""
+    emit_executable(cache, mi, world, bytecode) -> CuFunction
+
+Executable phase: run tileiras on bytecode to produce CUBIN, then load into GPU memory.
+This is the only session-dependent phase.
+"""
+function emit_executable(cache::CacheHandle, mi::Core.MethodInstance, world::UInt, bytecode::Vector{UInt8})
+    opts = cache.keys
+    kernel_name = string(mi.def.name)
+
+    # Run tileiras to produce CUBIN
+    input_path = tempname() * ".tile"
+    output_path = tempname() * ".cubin"
+    try
+        write(input_path, bytecode)
+        run(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(opts.sm_arch) -O$(opts.opt_level)`)
+        cubin = read(output_path)
+
+        # Load into GPU memory
+        cumod = CuModule(cubin)
+        return CuFunction(cumod, kernel_name)
+    finally
+        rm(input_path, force=true)
+        rm(output_path, force=true)
+    end
+end
 
 """
     launch(f, grid, args...; name=nothing, sm_arch=default_sm_arch(), opt_level=3, num_ctas=nothing, occupancy=nothing)
@@ -62,23 +88,19 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     # Compute argument types from the converted arguments
     argtypes = Tuple{map(typeof, tile_args)...}
 
-    # Determine kernel name
-    kernel_name = name !== nothing ? name : string(nameof(f))
+    # Get world age and method instance
+    # Don't pass method_table - kernel functions are in the global table
+    # The overlay table is only used by the interpreter during inference
+    world = Base.get_world_counter()
+    mi = method_instance(f, argtypes; world)
+    mi === nothing && throw(MethodError(f, argtypes))
 
-    # Use method instance in case of a redefinition
-    method = which(f, argtypes)
+    # Create cache handle with compilation options as sharding keys
+    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
+    cache = CacheHandle{CGOpts}(:cuTile, opts)
 
-    # Check compilation cache - returns CuFunction directly
-    cache_key = (method, argtypes, sm_arch, opt_level, num_ctas, occupancy)
-    cufunc = get(_compilation_cache, cache_key, nothing)
-    if cufunc === nothing || cuTile.compile_hook[] !== nothing
-        cubin = compile(f, argtypes; name, sm_arch, opt_level, num_ctas, occupancy)
-        if cufunc === nothing
-            cumod = CuModule(cubin)
-            cufunc = CuFunction(cumod, kernel_name)
-            _compilation_cache[cache_key] = cufunc
-        end
-    end
+    # Run cached three-phase compilation
+    cufunc = cached_compilation(cache, mi, world; emit_ir, emit_code, emit_executable)
 
     # Flatten arguments for cudacall - Constant returns () so ghost types disappear
     flat_args = Tuple(Iterators.flatten(map(flatten, tile_args)))
@@ -102,52 +124,6 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     cudacall(cufunc, flat_types, flat_args...; blocks=grid_dims, threads=1)
 
     return nothing
-end
-
-"""
-    compile(f, argtypes; name=nothing, sm_arch=default_sm_arch(), opt_level=3, num_ctas=nothing, occupancy=nothing) -> Vector{UInt8}
-
-Compile a Julia kernel function to a CUDA binary.
-"""
-function compile(@nospecialize(f), @nospecialize(argtypes);
-                 name::Union{String, Nothing}=nothing,
-                 sm_arch::String=default_sm_arch(),
-                 opt_level::Int=3,
-                 num_ctas::Union{Int, Nothing}=nothing,
-                 occupancy::Union{Int, Nothing}=nothing)
-    tile_bytecode = emit_tileir(f, argtypes; name, sm_arch,
-                                 num_ctas, occupancy)
-
-    # Dump bytecode if JULIA_CUTILE_DUMP_BYTECODE is set
-    dump_dir = get(ENV, "JULIA_CUTILE_DUMP_BYTECODE", nothing)
-    if dump_dir !== nothing
-        mkpath(dump_dir)
-        # Get source location from the function's method
-        mi = first(methods(f, Base.to_tuple_type(argtypes)))
-        base_filename = basename(string(mi.file))
-        base_filename = first(splitext(base_filename))
-        # Find unique filename, adding counter if file exists
-        dump_path = joinpath(dump_dir, "$(base_filename).ln$(mi.line).cutile")
-        counter = 1
-        while isfile(dump_path)
-            counter += 1
-            dump_path = joinpath(dump_dir, "$(base_filename).ln$(mi.line).$(counter).cutile")
-        end
-        println(stderr, "Dumping TILEIR bytecode to file: $dump_path")
-        write(dump_path, tile_bytecode)
-    end
-
-    input_path = tempname() * ".tile"
-    output_path = tempname() * ".cubin"
-
-    try
-        write(input_path, tile_bytecode)
-        run(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $sm_arch -O$opt_level`)
-        return read(output_path)
-    finally
-        rm(input_path, force=true)
-        rm(output_path, force=true)
-    end
 end
 
 """

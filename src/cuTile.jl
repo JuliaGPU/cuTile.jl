@@ -23,11 +23,9 @@ include("bytecode/encodings.jl")
 include("language/types.jl")
 
 # Compiler implementation
-include("compiler/interpreter.jl")
-include("compiler/target.jl")
+include("compiler/interface.jl")
 include("compiler/codegen.jl")
 include("compiler/intrinsics.jl")
-include("compiler/reflection.jl")
 
 # Language implementation
 include("language/broadcast.jl")
