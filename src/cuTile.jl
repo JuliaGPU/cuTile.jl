@@ -42,6 +42,6 @@ public launch
 launch() = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 # Export identity types for reduction operations
-public IdentityOp, FloatIdentityOp, IntegerIdentityOp
+public IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end # module cuTile

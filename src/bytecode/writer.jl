@@ -234,41 +234,41 @@ end
 =============================================================================#
 
 """
-    IdentityOp
+    IdentityVal
 
 Abstract type for binary operation identity attributes (reduce, scan, etc.).
 """
-abstract type IdentityOp end
+abstract type IdentityVal end
 
 """
-    FloatIdentityOp(value, type_id, dtype)
+    FloatIdentityVal(value, type_id, dtype)
 
 Float identity value for binary operations.
 """
-struct FloatIdentityOp <: IdentityOp
+struct FloatIdentityVal <: IdentityVal
     value::Float64
     type_id::TypeId
     dtype::Type  # Float16, Float32, Float64, etc.
 end
 
 """
-    IntegerIdentityOp(value, type_id, dtype)
+    IntegerIdentityVal(value, type_id, dtype)
 
 Integer identity value for binary operations.
 """
-struct IntegerIdentityOp <: IdentityOp
+struct IntegerIdentityVal <: IdentityVal
     value::UInt128  # Store as UInt128 to handle all unsigned values up to 64 bits
     type_id::TypeId
     dtype::Type   # Int8, Int16, Int32, Int64, UInt8, etc. (signedness inferred from dtype)
 end
 
 """
-    encode_tagged_float!(cb, identity::FloatIdentityOp)
+    encode_tagged_float!(cb, identity::FloatIdentityVal)
 
 Encode a tagged float attribute for reduce identity.
 Format: tag(Float=0x02) + typeid + ap_int(value_bits)
 """
-function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityOp)
+function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityVal)
     # Tag for Float attribute
     push!(cb.buf, 0x02)
     # Type ID
@@ -279,12 +279,12 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityOp)
 end
 
 """
-    encode_tagged_int!(cb, identity::IntegerIdentityOp)
+    encode_tagged_int!(cb, identity::IntegerIdentityVal)
 
 Encode a tagged integer identity attribute.
 Format: tag(Int=0x01) + typeid + ap_int(value)
 """
-function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityOp)
+function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityVal)
     # Tag for Int attribute
     push!(cb.buf, 0x01)
     # Type ID
@@ -347,7 +347,7 @@ end
 Encode an array of binary operation identity attributes.
 Dispatches on identity type to encode correctly.
 """
-function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:IdentityOp})
+function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:IdentityVal})
     encode_varint!(cb.buf, length(identities))
     for identity in identities
         encode_identity!(cb, identity)
@@ -359,8 +359,8 @@ end
 
 Encode a single identity attribute, dispatching on type.
 """
-encode_identity!(cb::CodeBuilder, identity::FloatIdentityOp) = encode_tagged_float!(cb, identity)
-encode_identity!(cb::CodeBuilder, identity::IntegerIdentityOp) = encode_tagged_int!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::FloatIdentityVal) = encode_tagged_float!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::IntegerIdentityVal) = encode_tagged_int!(cb, identity)
 
 """
     BytecodeWriter

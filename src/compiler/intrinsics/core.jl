@@ -581,10 +581,10 @@ end
 #=============================================================================#
 
 """
-    operation_identity(fn, dtype, elem_type) -> IdentityOp
+    operation_identity(fn, dtype, elem_type) -> IdentityVal
     to_uint128(value)
 
-Convert an integer value to UInt128 for storage in IntegerIdentityOp.
+Convert an integer value to UInt128 for storage in IntegerIdentityVal.
 For signed types, this returns the two's complement bit representation.
 """
 # Unsigned types: directly convert
@@ -599,7 +599,7 @@ to_uint128(value::Int16) = UInt128(reinterpret(UInt16, value))
 to_uint128(value::Int8) = UInt128(reinterpret(UInt8, value))
 
 """
-    operation_identity(fn, dtype, elem_type) -> IdentityOp
+    operation_identity(fn, dtype, elem_type) -> IdentityVal
 
 Return the identity value for a binary operation (reduce, scan, etc.).
 Identity must satisfy: identity ⊕ x = x for the operation.
@@ -607,15 +607,15 @@ Identity must satisfy: identity ⊕ x = x for the operation.
 
 # Addition identity: 0 + x = x
 operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentityOp(zero(T), dtype, T)
+    FloatIdentityVal(zero(T), dtype, T)
 operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentityOp(to_uint128(zero(T)), dtype, T)
+    IntegerIdentityVal(to_uint128(zero(T)), dtype, T)
 
 # Maximum identity: max(typemin(T), x) = x
 operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentityOp(typemin(T), dtype, T)
+    FloatIdentityVal(typemin(T), dtype, T)
 operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentityOp(to_uint128(typemin(T)), dtype, T)
+    IntegerIdentityVal(to_uint128(typemin(T)), dtype, T)
 
 #=============================================================================#
 # Reduce Body Operations
