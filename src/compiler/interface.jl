@@ -7,7 +7,7 @@
 
 export code_tiled, @code_tiled
 
-using CompilerCaching: CacheHandle, @setup_caching, get_ir, get_code, compile_hook,
+using CompilerCaching: CacheView, @setup_caching, get_ir, get_code, compile_hook,
                        compile_hook!, method_instance, populate!
 
 #=============================================================================
@@ -25,17 +25,15 @@ Custom interpreter that supports overlay method tables for cuTile compilation.
 This is necessary because NativeInterpreter has a fixed method_table type parameter.
 """
 struct cuTileInterpreter <: CC.AbstractInterpreter
-    cache::CacheHandle
-    world::UInt
+    cache::CacheView
     method_table::CC.CachedMethodTable{CC.OverlayMethodTable}
     inf_cache::Vector{CC.InferenceResult}
     inf_params::CC.InferenceParams
     opt_params::CC.OptimizationParams
 end
 
-function cuTileInterpreter(cache::CacheHandle, world::UInt=Base.get_world_counter();
-                           always_inline::Bool=true)
-    method_table = get_method_table_view(world)
+function cuTileInterpreter(cache::CacheView; always_inline::Bool=true)
+    method_table = get_method_table_view(cache.world)
     inf_cache = Vector{CC.InferenceResult}()
     inf_params = CC.InferenceParams()
     opt_params = if always_inline
@@ -43,7 +41,7 @@ function cuTileInterpreter(cache::CacheHandle, world::UInt=Base.get_world_counte
     else
         CC.OptimizationParams()
     end
-    return cuTileInterpreter(cache, world, method_table, inf_cache, inf_params, opt_params)
+    return cuTileInterpreter(cache, method_table, inf_cache, inf_params, opt_params)
 end
 
 # Required AbstractInterpreter interface methods
@@ -53,9 +51,9 @@ CC.get_inference_cache(interp::cuTileInterpreter) = interp.inf_cache
 
 # World age
 @static if isdefined(CC, :get_inference_world)
-    CC.get_inference_world(interp::cuTileInterpreter) = interp.world
+    CC.get_inference_world(interp::cuTileInterpreter) = interp.cache.world
 else
-    CC.get_world_counter(interp::cuTileInterpreter) = interp.world
+    CC.get_world_counter(interp::cuTileInterpreter) = interp.cache.world
 end
 
 # Method table - this enables the overlays
@@ -92,8 +90,8 @@ If always_inline=true (default), forces all functions to be inlined.
 """
 function code_ircode(mi::MethodInstance; world::UInt=Base.get_world_counter(),
                      always_inline::Bool=true)
-    cache = CacheHandle(:cuTile)
-    interp = cuTileInterpreter(cache, world; always_inline)
+    cache = CacheView(:cuTile, world)
+    interp = cuTileInterpreter(cache; always_inline)
     result = CC.typeinf_ircode(interp, mi, nothing)
 
     if result === nothing
@@ -117,30 +115,30 @@ const CGOpts = @NamedTuple{
 }
 
 """
-    emit_ir(cache, mi, world) -> (StructuredIRCode, rettype)
+    emit_ir(cache, mi) -> (StructuredIRCode, rettype)
 
 IR phase: populate code cache with dependencies and return structured IR.
 This phase uses cuTile's overlay method table for intrinsic substitution.
 """
-function emit_ir(cache::CacheHandle, mi::Core.MethodInstance, world::UInt)
-    interp = cuTileInterpreter(cache, world)
+function emit_ir(cache::CacheView, mi::Core.MethodInstance)
+    interp = cuTileInterpreter(cache)
     populate!(cache, interp, mi)
 
     # Return StructuredIRCode for emit_code phase
-    ir, rettype = code_ircode(mi; world)
+    ir, rettype = code_ircode(mi; world=cache.world)
     sci = StructuredIRCode(ir)
     return (sci, rettype)
 end
 
 """
-    emit_code(cache, mi, world, ir_result) -> Vector{UInt8}
+    emit_code(cache, mi, ir_result) -> Vector{UInt8}
 
 Code phase: generate Tile IR bytecode from StructuredIRCode.
 This phase is deterministic and does not require CUDA.
 
 Returns bytecode that can be compiled to CUBIN by tileiras in the emit_executable phase.
 """
-function emit_code(cache::CacheHandle, mi::Core.MethodInstance, world::UInt, ir_result)
+function emit_code(cache::CacheView, mi::Core.MethodInstance, ir_result)
     sci, rettype = ir_result
     opts = cache.keys
 
@@ -193,8 +191,8 @@ Return typed code for a cuTile function.. Analogous to `Base.code_typed`.
 """
 function code_typed(@nospecialize(f), @nospecialize(argtypes);
                     world::UInt=Base.get_world_counter(), kwargs...)
-    cache = CacheHandle(:cuTile)
-    interp = cuTileInterpreter(cache, world)
+    cache = CacheView(:cuTile, world)
+    interp = cuTileInterpreter(cache)
     Base.code_typed(f, argtypes; world, interp, kwargs...)
 end
 
@@ -214,9 +212,9 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
                     throw(MethodError(f, argtypes)))
 
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
-    cache = CacheHandle{CGOpts}(:cuTile, opts)
+    cache = CacheView{CGOpts}(:cuTile, world, opts)
 
-    _, ir_result = get_ir(cache, mi, world; emit_ir)
+    ir_result = get_ir(cache, mi; emit_ir)
     sci, rettype = ir_result
     return sci
 end
@@ -241,9 +239,9 @@ function code_tiled(@nospecialize(f), @nospecialize(argtypes);
                     throw(MethodError(f, argtypes)))
 
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
-    cache = CacheHandle{CGOpts}(:cuTile, opts)
+    cache = CacheView{CGOpts}(:cuTile, world, opts)
 
-    _, bytecode = get_code(cache, mi, world; emit_ir, emit_code)
+    bytecode = get_code(cache, mi; emit_ir, emit_code)
     disassemble_tileir(bytecode)
 end
 
@@ -254,7 +252,7 @@ function emit_hooked_compilation(inner_hook, ex...)
     quote
         # we only want to invoke the hook once for every compilation
         seen = Set()
-        function outer_hook(cache, mi, world)
+        function outer_hook(cache, mi)
             key = (cache, mi)
             if !in(key, seen)
                 # the user hook might invoke the compiler again, so disable the hook
@@ -262,7 +260,7 @@ function emit_hooked_compilation(inner_hook, ex...)
                 try
                     $compile_hook!(nothing)
                     opts = cache.keys
-                    $inner_hook(cache, mi, world; $(map(esc, user_kwargs)...))
+                    $inner_hook(cache, mi; $(map(esc, user_kwargs)...))
                 finally
                     $compile_hook!(old_hook)
                 end
@@ -287,10 +285,10 @@ function emit_hooked_compilation(inner_hook, ex...)
 end
 
 macro code_tiled(ex...)
-    function hook(cache, mi, world; io::IO=stdout)
+    function hook(cache, mi; io::IO=stdout)
         # The hook fires during cached_compilation, so bytecode is being cached
         # at this moment - retrieve it via get_code
-        _, bytecode = get_code(cache, mi, world; emit_ir, emit_code)
+        bytecode = get_code(cache, mi; emit_ir, emit_code)
         println(io, "// $(mi.def.name)($(join(map(string, mi.specTypes.parameters[2:end]), ", ")))")
         println(io)
         println(io, disassemble_tileir(bytecode))
