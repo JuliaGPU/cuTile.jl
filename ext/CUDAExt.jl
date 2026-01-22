@@ -3,7 +3,7 @@ module CUDAExt
 using cuTile
 using cuTile: TileArray, Constant, CGOpts, emit_ir, emit_code
 
-using CompilerCaching: CacheView, cached_compilation, method_instance
+using CompilerCaching: CacheView, method_instance
 
 using CUDA: CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
@@ -11,12 +11,13 @@ using CUDA_Compiler_jll
 public launch
 
 """
-    emit_executable(cache, mi, bytecode) -> CuFunction
+    emit_executable(cache, mi) -> CuFunction
 
 Executable phase: run tileiras on bytecode to produce CUBIN, then load into GPU memory.
 This is the only session-dependent phase.
 """
-function emit_executable(cache::CacheView, mi::Core.MethodInstance, bytecode::Vector{UInt8})
+function emit_executable(cache::CacheView, mi::Core.MethodInstance)
+    bytecode = get!(emit_code, cache, mi, :code)
     opts = cache.keys
     kernel_name = string(mi.def.name)
 
@@ -99,8 +100,8 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
     cache = CacheView{CGOpts}(:cuTile, world, opts)
 
-    # Run cached three-phase compilation
-    cufunc = cached_compilation(cache, mi; emit_ir, emit_code, emit_executable)
+    # Run cached compilation
+    cufunc = get!(emit_executable, cache, mi, :executable)
 
     # Flatten arguments for cudacall - Constant returns () so ghost types disappear
     flat_args = Tuple(Iterators.flatten(map(flatten, tile_args)))

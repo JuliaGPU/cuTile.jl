@@ -13,7 +13,8 @@ IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 
 [sources]
-CompilerCaching = {url = "https://github.com/maleadt/CompilerCaching.jl", rev="main"}
+#CompilerCaching = {url = "https://github.com/maleadt/CompilerCaching.jl", rev="main"}
+CompilerCaching = {path = "/Users/tim/Julia/pkg/CompilerCaching"}
 IRStructurizer = {path = "IRStructurizer"}
 
 [extensions]

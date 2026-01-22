@@ -7,8 +7,8 @@
 
 export code_tiled, @code_tiled
 
-using CompilerCaching: CacheView, @setup_caching, get_ir, get_code, compile_hook,
-                       compile_hook!, method_instance, populate!
+using CompilerCaching: CacheView, @setup_caching, compile_hook,
+                       compile_hook!, method_instance, typeinf!
 
 #=============================================================================
  Interpreter
@@ -122,24 +122,34 @@ This phase uses cuTile's overlay method table for intrinsic substitution.
 """
 function emit_ir(cache::CacheView, mi::Core.MethodInstance)
     interp = cuTileInterpreter(cache)
-    populate!(cache, interp, mi)
+    codeinfos = typeinf!(cache, interp, mi)
 
-    # Return StructuredIRCode for emit_code phase
-    ir, rettype = code_ircode(mi; world=cache.world)
+    # Get IRCode from the CodeInfo - no second inference needed
+    ci, codeinfo = first(codeinfos)
+
+    # Get the MethodInstance from the CodeInstance for safety
+    ci_mi = @static if VERSION >= v"1.12-"
+        CC.get_ci_mi(ci)
+    else
+        ci.def::MethodInstance
+    end
+
+    ir = CC.inflate_ir(codeinfo, ci_mi)
+
     sci = StructuredIRCode(ir)
-    return (sci, rettype)
+    return (sci, ci.rettype)
 end
 
 """
-    emit_code(cache, mi, ir_result) -> Vector{UInt8}
+    emit_code(cache, mi) -> Vector{UInt8}
 
 Code phase: generate Tile IR bytecode from StructuredIRCode.
 This phase is deterministic and does not require CUDA.
 
 Returns bytecode that can be compiled to CUBIN by tileiras in the emit_executable phase.
 """
-function emit_code(cache::CacheView, mi::Core.MethodInstance, ir_result)
-    sci, rettype = ir_result
+function emit_code(cache::CacheView, mi::Core.MethodInstance)
+    sci, rettype = get!(emit_ir, cache, mi, :ir)
     opts = cache.keys
 
     # Generate Tile IR bytecode
@@ -214,8 +224,7 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
     cache = CacheView{CGOpts}(:cuTile, world, opts)
 
-    ir_result = get_ir(cache, mi; emit_ir)
-    sci, rettype = ir_result
+    sci, rettype = get!(emit_ir, cache, mi, :ir)
     return sci
 end
 
@@ -241,7 +250,7 @@ function code_tiled(@nospecialize(f), @nospecialize(argtypes);
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
     cache = CacheView{CGOpts}(:cuTile, world, opts)
 
-    bytecode = get_code(cache, mi; emit_ir, emit_code)
+    bytecode = get!(emit_code, cache, mi, :code)
     disassemble_tileir(bytecode)
 end
 
@@ -286,9 +295,9 @@ end
 
 macro code_tiled(ex...)
     function hook(cache, mi; io::IO=stdout)
-        # The hook fires during cached_compilation, so bytecode is being cached
-        # at this moment - retrieve it via get_code
-        bytecode = get_code(cache, mi; emit_ir, emit_code)
+        # The hook fires during get!, so bytecode is being cached
+        # at this moment - retrieve it via get!
+        bytecode = get!(emit_code, cache, mi, :code)
         println(io, "// $(mi.def.name)($(join(map(string, mi.specTypes.parameters[2:end]), ", ")))")
         println(io)
         println(io, disassemble_tileir(bytecode))
