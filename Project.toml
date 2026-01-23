@@ -4,6 +4,7 @@ authors = ["Tim Besard <tim.besard@gmail.com>"]
 version = "0.1.0"
 
 [deps]
+CompilerCaching = "9db33cc3-5358-4881-8759-fa4194144afd"
 CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
 CUDA_Tile_jll = "2068806d-a867-5dbd-af0e-42c2eb5d895d"
 IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
@@ -12,6 +13,8 @@ IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 
 [sources]
+#CompilerCaching = {url = "https://github.com/maleadt/CompilerCaching.jl", rev="main"}
+CompilerCaching = {path = "/Users/tim/Julia/pkg/CompilerCaching"}
 IRStructurizer = {path = "IRStructurizer"}
 
 [extensions]
@@ -21,6 +24,3 @@ CUDAExt = "CUDA"
 julia = "1.11"
 CUDA_Compiler_jll = "0.4"
 CUDA_Tile_jll = "13.1"
-
-[workspace]
-projects = ["test", "IRStructurizer", "FileCheck"]

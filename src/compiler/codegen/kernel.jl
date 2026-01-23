@@ -1,22 +1,22 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, target; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing)
+    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing)
 
-Compile a TileTarget to Tile IR bytecode.
+Compile a StructuredIRCode to Tile IR bytecode.
 """
 function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
-                      target::TileTarget;
-                      name::String = string(target.mi.def.name),
+                      sci::StructuredIRCode, rettype::Type;
+                      name::String,
                       sm_arch::Union{String, Nothing} = nothing,
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing)
-    ctx = CGCtx(writer, target, sm_arch)
+    ctx = CGCtx(writer, sci, sm_arch)
     tt = ctx.tt
 
     # Validate non-ghost argument types are concrete
-    for (i, argtype) in enumerate(target.sci.argtypes)
+    for (i, argtype) in enumerate(sci.argtypes)
         is_ghost_type(unwrap_type(argtype)) && continue
         require_concrete_type(argtype, "kernel argument $i")
     end
@@ -25,7 +25,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     param_types = TypeId[]
     param_mapping = Tuple{Int, Union{Nothing, Symbol}}[]
 
-    for (i, argtype) in enumerate(target.sci.argtypes)
+    for (i, argtype) in enumerate(sci.argtypes)
         argtype_unwrapped = unwrap_type(argtype)
         if is_ghost_type(argtype_unwrapped)
             continue
@@ -57,8 +57,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # Return types
     result_types = TypeId[]
-    if target.rettype !== Nothing && target.rettype !== Union{}
-        push!(result_types, tile_type_for_julia!(ctx, target.rettype))
+    if rettype !== Nothing && rettype !== Union{}
+        push!(result_types, tile_type_for_julia!(ctx, rettype))
     end
 
     # Create entry hints if provided
@@ -92,8 +92,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             # Regular argument - create concrete CGVal
             @assert length(values) == 1
             val = values[1]
-            type_id = tile_type_for_julia!(ctx, target.sci.argtypes[arg_idx])
-            tv = CGVal(val, type_id, target.sci.argtypes[arg_idx])
+            type_id = tile_type_for_julia!(ctx, sci.argtypes[arg_idx])
+            tv = CGVal(val, type_id, sci.argtypes[arg_idx])
             ctx[SlotNumber(arg_idx)] = tv
             ctx[Argument(arg_idx)] = tv
         end
@@ -117,7 +117,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     ctx.token = encode_MakeTokenOp!(cb, token_type)
 
     # Emit the structured IR (uses original Julia SSA indices everywhere)
-    emit_block!(ctx, ctx.target.sci.entry)
+    emit_block!(ctx, ctx.sci.entry)
 
     finalize_function!(func_buf, cb, writer.debug_info)
 end
