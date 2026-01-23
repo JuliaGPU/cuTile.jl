@@ -1,7 +1,7 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_ir, emit_code
+using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -13,20 +13,18 @@ public launch
 """
     emit_executable(cache, mi) -> CuFunction
 
-Executable phase: run tileiras on bytecode to produce CUBIN, then load into GPU memory.
-This is the only session-dependent phase.
+Executable phase: compile bytecode to CUBIN and load into GPU memory.
 """
 function emit_executable(cache::CacheView, mi::Core.MethodInstance)
-    # First ensure code is cached
+    # Delegate to previous phase (handles CI + IR + code)
     bytecode = emit_code(cache, mi)
 
-    # Check if executable already cached
-    ci = get(cache, mi, nothing)
+    # Check executable cache
+    ci = get(cache, mi)
     res = results(cache, ci)
-    if res.executable !== nothing
-        return res.executable
-    end
+    res.executable !== nothing && return res.executable
 
+    # Compile to CUBIN and load
     opts = cache.owner[2]
     kernel_name = string(mi.def.name)
 

@@ -7,8 +7,7 @@
 
 export code_tiled, @code_tiled
 
-using CompilerCaching: CacheView, @setup_caching, compile_hook,
-                       compile_hook!, method_instance, typeinf!, results
+using CompilerCaching: CacheView, @setup_caching, method_instance, typeinf!, results, get_source
 
 #=============================================================================
  Interpreter
@@ -125,36 +124,27 @@ end
 """
     emit_ir(cache, mi) -> (StructuredIRCode, rettype)
 
-IR phase: populate code cache with dependencies and return structured IR.
-This phase uses cuTile's overlay method table for intrinsic substitution.
+IR phase: run inference if needed and return structured IR.
 """
 function emit_ir(cache::CacheView, mi::Core.MethodInstance)
-    # Check cache first
+    # Ensure CI exists
     ci = get(cache, mi, nothing)
-    if ci !== nothing
-        res = results(cache, ci)
-        res.ir !== nothing && return res.ir
+    if ci === nothing
+        interp = cuTileInterpreter(cache)
+        typeinf!(cache, interp, mi)
+        ci = get(cache, mi)
     end
 
-    # Cache miss - run inference (creates CI via @setup_caching)
-    interp = cuTileInterpreter(cache)
-    codeinfos = typeinf!(cache, interp, mi)
-    ci, codeinfo = first(codeinfos)
+    # Check IR cache
+    res = results(cache, ci)
+    res.ir !== nothing && return res.ir
 
-    # Get the MethodInstance from the CodeInstance for safety
-    ci_mi = @static if VERSION >= v"1.12-"
-        CC.get_ci_mi(ci)
-    else
-        ci.def::MethodInstance
-    end
-
-    ir = CC.inflate_ir(codeinfo, ci_mi)
+    # Compute IR from CodeInfo
+    src = @something get_source(ci)
+    ir = CC.inflate_ir(src, mi)
     sci = StructuredIRCode(ir)
 
-    # Store in results
-    res = results(cache, ci)
     res.ir = (sci, ci.rettype)
-
     return res.ir
 end
 
@@ -162,27 +152,18 @@ end
     emit_code(cache, mi) -> Vector{UInt8}
 
 Code phase: generate Tile IR bytecode from StructuredIRCode.
-This phase is deterministic and does not require CUDA.
-
-Returns bytecode that can be compiled to CUBIN by tileiras in the emit_executable phase.
 """
 function emit_code(cache::CacheView, mi::Core.MethodInstance)
-    # First ensure IR is cached (this also populates CI)
+    # Delegate to previous phase (handles CI + IR)
     sci, rettype = emit_ir(cache, mi)
 
-    # Check if code already cached
-    ci = get(cache, mi, nothing)
+    # Check code cache
+    ci = get(cache, mi)
     res = results(cache, ci)
-    if res.code !== nothing
-        return res.code
-    end
+    res.code !== nothing && return res.code
 
-    # Get options from owner (tuple: (:cuTile, opts) or just symbol)
-    opts = if cache.owner isa Tuple
-        cache.owner[2]
-    else
-        (sm_arch=nothing, opt_level=3, num_ctas=nothing, occupancy=nothing)
-    end
+    # Compute bytecode
+    opts = cache.owner[2]
 
     # Generate Tile IR bytecode
     bytecode = write_bytecode!(1) do writer, func_buf
@@ -287,51 +268,27 @@ function code_tiled(@nospecialize(f), @nospecialize(argtypes);
     disassemble_tileir(bytecode)
 end
 
-# compilation hooking: uses CompilerCaching's global hook
-function emit_hooked_compilation(inner_hook, ex...)
-    user_code = ex[end]
-    user_kwargs = ex[1:end-1]
+"""
+    @code_tiled f(args...)
+
+Print the Tile IR for the kernel that would be launched by the given call.
+This is a convenience macro that extracts the function and argument types.
+
+# Example
+```julia
+@code_tiled vadd_kernel(a, b, c)
+```
+"""
+macro code_tiled(call)
+    if !(call isa Expr && call.head === :call)
+        error("@code_tiled requires a function call expression")
+    end
+    f = call.args[1]
+    args = call.args[2:end]
     quote
-        # we only want to invoke the hook once for every compilation
-        seen = Set()
-        function outer_hook(cache, mi)
-            key = (cache, mi)
-            if !in(key, seen)
-                # the user hook might invoke the compiler again, so disable the hook
-                old_hook = $compile_hook()
-                try
-                    $compile_hook!(nothing)
-                    opts = cache.owner[2]
-                    $inner_hook(cache, mi; $(map(esc, user_kwargs)...))
-                finally
-                    $compile_hook!(old_hook)
-                end
-                push!(seen, key)
-            end
-        end
-
-        # now invoke the user code with this hook in place
-        try
-            $compile_hook!(outer_hook)
-            $(esc(user_code))
-        finally
-            $compile_hook!(nothing)
-        end
-
-        if isempty(seen)
-            error("no kernels executed while evaluating the given expression")
-        end
-
-        nothing
+        local f_val = $(esc(f))
+        local args_val = ($(map(esc, args)...),)
+        local argtypes = Tuple{map(typeof, args_val)...}
+        code_tiled(f_val, argtypes)
     end
-end
-
-macro code_tiled(ex...)
-    function hook(cache, mi; io::IO=stdout)
-        bytecode = emit_code(cache, mi)
-        println(io, "// $(mi.def.name)($(join(map(string, mi.specTypes.parameters[2:end]), ", ")))")
-        println(io)
-        println(io, disassemble_tileir(bytecode))
-    end
-    emit_hooked_compilation(hook, ex...)
 end
