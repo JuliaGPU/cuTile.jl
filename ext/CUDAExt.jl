@@ -1,9 +1,9 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, emit_ir, emit_code
+using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_ir, emit_code
 
-using CompilerCaching: CacheView, method_instance
+using CompilerCaching: CacheView, method_instance, results
 
 using CUDA: CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
@@ -17,8 +17,17 @@ Executable phase: run tileiras on bytecode to produce CUBIN, then load into GPU 
 This is the only session-dependent phase.
 """
 function emit_executable(cache::CacheView, mi::Core.MethodInstance)
-    bytecode = get!(emit_code, cache, mi, :code)
-    opts = cache.keys
+    # First ensure code is cached
+    bytecode = emit_code(cache, mi)
+
+    # Check if executable already cached
+    ci = get(cache, mi, nothing)
+    res = results(cache, ci)
+    if res.executable !== nothing
+        return res.executable
+    end
+
+    opts = cache.owner[2]
     kernel_name = string(mi.def.name)
 
     # Run tileiras to produce CUBIN
@@ -31,7 +40,9 @@ function emit_executable(cache::CacheView, mi::Core.MethodInstance)
 
         # Load into GPU memory
         cumod = CuModule(cubin)
-        return CuFunction(cumod, kernel_name)
+        cufunc = CuFunction(cumod, kernel_name)
+        res.executable = cufunc
+        return cufunc
     finally
         rm(input_path, force=true)
         rm(output_path, force=true)
@@ -98,10 +109,10 @@ function cuTile.launch(@nospecialize(f), grid, args...;
 
     # Create cache view with compilation options as sharding keys
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
-    cache = CacheView{CGOpts}(:cuTile, world, opts)
+    cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
     # Run cached compilation
-    cufunc = get!(emit_executable, cache, mi, :executable)
+    cufunc = emit_executable(cache, mi)
 
     # Flatten arguments for cudacall - Constant returns () so ghost types disappear
     flat_args = Tuple(Iterators.flatten(map(flatten, tile_args)))
