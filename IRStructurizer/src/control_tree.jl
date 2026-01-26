@@ -17,6 +17,7 @@ Acyclic regions:
 - `REGION_IF_THEN_ELSE`: Conditional with two symmetric branches `u` ─→ `v` and `u` ─→ `w` and a single merge block reachable by `v` ─→ x or `w` ─→ x
 - `REGION_SWITCH`: Conditional with any number of branches [`u` ─→ `vᵢ`, `u` ─→ `vᵢ₊₁`, ...] and a single merge block reachable by [`vᵢ` ─→ `w`, `vᵢ₊₁` ─→ `w`, ...]
 - `REGION_TERMINATION`: Acyclic region which contains a block `v` with multiple branches, including one or multiple branches to blocks `wᵢ` which end with a function termination instruction. The region is composed of `v` and all the `wᵢ`.
+- `REGION_PROPER`: Generic proper region that doesn't match simpler patterns. Single-entry acyclic subgraph where the entry dominates all nodes.
 
 Cyclic regions:
 - `REGION_WHILE_LOOP`: Simple cyclic region made of a condition block `u`, a loop body block `v` and a merge block `w` such that `v` ⇆ `u` ─→ `w`
@@ -32,6 +33,7 @@ Cyclic regions:
     REGION_FOR_LOOP
     REGION_WHILE_LOOP
     REGION_NATURAL_LOOP
+    REGION_PROPER
 end
 
 @active block_region(args) begin

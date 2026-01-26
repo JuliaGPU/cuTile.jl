@@ -24,6 +24,48 @@ function get_loop_blocks(tree::ControlTree, ir::IRCode)
 end
 
 """
+    get_region_blocks(tree::ControlTree, ir::IRCode) -> Set{Int}
+
+Get all block indices contained in a control tree region.
+"""
+function get_region_blocks(tree::ControlTree, ir::IRCode)
+    blocks = Set{Int}()
+    nblocks = length(ir.cfg.blocks)
+    for subtree in PreOrderDFS(tree)
+        idx = node_index(subtree)
+        if 1 <= idx <= nblocks
+            push!(blocks, idx)
+        end
+    end
+    return blocks
+end
+
+"""
+    get_exit_block(tree::ControlTree, ir::IRCode) -> Int
+
+Get the exit block index of a control tree region.
+For single-block regions, this is the block itself.
+For multi-block regions, this is the block that has successors outside the region.
+"""
+function get_exit_block(tree::ControlTree, ir::IRCode)
+    blocks = get_region_blocks(tree, ir)
+    nblocks = length(ir.cfg.blocks)
+
+    # Find block(s) with successors outside the region
+    for block_idx in blocks
+        1 <= block_idx <= nblocks || continue
+        for succ in ir.cfg.blocks[block_idx].succs
+            if !(succ in blocks)
+                return block_idx
+            end
+        end
+    end
+
+    # Fallback to entry block
+    return node_index(tree)
+end
+
+"""
     convert_phi_value(val) -> IRValue
 
 Convert a phi node value to an IRValue. Most values pass through unchanged;
@@ -89,6 +131,9 @@ function tree_to_block(tree::ControlTree, ir::IRCode, ctx::StructurizationContex
         handle_loop!(block, tree, ir, ctx)
     elseif rtype == REGION_SWITCH
         handle_switch!(block, tree, ir, ctx)
+    elseif rtype == REGION_PROPER
+        # Generic proper region - treat like REGION_BLOCK
+        handle_block_region!(block, tree, ir, ctx)
     else
         error("Unknown region type: $rtype")
     end
@@ -150,6 +195,9 @@ function handle_nested_region!(block::Block, tree::ControlTree, ir::IRCode,
         handle_loop!(block, tree, ir, ctx)
     elseif rtype == REGION_SWITCH
         handle_switch!(block, tree, ir, ctx)
+    elseif rtype == REGION_PROPER
+        # Generic proper region - treat like REGION_BLOCK
+        handle_block_region!(block, tree, ir, ctx)
     else
         error("Unknown region type in nested region: $rtype")
     end
@@ -196,8 +244,9 @@ function handle_if_then_else!(block::Block, tree::ControlTree, ir::IRCode,
     else_blk = tree_to_block(else_tree, ir, ctx)
 
     # Find merge block and detect merge phis
-    then_block_idx = node_index(then_tree)
-    else_block_idx = node_index(else_tree)
+    # Use exit blocks (not entry blocks) for multi-block regions
+    then_block_idx = get_exit_block(then_tree, ir)
+    else_block_idx = get_exit_block(else_tree, ir)
     merge_phis = find_merge_phis(ir, then_block_idx, else_block_idx)
 
     # Add YieldOp terminators with phi values
@@ -321,10 +370,43 @@ function handle_if_then!(block::Block, tree::ControlTree, ir::IRCode,
     # Empty else block
     else_blk = Block()
 
+    # Find merge block and detect merge phis
+    # For if-then, the merge block is the common successor of cond_idx and then_block_idx.
+    # cond_idx acts as the "else" path since it has a direct edge to merge when condition is false.
+    # Use exit block (not entry block) for multi-block then regions
+    then_block_idx = get_exit_block(then_tree, ir)
+    merge_phis = find_merge_phis(ir, then_block_idx, cond_idx)
+
+    # Add YieldOp terminators with phi values
+    if !isempty(merge_phis)
+        then_values = [phi.then_val for phi in merge_phis]
+        else_values = [phi.else_val for phi in merge_phis]
+        then_blk.terminator = YieldOp(then_values)
+        else_blk.terminator = YieldOp(else_values)
+    end
+
     if_op = IfOp(cond_value, then_blk, else_blk)
-    bb = ir.cfg.blocks[cond_idx]
-    result_idx = gotoifnot_idx !== nothing ? gotoifnot_idx : last(bb.stmts)
-    push!(block, result_idx, if_op, Nothing)
+
+    # Allocate synthesized SSA index for IfOp
+    if_result_idx = ctx.next_ssa_idx
+    ctx.next_ssa_idx += 1
+
+    # Use Tuple type for IfOp results (uniform handling in codegen)
+    if !isempty(merge_phis)
+        phi_types = [ctx.ssavaluetypes[phi.ssa_idx] for phi in merge_phis]
+        result_type = Tuple{phi_types...}
+        push!(block, if_result_idx, if_op, result_type)
+
+        # Generate getfield statements at original phi indices
+        # This preserves SSA reference semantics: `return %7` still works because getfield is at %7
+        for (i, phi) in enumerate(merge_phis)
+            getfield_expr = Expr(:call, Core.getfield, SSAValue(if_result_idx), i)
+            push!(block, phi.ssa_idx, getfield_expr, phi_types[i])
+        end
+    else
+        # No merge phis - use Tuple{} for uniformity
+        push!(block, if_result_idx, if_op, Tuple{})
+    end
 end
 
 """

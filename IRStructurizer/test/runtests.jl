@@ -644,6 +644,62 @@ end
     validate_scf(sci)
 end
 
+# If-then (no else) must yield phi values, not return Nothing
+@testset "if-then yields phi values" begin
+    @test @filecheck begin
+        code_structured(Tuple{Bool}) do flag::Bool
+            x = 0
+            @check "if"
+            if flag
+                x = 1
+            end
+            @check "yield"
+            @check "else"
+            @check "yield"
+            @check "getfield"
+            return x
+        end
+    end
+end
+
+@testset "if-then phi inside loop" begin
+    @test @filecheck begin
+        code_structured(Tuple{Int, Bool}) do n::Int, flag::Bool
+            acc = 0
+            j = 1
+            @check "for"
+            while j <= n
+                x = 0
+                @check "if"
+                if flag && j >= 2
+                    x = 1
+                end
+                @check "yield"
+                @check "getfield"
+                acc += x
+                j += 1
+            end
+            return acc
+        end
+    end
+end
+
+@testset "if-then with multiple phis" begin
+    @test @filecheck begin
+        code_structured(Tuple{Bool}) do flag::Bool
+            x, y = 0, 0
+            @check "if"
+            if flag
+                x, y = 1, 2
+            end
+            @check "yield"
+            @check "getfield"
+            @check "getfield"
+            return x + y
+        end
+    end
+end
+
 end  # regression
 
 #=============================================================================
