@@ -193,3 +193,13 @@ for (op, pred) in ((:<, :CmpLessThan), (:>, :CmpGreaterThan),
             _cmp_intrinsic(broadcast_to(Tile(T(a)), S), b, $pred)
     end
 end
+
+# For index tile arithmetic:
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(-), a::Tile{T,S}, ::Base.RefValue{One}) where {T<:Integer,S} =
+    a .- one(T)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(+), a::Tile{T,S}, ::Base.RefValue{One}) where {T<:Integer,S} =
+    a .+ one(T)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(-), ::Base.RefValue{One}, a::Tile{T,S}) where {T<:Integer,S} =
+    one(T) .- a
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(+), ::Base.RefValue{One}, a::Tile{T,S}) where {T<:Integer,S} =
+    one(T) .+ a

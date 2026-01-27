@@ -199,7 +199,7 @@ tile = ct.gather(arr, indices; latency=3)
 @inline function gather(array::TileArray{T, 1}, indices::Tile{I, S};
                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     # Convert to 0-indexed
-    indices_0 = indices .- one(I)
+    indices_0 = indices .- One()
 
     # Convert to Int32 for consistency with array.sizes
     indices_i32 = astype(indices_0, Int32)
@@ -232,8 +232,8 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
 @inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}};
                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
     # Convert to 0-indexed
-    idx0_0 = indices[1] .- one(I0)
-    idx1_0 = indices[2] .- one(I1)
+    idx0_0 = indices[1] .- One()
+    idx1_0 = indices[2] .- One()
 
     # Broadcast indices to common shape
     S = broadcast_shape(S0, S1)
@@ -291,7 +291,7 @@ ct.scatter(arr, indices, result_tile; latency=3)
 @inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
                          latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     # Convert to 0-indexed
-    indices_0 = indices .- one(I)
+    indices_0 = indices .- One()
 
     # Convert to Int32 for consistency with array.sizes
     indices_i32 = astype(indices_0, Int32)
@@ -321,8 +321,8 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 @inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile};
                          latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
     # Convert to 0-indexed
-    idx0_0 = indices[1] .- one(I0)
-    idx1_0 = indices[2] .- one(I1)
+    idx0_0 = indices[1] .- One()
+    idx1_0 = indices[2] .- One()
 
     # Broadcast indices to common shape (include value tile shape)
     S = broadcast_shape(broadcast_shape(S0, S1), Stile)
