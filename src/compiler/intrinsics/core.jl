@@ -512,7 +512,7 @@ end
     Sum reduction along 0-indexed axis.
     Compiled to cuda_tile.reduce with ADD.
     """
-    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
         reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
         Tile{T, reduced_shape}()
     end
@@ -523,7 +523,7 @@ end
     Maximum reduction along 0-indexed axis.
     Compiled to cuda_tile.reduce with MAX.
     """
-    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
+    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
         reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
         Tile{T, reduced_shape}()
     end
@@ -562,27 +562,73 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     # Scalar type for reduction body (0D tile)
     scalar_tile_type = tile_type!(tt, dtype, Int[])
 
-    # Create identity value - use simple dtype (f32), not tile type
-    identity_val = reduce_fn == :add ? -0.0 : (reduce_fn == :max ? -Inf : 0.0)
-    identity = FloatIdentity(identity_val, dtype, elem_type)
+    # Create identity value via dispatch on reduction function and element type
+    identity = operation_identity(Val(reduce_fn), dtype, elem_type)
 
     # Emit ReduceOp
     results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
         acc, elem = block_args[1], block_args[2]
 
-        if reduce_fn == :add
-            res = encode_AddFOp!(cb, scalar_tile_type, acc, elem)
-        elseif reduce_fn == :max
-            res = encode_MaxFOp!(cb, scalar_tile_type, acc, elem)
-        else
-            error("Unsupported reduction function: $reduce_fn")
-        end
-
+        res = encode_reduce_body(cb, scalar_tile_type, acc, elem, Val(reduce_fn), elem_type)
         encode_YieldOp!(cb, [res])
     end
 
     CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
+
+#=============================================================================#
+# Reduce Identity Values via Dispatch
+#=============================================================================#
+
+"""
+    operation_identity(fn, dtype, elem_type) -> IdentityOp
+    to_uint128(value)
+
+Convert an integer value to UInt128 for storage in IntegerIdentityOp.
+For signed types, this returns the two's complement bit representation.
+"""
+# Unsigned types: directly convert
+to_uint128(value::UInt64) = UInt128(value)
+to_uint128(value::UInt32) = UInt128(value)
+to_uint128(value::UInt16) = UInt128(value)
+to_uint128(value::UInt8) = UInt128(value)
+# Signed types: reinterpret as unsigned first, then convert
+to_uint128(value::Int64) = UInt128(reinterpret(UInt64, value))
+to_uint128(value::Int32) = UInt128(reinterpret(UInt32, value))
+to_uint128(value::Int16) = UInt128(reinterpret(UInt16, value))
+to_uint128(value::Int8) = UInt128(reinterpret(UInt8, value))
+
+"""
+    operation_identity(fn, dtype, elem_type) -> IdentityOp
+
+Return the identity value for a binary operation (reduce, scan, etc.).
+Identity must satisfy: identity ⊕ x = x for the operation.
+"""
+
+# Addition identity: 0 + x = x
+operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityOp(zero(T), dtype, T)
+operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(to_uint128(zero(T)), dtype, T, T <: Signed)
+
+# Maximum identity: max(typemin(T), x) = x
+operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityOp(typemin(T), dtype, T)
+operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityOp(to_uint128(typemin(T)), dtype, T, T <: Signed)
+
+#=============================================================================#
+# Reduce Body Operations - dispatch on Val{fn} and elem_type
+#=============================================================================#
+
+encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: AbstractFloat =
+    encode_AddFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
+    encode_MaxFOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: Integer =
+    encode_AddIOp!(cb, type, acc, elem)
+encode_reduce_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
+    encode_MaxIOp!(cb, type, acc, elem; signedness=T <: Signed ? SignednessSigned : SignednessUnsigned)
 
 
 # cuda_tile.reshape
@@ -654,7 +700,84 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     CGVal(current_val, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
 end
 
-# TODO: cuda_tile.scan
+# cuda_tile.scan
+@eval Intrinsics begin
+    """
+        scan(tile, axis_val, fn_type; reverse=false)
+
+    Parallel prefix scan along specified dimension.
+    fn_type=:add for cumulative sum (only supported operation).
+    reverse=false for forward scan, true for reverse scan.
+    Compiled to cuda_tile.scan.
+    """
+    @noinline function scan(tile::Tile{T, S}, ::Val{axis}, fn::Symbol, reverse::Bool=false) where {T, S, axis}
+        # Scan preserves shape - result has same dimensions as input
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get input tile
+    input_tv = emit_value!(ctx, args[1])
+    input_tv === nothing && error("Cannot resolve input tile for scan")
+
+    # Get scan axis
+    axis = @something get_constant(ctx, args[2]) error("Scan axis must be a compile-time constant")
+
+    # Get scan function type (only :add is supported)
+    fn_type = @something get_constant(ctx, args[3]) error("Scan function type must be a compile-time constant")
+    fn_type == :add || error("Only :add (cumulative sum) is currently supported for scan operations")
+
+    # Get reverse flag (optional, defaults to false)
+    reverse = false
+    if length(args) >= 4
+        reverse_val = get_constant(ctx, args[4])
+        reverse = reverse_val === true
+    end
+
+    # Get element type and shapes
+    input_type = unwrap_type(input_tv.jltype)
+    elem_type = input_type <: Tile ? input_type.parameters[1] : input_type
+    input_shape = input_tv.shape
+
+    # For scan, output shape is same as input shape
+    output_shape = copy(input_shape)
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Output tile type (same shape as input)
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+
+    # Scalar type for scan body (0D tile)
+    scalar_tile_type = tile_type!(tt, dtype, Int[])
+
+    # Create identity value using operation_identity
+    # Reuses FloatIdentityOp and IntegerIdentityOp from IntegerReduce
+    identity = operation_identity(Val(fn_type), dtype, elem_type)
+
+    # Emit ScanOp
+    results = encode_ScanOp!(cb, [output_tile_type], [input_tv.v], axis, reverse, [identity], [scalar_tile_type]) do block_args
+        acc, elem = block_args[1], block_args[2]
+        res = encode_scan_body(cb, scalar_tile_type, acc, elem, Val(fn_type), elem_type)
+        encode_YieldOp!(cb, [res])
+    end
+
+
+    CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
+
+# Dispatch helpers for scan body operations - dispatch on Val{fn} and elem_type
+encode_scan_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: AbstractFloat =
+    encode_AddFOp!(cb, type, acc, elem)
+encode_scan_body(cb, type, acc, elem, ::Val{:add}, ::Type{T}) where T <: Integer =
+    encode_AddIOp!(cb, type, acc, elem)
+encode_scan_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: AbstractFloat =
+    encode_MaxFOp!(cb, type, acc, elem)
+encode_scan_body(cb, type, acc, elem, ::Val{:max}, ::Type{T}) where T <: Integer =
+    encode_MaxIOp!(cb, type, acc, elem; signedness=is_signed(T) ? SignednessSigned : SignednessUnsigned)
 
 # cuda_tile.select
 @eval Intrinsics begin
