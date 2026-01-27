@@ -418,6 +418,32 @@ end
     end
 end
 
+@testset "strided" begin
+    @testset "PermutedDimsArray" begin
+        function copy_kernel_2d(
+            src::ct.TileArray{Float32, 2}, dst::ct.TileArray{Float32, 2},
+            tile_x::ct.Constant{Int}, tile_y::ct.Constant{Int}
+        )
+            bid_x = ct.bid(1)
+            bid_y = ct.bid(2)
+            tile = ct.load(src, (bid_x, bid_y), (tile_x[], tile_y[]))
+            ct.store(dst, (bid_x, bid_y), tile)
+            return
+        end
+
+        m, n = 64, 32
+        tm, tn = 16, 16
+        A = CuArray(Float32.(reshape(1:n*m, n, m)))
+        P = PermutedDimsArray(A, (2, 1))
+        out = CUDA.zeros(Float32, m, n)
+
+        grid = (cld(m, tm), cld(n, tn))
+        ct.launch(copy_kernel_2d, grid, P, out, ct.Constant(tm), ct.Constant(tn))
+
+        @test out == permutedims(A, (2, 1))
+    end
+end
+
 @testset "extract" begin
     @testset "extract identity (0,0) full shape" begin
         function extract_identity_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})

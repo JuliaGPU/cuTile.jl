@@ -162,6 +162,9 @@ function TileArray(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTuple{N, Int3
     TileArray{T, N, spec}(ptr, sizes, strides)
 end
 
+_pointer(arr::AbstractArray) = pointer(arr)
+_pointer(arr::PermutedDimsArray) = pointer(parent(arr))
+
 """
     TileArray(arr)
 
@@ -169,13 +172,13 @@ Create a TileArray from a CUDA array (CuArray or similar).
 Automatically extracts pointer, sizes, strides, and computes ArraySpec.
 
 This method works with any array type that supports:
-- `pointer(arr)` - returns device pointer
+- `pointer(arr)` - returns device pointer (or parent's pointer for wrapper types)
 - `size(arr)` - returns array dimensions
 - `strides(arr)` - returns array strides
 """
 function TileArray(arr::AbstractArray{T, N}) where {T, N}
     # Use reinterpret to handle both Ptr and CuPtr (device pointers)
-    ptr = reinterpret(Ptr{T}, pointer(arr))
+    ptr = reinterpret(Ptr{T}, _pointer(arr))
     sizes = NTuple{N, Int32}(Int32.(size(arr)))
     strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
     TileArray(ptr, sizes, strides_val)
