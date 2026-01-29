@@ -13,8 +13,8 @@ const CC = Core.Compiler
 
 using CUDA_Tile_jll
 
-using DLFP8Types: Float8_E4M3FN, Float8_E5M2
-public Float8_E4M3FN, Float8_E5M2
+using BFloat16s: BFloat16
+public BFloat16
 
 # Bytecode infrastructure
 include("bytecode/basic.jl")

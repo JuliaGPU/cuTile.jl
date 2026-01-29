@@ -444,27 +444,14 @@
                 end
             end
 
-            # Float32 -> Float8_E4M3FN
+            # Float32 -> BFloat16
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
-                    converted = convert(ct.Tile{ct.Float8_E4M3FN}, tile)
-                    ct.store(b, pid, ct.astype(converted, Float32))
-                    return
-                end
-            end
-
-            # Float32 -> Float8_E5M2
-            @test @filecheck begin
-                @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
-                    pid = ct.bid(1)
-                    tile = ct.load(a, pid, (16,))
-                    @check "ftof"
-                    converted = convert(ct.Tile{ct.Float8_E5M2}, tile)
+                    converted = convert(ct.Tile{ct.BFloat16}, tile)
                     ct.store(b, pid, ct.astype(converted, Float32))
                     return
                 end

@@ -9,7 +9,7 @@ using CUDA_Compiler_jll
 public launch
 
 # Compilation cache - stores CuFunction directly to avoid re-loading CuModule
-const _compilation_cache = Dict{Any, Any}()  # (f, argtypes, sm_arch, opt_level, num_ctas, occupancy) => CuFunction
+const _compilation_cache = Dict{Any, Any}()  # (method, argtypes, sm_arch, opt_level, num_ctas, occupancy) => CuFunction
 
 """
     launch(f, grid, args...; name=nothing, sm_arch=default_sm_arch(), opt_level=3, num_ctas=nothing, occupancy=nothing)
@@ -65,8 +65,11 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     # Determine kernel name
     kernel_name = name !== nothing ? name : string(nameof(f))
 
+    # Use method instance in case of a redefinition
+    method = which(f, argtypes)
+
     # Check compilation cache - returns CuFunction directly
-    cache_key = (f, argtypes, sm_arch, opt_level, num_ctas, occupancy)
+    cache_key = (method, argtypes, sm_arch, opt_level, num_ctas, occupancy)
     cufunc = get(_compilation_cache, cache_key, nothing)
     if cufunc === nothing || cuTile.compile_hook[] !== nothing
         cubin = compile(f, argtypes; name, sm_arch, opt_level, num_ctas, occupancy)

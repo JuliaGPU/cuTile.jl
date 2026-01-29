@@ -4,7 +4,7 @@ using FileCheck
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, IfOp, ForOp, WhileOp, LoopOp,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      validate_scf, statements
+                      validate_scf, validate_terminators, SSAMap, statements
 using Core: SSAValue
 using Base: code_ircode
 
@@ -52,6 +52,27 @@ end
     sci = StructuredIRCode(ir)
     @test !any(expr -> expr isa Core.GotoIfNot, statements(sci.entry.body))
     validate_scf(sci)  # Should not throw
+end
+
+@testset "validation: InvalidTerminatorError" begin
+    # Manually construct malformed IR with missing YieldOp
+    then_region = Block()
+    else_region = Block()
+    if_op = IfOp(true, then_region, else_region)
+    entry = Block()
+    push!(entry, 1, if_op, Tuple{Int})
+
+    # Validation should catch the missing YieldOp
+    @test_throws InvalidTerminatorError validate_terminators(entry)
+
+    # Verify the error message mentions the issue
+    try
+        validate_terminators(entry)
+    catch e
+        @test e isa InvalidTerminatorError
+        @test any(msg -> occursin("then region", msg), e.messages)
+        @test any(msg -> occursin("else region", msg), e.messages)
+    end
 end
 
 @testset "ForOp detection during CFG analysis" begin
@@ -551,13 +572,12 @@ end
     end |> only
     validate_scf(sci)
 
-    # Find the loop in the structure
-    while_idx = findfirst(stmt -> stmt isa WhileOp, collect(statements(sci.entry.body)))
-    if while_idx !== nothing
-        # Check that the result type is Tuple{} (no results), not Int
-        result_type = sci.entry.body[while_idx].typ
-        @test result_type === Tuple{}
-    end
+    # Find the loop in the structure (may be LoopOp, WhileOp, or ForOp)
+    matches = filter(p -> p[2].stmt isa LoopOp || p[2].stmt isa WhileOp || p[2].stmt isa ForOp, sci.entry.body)
+    @test length(matches) == 1
+    (_, entry) = only(matches)
+    # Check that the result type is Tuple{} (no results), not Int
+    @test entry.typ === Tuple{}
 end
 
 @testset "while loop ConditionOp uses BlockArgs not SSAValues" begin
@@ -572,20 +592,16 @@ end
     end |> only
     validate_scf(sci)
 
-    while_idx = findfirst(stmt -> stmt isa WhileOp, collect(statements(sci.entry.body)))
-    @test while_idx !== nothing
+    (_, entry) = only(filter(p -> p[2].stmt isa WhileOp, sci.entry.body))
+    while_op = entry.stmt
+    before = while_op.before
 
-    if while_idx !== nothing
-        while_op = sci.entry.body[while_idx].stmt
-        before = while_op.before
+    @test before.terminator isa ConditionOp
+    cond_op = before.terminator
 
-        @test before.terminator isa ConditionOp
-        cond_op = before.terminator
-
-        # The result should be BlockArg, not SSAValue
-        @test !isempty(cond_op.args)
-        @test cond_op.args[1] isa IRStructurizer.BlockArg
-    end
+    # The result should be BlockArg, not SSAValue
+    @test !isempty(cond_op.args)
+    @test cond_op.args[1] isa IRStructurizer.BlockArg
 end
 
 @testset "SESE while-loop becomes ForOp, non-SESE stays LoopOp" begin
@@ -642,6 +658,62 @@ end
 
     # Should produce valid structured IR (no unstructured control flow)
     validate_scf(sci)
+end
+
+# If-then (no else) must yield phi values, not return Nothing
+@testset "if-then yields phi values" begin
+    @test @filecheck begin
+        code_structured(Tuple{Bool}) do flag::Bool
+            x = 0
+            @check "if"
+            if flag
+                x = 1
+            end
+            @check "yield"
+            @check "else"
+            @check "yield"
+            @check "getfield"
+            return x
+        end
+    end
+end
+
+@testset "if-then phi inside loop" begin
+    @test @filecheck begin
+        code_structured(Tuple{Int, Bool}) do n::Int, flag::Bool
+            acc = 0
+            j = 1
+            @check "for"
+            while j <= n
+                x = 0
+                @check "if"
+                if flag && j >= 2
+                    x = 1
+                end
+                @check "yield"
+                @check "getfield"
+                acc += x
+                j += 1
+            end
+            return acc
+        end
+    end
+end
+
+@testset "if-then with multiple phis" begin
+    @test @filecheck begin
+        code_structured(Tuple{Bool}) do flag::Bool
+            x, y = 0, 0
+            @check "if"
+            if flag
+                x, y = 1, 2
+            end
+            @check "yield"
+            @check "getfield"
+            @check "getfield"
+            return x + y
+        end
+    end
 end
 
 end  # regression

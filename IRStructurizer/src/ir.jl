@@ -26,89 +26,65 @@ end
 const IRValue = Any
 
 #=============================================================================
- SSAVector - Vector of (ssa_idx, stmt, type) triples
+ SSAMap - ordered map from SSA index to (stmt, type)
 =============================================================================#
 
 """
-    SSAEntry
+    SSAMap <: AbstractDict{Int, NamedTuple{(:stmt, :typ)}}
 
-Named tuple for SSAVector entries: `(; stmt, typ)`.
-"""
-const SSAEntry = @NamedTuple{stmt::Any, typ::Any}
-
-"""
-    SSAVector
-
-A vector of `(ssa_idx, statement, type)` triples, ordered by insertion.
+An ordered map from SSA indices to `(; stmt, typ)` entries.
 Used to store block body contents with their original Julia SSA indices.
 
-Iteration yields `(idx, entry)` pairs where `entry` is a `SSAEntry` named tuple.
-Indexing by position returns `SSAEntry`. Use `idx in v` to test presence by SSA index.
+Indexing by SSA index: `m[ssa_idx]` returns `(; stmt, typ)` or throws `KeyError`,
+`get(m, ssa_idx, default)` returns `default` if missing.
+Iteration yields `idx => (; stmt, typ)` pairs, enabling `filter(p -> p.second.stmt isa Foo, m)`.
+
+Note: Currently uses linear scan for lookup. If this becomes a bottleneck,
+consider switching to `OrderedDict{Int, NamedTuple}` for O(1) access.
 """
-struct SSAVector <: AbstractVector{Tuple{Int, SSAEntry}}
+struct SSAMap <: AbstractDict{Int, @NamedTuple{stmt::Any, typ::Any}}
     ssa_idxes::Vector{Int}
     stmts::Vector{Any}
     types::Vector{Any}
 end
 
-SSAVector() = SSAVector(Int[], Any[], Any[])
+SSAMap() = SSAMap(Int[], Any[], Any[])
 
-# Iteration yields (idx, (; stmt, typ)) pairs
-function Base.iterate(v::SSAVector)
-    isempty(v.ssa_idxes) && return nothing
-    idx = v.ssa_idxes[1]
-    stmt = v.stmts[1]
-    typ = v.types[1]
-    return (idx, SSAEntry((stmt, typ))), 2
+# Iteration yields idx => (; stmt, typ) pairs
+function Base.iterate(m::SSAMap, state::Int=1)
+    state > length(m.ssa_idxes) && return nothing
+    idx = m.ssa_idxes[state]
+    entry = (; stmt=m.stmts[state], typ=m.types[state])
+    return Pair(idx, entry), state + 1
 end
 
-function Base.iterate(v::SSAVector, state::Int)
-    state > length(v.ssa_idxes) && return nothing
-    idx = v.ssa_idxes[state]
-    stmt = v.stmts[state]
-    typ = v.types[state]
-    return (idx, SSAEntry((stmt, typ))), state + 1
+Base.length(m::SSAMap) = length(m.ssa_idxes)
+
+# Lookup by SSA index
+function Base.getindex(m::SSAMap, ssa_idx::Int)
+    i = findfirst(==(ssa_idx), m.ssa_idxes)
+    i === nothing && throw(KeyError(ssa_idx))
+    return (; stmt=m.stmts[i], typ=m.types[i])
 end
 
-Base.length(v::SSAVector) = length(v.ssa_idxes)
-Base.size(v::SSAVector) = (length(v.ssa_idxes),)
-
-# Positional indexing returns SSAEntry
-function Base.getindex(v::SSAVector, i::Int)
-    stmt = v.stmts[i]
-    typ = v.types[i]
-    return SSAEntry((stmt, typ))
+function Base.get(m::SSAMap, ssa_idx::Int, default)
+    i = findfirst(==(ssa_idx), m.ssa_idxes)
+    i === nothing && return default
+    return (; stmt=m.stmts[i], typ=m.types[i])
 end
 
 # Push raw tuple
-function Base.push!(v::SSAVector, (idx, stmt, typ)::Tuple{Int,Any,Any})
-    push!(v.ssa_idxes, idx)
-    push!(v.stmts, stmt)
-    push!(v.types, typ)
+function Base.push!(m::SSAMap, (idx, stmt, typ)::Tuple{Int,Any,Any})
+    push!(m.ssa_idxes, idx)
+    push!(m.stmts, stmt)
+    push!(m.types, typ)
     return nothing
 end
 
-# Test if SSA index is present
-Base.in(ssa_idx::Int, v::SSAVector) = any(==(ssa_idx), v.ssa_idxes)
-
-# Lazy iterators
-indices(v::SSAVector) = (idx for idx in v.ssa_idxes)
-statements(v::SSAVector) = (stmt for stmt in v.stmts)
-types(v::SSAVector) = (typ for typ in v.types)
-
-"""
-    find_by_ssa(v::SSAVector, ssa_idx::Int) -> Union{SSAEntry, Nothing}
-
-Find a statement and its type by SSA index. Returns SSAEntry or nothing.
-"""
-function find_by_ssa(v::SSAVector, ssa_idx::Int)
-    i = findfirst(==(ssa_idx), v.ssa_idxes)
-    if i === nothing
-        return nothing
-    else
-        return SSAEntry((v.stmts[i], v.types[i]))
-    end
-end
+# Lazy iterators (keys(m)/values(m) also available via AbstractDict)
+indices(m::SSAMap) = (idx for idx in m.ssa_idxes)
+statements(m::SSAMap) = (stmt for stmt in m.stmts)
+types(m::SSAMap) = (typ for typ in m.types)
 
 #=============================================================================
  Terminator Operations
@@ -227,15 +203,15 @@ abstract type ControlFlowOp end
     Block
 
 A block of statements with block arguments and a terminator.
-Body is stored as SSAVector of (ssa_idx, stmt, type) triples.
+Body is an SSAMap mapping SSA indices to (stmt, type) entries.
 """
 mutable struct Block
     args::Vector{BlockArg}
-    body::SSAVector
+    body::SSAMap
     terminator::Terminator
 end
 
-Block() = Block(BlockArg[], SSAVector(), nothing)
+Block() = Block(BlockArg[], SSAMap(), nothing)
 
 """
     push!(block::Block, idx::Int, stmt, typ)
@@ -477,6 +453,7 @@ function StructuredIRCode(ir::IRCode; structurize::Bool=true, validate::Bool=tru
     if validate
         validate_scf(sci.entry)
         validate_no_phis(sci.entry)
+        validate_terminators(sci)
     end
 
     return sci
@@ -496,7 +473,7 @@ but the nested regions are handled by process_block_args! dispatch.
 function apply_substitutions!(block::Block, subs::Substitutions)
     isempty(subs) && return
 
-    new_body = SSAVector()
+    new_body = SSAMap()
     for (idx, entry) in block.body
         if entry.stmt isa ControlFlowOp
             apply_substitutions!(entry.stmt, subs)
@@ -583,4 +560,57 @@ end
 
 function substitute_terminator(term::Nothing, subs::Substitutions)
     return nothing
+end
+
+#=============================================================================
+ Type Resolution for IRValues
+=============================================================================#
+
+"""
+    resolve_type(sci::StructuredIRCode, value::IRValue) -> Any
+
+Resolve the Julia type of an IRValue.
+Returns `nothing` if the type cannot be resolved.
+"""
+function resolve_type end
+
+resolve_type(sci::StructuredIRCode, value::BlockArg) = value.type
+
+resolve_type(sci::StructuredIRCode, value::Argument) = sci.argtypes[value.n]
+
+resolve_type(sci::StructuredIRCode, value::SlotNumber) = sci.argtypes[value.id]
+
+# Constants: return their runtime type
+resolve_type(sci::StructuredIRCode, value) = typeof(value)
+
+# SSAValue: search the structured IR for its definition
+function resolve_type(sci::StructuredIRCode, value::SSAValue)
+    function process(block::Block)
+        entry = get(block.body, value.id, nothing)
+        entry !== nothing && return entry.typ
+
+        # Search nested control flow ops
+        for (_, e) in block.body
+            if e.stmt isa IfOp
+                t = process(e.stmt.then_region)
+                t !== nothing && return t
+                t = process(e.stmt.else_region)
+                t !== nothing && return t
+            elseif e.stmt isa LoopOp
+                t = process(e.stmt.body)
+                t !== nothing && return t
+            elseif e.stmt isa WhileOp
+                t = process(e.stmt.before)
+                t !== nothing && return t
+                t = process(e.stmt.after)
+                t !== nothing && return t
+            elseif e.stmt isa ForOp
+                t = process(e.stmt.body)
+                t !== nothing && return t
+            end
+        end
+        return nothing
+    end
+
+    return process(sci.entry)
 end

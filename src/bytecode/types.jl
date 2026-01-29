@@ -181,7 +181,7 @@ end
 function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
     if T === Bool
         I1(table)
-    elseif T === Int8
+    elseif T === Int8 || T === UInt8
         I8(table)
     elseif T === Int16 || T === UInt16
         I16(table)
@@ -191,6 +191,8 @@ function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
         I64(table)
     elseif T === Float16
         F16(table)
+    elseif T === BFloat16
+        BF16(table)
     elseif T === Float32
         F32(table)
     elseif T === TFloat32

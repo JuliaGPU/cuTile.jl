@@ -788,56 +788,25 @@ end
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
-@testset "Float8" begin
-
-    @testset "Float8_E4M3FN" begin
-        # Float8 addition not supported
-        function vadd_f8e4m3fn(a::ct.TileArray{ct.Float8_E4M3FN,1}, b::ct.TileArray{ct.Float8_E4M3FN,1},
-                        c::ct.TileArray{ct.Float8_E4M3FN,1})
-            pid = ct.bid(1)
-            tile_a = ct.astype(ct.load(a, pid, (16,)), Float16)
-            tile_b = ct.astype(ct.load(b, pid, (16,)), Float16)
-            tile_c = ct.astype(tile_a + tile_b, ct.Float8_E4M3FN)
-            ct.store(c, pid, tile_c)
-            return
-        end
-
-        n = 1024
-        tile_size = 16
-        T = ct.Float8_E4M3FN
-        a = T.(CUDA.rand(n))
-        b = T.(CUDA.rand(n))
-        c = CUDA.zeros(T, n)
-
-        ct.launch(vadd_f8e4m3fn, cld(n, tile_size), a, b, c)
-
-        @test Array(c) ≈ Array(a) + Array(b)
-    end
-    
-    @testset "Float8_E5M2" begin
-        # Float8 addition not supported
-        function vadd_f8e5m2(a::ct.TileArray{ct.Float8_E5M2,1}, b::ct.TileArray{ct.Float8_E5M2,1},
-                        c::ct.TileArray{ct.Float8_E5M2,1})
-            pid = ct.bid(1)
-            tile_a = ct.astype(ct.load(a, pid, (16,)), Float16)
-            tile_b = ct.astype(ct.load(b, pid, (16,)), Float16)
-            tile_c = ct.astype(tile_a + tile_b, ct.Float8_E5M2)
-            ct.store(c, pid, tile_c)
-            return
-        end
-
-        n = 1024
-        tile_size = 16
-        T = ct.Float8_E5M2
-        a = T.(CUDA.rand(n))
-        b = T.(CUDA.rand(n))
-        c = CUDA.zeros(T, n)
-
-        ct.launch(vadd_f8e5m2, cld(n, tile_size), a, b, c)
-
-        @test Array(c) ≈ Array(a) + Array(b)
+@testset "BFloat16" begin
+    function vadd_bf16(a::ct.TileArray{ct.BFloat16,1}, b::ct.TileArray{ct.BFloat16,1},
+                      c::ct.TileArray{ct.BFloat16,1})
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, tile_a + tile_b)
+        return
     end
 
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(ct.BFloat16, n)
+    b = CUDA.rand(ct.BFloat16, n)
+    c = CUDA.zeros(ct.BFloat16, n)
+
+    ct.launch(vadd_bf16, cld(n, tile_size), a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b)
 end
 
 end
@@ -2051,3 +2020,39 @@ end
 end
 
 end
+
+@testset "redefine kernel method" begin
+    mod = @eval module $(gensym())
+        import cuTile as ct
+        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, (pid,), (16,))
+            tb = ct.load(b, (pid,), (16,))
+            ct.store(c, (pid,), ta + tb)
+            return
+        end
+    end
+
+    a = CUDA.ones(Float32, 1024)
+    b = CUDA.ones(Float32, 1024)
+    c = CUDA.zeros(Float32, 1024)
+
+    ct.launch(mod.vadd_kernel, 64, a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b)
+
+    @eval mod begin
+        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, (pid,), (16,))
+            tb = ct.load(b, (pid,), (16,))
+            ct.store(c, (pid,), ta + tb * 2)
+            return
+        end
+    end
+
+    ct.launch(mod.vadd_kernel, 64, a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b) * 2
+end
+
