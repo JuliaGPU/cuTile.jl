@@ -234,30 +234,41 @@ end
 =============================================================================#
 
 """
-    ReduceIdentity
+    IdentityVal
 
-Abstract type for reduce identity attributes.
+Abstract type for binary operation identity attributes (reduce, scan, etc.).
 """
-abstract type ReduceIdentity end
+abstract type IdentityVal end
 
 """
-    FloatIdentity(value, type_id, dtype)
+    FloatIdentityVal(value, type_id, dtype)
 
-Float identity value for reduce operations.
+Float identity value for binary operations.
 """
-struct FloatIdentity <: ReduceIdentity
+struct FloatIdentityVal <: IdentityVal
     value::Float64
     type_id::TypeId
     dtype::Type  # Float16, Float32, Float64, etc.
 end
 
 """
-    encode_tagged_float!(cb, identity::FloatIdentity)
+    IntegerIdentityVal(value, type_id, dtype)
+
+Integer identity value for binary operations.
+"""
+struct IntegerIdentityVal <: IdentityVal
+    value::UInt128  # Store as UInt128 to handle all unsigned values up to 64 bits
+    type_id::TypeId
+    dtype::Type   # Int8, Int16, Int32, Int64, UInt8, etc. (signedness inferred from dtype)
+end
+
+"""
+    encode_tagged_float!(cb, identity::FloatIdentityVal)
 
 Encode a tagged float attribute for reduce identity.
 Format: tag(Float=0x02) + typeid + ap_int(value_bits)
 """
-function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
+function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityVal)
     # Tag for Float attribute
     push!(cb.buf, 0x02)
     # Type ID
@@ -266,6 +277,42 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
     bits = float_to_bits(identity.value, identity.dtype)
     encode_varint!(cb.buf, bits)
 end
+
+"""
+    encode_tagged_int!(cb, identity::IntegerIdentityVal)
+
+Encode a tagged integer identity attribute.
+Format: tag(Int=0x01) + typeid + ap_int(value)
+"""
+function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityVal)
+    # Tag for Int attribute
+    push!(cb.buf, 0x01)
+    # Type ID
+    encode_typeid!(cb.buf, identity.type_id)
+    # Mask value to correct bit width and apply zigzag encoding for signed types
+    masked_value = mask_to_width(identity.value, identity.dtype)
+    encode_varint!(cb.buf, masked_value) # masked_value are already zigzag encoded
+end
+
+"""
+    mask_to_width(value, dtype)
+
+Mask a UInt128 value to the correct bit width for the given type.
+Applies zigzag encoding for signed types.
+"""
+function mask_to_width(value::UInt128, ::Type{T}) where T <: Integer
+    bits = sizeof(T) * 8
+    mask = (UInt128(1) << bits) - 1
+    masked = value & mask
+    U = unsigned(T)
+    unsigned_masked = U(masked)
+    if T <: Signed # do zig-zag encoding
+        U((unsigned_masked << 1) ⊻ (unsigned_masked >>> (bits - 1)))
+    else
+        unsigned_masked
+    end
+end
+
 
 """
     float_to_bits(value, dtype)
@@ -297,14 +344,23 @@ end
 """
     encode_identity_array!(cb, identities)
 
-Encode an array of reduce identity attributes.
+Encode an array of binary operation identity attributes.
+Dispatches on identity type to encode correctly.
 """
-function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:ReduceIdentity})
+function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:IdentityVal})
     encode_varint!(cb.buf, length(identities))
     for identity in identities
-        encode_tagged_float!(cb, identity)
+        encode_identity!(cb, identity)
     end
 end
+
+"""
+    encode_identity!(cb, identity)
+
+Encode a single identity attribute, dispatching on type.
+"""
+encode_identity!(cb::CodeBuilder, identity::FloatIdentityVal) = encode_tagged_float!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::IntegerIdentityVal) = encode_tagged_int!(cb, identity)
 
 """
     BytecodeWriter

@@ -1291,7 +1291,7 @@ function encode_ReduceOp!(body::Function, cb::CodeBuilder,
                           result_types::Vector{TypeId},
                           operands::Vector{Value},
                           dim::Int,
-                          identities::Vector{<:ReduceIdentity},
+                          identities::Vector{<:IdentityVal},
                           body_scalar_types::Vector{TypeId})
     encode_varint!(cb.buf, Opcode.ReduceOp)
 

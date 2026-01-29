@@ -8,6 +8,7 @@ using Base: compilerbarrier, donotdelete
 using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
 using ..cuTile: Signedness, SignednessSigned, SignednessUnsigned
 using ..cuTile: ComparisonPredicate, CmpLessThan, CmpLessThanOrEqual, CmpGreaterThan, CmpGreaterThanOrEqual, CmpEqual, CmpNotEqual
+using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
 
