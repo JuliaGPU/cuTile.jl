@@ -1,6 +1,6 @@
 res/
 *.cubin
-Manifest.toml
+Manifest*.toml
 LocalPreferences.toml
 CLAUDE.md
 AGENTS.md

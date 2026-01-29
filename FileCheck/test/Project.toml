@@ -1,6 +1,0 @@
-[deps]
-FileCheck = "4e644321-382b-4b05-b0b6-5d23c3d944fb"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[sources]
-FileCheck = {path = ".."}
