@@ -2021,6 +2021,383 @@ end
 
 end
 
+@testset "where / ifelse broadcasting" begin
+
+@testset "where same-shape" begin
+    function where_same_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                               c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        mask = ta .> tb
+        result = ct.where(mask, ta, tb)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(where_same_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) ≈ ifelse.(Array(a) .> Array(b), Array(a), Array(b)) rtol=1e-5
+end
+
+@testset "where with scalar y" begin
+    function where_scalar_y_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        mask = ta .> 0.5f0
+        result = ct.where(mask, ta, 0.0f0)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(where_scalar_y_kernel, cld(n, 16), a, b)
+
+    @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, Array(a), 0.0f0) rtol=1e-5
+end
+
+@testset "where with scalar x" begin
+    function where_scalar_x_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        mask = ta .> 0.5f0
+        result = ct.where(mask, 1.0f0, ta)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(where_scalar_x_kernel, cld(n, 16), a, b)
+
+    @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, 1.0f0, Array(a)) rtol=1e-5
+end
+
+@testset "where with broadcasting" begin
+    function where_broadcast_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        mask = ct.load(a, (1, 1), (1, 128))  # (1, 128) mask
+        tile = ct.load(a, (1, 1), (64, 128))  # (64, 128) tile
+        result = ct.where(mask .> 0.5f0, tile, 0.0f0)
+        ct.store(b, (1, 1), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m, n)
+
+    ct.launch(where_broadcast_kernel, 1, a, b)
+
+    a_cpu = Array(a)
+    mask_cpu = a_cpu[1:1, :] .> 0.5f0
+    expected = ifelse.(mask_cpu, a_cpu, 0.0f0)
+    @test Array(b) ≈ expected rtol=1e-5
+end
+
+@testset "ifelse. same-shape" begin
+    function ifelse_same_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        result = ifelse.(ta .> tb, ta, tb)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(ifelse_same_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) ≈ ifelse.(Array(a) .> Array(b), Array(a), Array(b)) rtol=1e-5
+end
+
+@testset "ifelse. with scalar y" begin
+    function ifelse_scalar_y_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        result = ifelse.(ta .> 0.5f0, ta, 0.0f0)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ifelse_scalar_y_kernel, cld(n, 16), a, b)
+
+    @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, Array(a), 0.0f0) rtol=1e-5
+end
+
+@testset "ifelse. with both scalars" begin
+    function ifelse_both_scalar_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        result = ifelse.(ta .> 0.5f0, 1.0f0, 0.0f0)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ifelse_both_scalar_kernel, cld(n, 16), a, b)
+
+    @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, 1.0f0, 0.0f0) rtol=1e-5
+end
+
+@testset "ifelse. with broadcasting shapes" begin
+    function ifelse_broadcast_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        col_mask = ct.load(a, (1, 1), (64, 1))  # (64, 1) column
+        tile = ct.load(a, (1, 1), (64, 128))     # (64, 128) tile
+        result = ifelse.(col_mask .> 0.5f0, tile, 0.0f0)
+        ct.store(b, (1, 1), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m, n)
+
+    ct.launch(ifelse_broadcast_kernel, 1, a, b)
+
+    a_cpu = Array(a)
+    mask_cpu = a_cpu[:, 1:1] .> 0.5f0
+    expected = ifelse.(mask_cpu, a_cpu, 0.0f0)
+    @test Array(b) ≈ expected rtol=1e-5
+end
+
+end # where / ifelse broadcasting
+
+@testset "max / min broadcasting" begin
+
+@testset "max. float tile-tile" begin
+    function max_float_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                              c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        result = max.(ta, tb)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(max_float_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) ≈ max.(Array(a), Array(b)) rtol=1e-5
+end
+
+@testset "min. float tile-tile" begin
+    function min_float_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                              c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        result = min.(ta, tb)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(min_float_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) ≈ min.(Array(a), Array(b)) rtol=1e-5
+end
+
+@testset "max. float tile-scalar (ReLU)" begin
+    function relu_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        result = max.(ta, 0.0f0)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n) .- 0.5f0  # Mix of positive and negative
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(relu_kernel, cld(n, 16), a, b)
+
+    @test Array(b) ≈ max.(Array(a), 0.0f0) rtol=1e-5
+end
+
+@testset "min. float tile-scalar" begin
+    function clamp_max_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        result = min.(ta, 1.0f0)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n) .* 2.0f0  # Values in [0, 2]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(clamp_max_kernel, cld(n, 16), a, b)
+
+    @test Array(b) ≈ min.(Array(a), 1.0f0) rtol=1e-5
+end
+
+@testset "max. integer tile-tile (signed)" begin
+    function max_int_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1},
+                            c::ct.TileArray{Int32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        result = max.(ta, tb)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CuArray(rand(Int32(-100):Int32(100), n))
+    b = CuArray(rand(Int32(-100):Int32(100), n))
+    c = CUDA.zeros(Int32, n)
+
+    ct.launch(max_int_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) == max.(Array(a), Array(b))
+end
+
+@testset "min. integer tile-tile (signed)" begin
+    function min_int_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1},
+                            c::ct.TileArray{Int32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        result = min.(ta, tb)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CuArray(rand(Int32(-100):Int32(100), n))
+    b = CuArray(rand(Int32(-100):Int32(100), n))
+    c = CUDA.zeros(Int32, n)
+
+    ct.launch(min_int_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) == min.(Array(a), Array(b))
+end
+
+@testset "max. broadcasting: (64,1) vs (1,128)" begin
+    function max_broadcast_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                                  c::ct.TileArray{Float32,2})
+        col_tile = ct.load(a, (1, 1), (64, 1))
+        row_tile = ct.load(b, (1, 1), (1, 128))
+        result = max.(col_tile, row_tile)
+        ct.store(c, (1, 1), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, 1)
+    b = CUDA.rand(Float32, 1, n)
+    c = CUDA.zeros(Float32, m, n)
+
+    ct.launch(max_broadcast_kernel, 1, a, b, c)
+
+    @test Array(c) ≈ max.(Array(a), Array(b)) rtol=1e-5
+end
+
+end # max / min broadcasting
+
+@testset "fma broadcasting" begin
+
+@testset "fma. same-shape" begin
+    function fma_same_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                             c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        tc = ct.load(c, pid, (16,))
+        result = fma.(ta, tb, tc)
+        ct.store(d, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.rand(Float32, n)
+    d = CUDA.zeros(Float32, n)
+
+    ct.launch(fma_same_kernel, cld(n, 16), a, b, c, d)
+
+    @test Array(d) ≈ fma.(Array(a), Array(b), Array(c)) rtol=1e-5
+end
+
+@testset "fma. with scalar c" begin
+    function fma_scalar_c_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                 c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        result = fma.(ta, tb, 1.0f0)
+        ct.store(c, pid, result)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(fma_scalar_c_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) ≈ fma.(Array(a), Array(b), 1.0f0) rtol=1e-5
+end
+
+@testset "fma. with broadcasting bias" begin
+    function fma_broadcast_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                                  bias::ct.TileArray{Float32,2}, c::ct.TileArray{Float32,2})
+        ta = ct.load(a, (1, 1), (64, 128))
+        tb = ct.load(b, (1, 1), (64, 128))
+        tbias = ct.load(bias, (1, 1), (1, 128))  # (1, 128) bias row
+        result = fma.(ta, tb, tbias)
+        ct.store(c, (1, 1), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.rand(Float32, m, n)
+    bias = CUDA.rand(Float32, 1, n)
+    c = CUDA.zeros(Float32, m, n)
+
+    ct.launch(fma_broadcast_kernel, 1, a, b, bias, c)
+
+    @test Array(c) ≈ fma.(Array(a), Array(b), Array(bias)) rtol=1e-5
+end
+
+end # fma broadcasting
+
 @testset "invalidations" begin
 
 @testset "redefine kernel" begin

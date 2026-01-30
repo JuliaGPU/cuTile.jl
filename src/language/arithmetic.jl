@@ -68,6 +68,7 @@
 @overlay Base.:>>(x::Unsigned, y::Integer) = Intrinsics.shri(x, y, SignednessUnsigned)
 @overlay Base.:>>>(x::ScalarInt, y::Integer) = Intrinsics.shri(x, y, SignednessUnsigned)
 
+
 ## tile arithmetic
 
 # direct operators (same shape required)
@@ -125,8 +126,17 @@ for (op, pred) in ((:<, :CmpLessThan), (:>, :CmpGreaterThan),
 end
 
 # broadcasted logical
-@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(&), a::Tile{Bool,S1}, b::Tile{Bool,S2}) where {S1,S2} =
-    Intrinsics.andi(broadcast_to(a, broadcast_shape(S1, S2)), broadcast_to(b, broadcast_shape(S1, S2)))
+@inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof(&), a::Tile{Bool,S1}, b::Tile{Bool,S2}) where {S1,S2}
+    S = broadcast_shape(S1, S2)
+    Intrinsics.andi(broadcast_to(a, S), broadcast_to(b, S))
+end
+
+# broadcasted ifelse
+@inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof(ifelse),
+        cond::Tile{Bool,S1}, x::Tile{T,S2}, y::Tile{T,S3}) where {T,S1,S2,S3}
+    S = broadcast_shape(broadcast_shape(S1, S2), S3)
+    Intrinsics.select(broadcast_to(cond, S), broadcast_to(x, S), broadcast_to(y, S))
+end
 
 # mul_hi (high bits of integer multiply)
 # Base.mul_hi added in Julia 1.13; before that, use ct.mul_hi
@@ -192,4 +202,24 @@ for (op, pred) in ((:<, :CmpLessThan), (:>, :CmpGreaterThan),
         @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Number, b::Tile{T,S}) where {T,S} =
             _cmp_intrinsic(broadcast_to(Tile(T(a)), S), b, $pred)
     end
+end
+
+# broadcasted ifelse
+## scalar y
+@inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof(ifelse),
+        cond::Tile{Bool,S1}, x::Tile{T,S2}, y::Number) where {T,S1,S2}
+    S = broadcast_shape(S1, S2)
+    Intrinsics.select(broadcast_to(cond, S), broadcast_to(x, S), broadcast_to(Tile(T(y)), S))
+end
+## scalar x
+@inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof(ifelse),
+        cond::Tile{Bool,S1}, x::Number, y::Tile{T,S2}) where {T,S1,S2}
+    S = broadcast_shape(S1, S2)
+    Intrinsics.select(broadcast_to(cond, S), broadcast_to(Tile(T(x)), S), broadcast_to(y, S))
+end
+## both scalars
+@inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof(ifelse),
+        cond::Tile{Bool,S}, x::Number, y::Number) where {S}
+    T = promote_type(typeof(x), typeof(y))
+    Intrinsics.select(cond, broadcast_to(Tile(T(x)), S), broadcast_to(Tile(T(y)), S))
 end

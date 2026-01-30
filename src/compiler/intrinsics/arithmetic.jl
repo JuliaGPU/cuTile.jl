@@ -170,6 +170,8 @@ end
         lt = s === SignednessSigned ? Core.Intrinsics.slt_int(x, y) : Core.Intrinsics.ult_int(x, y)
         ifelse(lt, y, x)
     end
+    @noinline maxi(a::Tile{T, S}, b::Tile{T, S}, s::Signedness) where {T<:Integer, S} =
+        (donotdelete(a, b); Tile{T, S}())
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
     signedness = @something get_constant(ctx, args[3]) error("maxi requires compile-time signedness")
@@ -182,6 +184,8 @@ end
         lt = s === SignednessSigned ? Core.Intrinsics.slt_int(x, y) : Core.Intrinsics.ult_int(x, y)
         ifelse(lt, x, y)
     end
+    @noinline mini(a::Tile{T, S}, b::Tile{T, S}, s::Signedness) where {T<:Integer, S} =
+        (donotdelete(a, b); Tile{T, S}())
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args)
     signedness = @something get_constant(ctx, args[3]) error("mini requires compile-time signedness")

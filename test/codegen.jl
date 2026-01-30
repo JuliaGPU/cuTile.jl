@@ -1054,7 +1054,39 @@
             end
         end
 
-        # TODO: divi, mini, remi tests need tile-level operations to avoid DCE
+        @testset "maxi" begin
+            spec_i32 = ct.ArraySpec{1}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b, c
+                    pid = ct.bid(1)
+                    tile_a = ct.load(a, pid, (16,))
+                    tile_b = ct.load(b, pid, (16,))
+                    @check "maxi"
+                    result = max.(tile_a, tile_b)
+                    ct.store(c, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "mini" begin
+            spec_i32 = ct.ArraySpec{1}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b, c
+                    pid = ct.bid(1)
+                    tile_a = ct.load(a, pid, (16,))
+                    tile_b = ct.load(b, pid, (16,))
+                    @check "mini"
+                    result = min.(tile_a, tile_b)
+                    ct.store(c, pid, result)
+                    return
+                end
+            end
+        end
+
+        # TODO: divi, remi tests need tile-level operations to avoid DCE
         # The scalar intrinsics work but their results get eliminated if unused.
     end
 
