@@ -20,74 +20,58 @@
         # TODO: offset - tile offset computation
         # TODO: pack - pack tiles
         @testset "scan" begin
-            # 1D cumulative sum (forward scan)
-            @test @filecheck begin
-                @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
-                    pid = ct.bid(1)
-                    tile = ct.load(a, pid, (16,))
-                    result = ct.scan(tile, Val(1), :add, false)
-                    ct.store(b, pid, result)
-                    return
+            # Forward scan - float and integer types
+            for (T, spec, op_check) in [
+                (Float32, spec1d, "addf"),
+                (Int32, spec1d, "addi"),
+            ]
+                @test @filecheck begin
+                    @check_label "entry"
+                    code_tiled(Tuple{ct.TileArray{T,1,spec}}) do a
+                        pid = ct.bid(1)
+                        tile = ct.load(a, pid, (16,))
+                        @check "scan"
+                        @check op_check
+                        Base.donotdelete(ct.scan(tile, Val(1), :add, false))
+                        return
+                    end
                 end
             end
 
-            # 2D cumulative sum along axis 1 (columns)
+            # 2D scan along different axes
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
-                    result = ct.scan(tile, Val(2), :add, false)
-                    ct.store(b, pid, result)
+                    @check "scan"
+                    Base.donotdelete(ct.scan(tile, Val(1), :add, false))
+                    @check "scan"
+                    Base.donotdelete(ct.scan(tile, Val(2), :add, false))
                     return
                 end
             end
 
-            # 2D cumulative sum along axis 2 (rows) - forward scan
+            # Reverse scan
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
-                    result = ct.scan(tile, Val(1), :add, false)
-                    ct.store(b, pid, result)
+                    @check "scan"
+                    Base.donotdelete(ct.scan(tile, Val(1), :add, true))
                     return
                 end
             end
 
-            # 2D cumulative sum along axis 2 (rows) - reverse scan
+            # cumsum convenience
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
-                    result = ct.scan(tile, Val(1), :add, true)
-                    ct.store(b, pid, result)
-                    return
-                end
-            end
-
-            # Integer cumulative sum
-            @test @filecheck begin
-                @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
-                    pid = ct.bid(1)
-                    tile = ct.load(a, pid, (16,))
-                    result = ct.scan(tile, Val(1), :add, false)
-                    ct.store(b, pid, result)
-                    return
-                end
-            end
-
-            # cumsum convenience function (forward scan)
-            @test @filecheck begin
-                @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
-                    pid = ct.bid(1)
-                    tile = ct.load(a, pid, (4, 8))
-                    result = ct.cumsum(tile, Val(2), false)
-                    ct.store(b, pid, result)
+                    @check "scan"
+                    Base.donotdelete(ct.cumsum(tile, Val(2), false))
                     return
                 end
             end
@@ -457,61 +441,25 @@
                     return
                 end
             end
-        end
 
-        # Integer reduce_sum (Int32)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}, ct.TileArray{Int32,1,spec1d}}) do a, b
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (4, 16))
-                @check "reduce"
-                @check "addi"
-                sums = ct.reduce_sum(tile, 2)
-                ct.store(b, pid, sums)
-                return
-            end
-        end
-
-        # Integer reduce_max (Int32)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}, ct.TileArray{Int32,1,spec1d}}) do a, b
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (4, 16))
-                @check "reduce"
-                @check "maxi"
-                maxes = ct.reduce_max(tile, 2)
-                ct.store(b, pid, maxes)
-                return
-            end
-        end
-
-        # Unsigned reduce_sum (UInt32)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,2,spec2d}, ct.TileArray{UInt32,1,spec1d}}) do a, b
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (4, 16))
-                @check "reduce"
-                @check "addi"
-                sums = ct.reduce_sum(tile, 2)
-                ct.store(b, pid, sums)
-                return
-            end
-        end
-
-        # Unsigned reduce_max (UInt32)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,2,spec2d}, ct.TileArray{UInt32,1,spec1d}}) do a, b
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (4, 16))
-                @check "reduce"
-                @check "maxi"
-                maxes = ct.reduce_max(tile, 2)
-                ct.store(b, pid, maxes)
-                return
+            # Integer/unsigned reduce
+            for (T, op, op_check) in [
+                (Int32,  ct.reduce_sum, "addi"),
+                (Int32,  ct.reduce_max, "maxi"),
+                (UInt32, ct.reduce_sum, "addi"),
+                (UInt32, ct.reduce_max, "maxi"),
+            ]
+                @test @filecheck begin
+                    @check_label "entry"
+                    code_tiled(Tuple{ct.TileArray{T,2,spec2d}}) do a
+                        pid = ct.bid(1)
+                        tile = ct.load(a, pid, (4, 16))
+                        @check "reduce"
+                        @check op_check
+                        Base.donotdelete(op(tile, 2))
+                        return
+                    end
+                end
             end
         end
 

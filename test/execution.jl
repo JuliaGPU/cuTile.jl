@@ -1834,7 +1834,9 @@ end
         # UInt16: 1 to 2000 (32 * 2000 = 64,000, safely within UInt16 range 0 to 65,535)
         # Larger types: -1000 to 1000 (arbitrary but covers positive/negative)
         # Floats: 0 to 1 (CUDA.rand default)
-        if elType == Int8
+        if elType == UInt8
+            a_gpu = CuArray{UInt8}(rand(UInt8(0):UInt8(7), N))
+        elseif elType == Int8
             a_gpu = CuArray{Int8}(rand(-3:3, N))
         elseif elType == Int16
             a_gpu = CuArray{Int16}(rand(-800:800, N))
@@ -1866,6 +1868,51 @@ end
             @test b_cpu ≈ cpu_result rtol=1e-3
         else
             @test b_cpu == cpu_result
+        end
+    end
+end
+
+# Kernel factory for scan operations
+function makeScanKernel(::Type{T}) where {T}
+    @inline function kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int})
+        ct.store(b, ct.bid(1), ct.cumsum(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        return nothing
+    end
+    return kernel
+end
+
+@testset "1D scan (cumsum)" begin
+    TILE_SIZE = 32
+    N = 1024
+
+    TEST_TYPES = [Float16, Float32, Float64, Int32, Int64, UInt32, UInt64]
+
+    @testset "Type: $elType" for elType in TEST_TYPES
+        scanKernel = makeScanKernel(elType)
+
+        # Type-appropriate input generation (small values to avoid overflow in cumsum)
+        if elType <: Integer && elType <: Signed
+            a_gpu = CuArray{elType}(rand(elType(-3):elType(3), N))
+        elseif elType <: Integer
+            a_gpu = CuArray{elType}(rand(elType(0):elType(7), N))
+        else
+            a_gpu = CUDA.rand(elType, N)
+        end
+        b_gpu = CUDA.zeros(elType, N)
+
+        CUDA.@sync ct.launch(scanKernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
+
+        a_cpu = Array(a_gpu)
+        b_cpu = Array(b_gpu)
+
+        # CPU reference: per-tile cumulative sum
+        a_reshaped = reshape(a_cpu, TILE_SIZE, :)
+        expected = mapslices(x -> accumulate(+, x), a_reshaped, dims=1)
+
+        if elType <: AbstractFloat
+            @test b_cpu ≈ vec(expected) rtol=1e-3
+        else
+            @test b_cpu == vec(expected)
         end
     end
 end
