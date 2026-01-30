@@ -1342,7 +1342,7 @@ end
                    operands::Vector{Value},
                    dim::Int,
                    reverse::Bool,
-                   identities::Vector{<:IdentityOp},
+                   identities::Vector{<:IdentityVal},
                    body_scalar_types::Vector{TypeId})
 
 Encode a ScanOp (parallel prefix sum) operation.
@@ -1354,7 +1354,7 @@ Encode a ScanOp (parallel prefix sum) operation.
 - operands: Input tiles to scan
 - dim: Dimension to scan along (0-indexed)
 - reverse: Whether to scan in reverse order
-- identities: Identity values for each operand (reuses IdentityOp from IntegerReduce)
+- identities: Identity values for each operand
 - body_scalar_types: 0D tile types for body arguments
 """
 function encode_ScanOp!(body::Function, cb::CodeBuilder,
@@ -1362,7 +1362,7 @@ function encode_ScanOp!(body::Function, cb::CodeBuilder,
                         operands::Vector{Value},
                         dim::Int,
                         reverse::Bool,
-                        identities::Vector{<:IdentityOp},
+                        identities::Vector{<:IdentityVal},
                         body_scalar_types::Vector{TypeId})
     encode_varint!(cb.buf, Opcode.ScanOp)
 
