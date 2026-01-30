@@ -102,7 +102,7 @@ function verify(data, result)
     for b in 1:Batch
         expected[:, :, b] = A_cpu[:, :, b] * B_cpu[:, :, b]
     end
-    @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
+    @assert isapprox(Array(result.C), expected; rtol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
 #=============================================================================

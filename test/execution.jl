@@ -689,7 +689,7 @@ end
         c_cpu = Array(c)
         c_ref = a_cpu * b_cpu
 
-        @test c_cpu ≈ c_ref rtol=1e-5
+        @test c_cpu ≈ c_ref
     end
 end
 
@@ -875,7 +875,7 @@ end
 
     ct.launch(vdiv_1d, cld(n, tile_size), a, b, c)
 
-    @test Array(c) ≈ Array(a) ./ Array(b) rtol=1e-5
+    @test Array(c) ≈ Array(a) ./ Array(b)
 end
 
 @testset "1D sqrt" begin
@@ -893,7 +893,7 @@ end
 
     ct.launch(vsqrt_1d, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ sqrt.(Array(a)) rtol=1e-5
+    @test Array(b) ≈ sqrt.(Array(a))
 end
 
 end
@@ -965,7 +965,7 @@ end
     a_cpu = Array(a)
     b_cpu = Array(b)
     for i in 1:m
-        @test b_cpu[i] ≈ maximum(a_cpu[i, :]) rtol=1e-5
+        @test b_cpu[i] ≈ maximum(a_cpu[i, :])
     end
 end
 
@@ -989,7 +989,7 @@ end
 
     ct.launch(div_by_scalar, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ Array(a) ./ 2.0f0 rtol=1e-5
+    @test Array(b) ≈ Array(a) ./ 2.0f0
 end
 
 @testset "tile / integer" begin
@@ -1008,7 +1008,7 @@ end
 
     ct.launch(div_by_int, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ Array(a) ./ 4.0f0 rtol=1e-5
+    @test Array(b) ≈ Array(a) ./ 4.0f0
 end
 
 @testset "scalar ./ tile" begin
@@ -1027,7 +1027,7 @@ end
 
     ct.launch(scalar_div_tile_kernel, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ 1.0f0 ./ Array(a) rtol=1e-5
+    @test Array(b) ≈ 1.0f0 ./ Array(a)
 end
 
 @testset "tile .+ scalar" begin
@@ -1046,7 +1046,7 @@ end
 
     ct.launch(add_scalar, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ Array(a) .+ 3.5f0 rtol=1e-5
+    @test Array(b) ≈ Array(a) .+ 3.5f0
 end
 
 @testset "scalar .+ tile" begin
@@ -1065,7 +1065,7 @@ end
 
     ct.launch(scalar_add_tile_kernel, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ 2.5f0 .+ Array(a) rtol=1e-5
+    @test Array(b) ≈ 2.5f0 .+ Array(a)
 end
 
 @testset "tile .- scalar" begin
@@ -1084,7 +1084,7 @@ end
 
     ct.launch(sub_scalar, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ Array(a) .- 1.5f0 rtol=1e-5
+    @test Array(b) ≈ Array(a) .- 1.5f0
 end
 
 @testset "scalar .- tile" begin
@@ -1103,7 +1103,7 @@ end
 
     ct.launch(scalar_sub_tile_kernel, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ 5.0f0 .- Array(a) rtol=1e-5
+    @test Array(b) ≈ 5.0f0 .- Array(a)
 end
 
 @testset "tile * scalar" begin
@@ -1122,7 +1122,7 @@ end
 
     ct.launch(mul_scalar, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ Array(a) .* 2.5f0 rtol=1e-5
+    @test Array(b) ≈ Array(a) .* 2.5f0
 end
 
 @testset "scalar * tile" begin
@@ -1141,7 +1141,7 @@ end
 
     ct.launch(scalar_mul_tile_kernel, cld(n, tile_size), a, b)
 
-    @test Array(b) ≈ 3.0f0 .* Array(a) rtol=1e-5
+    @test Array(b) ≈ 3.0f0 .* Array(a)
 end
 
 end
@@ -1175,7 +1175,7 @@ end
     a_cpu = Array(a)
     b_cpu = Array(b)
     c_cpu = Array(c)
-    @test c_cpu ≈ a_cpu[1] .+ b_cpu rtol=1e-5
+    @test c_cpu ≈ a_cpu[1] .+ b_cpu
 end
 
 @testset "2D broadcast: (1, 128) .+ (64, 1)" begin
@@ -1203,7 +1203,7 @@ end
     b_cpu = Array(b)
     c_cpu = Array(c)
     expected = a_cpu .+ b_cpu  # Julia broadcasting
-    @test c_cpu ≈ expected rtol=1e-5
+    @test c_cpu ≈ expected
 end
 
 @testset "broadcast mul: (4, 1) .* (1, 8)" begin
@@ -1227,7 +1227,7 @@ end
     b_cpu = Array(b)
     c_cpu = Array(c)
     expected = a_cpu .* b_cpu  # Outer product
-    @test c_cpu ≈ expected rtol=1e-5
+    @test c_cpu ≈ expected
 end
 
 @testset "broadcast sub: (128,) .- (1,)" begin
@@ -1253,7 +1253,7 @@ end
     a_cpu = Array(a)
     b_cpu = Array(b)
     c_cpu = Array(c)
-    @test c_cpu ≈ a_cpu .- b_cpu[1] rtol=1e-5
+    @test c_cpu ≈ a_cpu .- b_cpu[1]
 end
 
 @testset "broadcast div: (64, 128) ./ (1, 128)" begin
@@ -1279,7 +1279,7 @@ end
     scale_cpu = Array(scale)
     c_cpu = Array(c)
     expected = a_cpu ./ scale_cpu
-    @test c_cpu ≈ expected rtol=1e-5
+    @test c_cpu ≈ expected
 end
 
 @testset "explicit broadcast_to" begin
@@ -1303,7 +1303,7 @@ end
     c_cpu = Array(c)
     # Each row of c should equal the single row of a
     for i in 1:m
-        @test c_cpu[i, :] ≈ a_cpu[1, :] rtol=1e-5
+        @test c_cpu[i, :] ≈ a_cpu[1, :]
     end
 end
 
@@ -1833,7 +1833,7 @@ end
     c_cpu = Array(c)
     c_ref = a_cpu * b_cpu
 
-    @test c_cpu ≈ c_ref rtol=1e-5
+    @test c_cpu ≈ c_ref
 end
 
 @testset "reduction with hints" begin

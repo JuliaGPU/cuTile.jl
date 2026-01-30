@@ -101,7 +101,7 @@ end
 
 function verify(data, result)
     expected = Array(data.A) * Array(data.B)
-    @assert isapprox(Array(result.C), expected, rtol=1e-2, atol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
+    @assert isapprox(Array(result.C), expected; rtol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
 #=============================================================================

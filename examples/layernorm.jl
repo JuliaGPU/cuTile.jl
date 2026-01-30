@@ -359,8 +359,7 @@ function verify(data, result)
     xhat = (X_cpu .- expected_mean) .* expected_rstd
     expected_Y = xhat .* W_cpu' .+ B_cpu'
 
-    atol, rtol = 1f-2, 1f-2
-    @assert isapprox(expected_Y, Array(result.Y); rtol, atol) "Y mismatch"
+    @assert isapprox(expected_Y, Array(result.Y); rtol=1e-2) "Y mismatch"
 
     # Backward verification
     wdy = W_cpu' .* DY_cpu
@@ -370,9 +369,9 @@ function verify(data, result)
     expected_DW = vec(sum(DY_cpu .* xhat, dims=1))
     expected_DB = vec(sum(DY_cpu, dims=1))
 
-    @assert isapprox(expected_DX, Array(result.DX); rtol, atol) "dX mismatch"
-    @assert isapprox(expected_DW, Array(result.FINAL_DW); rtol, atol) "dW mismatch"
-    @assert isapprox(expected_DB, Array(result.FINAL_DB); rtol, atol) "dB mismatch"
+    @assert isapprox(expected_DX, Array(result.DX); rtol=1e-2) "dX mismatch"
+    @assert isapprox(expected_DW, Array(result.FINAL_DW); rtol=1e-2) "dW mismatch"
+    @assert isapprox(expected_DB, Array(result.FINAL_DB); rtol=1e-2) "dB mismatch"
 end
 
 function test_layernorm(M, N, TILE_N; TILE_M::Int=32, eps::Float32=1f-5, name=nothing)
