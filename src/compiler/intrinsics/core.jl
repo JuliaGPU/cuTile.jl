@@ -617,6 +617,8 @@ function encode_reduce_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
             encode_AddFOp!(cb, type, acc, elem)
         elseif op == :max
             encode_MaxFOp!(cb, type, acc, elem)
+        else
+            error("Unsupported float reduction operation: $op")
         end
     else  # Integer
         signedness = T <: Signed ? SignednessSigned : SignednessUnsigned
@@ -624,6 +626,8 @@ function encode_reduce_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
             encode_AddIOp!(cb, type, acc, elem)
         elseif op == :max
             encode_MaxIOp!(cb, type, acc, elem; signedness)
+        else
+            error("Unsupported integer reduction operation: $op")
         end
     end
 end
