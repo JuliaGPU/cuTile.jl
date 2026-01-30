@@ -997,6 +997,85 @@ end
 
 end
 
+@testset "scan" begin
+
+@testset "1D cumsum (forward)" begin
+    function cumsum_1d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                              tile_size::ct.Constant{Int})
+        bid = ct.bid(1)
+        tile = ct.load(a, bid, (tile_size[],))
+        result = ct.cumsum(tile, Val(1))
+        ct.store(b, bid, result)
+        return nothing
+    end
+
+    sz = 32
+    N = 1024
+    a = CUDA.rand(Float32, N)
+    b = CUDA.zeros(Float32, N)
+
+    ct.launch(cumsum_1d_kernel, cld(N, sz), a, b, ct.Constant(sz))
+
+    # Per-tile cumulative sum
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    a_reshaped = reshape(a_cpu, sz, :)
+    expected = mapslices(x -> accumulate(+, x), a_reshaped, dims=1)
+    @test b_cpu ≈ vec(expected) rtol=1e-3
+end
+
+@testset "2D cumsum along axis 1" begin
+    function cumsum_2d_axis1_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (4, 8))
+        result = ct.cumsum(tile, Val(1))
+        ct.store(b, (pid, 1), result)
+        return nothing
+    end
+
+    m, n = 32, 8
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m, n)
+
+    ct.launch(cumsum_2d_axis1_kernel, cld(m, 4), a, b)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    # cumsum along dim 1 within each 4-row tile
+    for bid in 0:(cld(m, 4)-1)
+        rows = (bid*4+1):(bid*4+4)
+        for j in 1:n
+            @test b_cpu[rows, j] ≈ accumulate(+, a_cpu[rows, j]) rtol=1e-3
+        end
+    end
+end
+
+@testset "1D reverse cumsum" begin
+    function reverse_cumsum_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                    tile_size::ct.Constant{Int})
+        bid = ct.bid(1)
+        tile = ct.load(a, bid, (tile_size[],))
+        result = ct.scan(tile, Val(1), :add, true)
+        ct.store(b, bid, result)
+        return nothing
+    end
+
+    sz = 32
+    N = 1024
+    a = CUDA.rand(Float32, N)
+    b = CUDA.zeros(Float32, N)
+
+    ct.launch(reverse_cumsum_kernel, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    a_reshaped = reshape(a_cpu, sz, :)
+    expected = mapslices(x -> reverse(accumulate(+, reverse(x))), a_reshaped, dims=1)
+    @test b_cpu ≈ vec(expected) rtol=1e-3
+end
+
+end
+
 @testset "scalar-tile operations" begin
 
 for (name, kernel_expr, cpu_expr) in [
@@ -1536,7 +1615,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1557,7 +1636,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_kernel_occupancy, 64, a, b, c; occupancy=4)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1578,7 +1657,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1603,7 +1682,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_with_load_latency, 64, a, b, c)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1624,7 +1703,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_no_tma, 64, a, b, c)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1645,7 +1724,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_both_load_hints, 64, a, b, c)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1663,7 +1742,7 @@ end
     b = CUDA.zeros(Float32, n)
 
     ct.launch(copy_with_store_latency, 64, a, b)
-    CUDA.synchronize()
+
     @test Array(b) ≈ Array(a)
 end
 
@@ -1681,7 +1760,7 @@ end
     b = CUDA.zeros(Float32, n)
 
     ct.launch(copy_no_tma_store, 64, a, b)
-    CUDA.synchronize()
+
     @test Array(b) ≈ Array(a)
 end
 
@@ -1704,7 +1783,7 @@ end
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_mixed_hints, 64, a, b, c)
-    CUDA.synchronize()
+
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
 
@@ -1731,7 +1810,7 @@ end
     grid_x = cld(M, 32)
     grid_y = cld(N, 32)
     ct.launch(matmul_with_hints, (grid_x, grid_y, 1), a, b, c)
-    CUDA.synchronize()
+
 
     # Verify against CPU reference
     a_cpu = Array(a)
@@ -1759,7 +1838,7 @@ end
     b = CUDA.zeros(Float32, m)
 
     ct.launch(reduce_with_hints, m, a, b)
-    CUDA.synchronize()
+
 
     # Each row should be summed
     a_cpu = Array(a)
@@ -1769,71 +1848,40 @@ end
     end
 end
 
-# Kernel factory for reduce operations - extendable pattern
-function makeReduceKernel(::Type{T}, op::Symbol) where {T}
-    reduceFunc = if op == :reduce_sum
-        ct.reduce_sum
-    elseif op == :reduce_max
-        ct.reduce_max
-    # ADD NEW OPERATIONS HERE
-    # elseif op == :reduce_min
-    #     ct.reduce_min
-    # elseif op == :reduce_mul
-    #     ct.reduce_mul
-    end
+@testset "1D reduce operations" begin
+    TILE_SIZE = 32
+    N = 1024
 
-    @inline function kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int})
-        ct.store(b, ct.bid(1), reduceFunc(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+    function reduce_sum_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1},
+                           tileSz::ct.Constant{Int}) where {T}
+        ct.store(b, ct.bid(1), ct.reduce_sum(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
         return nothing
     end
-    return kernel
-end
 
-# CPU reference implementation for reduce operations - extendable pattern
-function cpu_reduce(a_reshaped::AbstractArray{T}, op::Symbol) where {T}
-    if op == :reduce_sum
-        result = sum(a_reshaped, dims=1)[:]
-        # For unsigned types, apply mask to handle overflow
-        if T <: Unsigned
+    function reduce_max_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1},
+                           tileSz::ct.Constant{Int}) where {T}
+        ct.store(b, ct.bid(1), ct.reduce_max(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        return nothing
+    end
+
+    function cpu_reduce(a_reshaped::AbstractArray{T}, op) where {T}
+        result = mapslices(op, a_reshaped, dims=1)[:]
+        # For unsigned sum, apply mask to handle overflow
+        if T <: Unsigned && op === sum
             result .= result .& typemax(T)
         end
         return result
-    elseif op == :reduce_max
-        return maximum(a_reshaped, dims=1)[:]
-    # ADD NEW OPERATIONS HERE
-    # elseif op == :reduce_min
-    #     return minimum(a_reshaped, dims=1)[:]
-    # elseif op == :reduce_mul
-    #     return prod(a_reshaped, dims=1)[:]
     end
-end
 
-@testset "1D reduce operations (extendable)" begin
-    # Test parameters - easily extendable
-    TILE_SIZE = 32
-    N = 1024
-    
-    # Supported types - add new types here
     TEST_TYPES = [Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float16, Float32, Float64]
-    
-    # Supported operations - add new operations here
-    TEST_OPS = [:reduce_sum, :reduce_max]
-    
-    @testset "Type: $elType, Operation: $op" for elType in TEST_TYPES, op in TEST_OPS
-        # Create kernel using factory
-        reduceKernel = try
-            makeReduceKernel(elType, op)
-        catch e
-            @test_broken false
-            rethrow()
-        end
-        
-        # Generate input data with type-appropriate ranges
-        # Int8: -3 to 3 (32 * 3 = 96, safely within Int8 range -128 to 127)
-        # Int16: -800 to 800 (32 * 800 = 25,600, safely within Int16 range -32,768 to 32,767)
-        # UInt16: 1 to 2000 (32 * 2000 = 64,000, safely within UInt16 range 0 to 65,535)
-        # Larger types: -1000 to 1000 (arbitrary but covers positive/negative)
-        # Floats: 0 to 1 (CUDA.rand default)
+
+    TEST_OPS = [
+        (reduce_sum_1d, sum),
+        (reduce_max_1d, maximum),
+    ]
+
+    @testset "Type: $elType, Operation: $gpu_kernel" for elType in TEST_TYPES, (gpu_kernel, cpu_op) in TEST_OPS
+        # Generate input data with type-appropriate ranges to avoid overflow
         if elType == UInt8
             a_gpu = CuArray{UInt8}(rand(UInt8(0):UInt8(7), N))
         elseif elType == Int8
@@ -1848,22 +1896,14 @@ end
             a_gpu = CUDA.rand(elType, N)
         end
         b_gpu = CUDA.zeros(elType, cld(N, TILE_SIZE))
-        
-        # Launch kernel
-        try
-            CUDA.@sync ct.launch(reduceKernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
-        catch e
-            @test_broken false
-            rethrow()
-        end
-        
-        # Verify results
+
+        ct.launch(gpu_kernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
+
         a_cpu = Array(a_gpu)
         b_cpu = Array(b_gpu)
         a_reshaped = reshape(a_cpu, TILE_SIZE, :)
-        cpu_result = cpu_reduce(a_reshaped, op)
-        
-        # Use appropriate comparison based on type
+        cpu_result = cpu_reduce(a_reshaped, cpu_op)
+
         if elType <: AbstractFloat
             @test b_cpu ≈ cpu_result rtol=1e-3
         else
@@ -1872,24 +1912,18 @@ end
     end
 end
 
-# Kernel factory for scan operations
-function makeScanKernel(::Type{T}) where {T}
-    @inline function kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int})
-        ct.store(b, ct.bid(1), ct.cumsum(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
-        return nothing
-    end
-    return kernel
-end
-
 @testset "1D scan (cumsum)" begin
     TILE_SIZE = 32
     N = 1024
 
+    function scan_kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int}) where {T}
+        ct.store(b, ct.bid(1), ct.cumsum(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        return nothing
+    end
+
     TEST_TYPES = [Float16, Float32, Float64, Int32, Int64, UInt32, UInt64]
 
     @testset "Type: $elType" for elType in TEST_TYPES
-        scanKernel = makeScanKernel(elType)
-
         # Type-appropriate input generation (small values to avoid overflow in cumsum)
         if elType <: Integer && elType <: Signed
             a_gpu = CuArray{elType}(rand(elType(-3):elType(3), N))
@@ -1900,7 +1934,7 @@ end
         end
         b_gpu = CUDA.zeros(elType, N)
 
-        CUDA.@sync ct.launch(scanKernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
+        ct.launch(scan_kernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
 
         a_cpu = Array(a_gpu)
         b_cpu = Array(b_gpu)
@@ -1936,7 +1970,7 @@ end
     y = CUDA.zeros(Float32, n, m)
 
     ct.launch(transpose_with_hints, (cld(m, tile_size), cld(n, tile_size)), x, y)
-    CUDA.synchronize()
+
 
     @test Array(y) ≈ transpose(Array(x))
 end
@@ -1967,7 +2001,7 @@ end
     d = CUDA.zeros(Float32, n)
 
     ct.launch(complex_hints_kernel, 64, a, b, c, d)
-    CUDA.synchronize()
+
     @test Array(d) ≈ ones(Float32, n) .* 6
 end
 
@@ -1988,7 +2022,7 @@ end
     c = CUDA.zeros(Float64, n)
 
     ct.launch(vadd_f64_hints, 64, a, b, c)
-    CUDA.synchronize()
+
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
@@ -2009,7 +2043,7 @@ end
     c = CUDA.zeros(Float16, n)
 
     ct.launch(vadd_f16_hints, 64, a, b, c)
-    CUDA.synchronize()
+
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
@@ -2028,7 +2062,7 @@ end
     b = CUDA.zeros(Float32, n)
 
     ct.launch(test_boundary_latency, 64, a, b)
-    CUDA.synchronize()
+
     @test Array(b) ≈ Array(a)
 end
 
@@ -2049,7 +2083,7 @@ end
     b = CUDA.zeros(Float32, n)
 
     ct.launch(gather_with_latency, 64, a, b)
-    CUDA.synchronize()
+
     @test Array(b) ≈ Array(a)
 end
 
@@ -2069,7 +2103,7 @@ end
     b = CUDA.zeros(Float32, n)
 
     ct.launch(scatter_with_latency, 64, a, b)
-    CUDA.synchronize()
+
     @test Array(b) ≈ Array(a)
 end
 
