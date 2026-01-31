@@ -127,13 +127,13 @@ mutable struct CGCtx
     # Target architecture (e.g., :sm_100)
     sm_arch::Union{String, Nothing}
 
-    # World age for method lookups (needed for combiner compilation)
-    world::UInt
+    # Compilation cache (needed for combiner compilation)
+    cache::CacheView
 end
 
 function CGCtx(writer::BytecodeWriter, sci::StructuredIRCode,
-               sm_arch::Union{String, Nothing}=nothing,
-               world::UInt=Base.get_world_counter())
+               sm_arch::Union{String, Nothing},
+               cache::CacheView)
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -149,7 +149,7 @@ function CGCtx(writer::BytecodeWriter, sci::StructuredIRCode,
         nothing,
         Dict{Type, TypeId}(),
         sm_arch,
-        world,
+        cache,
     )
 end
 
@@ -176,7 +176,7 @@ function sub_context(parent::CGCtx, sci::StructuredIRCode)
         parent.token_type,
         parent.type_cache,            # shared
         parent.sm_arch,
-        parent.world,                 # shared
+        parent.cache,                 # shared
     )
 end
 

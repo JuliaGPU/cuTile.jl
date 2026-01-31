@@ -12,8 +12,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing,
-                      world::UInt = Base.get_world_counter())
-    ctx = CGCtx(writer, sci, sm_arch, world)
+                      cache::CacheView)
+    ctx = CGCtx(writer, sci, sm_arch, cache)
     tt = ctx.tt
 
     # Validate non-ghost argument types are concrete
@@ -238,16 +238,16 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
                           block_args::Vector{Value}, block_type_ids::Vector{TypeId})
     # 1. Resolve method instance
     argtuple = Tuple{arg_types...}
+    world = ctx.cache.world
     mi = @something(
         method_instance(func, argtuple;
-                        world=ctx.world, method_table=cuTileMethodTable),
-        method_instance(func, argtuple; world=ctx.world),
+                        world, method_table=cuTileMethodTable),
+        method_instance(func, argtuple; world),
         error("No method found for $func($(join(arg_types, ", ")))")
     )
 
-    # 2. Compile through cuTile pipeline
-    ir, _ = code_ircode(mi; world=ctx.world, always_inline=true)
-    sci = StructuredIRCode(ir)
+    # 2. Compile through cuTile pipeline (cached)
+    sci, _ = emit_ir(ctx.cache, mi)
 
     # 3. Create sub-context
     sub_ctx = sub_context(ctx, sci)
