@@ -505,16 +505,12 @@ end
 
 
 # cuda_tile.reduce
-#
-# Always-tuple interface: both single- and multi-operand callers pass tuples of
-# tiles and identities, and receive a tuple back. A base-case + recursive-case
-# pair using tuple-peeling generalizes to arbitrary arity.
 @eval Intrinsics begin
     """
         reduce(tiles::Tuple{Tile...}, Val(axis), f, identities::Tuple) -> Tuple{Tile...}
 
     Reduce tiles along a 0-indexed axis using combiner `f` with per-operand
-    identity values. Always accepts and returns tuples of tiles; single-operand
+    identity values. Accepts and returns tuples of tiles; single-operand
     callers wrap in 1-tuples and unwrap with `[1]`.
     Compiled to cuda_tile.reduce.
     """
@@ -529,27 +525,21 @@ end
         (Tile{T, reduced_shape}(), reduce(Base.tail(tiles), Val(axis), f, Base.tail(identities))...)
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce), args)
     emit_reduce!(ctx, args)
 end
-
 function emit_reduce!(ctx::CGCtx, args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Always-tuple: extract tile CGVals from the tuple argument
+    # Extract tile CGVals from the tuple argument
     first_tv = emit_value!(ctx, args[1])
     first_tv === nothing && error("Cannot resolve input for reduction")
-
-    if first_tv.tuple !== nothing
-        tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
-            tv === nothing && error("Cannot resolve tile operand in reduce")
-            tv
-        end for ref in first_tv.tuple]
-    else
-        error("reduce() requires a tuple of tiles (got $(first_tv.jltype))")
-    end
+    first_tv.tuple === nothing && error("reduce() requires a tuple of tiles (got $(first_tv.jltype))")
+    tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
+        tv === nothing && error("Cannot resolve tile operand in reduce")
+        tv
+    end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
     # Get reduction axis
@@ -626,14 +616,10 @@ function emit_reduce!(ctx::CGCtx, args)
         push!(component_types, Tile{elem_types[k], Tuple(output_shape)})
     end
 
-    # Always return multi-value CGVal (tuple)
+    # Return multi-value CGVal (tuple)
     jltype = Tuple{component_types...}
     return CGVal(reshaped_values, jltype)
 end
-
-#=============================================================================#
-# Reduce Identity Values via Dispatch
-#=============================================================================#
 
 """
     to_uint128(value)
@@ -654,8 +640,6 @@ make_identity_val(val, dtype, ::Type{T}) where T <: AbstractFloat =
     FloatIdentityVal(Float64(T(val)), dtype, T)
 make_identity_val(val, dtype, ::Type{T}) where T <: Integer =
     IntegerIdentityVal(to_uint128(T(val)), dtype, T)
-
-
 
 # cuda_tile.reshape
 @eval Intrinsics begin
@@ -727,15 +711,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
 end
 
 # cuda_tile.scan
-#
-# Always-tuple interface: mirrors reduce — single-operand callers wrap in
-# 1-tuples and unwrap with [1].
 @eval Intrinsics begin
     """
         scan(tiles::Tuple{Tile...}, Val(axis), f, identities::Tuple, reverse=false) -> Tuple{Tile...}
 
     Parallel prefix scan along a 0-indexed axis using combiner `f` with
-    per-operand identity values. Always accepts and returns tuples of tiles;
+    per-operand identity values. Accepts and returns tuples of tiles;
     single-operand callers wrap in 1-tuples and unwrap with `[1]`.
     `reverse=true` for a reverse (suffix) scan.
     Compiled to cuda_tile.scan.
@@ -745,23 +726,18 @@ end
         (Tile{T, S}(),)
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Always-tuple: extract tile CGVals from the tuple argument
+    # Extract tile CGVals from the tuple argument
     first_tv = emit_value!(ctx, args[1])
     first_tv === nothing && error("Cannot resolve input for scan")
-
-    if first_tv.tuple !== nothing
-        tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
-            tv === nothing && error("Cannot resolve tile operand in scan")
-            tv
-        end for ref in first_tv.tuple]
-    else
-        error("scan() requires a tuple of tiles (got $(first_tv.jltype))")
-    end
+    first_tv.tuple === nothing && error("scan() requires a tuple of tiles (got $(first_tv.jltype))")
+    tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
+        tv === nothing && error("Cannot resolve tile operand in scan")
+        tv
+    end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
     # Get scan axis
@@ -832,7 +808,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         emit_subprogram!(ctx, func, body_arg_types, block_args, body_type_ids)
     end
 
-    # Always return multi-value CGVal (tuple)
+    # Return multi-value CGVal (tuple)
     component_types = Type[]
     for k in 1:N
         push!(component_types, Tile{elem_types[k], Tuple(output_shape)})
@@ -851,15 +827,6 @@ end
     """
     @noinline function select(cond::Tile{Bool, S}, x::Tile{T, S}, y::Tile{T, S}) where {T, S}
         Tile{T, S}()
-    end
-
-    """
-        select(cond::Bool, x::T, y::T) -> T
-
-    Scalar conditional selection (for use inside reduction bodies on 0D tiles).
-    """
-    @noinline function select(cond::Bool, x::T, y::T) where {T<:Number}
-        ifelse(cond, x, y)
     end
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)

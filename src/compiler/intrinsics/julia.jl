@@ -49,6 +49,10 @@ emit_intrinsic!(ctx::CGCtx, ::typeof(isa), args) = nothing
 # built-in: donotdelete
 emit_intrinsic!(ctx::CGCtx, ::typeof(donotdelete), args) = nothing
 
+# built-in: ifelse
+emit_intrinsic!(ctx::CGCtx, ::typeof(Core.ifelse), args) =
+    emit_intrinsic!(ctx, Intrinsics.select, args)
+
 # XXX: Tile constructor
 function emit_intrinsic!(ctx::CGCtx, func::Type{<:Tile}, args)
     # Emit the scalar value

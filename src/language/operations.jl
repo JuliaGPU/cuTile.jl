@@ -538,7 +538,9 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
 end
 
-
+@inline function Base.reduce(f, tiles::T; dims::Integer, init::Tuple) where {T<:Tuple{Tile,Vararg{Tile}}}
+    Intrinsics.reduce(tiles, Val(dims - 1), f, init)
+end
 
 """
     sum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -547,7 +549,7 @@ Sum reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.sum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(+, tile, dims, zero(T))
+    reduce(+, tile; dims, init=zero(T))
 
 """
     prod(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -556,7 +558,7 @@ Product reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.prod(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(*, tile, dims, one(T))
+    reduce(*, tile; dims, init=one(T))
 
 """
     maximum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -565,7 +567,7 @@ Maximum reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.maximum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(max, tile, dims, typemin(T))
+    reduce(max, tile; dims, init=typemin(T))
 
 """
     minimum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -574,7 +576,7 @@ Minimum reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(min, tile, dims, typemax(T))
+    reduce(min, tile; dims, init=typemax(T))
 
 """
     any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
@@ -583,7 +585,7 @@ Logical OR reduction along the specified axis (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.any(tile::Tile{Bool,S}; dims::Integer) where {S} =
-    Intrinsics.reduce((tile,), Val(dims - 1), |, (false,))[1]
+    reduce(|, tile; dims, init=false)
 
 """
     all(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
@@ -592,7 +594,7 @@ Logical AND reduction along the specified axis (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.all(tile::Tile{Bool,S}; dims::Integer) where {S} =
-    Intrinsics.reduce((tile,), Val(dims - 1), &, (true,))[1]
+    reduce(&, tile; dims, init=true)
 
 """
     count(tile::Tile{Bool,S}; dims) -> Tile{Int32, reduced_shape}
@@ -621,13 +623,19 @@ indices = argmax(tile; dims=2)  # Column indices of max per row
 ```
 """
 @inline function Base.argmax(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
-    axis = dims - 1
     n = S[dims]
     indices = reshape(Intrinsics.iota((n,), Int32),
                       ntuple(i -> i == dims ? n : 1, length(S)))
     indices = broadcast_to(indices, S)
-    _, idx = Intrinsics.reduce((tile, indices), Val(axis),
-                               _argmax_body, (typemin(T), Int32(0)))
+
+    @noinline function reducer(val_acc, val_elem, idx_acc, idx_elem)
+        strict = val_acc > val_elem
+        eq = val_acc == val_elem
+        cond = strict | (eq & (idx_acc < idx_elem))
+        (ifelse(cond, val_acc, val_elem),
+         ifelse(cond, idx_acc, idx_elem))
+    end
+    _, idx = reduce(reducer, (tile, indices); dims, init=(typemin(T), Int32(0)))
     idx .+ one(Int32)
 end
 
@@ -643,48 +651,22 @@ indices = argmin(tile; dims=2)  # Column indices of min per row
 ```
 """
 @inline function Base.argmin(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
-    axis = dims - 1
     n = S[dims]
     indices = reshape(Intrinsics.iota((n,), Int32),
                       ntuple(i -> i == dims ? n : 1, length(S)))
     indices = broadcast_to(indices, S)
-    _, idx = Intrinsics.reduce((tile, indices), Val(axis),
-                               _argmin_body, (typemax(T), Int32(0)))
+
+    @noinline function reducer(val_acc, val_elem, idx_acc, idx_elem)
+        strict = val_elem > val_acc
+        eq = val_acc == val_elem
+        cond = strict | (eq & (idx_acc < idx_elem))
+        (ifelse(cond, val_acc, val_elem),
+         ifelse(cond, idx_acc, idx_elem))
+    end
+    _, idx = reduce(reducer, (tile, indices); dims, init=(typemax(T), Int32(0)))
     idx .+ one(Int32)
 end
 
-@noinline function _argmax_body(val_acc, val_elem, idx_acc, idx_elem)
-    strict = val_acc > val_elem
-    eq = val_acc == val_elem
-    cond = strict | (eq & (idx_acc < idx_elem))
-    (Intrinsics.select(cond, val_acc, val_elem),
-     Intrinsics.select(cond, idx_acc, idx_elem))
-end
-
-@noinline function _argmin_body(val_acc, val_elem, idx_acc, idx_elem)
-    strict = val_elem > val_acc
-    eq = val_acc == val_elem
-    cond = strict | (eq & (idx_acc < idx_elem))
-    (Intrinsics.select(cond, val_acc, val_elem),
-     Intrinsics.select(cond, idx_acc, idx_elem))
-end
-
-# Single-dim dispatch
-@inline _tile_reduce(f, tile::Tile{T}, dims::Integer, init) where {T} =
-    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
-
-# Multi-dim reduction: chain single-dim reductions.
-# Since reduced dims become size 1 (not removed), axis indices stay valid.
-
-# Multi-dim reduction: chain single-dim reductions.
-# Since reduced dims become size 1 (not removed), axis indices stay valid.
-@inline function _reduce_multi(f, tile, dims::Tuple{Int, Vararg}, init)
-    tile = Intrinsics.reduce((tile,), Val(first(dims) - 1), f, (init,))[1]
-    _reduce_multi(f, tile, Base.tail(dims), init)
-end
-@inline function _reduce_multi(f, tile, dims::Tuple{Int}, init)
-    Intrinsics.reduce((tile,), Val(first(dims) - 1), f, (init,))[1]
-end
 
 """
     dropdims(tile::Tile{T,S}; dims) -> Tile{T, squeezed_shape}
