@@ -70,6 +70,131 @@ CC.may_optimize(::cuTileInterpreter) = true
 CC.may_compress(::cuTileInterpreter) = true
 CC.may_discard_trees(::cuTileInterpreter) = true
 
+#=============================================================================
+ Subprogram inference for reduce/scan
+=============================================================================#
+
+# Intrinsics.reduce and Intrinsics.scan accept a subprogram function `f` that
+# is never called in their bodies — inference treats it as dead. We intercept
+# abstract_call_known to trigger a synthetic inference of `f(T, T)`,
+# front-loading subprogram inference and establishing proper invalidation edges.
+
+# On 1.12+, compute_edges! walks stmt_info and calls add_edges_impl.
+# We need a custom CallInfo that propagates both the reduce/scan call's edges
+# and the subprogram's edges.
+# TODO: switch to IndirectCallInfo when JuliaLang/julia#59221 lands
+@static if isdefined(CC, :add_edges_impl)  # 1.12+
+    struct SubprogramCallInfo <: CC.CallInfo
+        call::CC.CallInfo
+        subprogram::CC.CallInfo
+    end
+    CC.add_edges_impl(edges::Vector{Any}, info::SubprogramCallInfo) =
+        (CC.add_edges!(edges, info.call); CC.add_edges!(edges, info.subprogram))
+    CC.nsplit_impl(info::SubprogramCallInfo) = CC.nsplit_impl(info.call)
+    CC.getsplit_impl(info::SubprogramCallInfo, idx::Int) = CC.getsplit_impl(info.call, idx)
+    CC.getresult_impl(info::SubprogramCallInfo, idx::Int) = CC.getresult_impl(info.call, idx)
+end
+
+# Version-portable StmtInfo constructor for subprogram inference
+@static if hasfield(CC.StmtInfo, :saw_latestworld)  # 1.12+
+    _subprogram_si(si) = CC.StmtInfo(true, si.saw_latestworld)
+else  # 1.11
+    _subprogram_si(si) = CC.StmtInfo(true)
+end
+
+# Detect vtypes parameter (1.14+)
+const _HAS_VTYPES = hasmethod(CC.abstract_call,
+    Tuple{CC.AbstractInterpreter, CC.ArgInfo, CC.StmtInfo,
+          Union{Vector{CC.VarState},Nothing}, CC.AbsIntState, Int})
+
+"""
+Trigger a synthetic `abstract_call` for the subprogram function `f(T, T)`
+so that inference discovers the subprogram callee and establishes invalidation edges.
+Returns the result of `abstract_call` (Future{CallMeta} on 1.12+, CallMeta on 1.11),
+or `nothing` if inapplicable.
+"""
+function _infer_subprogram(interp::cuTileInterpreter, @nospecialize(f),
+                           arginfo::CC.ArgInfo, si, vtypes, sv)
+    (f === Intrinsics.reduce || f === Intrinsics.scan) || return nothing
+    argtypes = arginfo.argtypes
+    length(argtypes) >= 4 || return nothing
+
+    tile_type = CC.widenconst(argtypes[2])
+    f_type = argtypes[4]
+    tile_type <: Tile || return nothing
+
+    T = tile_type.parameters[1]
+    csi = _subprogram_si(si)
+    cargs = CC.ArgInfo(nothing, Any[f_type, T, T])
+
+    @static if _HAS_VTYPES
+        CC.abstract_call(interp, cargs, csi, vtypes, sv, 1)
+    else
+        CC.abstract_call(interp, cargs, csi, sv, 1)
+    end
+end
+
+# Override abstract_call_known to trigger subprogram inference for reduce/scan.
+#
+# On 1.12+, abstract_call_known returns Future{CallMeta}. The caller uses the
+# CallMeta.info to populate stmt_info[pc], which compute_edges! later walks.
+# We return a new Future that wraps the original result's info with
+# SubprogramCallInfo, so the subprogram's edges end up in stmt_info and thus
+# in the CodeInstance's edge list.
+@static if _HAS_VTYPES   # 1.14+
+    function CC.abstract_call_known(interp::cuTileInterpreter, @nospecialize(f),
+            arginfo::CC.ArgInfo, si::CC.StmtInfo, vtypes::Union{CC.VarTable,Nothing},
+            sv::CC.InferenceState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+        result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
+            arginfo::CC.ArgInfo, si::CC.StmtInfo, vtypes::Union{CC.VarTable,Nothing},
+            sv::CC.InferenceState, max_methods::Int)
+        subprog = _infer_subprogram(interp, f, arginfo, si, vtypes, sv)
+        subprog === nothing && return result
+        wrapped = CC.Future{CC.CallMeta}()
+        push!(sv.tasks, function (interp′, sv′)
+            isready(result) || return false
+            isready(subprog) || return false
+            cm = result[]
+            sp = subprog[]
+            wrapped[] = CC.CallMeta(cm.rt, cm.exct, cm.effects,
+                                    SubprogramCallInfo(cm.info, sp.info), cm.refinements)
+            return true
+        end)
+        return wrapped
+    end
+elseif isdefined(CC, :Future)   # 1.12–1.13
+    function CC.abstract_call_known(interp::cuTileInterpreter, @nospecialize(f),
+            arginfo::CC.ArgInfo, si::CC.StmtInfo,
+            sv::CC.InferenceState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+        result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
+            arginfo::CC.ArgInfo, si::CC.StmtInfo,
+            sv::CC.InferenceState, max_methods::Int)
+        subprog = _infer_subprogram(interp, f, arginfo, si, nothing, sv)
+        subprog === nothing && return result
+        wrapped = CC.Future{CC.CallMeta}()
+        push!(sv.tasks, function (interp′, sv′)
+            isready(result) || return false
+            isready(subprog) || return false
+            cm = result[]
+            sp = subprog[]
+            wrapped[] = CC.CallMeta(cm.rt, cm.exct, cm.effects,
+                                    SubprogramCallInfo(cm.info, sp.info), cm.refinements)
+            return true
+        end)
+        return wrapped
+    end
+else   # 1.11: synchronous, edges auto-tracked via stmt_edges
+    function CC.abstract_call_known(interp::cuTileInterpreter, @nospecialize(f),
+            arginfo::CC.ArgInfo, si::CC.StmtInfo,
+            sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+        result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
+            arginfo::CC.ArgInfo, si::CC.StmtInfo,
+            sv::CC.AbsIntState, max_methods::Int)
+        _infer_subprogram(interp, f, arginfo, si, nothing, sv)  # side-effect only
+        return result
+    end
+end
+
 # Disable semi-concrete interpretation (broken with overlays per JuliaLang/julia#47349)
 function CC.concrete_eval_eligible(interp::cuTileInterpreter,
     @nospecialize(f), result::CC.MethodCallResult, arginfo::CC.ArgInfo, sv::CC.InferenceState)
@@ -172,7 +297,8 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance)
             name = string(mi.def.name),
             sm_arch = opts.sm_arch,
             num_ctas = opts.num_ctas,
-            occupancy = opts.occupancy
+            occupancy = opts.occupancy,
+            cache = cache
         )
     end
 

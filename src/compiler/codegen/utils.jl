@@ -126,9 +126,17 @@ mutable struct CGCtx
 
     # Target architecture (e.g., :sm_100)
     sm_arch::Union{String, Nothing}
+
+    # Compilation cache (needed for combiner compilation)
+    cache::CacheView
 end
 
-function CGCtx(writer::BytecodeWriter, sci::StructuredIRCode, sm_arch::Union{String, Nothing}=nothing)
+function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
+                 token::Union{Value, Nothing} = nothing,
+                 token_type::Union{TypeId, Nothing} = nothing,
+                 type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
+                 sm_arch::Union{String, Nothing} = nothing,
+                 cache::CacheView)
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -136,16 +144,11 @@ function CGCtx(writer::BytecodeWriter, sci::StructuredIRCode, sm_arch::Union{Str
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Int, Tuple{Value, TypeId}}(),  # tensor_views cache
-        CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
-        writer.type_table,
-        sci,
-        nothing,
-        nothing,
-        Dict{Type, TypeId}(),
-        sm_arch,
+        Dict{Int, Tuple{Value, TypeId}}(),
+        cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
     )
 end
+
 
 #=============================================================================
  Value lookup via indexing syntax

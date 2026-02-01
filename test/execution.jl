@@ -926,11 +926,11 @@ end
 
 @testset "reduction operations" begin
 
-@testset "reduce_sum along axis 1" begin
-    function reduce_sum_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+@testset "sum along axis 2" begin
+    function sum_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 128))  # Load 1x128 tile
-        sums = ct.reduce_sum(tile, 2)           # Sum along axis 1 -> (1,)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        sums = sum(tile; dims=2)
         ct.store(b, pid, sums)
         return
     end
@@ -939,9 +939,8 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(reduce_sum_kernel, m, a, b)
+    ct.launch(sum_kernel, m, a, b)
 
-    # Each row should be summed
     a_cpu = Array(a)
     b_cpu = Array(b)
     for i in 1:m
@@ -949,11 +948,11 @@ end
     end
 end
 
-@testset "reduce_sum along axis 0" begin
-    function reduce_sum_axis0_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+@testset "sum along axis 1" begin
+    function sum_axis1_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
-        tile = ct.load(a, (1, pid), (64, 1))   # Load 64x1 tile
-        sums = ct.reduce_sum(tile, 1)           # Sum along axis 0 -> (1,)
+        tile = ct.load(a, (1, pid), (64, 1))
+        sums = sum(tile; dims=1)
         ct.store(b, pid, sums)
         return
     end
@@ -962,9 +961,8 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(reduce_sum_axis0_kernel, n, a, b)
+    ct.launch(sum_axis1_kernel, n, a, b)
 
-    # Each column should be summed
     a_cpu = Array(a)
     b_cpu = Array(b)
     for j in 1:n
@@ -972,11 +970,11 @@ end
     end
 end
 
-@testset "reduce_max along axis 1" begin
-    function reduce_max_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+@testset "maximum along axis 2" begin
+    function maximum_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
-        tile = ct.load(a, (pid, 1), (1, 128))  # Load 1x128 tile
-        maxes = ct.reduce_max(tile, 2)          # Max along axis 1 -> (1,)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        maxes = maximum(tile; dims=2)
         ct.store(b, pid, maxes)
         return
     end
@@ -985,13 +983,79 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(reduce_max_kernel, m, a, b)
+    ct.launch(maximum_kernel, m, a, b)
 
-    # Each row should have its max
     a_cpu = Array(a)
     b_cpu = Array(b)
     for i in 1:m
         @test b_cpu[i] ≈ maximum(a_cpu[i, :])
+    end
+end
+
+@testset "minimum along axis 2" begin
+    function minimum_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        mins = minimum(tile; dims=2)
+        ct.store(b, pid, mins)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(minimum_kernel, m, a, b)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ minimum(a_cpu[i, :])
+    end
+end
+
+@testset "prod along axis 2" begin
+    function prod_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        prods = prod(tile; dims=2)
+        ct.store(b, pid, prods)
+        return
+    end
+
+    m, n = 64, 128
+    # Use small values to avoid overflow/underflow
+    a = CuArray(rand(Float32, m, n) .* 0.1f0 .+ 0.95f0)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(prod_kernel, m, a, b)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ prod(a_cpu[i, :]) rtol=1e-2
+    end
+end
+
+@testset "reduce with custom combiner" begin
+    function custom_reduce_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        sums = reduce((x, y) -> x + y, tile; dims=2, init=0.0f0)
+        ct.store(b, pid, sums)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(custom_reduce_kernel, m, a, b)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
     end
 end
 
@@ -1004,7 +1068,7 @@ end
                               tile_size::ct.Constant{Int})
         bid = ct.bid(1)
         tile = ct.load(a, bid, (tile_size[],))
-        result = ct.cumsum(tile, Val(1))
+        result = cumsum(tile; dims=1)
         ct.store(b, bid, result)
         return nothing
     end
@@ -1028,7 +1092,7 @@ end
     function cumsum_2d_axis1_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
         pid = ct.bid(1)
         tile = ct.load(a, (pid, 1), (4, 8))
-        result = ct.cumsum(tile, Val(1))
+        result = cumsum(tile; dims=1)
         ct.store(b, (pid, 1), result)
         return nothing
     end
@@ -1055,7 +1119,7 @@ end
                                     tile_size::ct.Constant{Int})
         bid = ct.bid(1)
         tile = ct.load(a, bid, (tile_size[],))
-        result = ct.scan(tile, Val(1), :add, true)
+        result = cumsum(tile; dims=1, rev=true)
         ct.store(b, bid, result)
         return nothing
     end
@@ -1072,6 +1136,31 @@ end
     a_reshaped = reshape(a_cpu, sz, :)
     expected = mapslices(x -> reverse(accumulate(+, reverse(x))), a_reshaped, dims=1)
     @test b_cpu ≈ vec(expected) rtol=1e-3
+end
+
+@testset "1D cumprod" begin
+    function cumprod_1d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                               tile_size::ct.Constant{Int})
+        bid = ct.bid(1)
+        tile = ct.load(a, bid, (tile_size[],))
+        result = cumprod(tile; dims=1)
+        ct.store(b, bid, result)
+        return nothing
+    end
+
+    sz = 32
+    N = 1024
+    # Use values close to 1.0 to avoid overflow/underflow
+    a = CuArray(rand(Float32, N) .* 0.1f0 .+ 0.95f0)
+    b = CUDA.zeros(Float32, N)
+
+    ct.launch(cumprod_1d_kernel, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    a_reshaped = reshape(a_cpu, sz, :)
+    expected = mapslices(x -> accumulate(*, x), a_reshaped, dims=1)
+    @test b_cpu ≈ vec(expected) rtol=1e-2
 end
 
 end
@@ -1827,7 +1916,7 @@ end
         pid = ct.bid(1)
         # Load with hints
         tile = ct.load(a, (pid, 1), (1, 128); latency=6, allow_tma=false)
-        sums = ct.reduce_sum(tile, 2)
+        sums = sum(tile; dims=2)
         # Store with hints
         ct.store(b, pid, sums; latency=2)
         return nothing
@@ -1854,13 +1943,13 @@ end
 
     function reduce_sum_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1},
                            tileSz::ct.Constant{Int}) where {T}
-        ct.store(b, ct.bid(1), ct.reduce_sum(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        ct.store(b, ct.bid(1), sum(ct.load(a, ct.bid(1), (tileSz[],)); dims=1))
         return nothing
     end
 
     function reduce_max_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1},
                            tileSz::ct.Constant{Int}) where {T}
-        ct.store(b, ct.bid(1), ct.reduce_max(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        ct.store(b, ct.bid(1), maximum(ct.load(a, ct.bid(1), (tileSz[],)); dims=1))
         return nothing
     end
 
@@ -1917,7 +2006,7 @@ end
     N = 1024
 
     function scan_kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int}) where {T}
-        ct.store(b, ct.bid(1), ct.cumsum(ct.load(a, ct.bid(1), (tileSz[],)), Val(1)))
+        ct.store(b, ct.bid(1), cumsum(ct.load(a, ct.bid(1), (tileSz[],)); dims=1))
         return nothing
     end
 
@@ -2545,6 +2634,62 @@ end
 
     ct.launch(mod.vadd_kernel, 64, a, b, c)
     @test Array(c) ≈ Array(a) + Array(b) * 2
+end
+
+@testset "redefine reduce subprogram" begin
+    mod = @eval module $(gensym())
+        import cuTile as ct
+        combine(a, b) = a + b
+        function reduce_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            tile = ct.load(a, (pid, 1), (1, 128))
+            sums = reduce(combine, tile; dims=2, init=0.0f0)
+            ct.store(b, pid, sums)
+            return
+        end
+    end
+
+    m, n = 64, 128
+    a = CUDA.ones(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(mod.reduce_kernel, m, a, b)
+    @test all(Array(b) .≈ Float32(n))
+
+    # Redefine to max (associative+commutative, tree-order independent)
+    @eval mod combine(a, b) = max(a, b)
+
+    ct.launch(mod.reduce_kernel, m, a, b)
+    @test all(Array(b) .≈ 1.0f0)
+end
+
+@testset "redefine scan subprogram" begin
+    mod = @eval module $(gensym())
+        import cuTile as ct
+        combine(a, b) = a + b
+        function scan_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (128,))
+            scanned = accumulate(combine, tile; dims=1, init=0.0f0)
+            ct.store(b, pid, scanned)
+            return
+        end
+    end
+
+    n = 128
+    a = CUDA.ones(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(mod.scan_kernel, 1, a, b)
+    expected = Float32.(cumsum(ones(Float32, n)))
+    @test Array(b) ≈ expected
+
+    # Redefine to max (associative+commutative, tree-order independent)
+    @eval mod combine(a, b) = max(a, b)
+
+    ct.launch(mod.scan_kernel, 1, a, b)
+    # Running max over [1,1,...,1] with init=0 gives [1,1,...,1]
+    @test all(Array(b) .≈ 1.0f0)
 end
 
 end # invalidations

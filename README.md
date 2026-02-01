@@ -149,6 +149,7 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 | `permute(tile, perm)` | Permute dimensions |
 | `extract(tile, index, shape)` | Extract sub-tile |
 | `cat((a, b), axis)` | Concatenate tiles |
+| `dropdims(tile; dims)` | Remove singleton dimensions |
 
 ### Matrix
 | Operation | Description |
@@ -159,8 +160,15 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Reductions
 | Operation | Description |
 |-----------|-------------|
-| `reduce_sum(tile, axis)` | Sum along axis |
-| `reduce_max(tile, axis)` | Maximum along axis |
+| `sum(tile; dims)` | Sum along axis |
+| `prod(tile; dims)` | Product along axis |
+| `maximum(tile; dims)` | Maximum along axis |
+| `minimum(tile; dims)` | Minimum along axis |
+| `reduce(f, tile; dims, init)` | Custom reduction |
+| `dropdims(tile; dims)` | Remove singleton dimensions |
+| `cumsum(tile; dims)` | Cumulative sum |
+| `cumprod(tile; dims)` | Cumulative product |
+| `accumulate(f, tile; dims, init)` | Custom scan/prefix-sum |
 
 ### Math
 | Operation | Description |
@@ -323,6 +331,26 @@ a * b              # Matrix multiplication
 tile * 2.0f0       # Scalar multiply
 result = exp.(tile)
 ```
+
+### Reductions
+
+Python reductions (`ct.sum`, `ct.max`, etc.) drop the reduced dimension by default (`keepdims=False`). Julia reductions (`sum`, `maximum`, etc.) always keep it as size 1 (matching `Base` semantics). Use `dropdims` to remove singleton dims afterward.
+
+```python
+# Python
+result = ct.sum(tile, axis=1)           # (M, N) → (M,)
+result = ct.sum(tile, axis=1, keepdims=True)  # (M, N) → (M, 1)
+```
+
+```julia
+# Julia
+result = sum(tile; dims=2)              # (M, N) → (M, 1)
+result = dropdims(sum(tile; dims=2); dims=2)  # (M, N) → (M,)
+```
+
+### Store reshaping
+
+`ct.store` automatically reshapes the tile to match the target array's rank by dropping singleton dimensions (e.g., storing a `(1, N)` tile into a 1D array reshapes it to `(N,)`). Scalar `()` tiles are reshaped to `(1,)`.
 
 
 ## Limitations

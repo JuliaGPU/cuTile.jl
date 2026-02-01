@@ -38,7 +38,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
         mean = mean .+ tx
         j += Int32(1)
     end
-    mean = ct.reduce_sum(mean, 2) / N
+    mean = sum(mean; dims=2) / N
     ct.store(Mean, bid_m, mean)
 
     # Compute variance
@@ -52,7 +52,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
         var = var .+ (centered_tx .^ 2.0f0)
         j += Int32(1)
     end
-    var = ct.reduce_sum(var, 2) / N
+    var = sum(var; dims=2) / N
     rstd = 1.0f0 ./ sqrt.(var .+ eps[])
     ct.store(Rstd, bid_m, rstd)
 
@@ -142,8 +142,8 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
         c2 = c2 .+ wdy
         j += Int32(1)
     end
-    c1 = ct.reduce_sum(c1, 2) / N
-    c2 = ct.reduce_sum(c2, 2) / N
+    c1 = sum(c1; dims=2) / N
+    c2 = sum(c2; dims=2) / N
 
     # Second pass: compute dX
     j = Int32(1)
@@ -201,8 +201,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         c2 = c2 .+ wdy
         j += Int32(1)
     end
-    c1 = ct.reduce_sum(c1, 2) / N
-    c2 = ct.reduce_sum(c2, 2) / N
+    c1 = sum(c1; dims=2) / N
+    c2 = sum(c2; dims=2) / N
 
     # Second pass: compute dX and partial dW/dB
     j = Int32(1)
@@ -263,8 +263,8 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
         db = db .+ ct.load(DB, (i, bid_n), (TILE_M[], TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         i += Int32(1)
     end
-    sum_dw = ct.reduce_sum(dw, 1)
-    sum_db = ct.reduce_sum(db, 1)
+    sum_dw = sum(dw; dims=1)
+    sum_db = sum(db; dims=1)
 
     ct.store(FINAL_DW, bid_n, sum_dw)
     ct.store(FINAL_DB, bid_n, sum_db)

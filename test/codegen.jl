@@ -32,7 +32,7 @@
                         tile = ct.load(a, pid, (16,))
                         @check "scan"
                         @check op_check
-                        Base.donotdelete(ct.scan(tile, Val(1), :add, false))
+                        Base.donotdelete(cumsum(tile; dims=1))
                         return
                     end
                 end
@@ -45,9 +45,9 @@
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "scan"
-                    Base.donotdelete(ct.scan(tile, Val(1), :add, false))
+                    Base.donotdelete(cumsum(tile; dims=1))
                     @check "scan"
-                    Base.donotdelete(ct.scan(tile, Val(2), :add, false))
+                    Base.donotdelete(cumsum(tile; dims=2))
                     return
                 end
             end
@@ -59,7 +59,7 @@
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "scan"
-                    Base.donotdelete(ct.scan(tile, Val(1), :add, true))
+                    Base.donotdelete(cumsum(tile; dims=1, rev=true))
                     return
                 end
             end
@@ -71,7 +71,20 @@
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "scan"
-                    Base.donotdelete(ct.cumsum(tile, Val(2), false))
+                    Base.donotdelete(cumsum(tile; dims=2))
+                    return
+                end
+            end
+
+            # cumprod
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 8))
+                    @check "scan"
+                    @check "mulf"
+                    Base.donotdelete(cumprod(tile; dims=2))
                     return
                 end
             end
@@ -423,7 +436,7 @@
                     tile = ct.load(a, pid, (4, 16))
                     @check "reduce"
                     @check "addf"
-                    sums = ct.reduce_sum(tile, 2)
+                    sums = sum(tile; dims=2)
                     ct.store(b, pid, sums)
                     return
                 end
@@ -436,18 +449,45 @@
                     tile = ct.load(a, pid, (4, 16))
                     @check "reduce"
                     @check "maxf"
-                    maxes = ct.reduce_max(tile, 2)
+                    maxes = maximum(tile; dims=2)
                     ct.store(b, pid, maxes)
+                    return
+                end
+            end
+
+            # minimum
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "reduce"
+                    @check "minf"
+                    mins = minimum(tile; dims=2)
+                    ct.store(b, pid, mins)
+                    return
+                end
+            end
+
+            # prod
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "reduce"
+                    @check "mulf"
+                    Base.donotdelete(prod(tile; dims=2))
                     return
                 end
             end
 
             # Integer/unsigned reduce
             for (T, op, op_check) in [
-                (Int32,  ct.reduce_sum, "addi"),
-                (Int32,  ct.reduce_max, "maxi"),
-                (UInt32, ct.reduce_sum, "addi"),
-                (UInt32, ct.reduce_max, "maxi"),
+                (Int32,  tile -> sum(tile; dims=2), "addi"),
+                (Int32,  tile -> maximum(tile; dims=2), "maxi"),
+                (UInt32, tile -> sum(tile; dims=2), "addi"),
+                (UInt32, tile -> maximum(tile; dims=2), "maxi"),
             ]
                 @test @filecheck begin
                     @check_label "entry"
@@ -456,9 +496,35 @@
                         tile = ct.load(a, pid, (4, 16))
                         @check "reduce"
                         @check op_check
-                        Base.donotdelete(op(tile, 2))
+                        Base.donotdelete(op(tile))
                         return
                     end
+                end
+            end
+
+            # Generic reduce with explicit function
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "reduce"
+                    @check "addf"
+                    Base.donotdelete(reduce(+, tile; dims=2, init=0.0f0))
+                    return
+                end
+            end
+
+            # Reduce with custom combiner (lambda)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "reduce"
+                    @check "addf"
+                    Base.donotdelete(reduce((a, b) -> a + b, tile; dims=2, init=0.0f0))
+                    return
                 end
             end
         end
@@ -1178,7 +1244,7 @@ end
                     j += Int32(1)
                 end
                 @check "reduce"
-                sum_val = ct.reduce_sum(acc, 2)
+                sum_val = sum(acc; dims=2)
                 ct.store(Sum, bid_m, sum_val)
 
                 # Second for loop: scale output by sum
@@ -1407,8 +1473,8 @@ end
                     i += Int32(1)
                 end
 
-                sum_dw = ct.reduce_sum(dw, 1)
-                sum_db = ct.reduce_sum(db, 1)
+                sum_dw = sum(dw; dims=1)
+                sum_db = sum(db; dims=1)
 
                 ct.store(FINAL_DW, bid_n, sum_dw)
                 ct.store(FINAL_DB, bid_n, sum_db)
@@ -1447,7 +1513,7 @@ end
                     i += Int32(1)
                 end
                 @check "reduce"
-                sum_val = ct.reduce_sum(acc, 1)
+                sum_val = sum(acc; dims=1)
 
                 # Second loop: use sum_val AND accumulate
                 @check "for"
@@ -1461,7 +1527,7 @@ end
                 end
                 @check "reduce"
                 @check "store_view_tko"
-                ct.store(out, bid, ct.reduce_sum(acc2, 1))
+                ct.store(out, bid, sum(acc2; dims=1))
 
                 return
             end

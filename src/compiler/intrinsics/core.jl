@@ -504,37 +504,25 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
 end
 
 
-## XXX: cuda_tile.reduce
+# cuda_tile.reduce
 @eval Intrinsics begin
     """
-        reduce_sum(tile, axis_val)
+        reduce(tile, axis_val, f, identity)
 
-    Sum reduction along 0-indexed axis.
-    Compiled to cuda_tile.reduce with ADD.
+    Reduction along 0-indexed axis with the given binary function and identity.
+    f is any binary function (e.g., +, max, or a lambda).
+    Compiled to cuda_tile.reduce.
     """
-    @noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
-        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
-        Tile{T, reduced_shape}()
-    end
-
-    """
-        reduce_max(tile, axis_val)
-
-    Maximum reduction along 0-indexed axis.
-    Compiled to cuda_tile.reduce with MAX.
-    """
-    @noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T, S, axis}
-        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+    @noinline function reduce(tile::Tile{T, S}, ::Val{axis}, f, identity) where {T, S, axis}
+        # Julia semantics: reduced dimension becomes size 1 (not removed)
+        reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S[i], length(S))
         Tile{T, reduced_shape}()
     end
 end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_sum), args)
-    emit_reduce!(ctx, args, :add)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce), args)
+    emit_reduce!(ctx, args)
 end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_max), args)
-    emit_reduce!(ctx, args, :max)
-end
-function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
+function emit_reduce!(ctx::CGCtx, args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -545,35 +533,47 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     # Get reduction axis
     axis = @something get_constant(ctx, args[2]) error("Reduction axis must be a compile-time constant")
 
+    # Resolve function: get the actual Julia function object
+    func = resolve_function(ctx, args[3])
+
+    # Get identity value
+    identity_val = @something get_constant(ctx, args[4]) error("Reduction identity must be a compile-time constant")
+
     # Get element type and shapes
     input_type = unwrap_type(input_tv.jltype)
     elem_type = input_type.parameters[1]
     input_shape = input_tv.shape
     isempty(input_shape) && error("Cannot reduce scalar tile")
 
-    # Compute output shape (dimension at axis is removed)
-    output_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
+    # ReduceOp removes the dimension; we'll reshape after to reintroduce it as size 1
+    reduced_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
-    # Output tile type
-    output_tile_type = tile_type!(tt, dtype, output_shape)
+    # Tile type for ReduceOp output (dimension removed)
+    reduced_tile_type = tile_type!(tt, dtype, reduced_shape)
 
     # Scalar type for reduction body (0D tile)
     scalar_tile_type = tile_type!(tt, dtype, Int[])
 
-    # Create identity value via dispatch on reduction function and element type
-    identity = operation_identity(Val(reduce_fn), dtype, elem_type)
+    # Create identity value
+    identity = make_identity_val(identity_val, dtype, elem_type)
 
-    # Emit ReduceOp
-    results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
-        acc, elem = block_args[1], block_args[2]
-
-        res = encode_binop_body(cb, scalar_tile_type, acc, elem, reduce_fn, elem_type)
-        encode_YieldOp!(cb, [res])
+    # Emit ReduceOp with compiled combiner body
+    results = encode_ReduceOp!(cb, [reduced_tile_type], [input_tv.v],
+                               axis, [identity], [scalar_tile_type]) do block_args
+        emit_subprogram!(ctx, func,
+                         [elem_type, elem_type],
+                         block_args, [scalar_tile_type, scalar_tile_type])
     end
 
-    CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    # Julia semantics: reintroduce reduced dimension as size 1 via ReshapeOp
+    output_shape = copy(input_shape)
+    output_shape[axis + 1] = 1
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+    result = encode_ReshapeOp!(cb, output_tile_type, results[1])
+
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
 #=============================================================================#
@@ -590,39 +590,14 @@ to_uint128(value::T) where T <: Unsigned = UInt128(value)
 to_uint128(value::T) where T <: Signed = UInt128(reinterpret(unsigned(T), value))
 
 """
-    operation_identity(fn, dtype, elem_type) -> IdentityVal
+    make_identity_val(val, dtype, elem_type) -> IdentityVal
 
-Return the identity value for a binary operation (reduce, scan, etc.).
-Identity must satisfy: identity ⊕ x = x for the operation.
+Convert a Julia constant identity value to bytecode IdentityVal format.
 """
-
-# Addition identity: 0 + x = x
-operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentityVal(zero(T), dtype, T)
-operation_identity(::Val{:add}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentityVal(to_uint128(zero(T)), dtype, T)
-
-# Maximum identity: max(typemin(T), x) = x
-operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: AbstractFloat =
-    FloatIdentityVal(typemin(T), dtype, T)
-operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
-    IntegerIdentityVal(to_uint128(typemin(T)), dtype, T)
-
-#=============================================================================#
-# Binary Operation Body Encoding (shared by reduce and scan)
-#=============================================================================#
-function encode_binop_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
-    if T <: AbstractFloat
-        op == :add ? encode_AddFOp!(cb, type, acc, elem) :
-        op == :max ? encode_MaxFOp!(cb, type, acc, elem) :
-        error("Unsupported float operation: $op")
-    else
-        signedness = T <: Signed ? SignednessSigned : SignednessUnsigned
-        op == :add ? encode_AddIOp!(cb, type, acc, elem) :
-        op == :max ? encode_MaxIOp!(cb, type, acc, elem; signedness) :
-        error("Unsupported integer operation: $op")
-    end
-end
+make_identity_val(val, dtype, ::Type{T}) where T <: AbstractFloat =
+    FloatIdentityVal(Float64(T(val)), dtype, T)
+make_identity_val(val, dtype, ::Type{T}) where T <: Integer =
+    IntegerIdentityVal(to_uint128(T(val)), dtype, T)
 
 
 # cuda_tile.reshape
@@ -697,14 +672,14 @@ end
 # cuda_tile.scan
 @eval Intrinsics begin
     """
-        scan(tile, axis_val, fn_type; reverse=false)
+        scan(tile, axis_val, f, identity, reverse)
 
     Parallel prefix scan along specified dimension.
-    fn_type=:add for cumulative sum (only supported operation).
+    f is any binary function (e.g., +, max, or a lambda).
     reverse=false for forward scan, true for reverse scan.
     Compiled to cuda_tile.scan.
     """
-    @noinline function scan(tile::Tile{T, S}, ::Val{axis}, fn::Symbol, reverse::Bool=false) where {T, S, axis}
+    @noinline function scan(tile::Tile{T, S}, ::Val{axis}, f, identity, reverse::Bool=false) where {T, S, axis}
         # Scan preserves shape - result has same dimensions as input
         Tile{T, S}()
     end
@@ -721,14 +696,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     # Get scan axis
     axis = @something get_constant(ctx, args[2]) error("Scan axis must be a compile-time constant")
 
-    # Get scan function type (only :add is supported)
-    fn_type = @something get_constant(ctx, args[3]) error("Scan function type must be a compile-time constant")
-    fn_type == :add || error("Only :add (cumulative sum) is currently supported for scan operations")
+    # Resolve function: get the actual Julia function object
+    func = resolve_function(ctx, args[3])
+
+    # Get identity value
+    identity_val = @something get_constant(ctx, args[4]) error("Scan identity must be a compile-time constant")
 
     # Get reverse flag (optional, defaults to false)
     reverse = false
-    if length(args) >= 4
-        reverse_val = get_constant(ctx, args[4])
+    if length(args) >= 5
+        reverse_val = get_constant(ctx, args[5])
         reverse = reverse_val === true
     end
 
@@ -748,14 +725,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     # Scalar type for scan body (0D tile)
     scalar_tile_type = tile_type!(tt, dtype, Int[])
 
-    # Create identity value using operation_identity
-    identity = operation_identity(Val(fn_type), dtype, elem_type)
+    # Create identity value
+    identity = make_identity_val(identity_val, dtype, elem_type)
 
-    # Emit ScanOp
+    # Emit ScanOp with compiled combiner body
     results = encode_ScanOp!(cb, [output_tile_type], [input_tv.v], axis, reverse, [identity], [scalar_tile_type]) do block_args
-        acc, elem = block_args[1], block_args[2]
-        res = encode_binop_body(cb, scalar_tile_type, acc, elem, fn_type, elem_type)
-        encode_YieldOp!(cb, [res])
+        emit_subprogram!(ctx, func,
+                         [elem_type, elem_type],
+                         block_args, [scalar_tile_type, scalar_tile_type])
     end
 
     CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)

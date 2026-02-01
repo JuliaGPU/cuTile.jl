@@ -11,9 +11,11 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       sm_arch::Union{String, Nothing} = nothing,
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
-                      occupancy::Union{Int, Nothing} = nothing)
-    ctx = CGCtx(writer, sci, sm_arch)
-    tt = ctx.tt
+                      occupancy::Union{Int, Nothing} = nothing,
+                      cache::CacheView)
+    tt = writer.type_table
+    cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
+    ctx = CGCtx(; cb, tt, sci, sm_arch, cache)
 
     # Validate non-ghost argument types are concrete
     for (i, argtype) in enumerate(sci.argtypes)
@@ -210,4 +212,65 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
 
     # Not an arg_ref - not handled here
     nothing
+end
+
+
+#=============================================================================
+ Subprogram compilation
+=============================================================================#
+
+"""
+    emit_subprogram!(ctx, func, arg_types, block_args, block_type_ids) -> Vector{Value}
+
+Compile a Julia function into the current region body. Resolves `func` via the cuTile
+pipeline (method_instance → code_ircode → StructuredIRCode), creates a sub-context,
+maps `block_args` to the function's positional arguments, emits the body, and returns
+the yielded result values.
+
+- `func`: the Julia function to compile (e.g., `+`, `max`, a lambda)
+- `arg_types`: Julia types for each block arg (e.g., `[Tile{Float32,()}]` repeated)
+- `block_args`: IR `Value`s from the enclosing region (e.g., `[acc, elem]`)
+- `block_type_ids`: `TypeId`s corresponding to each block arg
+
+The function's first argument (the function singleton itself) is treated as a ghost.
+A `YieldOp` is emitted with the return value(s).
+"""
+function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
+                          block_args::Vector{Value}, block_type_ids::Vector{TypeId})
+    # 1. Resolve method instance
+    argtuple = Tuple{arg_types...}
+    world = ctx.cache.world
+    mi = @something(
+        method_instance(func, argtuple;
+                        world, method_table=cuTileMethodTable),
+        method_instance(func, argtuple; world),
+        error("No method found for $func($(join(arg_types, ", ")))")
+    )
+
+    # 2. Compile through cuTile pipeline (cached)
+    @assert haskey(ctx.cache, mi) "Expected $func($(join(arg_types, ", "))) to be cached already by inference."
+    sci, _ = emit_ir(ctx.cache, mi)
+
+    # 3. Create sub-context
+    sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
+                      ctx.token, ctx.token_type,
+                      ctx.type_cache, ctx.sm_arch,
+                      ctx.cache)
+
+    # 4. Map arguments: Argument(1) = function singleton (ghost),
+    #    Argument(2..N+1) = block_args[1..N]
+    sub_ctx[Argument(1)] = ghost_value(sci.argtypes[1])
+    for (i, (barg, btype, jltype)) in enumerate(zip(block_args, block_type_ids, arg_types))
+        sub_ctx[Argument(i + 1)] = CGVal(barg, btype, jltype)
+    end
+
+    # 5. Emit body (skip terminator — we yield manually)
+    emit_block!(sub_ctx, sci.entry; skip_terminator=true)
+
+    # 6. Extract return value and yield
+    ret = sci.entry.terminator::ReturnNode
+    tv = emit_value!(sub_ctx, ret.val)
+    results = tv.v isa Vector ? tv.v : [tv.v]
+    encode_YieldOp!(ctx.cb, results)
+    return results
 end

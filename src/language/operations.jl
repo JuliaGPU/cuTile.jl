@@ -122,6 +122,29 @@ end
     Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
+# Auto-reshape tile to match target array rank for store.
+@inline function _reshape_for_store(tile::Tile{T,Shape}, ::Val{N}) where {T, Shape, N}
+    length(Shape) <= N && return tile
+    new_shape = _store_shape(Val(Shape), Val(N))
+    reshape(tile, new_shape)
+end
+
+@generated function _store_shape(::Val{Shape}, ::Val{N}) where {Shape, N}
+    M = length(Shape)
+    to_drop = M - N
+    singletons = [i for i in 1:M if Shape[i] == 1]
+    if length(singletons) < to_drop
+        error("cannot squeeze shape $Shape to rank $N: only $(length(singletons)) singleton dims but need to drop $to_drop")
+    end
+    drop_set = Set(singletons[1:to_drop])
+    kept = tuple((Shape[i] for i in 1:M if !(i in drop_set))...)
+    # Partition views require at least 1D
+    if isempty(kept)
+        kept = (1,)
+    end
+    return :($kept)
+end
+
 """
     store(arr::TileArray, index, tile::Tile; latency=nothing, allow_tma=true) -> Tile
 
@@ -132,45 +155,27 @@ Returns the stored tile (enables chaining and helps constant folding).
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
 """
-# Regular N-D tiles (N >= 1)
-@inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape};
+@inline function store(arr::TileArray{T,N}, index, tile::Tile{T, Shape};
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T, Shape}
-    tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, (promote(index...) .- One())...)
+                       allow_tma::Bool=true) where {T, N, Shape}
+    reshaped = _reshape_for_store(tile, Val(N))
+    _store_reshaped(arr, reshaped, latency, allow_tma, (promote(index...) .- One())...)
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape};
+@inline function store(arr::TileArray{T,N}, index::Integer, tile::Tile{T, Shape};
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T, Shape}
-    tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, index - One())
+                       allow_tma::Bool=true) where {T, N, Shape}
+    reshaped = _reshape_for_store(tile, Val(N))
+    _store_reshaped(arr, reshaped, latency, allow_tma, index - One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-# Special case for 0D (scalar) tiles - reshape to 1D for partition view
-@inline function store(arr::TileArray{T}, index, tile::Tile{T, ()};
-                       latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T}
+@inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T, SShape},
+                                 latency, allow_tma, indices...) where {T, SShape}
     tv = Intrinsics.make_tensor_view(arr)
-    # Reshape 0D tile to 1D (partition views require at least 1D)
-    tile_1d = Intrinsics.reshape(tile, Val((1,)))
-    pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, latency, allow_tma, (promote(index...) .- One())...)
-    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
-end
-
-@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()};
-                       latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T}
-    tv = Intrinsics.make_tensor_view(arr)
-    tile_1d = Intrinsics.reshape(tile, Val((1,)))
-    pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, latency, allow_tma, index - One())
-    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
+    pv = Intrinsics.make_partition_view(tv, Val(SShape), PaddingMode.Undetermined)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices...)
 end
 
 # Keyword argument version - dispatch to positional version
@@ -515,56 +520,132 @@ result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
  Reduction
 =============================================================================#
 
-public reduce_sum, reduce_max
-
 """
-    reduce_sum(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+    reduce(f, tile::Tile{T,S}; dims::Integer, init) -> Tile{T, reduced_shape}
 
-Sum reduction along the specified axis (1-indexed).
-Returns a tile with the specified dimension removed.
+Reduce a tile along the specified dimension using binary function `f` with
+identity element `init`. The `dims` axis is 1-indexed. The reduced dimension
+becomes size 1 (Julia semantics).
+
+Supported functions: `+`, `*`, `max`, `min`.
 
 # Example
 ```julia
-# For a (128, 64) tile, reducing along axis 2:
-sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
+sums = reduce(+, tile; dims=2, init=zero(Float32))
 ```
 """
-@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
-    Intrinsics.reduce_sum(tile, Val(axis - 1))
-end
-@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
-    Intrinsics.reduce_sum(tile, Val(axis - 1))
+@inline function Base.reduce(f, tile::Tile{T,S}; dims::Integer, init) where {T<:Number, S}
+    Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
 end
 
 """
-    reduce_max(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+    sum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
 
-Maximum reduction along the specified axis (1-indexed).
+Sum reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.sum(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    _tile_reduce(+, tile, dims, zero(T))
+
+"""
+    prod(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+
+Product reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.prod(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    _tile_reduce(*, tile, dims, one(T))
+
+"""
+    maximum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+
+Maximum reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.maximum(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    _tile_reduce(max, tile, dims, typemin(T))
+
+"""
+    minimum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+
+Minimum reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    _tile_reduce(min, tile, dims, typemax(T))
+
+# Single-dim dispatch
+@inline _tile_reduce(f, tile::Tile{T}, dims::Integer, init) where {T} =
+    Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
+
+# Multi-dim reduction: chain single-dim reductions.
+# Since reduced dims become size 1 (not removed), axis indices stay valid.
+
+# Multi-dim reduction: chain single-dim reductions.
+# Since reduced dims become size 1 (not removed), axis indices stay valid.
+@inline function _reduce_multi(f, tile, dims::Tuple{Int, Vararg}, init)
+    tile = Intrinsics.reduce(tile, Val(first(dims) - 1), f, init)
+    _reduce_multi(f, tile, Base.tail(dims), init)
+end
+@inline function _reduce_multi(f, tile, dims::Tuple{Int}, init)
+    Intrinsics.reduce(tile, Val(first(dims) - 1), f, init)
+end
+
+"""
+    dropdims(tile::Tile{T,S}; dims) -> Tile{T, squeezed_shape}
+
+Remove singleton dimensions from a tile. The specified dimensions must have
+size 1. This is the inverse of the dimension-preserving behavior of `sum`,
+`prod`, `maximum`, and `minimum`.
 
 # Example
 ```julia
-maxes = ct.reduce_max(tile, 2)  # Max along axis 2
+sums = sum(tile; dims=2)           # (64, 1)
+squeezed = dropdims(sums; dims=2)  # (64,)
 ```
 """
-@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: Number, S}
-    Intrinsics.reduce_max(tile, Val(axis - 1))
-end
-@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: Number, S, axis}
-    Intrinsics.reduce_max(tile, Val(axis - 1))
+@inline Base.dropdims(tile::Tile{T,S}; dims::Integer) where {T, S} =
+    _dropdims(tile, Val(dims))
+
+@inline function _dropdims(tile::Tile{T,S}, ::Val{D}) where {T, S, D}
+    new_shape = ntuple(i -> i < D ? S[i] : S[i + 1], Val(length(S) - 1))
+    reshape(tile, new_shape)
 end
 
-# Scan (Prefix Sum) Operations
+#=============================================================================
+ Scan (Prefix Sum) Operations
+=============================================================================#
 
-@inline function scan(tile::Tile{T, S}, ::Val{axis},
-                      fn::Symbol=:add,
-                      reverse::Bool=false) where {T<:Number, S, axis}
-    Intrinsics.scan(tile, Val(axis - 1), fn, reverse)
+"""
+    accumulate(f, tile::Tile{T,S}; dims::Integer, init, rev::Bool=false) -> Tile{T, S}
+
+Scan (prefix sum) along the specified dimension using binary function `f`.
+The `dims` axis is 1-indexed.
+
+Supported functions: `+`, `*`, `max`, `min`.
+"""
+@inline function Base.accumulate(f, tile::Tile{T,S}; dims::Integer,
+                                 init, rev::Bool=false) where {T<:Number, S}
+    Intrinsics.scan(tile, Val(dims - 1), f, T(init), rev)
 end
 
-@inline function cumsum(tile::Tile{T, S}, ::Val{axis},
-                        reverse::Bool=false) where {T<:Number, S, axis}
-    scan(tile, Val(axis), :add, reverse)
-end
+"""
+    cumsum(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
+
+Cumulative sum along the specified axis (1-indexed).
+"""
+@inline Base.cumsum(tile::Tile{T,S}; dims::Integer,
+                    rev::Bool=false) where {T<:Number, S} =
+    accumulate(+, tile; dims, init=zero(T), rev)
+
+"""
+    cumprod(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
+
+Cumulative product along the specified axis (1-indexed).
+"""
+@inline Base.cumprod(tile::Tile{T,S}; dims::Integer,
+                     rev::Bool=false) where {T<:Number, S} =
+    accumulate(*, tile; dims, init=one(T), rev)
 
 #=============================================================================
  Matrix multiplication
