@@ -2782,6 +2782,85 @@ end
 
 end # fma broadcasting
 
+@testset "multi-arg map" begin
+    @testset "binary map(+, ...)" begin
+        function map_add_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            ct.store(c, pid, map(+, ta, tb))
+            return
+        end
+
+        n = 1024
+        a = CUDA.rand(Float32, n)
+        b = CUDA.rand(Float32, n)
+        c = CUDA.zeros(Float32, n)
+        ct.launch(map_add_kernel, cld(n, 16), a, b, c)
+        @test Array(c) ≈ Array(a) + Array(b)
+    end
+
+    @testset "ternary map(fma, ...)" begin
+        function map_fma_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            tc = ct.load(c, pid, (16,))
+            ct.store(d, pid, map(fma, ta, tb, tc))
+            return
+        end
+
+        n = 1024
+        a = CUDA.rand(Float32, n)
+        b = CUDA.rand(Float32, n)
+        c = CUDA.rand(Float32, n)
+        d = CUDA.zeros(Float32, n)
+        ct.launch(map_fma_kernel, cld(n, 16), a, b, c, d)
+        @test Array(d) ≈ fma.(Array(a), Array(b), Array(c))
+    end
+
+    @testset "nested broadcast a .+ b .* c" begin
+        function nested_bc_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                  c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            tc = ct.load(c, pid, (16,))
+            ct.store(d, pid, ta .+ tb .* tc)
+            return
+        end
+
+        n = 1024
+        a = CUDA.rand(Float32, n)
+        b = CUDA.rand(Float32, n)
+        c = CUDA.rand(Float32, n)
+        d = CUDA.zeros(Float32, n)
+        ct.launch(nested_bc_kernel, cld(n, 16), a, b, c, d)
+        @test Array(d) ≈ Array(a) .+ Array(b) .* Array(c)
+    end
+
+    @testset "ifelse broadcast" begin
+        function ifelse_bc_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                  c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            mask = ta .> tb
+            ct.store(c, pid, ifelse.(mask, ta, tb))
+            return
+        end
+
+        n = 1024
+        a = CUDA.rand(Float32, n)
+        b = CUDA.rand(Float32, n)
+        c = CUDA.zeros(Float32, n)
+        ct.launch(ifelse_bc_kernel, cld(n, 16), a, b, c)
+        @test Array(c) ≈ max.(Array(a), Array(b))
+    end
+end
+
 @testset "invalidations" begin
 
 @testset "redefine kernel" begin

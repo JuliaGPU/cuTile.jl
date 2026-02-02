@@ -908,6 +908,84 @@
             end
         end
 
+        @testset "multi-arg map" begin
+            # Binary map → addf
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    tile_a = ct.load(a, pid, (16,))
+                    tile_b = ct.load(a, pid, (16,))
+                    @check "addf"
+                    result = map(+, tile_a, tile_b)
+                    ct.store(a, pid, result)
+                    return
+                end
+            end
+
+            # Broadcasting via .+ → broadcast + addf
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    row = ct.load(a, pid, (1, 16))
+                    col = ct.load(a, pid, (32, 1))
+                    @check "broadcast"
+                    @check "addf"
+                    result = row .+ col
+                    Base.donotdelete(result)
+                    return
+                end
+            end
+
+            # Ternary map → fma
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    ta = ct.load(a, pid, (16,))
+                    tb = ct.load(a, pid, (16,))
+                    tc = ct.load(a, pid, (16,))
+                    @check "fma"
+                    result = map(fma, ta, tb, tc)
+                    ct.store(a, pid, result)
+                    return
+                end
+            end
+
+            # map(max, ...) → maxf
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    ta = ct.load(a, pid, (16,))
+                    tb = ct.load(a, pid, (16,))
+                    @check "maxf"
+                    result = map(max, ta, tb)
+                    ct.store(a, pid, result)
+                    return
+                end
+            end
+        end
+
+        @testset "nested broadcast" begin
+            # a .+ b .* c → mulf then addf (no explicit broadcasted needed)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    ta = ct.load(a, pid, (16,))
+                    tb = ct.load(a, pid, (16,))
+                    tc = ct.load(a, pid, (16,))
+                    @check "mulf"
+                    @check "addf"
+                    result = ta .+ tb .* tc
+                    ct.store(a, pid, result)
+                    return
+                end
+            end
+        end
+
         @testset "remf" begin
             @test @filecheck begin
                 @check_label "entry"

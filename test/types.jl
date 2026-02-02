@@ -81,9 +81,35 @@ end
     @test (tile_a .^ tile_b) isa ct.Tile{Float32, (8, 16)}
 end
 
-@testset "integer power not supported" begin
+@testset "integer power dispatches through generic broadcast" begin
     int_tile = ct.arange((16,), Int)
-    @test_throws MethodError int_tile .^ int_tile
+    # Generic copy→map accepts this (no MethodError), but it will fail
+    # at codegen time since there's no ^ overlay for integers.
+    @test (int_tile .^ int_tile) isa ct.Tile
 end
 
+end
+
+@testset "multi-arg map" begin
+    a = ct.Tile{Float32, (16,)}()
+    b = ct.Tile{Float32, (16,)}()
+    c = ct.Tile{Float32, (16,)}()
+
+    # Binary map
+    @test map(+, a, b) isa ct.Tile{Float32, (16,)}
+
+    # Ternary map
+    @test map(fma, a, b, c) isa ct.Tile{Float32, (16,)}
+
+    # Broadcasting goes through the .op path, not map directly
+    @test (a .+ 1.0f0) isa ct.Tile{Float32, (16,)}
+    @test (1.0f0 .+ a) isa ct.Tile{Float32, (16,)}
+
+    # Broadcasting with different shapes goes through .op path
+    row = ct.Tile{Float32, (4, 1)}()
+    col = ct.Tile{Float32, (1, 16)}()
+    @test (row .+ col) isa ct.Tile{Float32, (4, 16)}
+
+    # Nested broadcast expression: a .+ b .* c
+    @test (a .+ b .* c) isa ct.Tile{Float32, (16,)}
 end
