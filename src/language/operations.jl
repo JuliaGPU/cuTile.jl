@@ -527,6 +527,46 @@ result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
 =============================================================================#
 
 """
+    mapreduce(identity, f, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
+    mapreduce(identity, f, tile1, tile2, ...; dims, init) -> Tuple{Tile...}
+
+Reduce one or more tiles along `dims` using binary function `f`.
+
+The single-tile form reduces a single tile along `dims` with identity element
+`init`. The multi-tile form reduces several same-shaped tiles simultaneously:
+`f` receives two tuples `(accumulators...)` and `(elements...)` and must return
+a tuple of updated accumulators. Each tile requires a corresponding entry in the
+`init` tuple.
+
+Only `identity` is supported as the map function.
+
+# Examples
+```julia
+sums = mapreduce(identity, +, tile; dims=2, init=zero(Float32))
+
+# Simultaneous reduction of two tiles
+vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
+                       dims=1, init=(typemin(Float32), Int32(0)))
+```
+"""
+@inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
+                                dims::Integer, init) where {T<:Number, S}
+    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
+end
+
+@inline function Base.mapreduce(::typeof(identity), f,
+                                tile1::Tile{<:Any,S}, tile2::Tile{<:Any,S},
+                                tiles::Tile{<:Any,S}...;
+                                dims::Integer,
+                                init::Tuple{Any, Any, Vararg{Any}}) where {S}
+    all_tiles = (tile1, tile2, tiles...)
+    function _combiner(args...)
+        f(_deinterleave_accs(args...), _deinterleave_elems(args...))
+    end
+    Intrinsics.reduce(all_tiles, Val(dims - 1), _combiner, init)
+end
+
+"""
     reduce(f, tile::Tile{T,S}; dims::Integer, init) -> Tile{T, reduced_shape}
 
 Reduce a tile along the specified dimension using binary function `f` with
@@ -541,15 +581,7 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
 ```
 """
 @inline function Base.reduce(f, tile::Tile{T,S}; dims::Integer, init) where {T<:Number, S}
-    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
-end
-
-@inline function Base.reduce(f, tiles::Tuple{Tile{<:Any,S}, Tile{<:Any,S}, Vararg{Tile{<:Any,S}}};
-                             dims::Integer, init::Tuple{Any, Any, Vararg{Any}}) where {S}
-    function _combiner(args...)
-        f(_deinterleave_accs(args...), _deinterleave_elems(args...))
-    end
-    Intrinsics.reduce(tiles, Val(dims - 1), _combiner, init)
+    mapreduce(identity, f, tile; dims, init)
 end
 
 """
@@ -647,7 +679,7 @@ indices = argmax(tile; dims=2)  # Column indices of max per row
         (ifelse(cond, val_acc, val_elem),
          ifelse(cond, idx_acc, idx_elem))
     end
-    _, idx = reduce(reducer, (tile, indices); dims, init=(typemin(T), Int32(0)))
+    _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemin(T), Int32(0)))
     idx .+ one(Int32)
 end
 
@@ -677,7 +709,7 @@ indices = argmin(tile; dims=2)  # Column indices of min per row
         (ifelse(cond, val_acc, val_elem),
          ifelse(cond, idx_acc, idx_elem))
     end
-    _, idx = reduce(reducer, (tile, indices); dims, init=(typemax(T), Int32(0)))
+    _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemax(T), Int32(0)))
     idx .+ one(Int32)
 end
 
