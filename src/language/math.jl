@@ -15,6 +15,8 @@ end
 @overlay Base.abs(x::T) where {T <: ScalarFloat} = Intrinsics.absf(x)
 @overlay Base.abs(x::T) where {T <: Signed} = Intrinsics.absi(x)
 
+@overlay Base.rem(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.remf(x, y)
+
 @overlay Base.fma(x::T, y::T, z::T) where {T <: ScalarFloat} = Intrinsics.fma(x, y, z)
 
 # max/min

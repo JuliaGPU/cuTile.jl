@@ -86,7 +86,8 @@ end
 # cuda_tile.absi
 @eval Intrinsics begin
     """Integer absolute value. Compiled to cuda_tile.absi."""
-    @noinline absi(x::T) where {T<:Integer} = abs(x)
+    @noinline absi(x::T) where {T<:Integer} =
+        ifelse(Core.Intrinsics.slt_int(x, zero(T)), Core.Intrinsics.neg_int(x), x)
     @noinline absi(a::Tile{T, S}) where {T<:Integer, S} = compilerbarrier(:const, a)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absi), args)

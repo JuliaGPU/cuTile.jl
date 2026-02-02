@@ -163,6 +163,7 @@ end
 # cuda_tile.remf
 @eval Intrinsics begin
     """Element-wise floating-point remainder. Compiled to cuda_tile.remf."""
+    @noinline remf(x::T, y::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
     @noinline remf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b); Tile{T, S}())
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remf), args)

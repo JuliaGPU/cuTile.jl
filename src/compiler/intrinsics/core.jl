@@ -824,6 +824,7 @@ end
     Element-wise conditional selection.
     Compiled to cuda_tile.select.
     """
+    @noinline select(cond::Bool, x::T, y::T) where {T} = Core.ifelse(cond, x, y)
     @noinline function select(cond::Tile{Bool, S}, x::Tile{T, S}, y::Tile{T, S}) where {T, S}
         Tile{T, S}()
     end
