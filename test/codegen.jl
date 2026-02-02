@@ -1706,6 +1706,31 @@ end
         end
     end
 
+    @testset "method error detection" begin
+        spec = ct.ArraySpec{1}(16, true)
+
+        @testset "no matching method produces MethodError" begin
+            only_ints(x::Int) = x
+            @test_throws "MethodError during Tile IR compilation" begin
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    tile = ct.load(a, ct.bid(1), (16,))
+                    only_ints(tile)
+                    return
+                end
+            end
+        end
+
+        @testset "unsupported function produces clear error" begin
+            @test_throws "Unsupported function call during Tile IR compilation" begin
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    tile = ct.load(a, ct.bid(1), (16,))
+                    println(tile)
+                    return
+                end
+            end
+        end
+    end
+
     #=========================================================================
      Tile Shape Validation
     =========================================================================#
