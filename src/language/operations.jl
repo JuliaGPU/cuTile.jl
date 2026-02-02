@@ -6,6 +6,12 @@
     (V, _extract_shape(Base.tail(s))...)
 @inline _extract_shape(::Tuple{}) = ()
 
+# Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
+@inline _deinterleave_accs(a, e, rest...) = (a, _deinterleave_accs(rest...)...)
+@inline _deinterleave_accs() = ()
+@inline _deinterleave_elems(a, e, rest...) = (e, _deinterleave_elems(rest...)...)
+@inline _deinterleave_elems() = ()
+
 #=============================================================================
  Load/Store
 =============================================================================#
@@ -538,8 +544,12 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
 end
 
-@inline function Base.reduce(f, tiles::T; dims::Integer, init::Tuple) where {T<:Tuple{Tile,Vararg{Tile}}}
-    Intrinsics.reduce(tiles, Val(dims - 1), f, init)
+@inline function Base.reduce(f, tiles::Tuple{Tile{<:Any,S}, Tile{<:Any,S}, Vararg{Tile{<:Any,S}}};
+                             dims::Integer, init::Tuple{Any, Any, Vararg{Any}}) where {S}
+    function _combiner(args...)
+        f(_deinterleave_accs(args...), _deinterleave_elems(args...))
+    end
+    Intrinsics.reduce(tiles, Val(dims - 1), _combiner, init)
 end
 
 """
@@ -628,7 +638,9 @@ indices = argmax(tile; dims=2)  # Column indices of max per row
                       ntuple(i -> i == dims ? n : 1, length(S)))
     indices = broadcast_to(indices, S)
 
-    @noinline function reducer(val_acc, val_elem, idx_acc, idx_elem)
+    function reducer(accs, elems)
+        val_acc, idx_acc = accs
+        val_elem, idx_elem = elems
         strict = val_acc > val_elem
         eq = val_acc == val_elem
         cond = strict | (eq & (idx_acc < idx_elem))
@@ -656,7 +668,9 @@ indices = argmin(tile; dims=2)  # Column indices of min per row
                       ntuple(i -> i == dims ? n : 1, length(S)))
     indices = broadcast_to(indices, S)
 
-    @noinline function reducer(val_acc, val_elem, idx_acc, idx_elem)
+    function reducer(accs, elems)
+        val_acc, idx_acc = accs
+        val_elem, idx_elem = elems
         strict = val_elem > val_acc
         eq = val_acc == val_elem
         cond = strict | (eq & (idx_acc < idx_elem))
