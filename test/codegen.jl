@@ -1841,6 +1841,7 @@ end
     @testset "method error detection" begin
         spec = ct.ArraySpec{1}(16, true)
 
+        isdefined(Core, :throw_methoderror) &&
         @testset "no matching method produces MethodError" begin
             only_ints(x::Int) = x
             @test_throws "MethodError during Tile IR compilation" begin

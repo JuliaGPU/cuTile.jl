@@ -69,9 +69,12 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     #       However, we currently trigger this when emitting Julia intrinsics.
     #       We should switch to our own intrinsics entirely, which are only invoked.
 
-    if func === Core.throw_methoderror
-        _throw_method_error(ctx, call_args)
-    elseif func === Core.getfield
+    @static if isdefined(Core, :throw_methoderror)
+        if func === Core.throw_methoderror
+            _throw_method_error(ctx, call_args)
+        end
+    end
+    if func === Core.getfield
         tv = emit_getfield!(ctx, call_args, result_type)
         tv !== nothing && return tv
     elseif func === Base.getindex
@@ -98,8 +101,10 @@ function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     func = resolve_function(ctx, expr.args[2])
     call_args = expr.args[3:end]
 
-    if func === Core.throw_methoderror
-        _throw_method_error(ctx, call_args)
+    @static if isdefined(Core, :throw_methoderror)
+        if func === Core.throw_methoderror
+            _throw_method_error(ctx, call_args)
+        end
     end
 
     result = emit_intrinsic!(ctx, func, call_args)
