@@ -60,8 +60,8 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     j = Int32(1)
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-        tw = ct.load(W, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
-        tb = ct.load(B, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+        tw = reshape(ct.load(W, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero), (1, TILE_N[]))
+        tb = reshape(ct.load(B, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero), (1, TILE_N[]))
         ty = (tx .- mean) .* rstd
         ty = ty .* tw .+ tb
         ct.store(Y, (bid_m, j), ty)
@@ -89,7 +89,7 @@ bid_m and j are 1-indexed (block ID and tile index).
 """
 @inline function bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
     tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
-    tw = ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
+    tw = reshape(ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
     tdy = ct.load(DY, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
     xhat = (tx .- mean) .* rstd
     wdy = tw .* tdy
