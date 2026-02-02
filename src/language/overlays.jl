@@ -37,6 +37,11 @@ for T in UnsignedInts, S in UnsignedInts
     end
 end
 
+# Bool to integer (zero-extend: false→0, true→1)
+for T in (SignedInts..., UnsignedInts...)
+    @eval @overlay $T(x::Bool) = Intrinsics.exti(x, $T, SignednessUnsigned)
+end
+
 # Integer extension/truncation (via rem) - T and S both used in body
 @overlay Base.rem(x::T, ::Type{S}) where {T <: Signed, S <: Signed} =
     sizeof(S) > sizeof(T) ? Intrinsics.exti(x, S, SignednessSigned) :

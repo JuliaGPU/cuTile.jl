@@ -141,6 +141,11 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
     # Try to get the object as a CGVal
     obj_tv = emit_value!(ctx, obj_arg)
 
+    # Tuple indexing: extract component by integer index
+    if obj_tv !== nothing && obj_tv.tuple !== nothing && field isa Integer
+        return emit_value!(ctx, obj_tv.tuple[field])
+    end
+
     # If obj is a lazy arg_ref, extend the chain
     if obj_tv !== nothing && is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref
@@ -260,8 +265,27 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     # 4. Map arguments: Argument(1) = function singleton (ghost),
     #    Argument(2..N+1) = block_args[1..N]
     sub_ctx[Argument(1)] = ghost_value(sci.argtypes[1])
-    for (i, (barg, btype, jltype)) in enumerate(zip(block_args, block_type_ids, arg_types))
-        sub_ctx[Argument(i + 1)] = CGVal(barg, btype, jltype)
+    if mi.def.isva
+        # Varargs: last argument in the compiled method is a Tuple packing the
+        # trailing positional args.  Map fixed args 1:1, then pack the rest
+        # into a tuple CGVal so getfield(tuple, i) resolves to block_args[i].
+        n_fixed = length(sci.argtypes) - 2   # excluding ghost + varargs tuple
+        for i in 1:n_fixed
+            sub_ctx[Argument(i + 1)] = CGVal(block_args[i], block_type_ids[i], arg_types[i])
+        end
+        # Pack remaining block_args into a virtual tuple for the varargs argument
+        va_offset = n_fixed + length(sci.argtypes)  # high indices to avoid collision
+        tuple_components = Any[]
+        for (j, i) in enumerate((n_fixed + 1):length(block_args))
+            sub_ctx[Argument(va_offset + j)] = CGVal(block_args[i], block_type_ids[i], arg_types[i])
+            push!(tuple_components, Argument(va_offset + j))
+        end
+        constants = Vector{Any}(fill(nothing, length(tuple_components)))
+        sub_ctx[Argument(length(sci.argtypes))] = tuple_value(sci.argtypes[end], tuple_components, constants)
+    else
+        for (i, (barg, btype, jltype)) in enumerate(zip(block_args, block_type_ids, arg_types))
+            sub_ctx[Argument(i + 1)] = CGVal(barg, btype, jltype)
+        end
     end
 
     # 5. Emit body (skip terminator — we yield manually)
@@ -270,7 +294,17 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     # 6. Extract return value and yield
     ret = sci.entry.terminator::ReturnNode
     tv = emit_value!(sub_ctx, ret.val)
-    results = tv.v isa Vector ? tv.v : [tv.v]
+    if tv.tuple !== nothing
+        # Tuple return: resolve each component to a concrete Value
+        results = Value[]
+        for ref in tv.tuple
+            component = emit_value!(sub_ctx, ref)
+            component === nothing && error("Cannot resolve tuple component in subprogram return")
+            push!(results, component.v::Value)
+        end
+    else
+        results = tv.v isa Vector ? tv.v : [tv.v]
+    end
     encode_YieldOp!(ctx.cb, results)
     return results
 end

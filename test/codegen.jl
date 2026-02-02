@@ -527,6 +527,78 @@
                     return
                 end
             end
+
+            # any
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    mask = tile .> 0.0f0
+                    @check "reduce"
+                    @check "ori"
+                    Base.donotdelete(any(mask; dims=2))
+                    return
+                end
+            end
+
+            # all
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    mask = tile .> 0.0f0
+                    @check "reduce"
+                    @check "andi"
+                    Base.donotdelete(all(mask; dims=2))
+                    return
+                end
+            end
+
+            # count
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "exti"
+                    @check "reduce"
+                    @check "addi"
+                    Base.donotdelete(count(tile .> 0.0f0; dims=2))
+                    return
+                end
+            end
+
+            # argmax
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "iota"
+                    @check "reduce"
+                    @check "cmpf"
+                    @check "select"
+                    Base.donotdelete(argmax(tile; dims=2))
+                    return
+                end
+            end
+
+            # argmin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "iota"
+                    @check "reduce"
+                    @check "cmpi"
+                    @check "select"
+                    Base.donotdelete(argmin(tile; dims=2))
+                    return
+                end
+            end
         end
 
         @testset "select" begin

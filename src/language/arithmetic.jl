@@ -59,6 +59,8 @@
 # bitwise
 @overlay Base.:&(x::T, y::T) where {T <: ScalarInt} = Intrinsics.andi(x, y)
 @overlay Base.:|(x::T, y::T) where {T <: ScalarInt} = Intrinsics.ori(x, y)
+@overlay Base.:&(x::Bool, y::Bool) = Intrinsics.andi(x, y)
+@overlay Base.:|(x::Bool, y::Bool) = Intrinsics.ori(x, y)
 @overlay Base.xor(x::T, y::T) where {T <: ScalarInt} = Intrinsics.xori(x, y)
 @overlay Base.:~(x::T) where {T <: Signed} = Intrinsics.xori(x, T(-1))
 @overlay Base.:~(x::T) where {T <: Unsigned} = Intrinsics.xori(x, ~T(0))

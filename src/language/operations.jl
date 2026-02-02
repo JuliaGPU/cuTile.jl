@@ -6,6 +6,12 @@
     (V, _extract_shape(Base.tail(s))...)
 @inline _extract_shape(::Tuple{}) = ()
 
+# Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
+@inline _deinterleave_accs(a, e, rest...) = (a, _deinterleave_accs(rest...)...)
+@inline _deinterleave_accs() = ()
+@inline _deinterleave_elems(a, e, rest...) = (e, _deinterleave_elems(rest...)...)
+@inline _deinterleave_elems() = ()
+
 #=============================================================================
  Load/Store
 =============================================================================#
@@ -521,6 +527,46 @@ result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
 =============================================================================#
 
 """
+    mapreduce(identity, f, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
+    mapreduce(identity, f, tile1, tile2, ...; dims, init) -> Tuple{Tile...}
+
+Reduce one or more tiles along `dims` using binary function `f`.
+
+The single-tile form reduces a single tile along `dims` with identity element
+`init`. The multi-tile form reduces several same-shaped tiles simultaneously:
+`f` receives two tuples `(accumulators...)` and `(elements...)` and must return
+a tuple of updated accumulators. Each tile requires a corresponding entry in the
+`init` tuple.
+
+Only `identity` is supported as the map function.
+
+# Examples
+```julia
+sums = mapreduce(identity, +, tile; dims=2, init=zero(Float32))
+
+# Simultaneous reduction of two tiles
+vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
+                       dims=1, init=(typemin(Float32), Int32(0)))
+```
+"""
+@inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
+                                dims::Integer, init) where {T<:Number, S}
+    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
+end
+
+@inline function Base.mapreduce(::typeof(identity), f,
+                                tile1::Tile{<:Any,S}, tile2::Tile{<:Any,S},
+                                tiles::Tile{<:Any,S}...;
+                                dims::Integer,
+                                init::Tuple{Any, Any, Vararg{Any}}) where {S}
+    all_tiles = (tile1, tile2, tiles...)
+    function _combiner(args...)
+        f(_deinterleave_accs(args...), _deinterleave_elems(args...))
+    end
+    Intrinsics.reduce(all_tiles, Val(dims - 1), _combiner, init)
+end
+
+"""
     reduce(f, tile::Tile{T,S}; dims::Integer, init) -> Tile{T, reduced_shape}
 
 Reduce a tile along the specified dimension using binary function `f` with
@@ -535,7 +581,7 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
 ```
 """
 @inline function Base.reduce(f, tile::Tile{T,S}; dims::Integer, init) where {T<:Number, S}
-    Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
+    mapreduce(identity, f, tile; dims, init)
 end
 
 """
@@ -545,7 +591,7 @@ Sum reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.sum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(+, tile, dims, zero(T))
+    reduce(+, tile; dims, init=zero(T))
 
 """
     prod(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -554,7 +600,7 @@ Product reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.prod(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(*, tile, dims, one(T))
+    reduce(*, tile; dims, init=one(T))
 
 """
     maximum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -563,7 +609,7 @@ Maximum reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.maximum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(max, tile, dims, typemin(T))
+    reduce(max, tile; dims, init=typemin(T))
 
 """
     minimum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
@@ -572,24 +618,101 @@ Minimum reduction along the specified axis/axes (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    _tile_reduce(min, tile, dims, typemax(T))
+    reduce(min, tile; dims, init=typemax(T))
 
-# Single-dim dispatch
-@inline _tile_reduce(f, tile::Tile{T}, dims::Integer, init) where {T} =
-    Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
+"""
+    any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
 
-# Multi-dim reduction: chain single-dim reductions.
-# Since reduced dims become size 1 (not removed), axis indices stay valid.
+Logical OR reduction along the specified axis (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.any(tile::Tile{Bool,S}; dims::Integer) where {S} =
+    reduce(|, tile; dims, init=false)
 
-# Multi-dim reduction: chain single-dim reductions.
-# Since reduced dims become size 1 (not removed), axis indices stay valid.
-@inline function _reduce_multi(f, tile, dims::Tuple{Int, Vararg}, init)
-    tile = Intrinsics.reduce(tile, Val(first(dims) - 1), f, init)
-    _reduce_multi(f, tile, Base.tail(dims), init)
+"""
+    all(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+
+Logical AND reduction along the specified axis (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.all(tile::Tile{Bool,S}; dims::Integer) where {S} =
+    reduce(&, tile; dims, init=true)
+
+"""
+    count(tile::Tile{Bool,S}; dims) -> Tile{Int32, reduced_shape}
+
+Count true elements along `dims` (1-indexed). Apply predicates via
+broadcasting before calling count:
+
+# Example
+```julia
+n_positive = count(tile .> 0.0f0; dims=1)
+```
+"""
+@inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
+    sum(astype(tile, Int32); dims)
 end
-@inline function _reduce_multi(f, tile, dims::Tuple{Int}, init)
-    Intrinsics.reduce(tile, Val(first(dims) - 1), f, init)
+
+"""
+    argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
+
+Return 1-indexed positions of maximum values along `dims`.
+Ties are broken by smallest index.
+
+# Example
+```julia
+indices = argmax(tile; dims=2)  # Column indices of max per row
+```
+"""
+@inline function Base.argmax(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
+    n = S[dims]
+    indices = reshape(Intrinsics.iota((n,), Int32),
+                      ntuple(i -> i == dims ? n : 1, length(S)))
+    indices = broadcast_to(indices, S)
+
+    function reducer(accs, elems)
+        val_acc, idx_acc = accs
+        val_elem, idx_elem = elems
+        strict = val_acc > val_elem
+        eq = val_acc == val_elem
+        cond = strict | (eq & (idx_acc < idx_elem))
+        (ifelse(cond, val_acc, val_elem),
+         ifelse(cond, idx_acc, idx_elem))
+    end
+    _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemin(T), Int32(0)))
+    idx .+ one(Int32)
 end
+
+"""
+    argmin(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
+
+Return 1-indexed positions of minimum values along `dims`.
+Ties are broken by smallest index.
+
+# Example
+```julia
+indices = argmin(tile; dims=2)  # Column indices of min per row
+```
+"""
+@inline function Base.argmin(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
+    n = S[dims]
+    indices = reshape(Intrinsics.iota((n,), Int32),
+                      ntuple(i -> i == dims ? n : 1, length(S)))
+    indices = broadcast_to(indices, S)
+
+    function reducer(accs, elems)
+        val_acc, idx_acc = accs
+        val_elem, idx_elem = elems
+        strict = val_elem > val_acc
+        eq = val_acc == val_elem
+        cond = strict | (eq & (idx_acc < idx_elem))
+        (ifelse(cond, val_acc, val_elem),
+         ifelse(cond, idx_acc, idx_elem))
+    end
+    _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemax(T), Int32(0)))
+    idx .+ one(Int32)
+end
+
 
 """
     dropdims(tile::Tile{T,S}; dims) -> Tile{T, squeezed_shape}
@@ -626,7 +749,7 @@ Supported functions: `+`, `*`, `max`, `min`.
 """
 @inline function Base.accumulate(f, tile::Tile{T,S}; dims::Integer,
                                  init, rev::Bool=false) where {T<:Number, S}
-    Intrinsics.scan(tile, Val(dims - 1), f, T(init), rev)
+    Intrinsics.scan((tile,), Val(dims - 1), f, (T(init),), rev)[1]
 end
 
 """

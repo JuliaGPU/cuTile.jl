@@ -2040,6 +2040,151 @@ end
     end
 end
 
+@testset "any / all" begin
+    TILE_SIZE = 16
+
+    function any_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1},
+                        tileSz::ct.Constant{Int})
+        tile = ct.load(a, ct.bid(1), (tileSz[],))
+        mask = tile .> 0.0f0
+        result = any(mask; dims=1)
+        ct.store(b, ct.bid(1), ct.astype(result, Int32))
+        return nothing
+    end
+
+    function all_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1},
+                        tileSz::ct.Constant{Int})
+        tile = ct.load(a, ct.bid(1), (tileSz[],))
+        mask = tile .> 0.0f0
+        result = all(mask; dims=1)
+        ct.store(b, ct.bid(1), ct.astype(result, Int32))
+        return nothing
+    end
+
+    N = 64
+    n_blocks = cld(N, TILE_SIZE)
+
+    # All positive → any=true, all=true
+    a_pos = CUDA.ones(Float32, N)
+    b_any = CUDA.zeros(Int32, n_blocks)
+    b_all = CUDA.zeros(Int32, n_blocks)
+    ct.launch(any_kernel, n_blocks, a_pos, b_any, ct.Constant(TILE_SIZE))
+    ct.launch(all_kernel, n_blocks, a_pos, b_all, ct.Constant(TILE_SIZE))
+    @test all(Array(b_any) .== 1)
+    @test all(Array(b_all) .== 1)
+
+    # All negative → any=false, all=false
+    a_neg = CUDA.fill(Float32(-1), N)
+    b_any = CUDA.zeros(Int32, n_blocks)
+    b_all = CUDA.zeros(Int32, n_blocks)
+    ct.launch(any_kernel, n_blocks, a_neg, b_any, ct.Constant(TILE_SIZE))
+    ct.launch(all_kernel, n_blocks, a_neg, b_all, ct.Constant(TILE_SIZE))
+    @test all(Array(b_any) .== 0)
+    @test all(Array(b_all) .== 0)
+
+    # Mixed → any=true, all=false (first element positive, rest negative)
+    a_mix = CUDA.fill(Float32(-1), N)
+    # Set first element of each tile to positive
+    a_mix_cpu = Array(a_mix)
+    for i in 1:TILE_SIZE:N
+        a_mix_cpu[i] = 1.0f0
+    end
+    a_mix = CuArray(a_mix_cpu)
+    b_any = CUDA.zeros(Int32, n_blocks)
+    b_all = CUDA.zeros(Int32, n_blocks)
+    ct.launch(any_kernel, n_blocks, a_mix, b_any, ct.Constant(TILE_SIZE))
+    ct.launch(all_kernel, n_blocks, a_mix, b_all, ct.Constant(TILE_SIZE))
+    @test all(Array(b_any) .== 1)
+    @test all(Array(b_all) .== 0)
+end
+
+@testset "count" begin
+    TILE_SIZE = 16
+
+    function count_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1},
+                          tileSz::ct.Constant{Int})
+        tile = ct.load(a, ct.bid(1), (tileSz[],))
+        result = count(tile .> 0.0f0; dims=1)
+        ct.store(b, ct.bid(1), result)
+        return nothing
+    end
+
+    N = 64
+    n_blocks = cld(N, TILE_SIZE)
+
+    # Known pattern: 3 positive per tile
+    a_cpu = fill(Float32(-1), N)
+    for i in 1:TILE_SIZE:N
+        a_cpu[i] = 1.0f0
+        a_cpu[i+1] = 2.0f0
+        a_cpu[i+2] = 3.0f0
+    end
+    a = CuArray(a_cpu)
+    b = CUDA.zeros(Int32, n_blocks)
+
+    ct.launch(count_kernel, n_blocks, a, b, ct.Constant(TILE_SIZE))
+
+    @test all(Array(b) .== 3)
+end
+
+@testset "argmax / argmin" begin
+    TILE_SIZE = 16
+
+    function argmax_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Int32,2})
+        tile = ct.load(a, ct.bid(1), (4, 16))
+        result = argmax(tile; dims=2)
+        ct.store(b, ct.bid(1), result)
+        return nothing
+    end
+
+    function argmin_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Int32,2})
+        tile = ct.load(a, ct.bid(1), (4, 16))
+        result = argmin(tile; dims=2)
+        ct.store(b, ct.bid(1), result)
+        return nothing
+    end
+
+    m, n = 4, 16
+    # Create data with known argmax/argmin positions
+    a_cpu = zeros(Float32, m, n)
+    for row in 1:m
+        for col in 1:n
+            a_cpu[row, col] = Float32(col)  # max at col 16, min at col 1
+        end
+    end
+    a = CuArray(a_cpu)
+    b_max = CUDA.zeros(Int32, m, 1)
+    b_min = CUDA.zeros(Int32, m, 1)
+
+    ct.launch(argmax_kernel, 1, a, b_max)
+    ct.launch(argmin_kernel, 1, a, b_min)
+
+    b_max_cpu = Array(b_max)
+    b_min_cpu = Array(b_min)
+
+    # argmax should return 16 (1-indexed) for all rows
+    @test all(b_max_cpu .== 16)
+    # argmin should return 1 (1-indexed) for all rows
+    @test all(b_min_cpu .== 1)
+
+    # Test with random data
+    a_rand = CUDA.rand(Float32, m, n)
+    b_max_rand = CUDA.zeros(Int32, m, 1)
+    b_min_rand = CUDA.zeros(Int32, m, 1)
+
+    ct.launch(argmax_kernel, 1, a_rand, b_max_rand)
+    ct.launch(argmin_kernel, 1, a_rand, b_min_rand)
+
+    a_rand_cpu = Array(a_rand)
+    # Compare with CPU argmax/argmin (Julia returns CartesianIndex, extract column)
+    for row in 1:m
+        expected_max = argmax(a_rand_cpu[row, :])
+        expected_min = argmin(a_rand_cpu[row, :])
+        @test Array(b_max_rand)[row, 1] == expected_max
+        @test Array(b_min_rand)[row, 1] == expected_min
+    end
+end
+
 @testset "transpose with hints" begin
     function transpose_with_hints(x::ct.TileArray{Float32,2},
                                   y::ct.TileArray{Float32,2})
