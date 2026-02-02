@@ -130,8 +130,7 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 |-----------|-------------|
 | `+`, `-` | Element-wise (same shape only) |
 | `tile * scalar`, `tile / scalar` | Scalar multiply/divide |
-| `.+`, `.-`, `.*`, `./` | Broadcasting element-wise |
-| `.^` | Power (float only, broadcast) |
+| `.+`, `.-`, `.*`, `./`, `.^` | Broadcasting element-wise |
 
 ### Construction
 | Operation | Description |
@@ -157,6 +156,14 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 | `a * b` | Matrix multiplication: `a @ b` |
 | `muladd(a, b, acc)` | Matrix multiply-accumulate: `a * b + acc` |
 
+### Higher-Order Functions
+| Operation | Description |
+|-----------|-------------|
+| `map(f, tiles...)` | Apply function element-wise (same shape) |
+| `f.(tiles...)`, `broadcast(f, tiles...)` | Apply function with shape broadcasting |
+| `reduce(f, tile; dims, init)` | Reduction with arbitrary function |
+| `accumulate(f, tile; dims, init, rev)` | Scan/prefix-sum with arbitrary function |
+
 ### Reductions
 | Operation | Description |
 |-----------|-------------|
@@ -169,23 +176,21 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 | `count(tile; dims)` | Count `true` elements along axis |
 | `argmax(tile; dims)` | 1-based index of maximum along axis |
 | `argmin(tile; dims)` | 1-based index of minimum along axis |
-| `reduce(f, tile; dims, init)` | Custom reduction |
 | `cumsum(tile; dims, rev)` | Cumulative sum |
 | `cumprod(tile; dims, rev)` | Cumulative product |
-| `accumulate(f, tile; dims, init, rev)` | Custom scan/prefix-sum |
 
 ### Math
 | Operation | Description |
 |-----------|-------------|
-| `sqrt.(tile)`, `sqrt(x)` | Square root (tile broadcast or scalar) |
-| `rsqrt.(tile)`, `rsqrt(x)` | Reciprocal square root |
-| `exp.(tile)`, `exp(x)` | Natural exponential |
-| `exp2.(tile)`, `exp2(x)` | Base-2 exponential |
-| `log.(tile)`, `log(x)` | Natural logarithm |
-| `log2.(tile)`, `log2(x)` | Base-2 logarithm |
+| `sqrt.(tile)` | Square root |
+| `rsqrt.(tile)` | Reciprocal square root |
+| `exp.(tile)` | Natural exponential |
+| `exp2.(tile)` | Base-2 exponential |
+| `log.(tile)` | Natural logarithm |
+| `log2.(tile)` | Base-2 logarithm |
 | `sin.(tile)`, `cos.(tile)`, etc. | Trigonometric functions |
-| `fma.(a, b, c)`, `fma(x, y, z)` | Fused multiply-add (tile broadcast or scalar) |
-| `abs.(tile)`, `abs(x)` | Absolute value |
+| `fma.(a, b, c)` | Fused multiply-add |
+| `abs.(tile)` | Absolute value |
 | `max(a, b)`, `min(a, b)` | Maximum/minimum (scalars) |
 
 ### Comparison
@@ -312,9 +317,14 @@ ct.launch(kernel, grid, a, b, ct.Constant(16))
 ### Broadcasting and Math Functions
 
 Python's operators and math functions work directly on tiles with automatic broadcasting.
-Julia cuTile follows standard Julia conventions: Operators and math functions can generally only be applied to scalars, while elementwise application requires broadcast syntax (`.+`, `exp.(...)`, etc).
+Julia cuTile follows standard Julia conventions: operators and math functions apply to
+scalars, while element-wise application requires broadcast syntax (`.+`, `exp.(...)`, etc).
 
-Some exceptions:
+`map(f, tiles...)` applies an arbitrary function element-wise to tiles of the same shape.
+Broadcast syntax (`.+`, `f.(x, y)`, etc.) combines `map` with automatic shape broadcasting,
+so any function that works on scalars "just works" when broadcast over tiles.
+
+Some non-broadcast shortcuts:
 
 - Scaling operations (`*` and `/`) can be applied directly to tiles and scalars.
 - Addition and subtraction can be applied directly to tiles with matching shapes.
@@ -334,6 +344,7 @@ a .* b             # Element-wise multiply (broadcast)
 a * b              # Matrix multiplication
 tile * 2.0f0       # Scalar multiply
 result = exp.(tile)
+map(x -> x * x, tile)  # map with arbitrary lambda
 ```
 
 ### Reductions
@@ -355,6 +366,25 @@ result = dropdims(sum(tile; dims=2); dims=2)  # (M, N) → (M,)
 ### Store reshaping
 
 `ct.store` automatically reshapes the tile to match the target array's rank by dropping singleton dimensions (e.g., storing a `(1, N)` tile into a 1D array reshapes it to `(N,)`). Scalar `()` tiles are reshaped to `(1,)`.
+
+### Broadcasting shape alignment
+
+cuTile.jl uses Julia's standard left-aligned broadcast shape rules: dimensions are matched
+starting from the first (leftmost) dimension. cuTile Python uses NumPy-style right-aligned
+rules, where dimensions are matched from the last (rightmost) dimension.
+
+This means a 1D `(N,)` tile cannot broadcast with a 2D `(M, N)` tile in Julia, because
+dimension 1 has size `N` vs `M`. In NumPy/Python, `(N,)` would be right-aligned to `(1, N)`
+and broadcast to `(M, N)`.
+
+Use `reshape` to get the desired alignment, just as with regular Julia arrays:
+
+```julia
+# Julia: explicitly reshape to align dimensions
+a = ct.load(...)              # (N,)
+b = ct.load(...)              # (M, N)
+result = reshape(a, (1, N)) .+ b  # (1, N) .+ (M, N) → (M, N)
+```
 
 
 ## Limitations
