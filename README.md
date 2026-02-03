@@ -148,7 +148,7 @@ uses standard Julia syntax and is overlaid on `Base`.
 | Operation | Description |
 |-----------|-------------|
 | `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
-| `ct.transpose(tile)` | Transpose 2D tile |
+| `transpose(tile)` | Transpose 2D tile |
 | `reshape(tile, shape)` | Reshape (same element count) |
 | `ct.permute(tile, perm)` | Permute dimensions |
 | `ct.extract(tile, index, shape)` | Extract sub-tile |

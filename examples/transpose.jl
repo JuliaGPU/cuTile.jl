@@ -12,7 +12,7 @@ function transpose_kernel(x::ct.TileArray{T,2}, y::ct.TileArray{T,2},
     bidx = ct.bid(1)
     bidy = ct.bid(2)
     input_tile = ct.load(x, (bidx, bidy), (tm[], tn[]))
-    transposed_tile = ct.transpose(input_tile)
+    transposed_tile = transpose(input_tile)
     ct.store(y, (bidy, bidx), transposed_tile)
     return
 end

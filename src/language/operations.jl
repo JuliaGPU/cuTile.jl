@@ -423,7 +423,7 @@ zeros_tile = ct.zeros((32, 32), Float32)
  Shape & DType
 =============================================================================#
 
-public cat, broadcast_to, reshape, permute, transpose, astype
+public cat, broadcast_to, permute, astype
 
 """
     cat(tiles::Tuple{Tile, Tile}, axis::Int) -> Tile
@@ -500,8 +500,9 @@ permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
     transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
 
 Transpose a 2D tile, swapping its dimensions.
+Equivalent to `permute(tile, (2, 1))`.
 """
-@inline transpose(tile::Tile{T}) where {T} =
+@inline Base.transpose(tile::Tile{T}) where {T} =
     Intrinsics.transpose(tile)
 
 """
