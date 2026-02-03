@@ -119,7 +119,7 @@ end
         bidx = ct.bid(1)
         bidy = ct.bid(2)
         tile = ct.load(x, (bidx, bidy), (32, 32))
-        transposed = ct.transpose(tile)
+        transposed = transpose(tile)
         ct.store(y, (bidy, bidx), transposed)
         return
     end
@@ -2254,7 +2254,7 @@ end
         bidy = ct.bid(2)
         # Load with high latency
         tile = ct.load(x, (bidx, bidy), (32, 32); latency=9)
-        transposed = ct.transpose(tile)
+        transposed = transpose(tile)
         # Store with lower latency
         ct.store(y, (bidy, bidx), transposed; latency=4)
         return nothing

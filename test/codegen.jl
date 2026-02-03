@@ -421,7 +421,7 @@
                     bidy = ct.bid(2)
                     tile = ct.load(a, (bidx, bidy), (32, 64))
                     @check "permute"
-                    transposed = ct.transpose(tile)
+                    transposed = transpose(tile)
                     ct.store(b, (bidy, bidx), transposed)
                     return
                 end
@@ -1388,7 +1388,7 @@ end
                 @check "load_view_tko"
                 input_tile = ct.load(x, (bidx, bidy), (tm[], tn[]))
                 @check "permute"
-                transposed_tile = ct.transpose(input_tile)
+                transposed_tile = transpose(input_tile)
                 @check "store_view_tko"
                 ct.store(y, (bidy, bidx), transposed_tile)
                 @check "return"

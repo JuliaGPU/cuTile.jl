@@ -12,7 +12,7 @@ def transpose_cutile_kernel(input, output, tile_m: ct.Constant[int], tile_n: ct.
     pid_m = ct.bid(0)
     pid_n = ct.bid(1)
     tile = ct.load(input, index=(pid_m, pid_n), shape=(tile_m, tile_n))
-    tile_t = ct.transpose(tile)
+    tile_t = transpose(tile)
     ct.store(output, index=(pid_n, pid_m), tile=tile_t)
 
 
