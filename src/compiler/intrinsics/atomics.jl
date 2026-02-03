@@ -57,24 +57,24 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     is_tilearray = arg_idx !== nothing && is_destructured_arg(ctx, arg_idx)
 
     if !is_tilearray
-        error("atomic_cas requires a TileArray argument")
+        throw(IRError("atomic_cas requires a TileArray argument"))
     end
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
-    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    isempty(ptr_vals) && throw(IRError("Cannot get ptr from TileArray argument"))
     array_val = ptr_vals[1]
     tilearray_type = get_arg_type(ctx, arg_idx)
     elem_type = eltype(tilearray_type)
 
     # Get expected and desired values
     expected_tv = emit_value!(ctx, args[3])
-    expected_tv === nothing && error("atomic_cas requires expected value")
+    expected_tv === nothing && throw(IRError("atomic_cas requires expected value"))
     desired_tv = emit_value!(ctx, args[4])
-    desired_tv === nothing && error("atomic_cas requires desired value")
+    desired_tv === nothing && throw(IRError("atomic_cas requires desired value"))
 
     # Get memory order and scope from args
-    memory_order = @something get_constant(ctx, args[5]) error("atomic_cas requires constant memory_order")
-    memory_scope = @something get_constant(ctx, args[6]) error("atomic_cas requires constant memory_scope")
+    memory_order = @something get_constant(ctx, args[5]) throw(IRError("atomic_cas requires constant memory_order"))
+    memory_scope = @something get_constant(ctx, args[6]) throw(IRError("atomic_cas requires constant memory_scope"))
 
     # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -117,22 +117,22 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     is_tilearray = arg_idx !== nothing && is_destructured_arg(ctx, arg_idx)
 
     if !is_tilearray
-        error("atomic operations require a TileArray argument")
+        throw(IRError("atomic operations require a TileArray argument"))
     end
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
-    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    isempty(ptr_vals) && throw(IRError("Cannot get ptr from TileArray argument"))
     array_val = ptr_vals[1]
     tilearray_type = get_arg_type(ctx, arg_idx)
     elem_type = eltype(tilearray_type)
 
     # Get update value
     val_tv = emit_value!(ctx, args[3])
-    val_tv === nothing && error("atomic operation requires value")
+    val_tv === nothing && throw(IRError("atomic operation requires value"))
 
     # Get memory order and scope from args
-    memory_order = @something get_constant(ctx, args[4]) error("atomic operation requires constant memory_order")
-    memory_scope = @something get_constant(ctx, args[5]) error("atomic operation requires constant memory_scope")
+    memory_order = @something get_constant(ctx, args[4]) throw(IRError("atomic operation requires constant memory_order"))
+    memory_scope = @something get_constant(ctx, args[5]) throw(IRError("atomic operation requires constant memory_scope"))
 
     # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)

@@ -16,7 +16,7 @@ Extract tile shape tuple from a Val{Shape} argument.
 """
 function get_tile_shape_tuple(ctx::CGCtx, arg)
     shape = get_constant(ctx, arg)
-    shape isa Tuple || error("make_partition_view() shape must be a compile-time constant tuple")
+    shape isa Tuple || throw(IRError("make_partition_view() shape must be a compile-time constant tuple"))
     shape_vec = collect(Int, shape)
     validate_tile_shape(shape_vec, "load")
     shape_vec
@@ -53,16 +53,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
 
     # args: (partition_view, axis)
     pv_arg = emit_value!(ctx, args[1])
-    pv_arg === nothing && error("get_index_space_shape() requires a PartitionView argument")
-    pv_arg.v === nothing && error("get_index_space_shape() requires a materialized PartitionView")
+    pv_arg === nothing && throw(IRError("get_index_space_shape() requires a PartitionView argument"))
+    pv_arg.v === nothing && throw(IRError("get_index_space_shape() requires a materialized PartitionView"))
 
     # Get axis (0-indexed)
     axis = get_constant(ctx, args[2])
-    axis === nothing && error("get_index_space_shape() axis must be a compile-time constant")
+    axis === nothing && throw(IRError("get_index_space_shape() axis must be a compile-time constant"))
     axis = Int(axis)
 
     # Get ndim from the PartitionView constant field
-    pv_arg.constant === nothing && error("get_index_space_shape(): PartitionView missing ndim info")
+    pv_arg.constant === nothing && throw(IRError("get_index_space_shape(): PartitionView missing ndim info"))
     ndim = something(pv_arg.constant)
 
     # Create result types for all dimensions
@@ -102,11 +102,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
 
     # args: (partition_view, latency, allow_tma, indices...)
     pv_arg = emit_value!(ctx, args[1])
-    pv_arg === nothing && error("load_partition_view() requires a PartitionView argument")
-    pv_arg.v === nothing && error("load_partition_view() requires a materialized PartitionView")
+    pv_arg === nothing && throw(IRError("load_partition_view() requires a PartitionView argument"))
+    pv_arg.v === nothing && throw(IRError("load_partition_view() requires a materialized PartitionView"))
 
     # Get ndim from PartitionView constant field
-    pv_arg.constant === nothing && error("load_partition_view(): PartitionView missing ndim info")
+    pv_arg.constant === nothing && throw(IRError("load_partition_view(): PartitionView missing ndim info"))
     ndim = something(pv_arg.constant)
 
     # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
@@ -124,7 +124,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
 
     # Verify we got compile-time constants
     if latency === nothing && allow_tma === nothing
-        error("load_partition_view(): latency and allow_tma must be compile-time constants")
+        throw(IRError("load_partition_view(): latency and allow_tma must be compile-time constants"))
     end
     # allow_tma defaults to true if not provided
     allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
@@ -134,13 +134,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     index_jl_types = Type[]
     for i in 4:length(args)
         tv = emit_value!(ctx, args[i])
-        tv === nothing && error("load_partition_view(): cannot resolve index argument")
+        tv === nothing && throw(IRError("load_partition_view(): cannot resolve index argument"))
         push!(index_vals, tv.v)
         push!(index_jl_types, tv.jltype)
     end
     unique_types = unique(index_jl_types)
-    length(unique_types) <= 1 || error("All index types must match, got: $unique_types")
-    isempty(unique_types) && ndim > 0 && error("load_partition_view(): indices required for $(ndim)D view")
+    length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
+    isempty(unique_types) && ndim > 0 && throw(IRError("load_partition_view(): indices required for $(ndim)D view"))
     index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
     index_type = tile_type_for_julia!(ctx, index_jl_type)
 
@@ -181,7 +181,7 @@ end
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
     tv = emit_value!(ctx, args[1])
-    tv === nothing && error("make_partition_view() requires a TensorView argument")
+    tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
     tile_shape = get_tile_shape_tuple(ctx, args[2])
     padding_value = get_padding_value(ctx, args)
 
@@ -213,15 +213,15 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
-    isempty(ptr_vals) && error("Cannot get ptr from TileArray argument")
+    isempty(ptr_vals) && throw(IRError("Cannot get ptr from TileArray argument"))
     array_val = ptr_vals[1]
 
     # Get sizes and strides from parameters (required at kernel entry)
     sizes_from_arg = get_arg_flat_values(ctx, arg_idx, :sizes)
     strides_from_arg = get_arg_flat_values(ctx, arg_idx, :strides)
 
-    sizes_from_arg === nothing && error("TileArray at kernel entry requires explicit sizes")
-    length(sizes_from_arg) < ndim && error("TileArray sizes don't match ndim")
+    sizes_from_arg === nothing && throw(IRError("TileArray at kernel entry requires explicit sizes"))
+    length(sizes_from_arg) < ndim && throw(IRError("TileArray sizes don't match ndim"))
 
     # Deduce size/stride type from TileArray fields
     size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
@@ -330,10 +330,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     # Extract TileArray argument index
     arg_idx = extract_argument_index(array_arg)
     (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
-        error("make_tensor_view() requires a TileArray argument")
+        throw(IRError("make_tensor_view() requires a TileArray argument"))
 
     # Look up cached TensorView (created at kernel entry)
-    haskey(ctx.tensor_views, arg_idx) || error("TensorView not found for arg $arg_idx")
+    haskey(ctx.tensor_views, arg_idx) || throw(IRError("TensorView not found for arg $arg_idx"))
     tensor_view, tv_type = ctx.tensor_views[arg_idx]
 
     tilearray_type = get_arg_type(ctx, arg_idx)
@@ -365,18 +365,18 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
 
     # args: (partition_view, tile, latency, allow_tma, indices...)
     pv_arg = emit_value!(ctx, args[1])
-    pv_arg === nothing && error("store_partition_view() requires a PartitionView argument")
-    pv_arg.v === nothing && error("store_partition_view() requires a materialized PartitionView")
+    pv_arg === nothing && throw(IRError("store_partition_view() requires a PartitionView argument"))
+    pv_arg.v === nothing && throw(IRError("store_partition_view() requires a materialized PartitionView"))
 
     # Get ndim from PartitionView constant field
-    pv_arg.constant === nothing && error("store_partition_view(): PartitionView missing ndim info")
+    pv_arg.constant === nothing && throw(IRError("store_partition_view(): PartitionView missing ndim info"))
     ndim = something(pv_arg.constant)
 
     # Get tile value
     tile_tv = emit_value!(ctx, args[2])
-    tile_tv === nothing && error("store_partition_view() requires a tile argument")
+    tile_tv === nothing && throw(IRError("store_partition_view() requires a tile argument"))
     tile_shape = tile_tv.shape
-    tile_shape === nothing && error("Cannot determine tile shape for store_partition_view()")
+    tile_shape === nothing && throw(IRError("Cannot determine tile shape for store_partition_view()"))
 
     elem_type = eltype(CC.widenconst(tile_tv.jltype))
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -398,7 +398,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
 
     # Verify we got compile-time constants
     if latency === nothing && allow_tma === nothing
-        error("store_partition_view(): latency and allow_tma must be compile-time constants")
+        throw(IRError("store_partition_view(): latency and allow_tma must be compile-time constants"))
     end
     # allow_tma defaults to true if not provided
     allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
@@ -408,13 +408,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     index_jl_types = Type[]
     for i in 5:length(args)
         tv = emit_value!(ctx, args[i])
-        tv === nothing && error("store_partition_view(): cannot resolve index argument")
+        tv === nothing && throw(IRError("store_partition_view(): cannot resolve index argument"))
         push!(index_vals, tv.v)
         push!(index_jl_types, tv.jltype)
     end
     unique_types = unique(index_jl_types)
-    length(unique_types) <= 1 || error("All index types must match, got: $unique_types")
-    isempty(unique_types) && actual_ndim > 0 && error("store_partition_view(): indices required for $(actual_ndim)D view")
+    length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
+    isempty(unique_types) && actual_ndim > 0 && throw(IRError("store_partition_view(): indices required for $(actual_ndim)D view"))
     index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
     index_type = tile_type_for_julia!(ctx, index_jl_type)
 

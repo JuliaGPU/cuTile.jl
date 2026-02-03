@@ -15,7 +15,7 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif expr.head === :new
         return nothing  # Struct construction handled elsewhere
     elseif expr.head === :foreigncall
-        error("Foreign calls not supported in Tile IR")
+        throw(IRError("Foreign calls not supported in Tile IR"))
     elseif expr.head === :boundscheck
         return nothing
     else
@@ -62,7 +62,7 @@ Emit bytecode for a function call.
 """
 function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     args = expr.args
-    func = resolve_function(ctx, args[1])
+    func = get_constant(ctx, args[1])
     call_args = args[2:end]
 
     # TODO: This is normally dynamic dispatch, which we should allow.
@@ -98,7 +98,7 @@ Emit bytecode for a method invocation.
 """
 function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     # invoke has: (MethodInstance, func, args...)
-    func = resolve_function(ctx, expr.args[2])
+    func = get_constant(ctx, expr.args[2])
     call_args = expr.args[3:end]
 
     @static if isdefined(Core, :throw_methoderror)
@@ -128,24 +128,7 @@ function validate_result_type(@nospecialize(result), @nospecialize(expected_type
     # Check subtype relationship (actual should be at least as specific as expected)
     actual <: expected && return
 
-    error("Type mismatch in $func: expected $expected, got $actual")
-end
-
-"""
-    resolve_function(ctx, ref) -> Any
-
-Resolve a function reference to its actual value.
-"""
-function resolve_function(ctx::CGCtx, @nospecialize(ref))
-    if ref isa GlobalRef
-        return getfield(ref.mod, ref.name)
-    elseif ref isa QuoteNode
-        return ref.value
-    elseif ref isa SSAValue
-        tv = ctx[ref]
-        tv !== nothing && tv.constant !== nothing && return something(tv.constant)
-    end
-    return ref
+    throw(IRError("Type mismatch in $func: expected $expected, got $actual"))
 end
 
 """
@@ -157,18 +140,18 @@ indicating that type inference found no matching method for a function call.
 function _throw_method_error(ctx::CGCtx, call_args)
     # call_args typically contains: (function, arg1, arg2, ...)
     if isempty(call_args)
-        error("MethodError during Tile IR compilation")
+        throw(IRError("MethodError during Tile IR compilation"))
     end
 
     func_val = try
-        resolve_function(ctx, call_args[1])
+        get_constant(ctx, call_args[1])
     catch
         call_args[1]
     end
 
-    argtypes = _collect_argtypes(ctx, call_args[2:end])
+    argtypes = argextype.(Ref(ctx), call_args[2:end])
     typestr = isempty(argtypes) ? "" : " with argument types ($(join(argtypes, ", ")))"
-    error("MethodError during Tile IR compilation: no matching method for $func_val$typestr")
+    throw(IRError("MethodError during Tile IR compilation: no matching method for $func_val$typestr"))
 end
 
 """
@@ -177,22 +160,17 @@ end
 Provide a clear error message when a function has no Tile IR intrinsic mapping.
 """
 function _unsupported_call(ctx::CGCtx, @nospecialize(func), call_args)
-    argtypes = _collect_argtypes(ctx, call_args)
+    argtypes = argextype.(Ref(ctx), call_args)
     typestr = isempty(argtypes) ? "" : " with argument types ($(join(argtypes, ", ")))"
-    error("Unsupported function call during Tile IR compilation: $func$typestr has no Tile IR equivalent")
+    throw(IRError("Unsupported function call during Tile IR compilation: $func$typestr has no Tile IR equivalent"))
 end
 
-function _collect_argtypes(ctx::CGCtx, call_args)
-    argtypes = []
-    for arg in call_args
-        if arg isa SSAValue
-            tv = ctx[arg]
-            if tv !== nothing
-                push!(argtypes, tv.jltype)
-                continue
-            end
-        end
-        push!(argtypes, typeof(arg))
-    end
-    argtypes
+"""
+    argextype(ctx, x) -> Type
+
+Get the Julia type of an IR value.
+"""
+function argextype(ctx::CGCtx, @nospecialize(x))
+    tv = emit_value!(ctx, x)
+    tv === nothing ? Any : CC.widenconst(tv.jltype)
 end

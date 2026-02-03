@@ -29,7 +29,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     # args: (ptrs, latency, mask?, padding?)
     # Get pointer tile (arg 1)
     ptrs_tv = emit_value!(ctx, args[1])
-    ptrs_tv === nothing && error("load_ptr_tko: cannot resolve pointer tile")
+    ptrs_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve pointer tile"))
     pointers = ptrs_tv.v
     tile_shape = ptrs_tv.shape
 
@@ -53,12 +53,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     if has_mask
         # Get mask tile (arg 3)
         mask_tv = emit_value!(ctx, args[3])
-        mask_tv === nothing && error("load_ptr_tko: cannot resolve mask tile")
+        mask_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
 
         # Get padding tile (arg 4)
         padding_tv = emit_value!(ctx, args[4])
-        padding_tv === nothing && error("load_ptr_tko: cannot resolve padding tile")
+        padding_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve padding tile"))
         padding = padding_tv.v
 
         # Load with mask and padding
@@ -107,12 +107,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     # args: (ptrs, values, latency, mask?)
     # Get pointer tile (arg 1)
     ptrs_tv = emit_value!(ctx, args[1])
-    ptrs_tv === nothing && error("store_ptr_tko: cannot resolve pointer tile")
+    ptrs_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve pointer tile"))
     pointers = ptrs_tv.v
 
     # Get value tile (arg 2)
     values_tv = emit_value!(ctx, args[2])
-    values_tv === nothing && error("store_ptr_tko: cannot resolve values tile")
+    values_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve values tile"))
     values = values_tv.v
 
     token_type = Token(tt)
@@ -129,7 +129,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     if has_mask
         # Get mask tile (arg 4)
         mask_tv = emit_value!(ctx, args[4])
-        mask_tv === nothing && error("store_ptr_tko: cannot resolve mask tile")
+        mask_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
 
         # Store with mask

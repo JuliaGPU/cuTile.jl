@@ -65,7 +65,7 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
 
     # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
-    cond_tv === nothing && error("Cannot resolve condition for IfOp")
+    cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
 
     # Determine result types from parent_result_type
     result_types = TypeId[]
@@ -130,11 +130,11 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     iv_arg = op.iv_arg
 
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
-        error("Cannot resolve ForOp bounds")
+        throw(IRError("Cannot resolve ForOp bounds"))
 
     # Assert all bounds have the same type
     lower_tv.jltype === upper_tv.jltype === step_tv.jltype ||
-        error("ForOp bounds must all have the same type: lower=$(lower_tv.jltype), upper=$(upper_tv.jltype), step=$(step_tv.jltype)")
+        throw(IRError("ForOp bounds must all have the same type: lower=$(lower_tv.jltype), upper=$(upper_tv.jltype), step=$(step_tv.jltype)"))
         iv_jl_type = lower_tv.jltype
         iv_type = tile_type_for_julia!(ctx, iv_jl_type)
 
@@ -142,7 +142,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
-        (tv === nothing || tv.v === nothing) && error("Cannot resolve ForOp init value")
+        (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve ForOp init value"))
         push!(init_values, tv.v)
     end
     # Add token as additional init value (for memory ordering)
@@ -208,7 +208,7 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
-        (tv === nothing || tv.v === nothing) && error("Cannot resolve LoopOp init value")
+        (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve LoopOp init value"))
         push!(init_values, tv.v)
     end
     # Add token as additional init value (for memory ordering)
@@ -279,7 +279,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
-        (tv === nothing || tv.v === nothing) && error("Cannot resolve WhileOp init value: $init_val")
+        (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve WhileOp init value: $init_val"))
         push!(init_values, tv.v)
     end
     # Add token as additional init value (for memory ordering)
@@ -327,10 +327,10 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
 
         # Get condition from ConditionOp terminator
         cond_op = before_blk.terminator
-        cond_op isa ConditionOp || error("WhileOp before region must end with ConditionOp")
+        cond_op isa ConditionOp || throw(IRError("WhileOp before region must end with ConditionOp"))
 
         cond_tv = emit_value!(ctx, cond_op.condition)
-        (cond_tv === nothing || cond_tv.v === nothing) && error("Cannot resolve WhileOp condition: $(cond_op.condition)")
+        (cond_tv === nothing || cond_tv.v === nothing) && throw(IRError("Cannot resolve WhileOp condition: $(cond_op.condition)"))
 
         # Emit conditional break: if (cond) { yield } else { break }
         # This keeps nested loops in "after" at LoopOp body level

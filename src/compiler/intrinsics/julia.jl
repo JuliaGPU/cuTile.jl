@@ -14,7 +14,7 @@ function emit_intrinsic!(ctx::CGCtx, func::Core.IntrinsicFunction, args)
     elseif func === Core.Intrinsics.ult_int
         emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., CmpLessThan, SignednessUnsigned])
     else
-        error("Unhandled Julia intrinsic: $func")
+        throw(IRError("Unhandled Julia intrinsic: $func"))
     end
 end
 
@@ -23,18 +23,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(===), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    lhs = emit_value!(ctx, args[1])
-    rhs = emit_value!(ctx, args[2])
-
-    lhs === nothing && error("Cannot resolve LHS operand for ===")
-    rhs === nothing && error("Cannot resolve RHS operand for ===")
+    lhs = @something emit_value!(ctx, args[1]) throw(IRError("===: cannot resolve lhs"))
+    rhs = @something emit_value!(ctx, args[2]) throw(IRError("===: cannot resolve rhs"))
 
     result_type_id = tile_type!(tt, I1(tt), Int[])
 
-    lhs_v = lhs isa CGVal ? lhs.v : lhs
-    rhs_v = rhs isa CGVal ? rhs.v : rhs
-
-    result_v = encode_CmpIOp!(cb, result_type_id, lhs_v, rhs_v;
+    result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v;
                               predicate=CmpEqual, signedness=SignednessSigned)
 
     CGVal(result_v, result_type_id, Bool, Int[])

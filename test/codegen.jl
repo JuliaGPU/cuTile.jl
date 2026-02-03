@@ -1827,9 +1827,9 @@ end
         spec = ct.ArraySpec{1}(16, true)
 
         @testset "binary op type mismatch errors in Julia" begin
-            # This should fail with a Julia error (not tileiras), since the intrinsic
+            # This should fail with an IRError, since the intrinsic
             # is invoked with mismatched types (Int32 + Int64)
-            @test_throws ErrorException code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+            @test_throws ct.IRError code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                 pid = ct.bid(1)  # Int32
                 # Force type mismatch by calling addi with different types
                 result = ct.Intrinsics.addi(pid, Int64(1))
@@ -1857,7 +1857,7 @@ end
             @test_throws "Unsupported function call during Tile IR compilation" begin
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                     tile = ct.load(a, ct.bid(1), (16,))
-                    println(tile)
+                    print(tile)
                     return
                 end
             end

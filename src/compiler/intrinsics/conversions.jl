@@ -19,8 +19,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
     tt = ctx.tt
 
     # Get source tile
-    source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve source operand for astype()")
+    source = @something emit_value!(ctx, args[1]) throw(IRError("astype: cannot resolve source"))
 
     # Get source element type and shape
     source_type = CC.widenconst(source.jltype)
@@ -28,8 +27,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
     tile_shape = source.shape
 
     # Get target element type from the Type argument
-    target_elem = @something get_constant(ctx, args[2]) error("astype() requires a compile-time constant type")
-    target_elem isa Type || error("astype() second argument must be a Type")
+    target_elem = @something get_constant(ctx, args[2]) throw(IRError("astype() requires a compile-time constant type"))
+    target_elem isa Type || throw(IRError("astype() second argument must be a Type"))
 
     # Same type? Return source unchanged
     if source_elem === target_elem
@@ -68,7 +67,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
             encode_TruncIOp!(cb, target_tile_type, source.v)
         end
     else
-        error("astype() unsupported conversion: $source_elem -> $target_elem")
+        throw(IRError("astype() unsupported conversion: $source_elem -> $target_elem"))
     end
 
     CGVal(result, target_tile_type, replace_eltype(source_type, target_elem), tile_shape)
@@ -86,22 +85,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    source = emit_value!(ctx, args[1])
-    target_type = @something get_constant(ctx, args[2]) error("exti requires compile-time target type")
-    signedness = @something get_constant(ctx, args[3]) error("exti requires compile-time signedness")
-
-    source === nothing && error("Cannot resolve source operand for exti")
-
-    source_v = source isa CGVal ? source.v : source
-    result_shape = source isa CGVal ? source.shape : Int[]
+    source = @something emit_value!(ctx, args[1]) throw(IRError("exti: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("exti: requires compile-time target type"))
+    signedness = @something get_constant(ctx, args[3]) throw(IRError("exti: requires compile-time signedness"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, result_shape)
+    result_type_id = tile_type!(tt, dtype, source.shape)
 
-    result_v = encode_ExtIOp!(cb, result_type_id, source_v; signedness)
+    result_v = encode_ExtIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = src_type <: Tile ? replace_eltype(src_type, target_type) : target_type
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    result_jltype = replace_eltype(src_type, target_type)
+    CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
 # cuda_tile.ftof (scalar float to float)
@@ -114,21 +108,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    source = emit_value!(ctx, args[1])
-    target_type = @something get_constant(ctx, args[2]) error("ftof requires compile-time target type")
-
-    source === nothing && error("Cannot resolve source operand for ftof")
-
-    source_v = source isa CGVal ? source.v : source
-    result_shape = source isa CGVal ? source.shape : Int[]
+    source = @something emit_value!(ctx, args[1]) throw(IRError("ftof: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("ftof: requires compile-time target type"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, result_shape)
+    result_type_id = tile_type!(tt, dtype, source.shape)
 
-    result_v = encode_FToFOp!(cb, result_type_id, source_v)
+    result_v = encode_FToFOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = src_type <: Tile ? replace_eltype(src_type, target_type) : target_type
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    result_jltype = replace_eltype(src_type, target_type)
+    CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
 # cuda_tile.ftoi (scalar float to integer)
@@ -141,22 +130,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    source = emit_value!(ctx, args[1])
-    target_type = @something get_constant(ctx, args[2]) error("ftoi requires compile-time target type")
-    signedness = @something get_constant(ctx, args[3]) error("ftoi requires compile-time signedness")
-
-    source === nothing && error("Cannot resolve source operand for ftoi")
-
-    source_v = source isa CGVal ? source.v : source
-    result_shape = source isa CGVal ? source.shape : Int[]
+    source = @something emit_value!(ctx, args[1]) throw(IRError("ftoi: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("ftoi: requires compile-time target type"))
+    signedness = @something get_constant(ctx, args[3]) throw(IRError("ftoi: requires compile-time signedness"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, result_shape)
+    result_type_id = tile_type!(tt, dtype, source.shape)
 
-    result_v = encode_FToIOp!(cb, result_type_id, source_v; signedness)
+    result_v = encode_FToIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = src_type <: Tile ? replace_eltype(src_type, target_type) : target_type
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    result_jltype = replace_eltype(src_type, target_type)
+    CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
 # cuda_tile.itof (scalar integer to float)
@@ -169,22 +153,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    source = emit_value!(ctx, args[1])
-    target_type = @something get_constant(ctx, args[2]) error("itof requires compile-time target type")
-    signedness = @something get_constant(ctx, args[3]) error("itof requires compile-time signedness")
-
-    source === nothing && error("Cannot resolve source operand for itof")
-
-    source_v = source isa CGVal ? source.v : source
-    result_shape = source isa CGVal ? source.shape : Int[]
+    source = @something emit_value!(ctx, args[1]) throw(IRError("itof: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("itof: requires compile-time target type"))
+    signedness = @something get_constant(ctx, args[3]) throw(IRError("itof: requires compile-time signedness"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, result_shape)
+    result_type_id = tile_type!(tt, dtype, source.shape)
 
-    result_v = encode_IToFOp!(cb, result_type_id, source_v; signedness)
+    result_v = encode_IToFOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = src_type <: Tile ? replace_eltype(src_type, target_type) : target_type
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    result_jltype = replace_eltype(src_type, target_type)
+    CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
 # cuda_tile.trunci (scalar integer truncation)
@@ -195,21 +174,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    source = emit_value!(ctx, args[1])
-    target_type = @something get_constant(ctx, args[2]) error("trunci requires compile-time target type")
-
-    source === nothing && error("Cannot resolve source operand for trunci")
-
-    source_v = source isa CGVal ? source.v : source
-    result_shape = source isa CGVal ? source.shape : Int[]
+    source = @something emit_value!(ctx, args[1]) throw(IRError("trunci: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("trunci: requires compile-time target type"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, result_shape)
+    result_type_id = tile_type!(tt, dtype, source.shape)
 
-    result_v = encode_TruncIOp!(cb, result_type_id, source_v)
+    result_v = encode_TruncIOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = src_type <: Tile ? replace_eltype(src_type, target_type) : target_type
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    result_jltype = replace_eltype(src_type, target_type)
+    CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
 # cuda_tile.int_to_ptr, cuda_tile.ptr_to_int# NOTE: Used internally by atomic operations, not exposed as user intrinsics

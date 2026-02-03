@@ -229,7 +229,7 @@ function code_ircode(mi::MethodInstance; world::UInt=Base.get_world_counter(),
     result = CC.typeinf_ircode(interp, mi, nothing)
 
     if result === nothing
-        error("Type inference failed for $mi")
+        throw(ErrorException("Type inference failed for $mi"))
     end
 
     ir, rettype = result
@@ -387,7 +387,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     world::UInt=Base.get_world_counter())
     tt = Base.signature_type(f, argtypes)
     if !Base.isdispatchtuple(tt)
-        error("code_tiled requires a dispatch tuple, got non-concrete signature")
+        throw(ArgumentError("code_tiled requires a dispatch tuple, got non-concrete signature"))
     end
     mi = @something(method_instance(f, argtypes; world, method_table=cuTileMethodTable),
                     method_instance(f, argtypes; world),
@@ -413,7 +413,7 @@ This is a convenience macro that extracts the function and argument types.
 """
 macro code_tiled(call)
     if !(call isa Expr && call.head === :call)
-        error("@code_tiled requires a function call expression")
+        throw(ArgumentError("@code_tiled requires a function call expression"))
     end
     f = call.args[1]
     args = call.args[2:end]

@@ -42,7 +42,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp2), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for exp2()")
+    source === nothing && throw(IRError("Cannot resolve operand for exp2()"))
 
     flush_to_zero = length(args) > 1 ? args[2]::Bool : false
 
@@ -61,7 +61,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for exp()")
+    source === nothing && throw(IRError("Cannot resolve operand for exp()"))
 
     result = encode_ExpOp!(cb, source.type_id, source.v)
 
@@ -91,7 +91,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
     b = emit_value!(ctx, args[2])
     c = emit_value!(ctx, args[3])
 
-    (a === nothing || b === nothing || c === nothing) && error("Cannot resolve operands for fma")
+    (a === nothing || b === nothing || c === nothing) && throw(IRError("Cannot resolve operands for fma"))
 
     result_v = encode_FmaOp!(cb, a.type_id, a.v, b.v, c.v)
 
@@ -108,7 +108,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log2), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for log2()")
+    source === nothing && throw(IRError("Cannot resolve operand for log2()"))
 
     result = encode_Log2Op!(cb, source.type_id, source.v)
 
@@ -125,7 +125,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for log()")
+    source === nothing && throw(IRError("Cannot resolve operand for log()"))
 
     result = encode_LogOp!(cb, source.type_id, source.v)
 
@@ -180,7 +180,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.rsqrt), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for rsqrt()")
+    source === nothing && throw(IRError("Cannot resolve operand for rsqrt()"))
 
     flush_to_zero = length(args) > 1 ? args[2]::Bool : false
 
@@ -219,7 +219,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sqrt), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for sqrt()")
+    source === nothing && throw(IRError("Cannot resolve operand for sqrt()"))
 
     result = encode_SqrtOp!(cb, source.type_id, source.v)
 

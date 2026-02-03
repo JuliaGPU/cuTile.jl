@@ -10,10 +10,10 @@ Throws an error with a clear message if validation fails.
 function validate_tile_shape(shape, context::String)
     for (i, dim) in enumerate(shape)
         if dim <= 0
-            error("$context: tile dimension $i must be positive, got $dim")
+            throw(IRError("$context: tile dimension $i must be positive, got $dim"))
         end
         if !ispow2(dim)
-            error("$context: tile dimension $i must be a power of 2, got $dim")
+            throw(IRError("$context: tile dimension $i must be a power of 2, got $dim"))
         end
     end
 end
@@ -36,7 +36,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
 
     # Get source tile
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve source operand for broadcast()")
+    source === nothing && throw(IRError("Cannot resolve source operand for broadcast()"))
 
     # Get source element type
     source_type = CC.widenconst(source.jltype)
@@ -44,7 +44,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
 
     # Extract target shape from the constant tuple argument
     target_shape_tuple = get_constant(ctx, args[2])
-    target_shape_tuple isa Tuple || error("broadcast() shape must be a compile-time constant tuple")
+    target_shape_tuple isa Tuple || throw(IRError("broadcast() shape must be a compile-time constant tuple"))
     target_shape = collect(Int, target_shape_tuple)
     validate_tile_shape(target_shape, "broadcast")
 
@@ -125,20 +125,20 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
 
     # Emit tuple value to get CGVal with component refs in .tuple
     tuple_tv = emit_value!(ctx, args[1])
-    tuple_tv === nothing && error("cat() cannot resolve tuple argument")
+    tuple_tv === nothing && throw(IRError("cat() cannot resolve tuple argument"))
 
     # Extract component refs from .tuple field
-    tuple_tv.tuple !== nothing || error("cat() requires tuple with tracked components")
-    length(tuple_tv.tuple) == 2 || error("cat() expects exactly 2 tiles, got $(length(tuple_tv.tuple))")
+    tuple_tv.tuple !== nothing || throw(IRError("cat() requires tuple with tracked components"))
+    length(tuple_tv.tuple) == 2 || throw(IRError("cat() expects exactly 2 tiles, got $(length(tuple_tv.tuple))"))
 
     # Emit tiles from refs (looks up ctx.values, not stmts!)
     lhs = emit_value!(ctx, tuple_tv.tuple[1])
     rhs = emit_value!(ctx, tuple_tv.tuple[2])
-    (lhs === nothing || rhs === nothing) && error("Cannot resolve tile operands for cat()")
+    (lhs === nothing || rhs === nothing) && throw(IRError("Cannot resolve tile operands for cat()"))
 
     # Get axis from Val{Axis}
     axis_val = get_constant(ctx, args[2])
-    axis_val isa Integer || error("cat() axis must be a compile-time constant integer")
+    axis_val isa Integer || throw(IRError("cat() axis must be a compile-time constant integer"))
 
     # Handle negative axis
     lhs_shape = lhs.shape
@@ -183,15 +183,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
 
     # Extract shape
     shape = get_constant(ctx, args[1])
-    shape isa Tuple || error("full() shape must be a compile-time constant tuple")
+    shape isa Tuple || throw(IRError("full() shape must be a compile-time constant tuple"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "full")
 
     # Extract value
-    value = @something get_constant(ctx, args[2]) error("full() value must be a compile-time constant")
+    value = @something get_constant(ctx, args[2]) throw(IRError("full() value must be a compile-time constant"))
 
     # Extract dtype from Type{T} argument
-    elem_type = @something get_constant(ctx, args[3]) error("constant() requires a compile-time element type")
+    elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -223,15 +223,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
 
     # Get source tile
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve source operand for extract()")
+    source === nothing && throw(IRError("Cannot resolve source operand for extract()"))
 
     # Extract index from Val{Index} argument
     index_tuple = get_constant(ctx, args[2])
-    index_tuple isa Tuple || error("extract() index must be a compile-time constant tuple")
+    index_tuple isa Tuple || throw(IRError("extract() index must be a compile-time constant tuple"))
 
     # Extract shape from Val{Shape} argument
     shape_tuple = get_constant(ctx, args[3])
-    shape_tuple isa Tuple || error("extract() shape must be a compile-time constant tuple")
+    shape_tuple isa Tuple || throw(IRError("extract() shape must be a compile-time constant tuple"))
     output_shape = collect(Int, shape_tuple)
     validate_tile_shape(output_shape, "extract")
 
@@ -270,8 +270,8 @@ end
     @noinline get_num_tile_blocks(axis::Integer) = compilerbarrier(:const, zero(Int32))
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), args)
-    axis = @something get_constant(ctx, args[1]) error("get_num_tile_blocks() axis must be a compile-time constant")
-    axis in (0, 1, 2) || error("get_num_tile_blocks() axis must be 0, 1, or 2, got $axis")
+    axis = @something get_constant(ctx, args[1]) throw(IRError("get_num_tile_blocks() axis must be a compile-time constant"))
+    axis in (0, 1, 2) || throw(IRError("get_num_tile_blocks() axis must be 0, 1, or 2, got $axis"))
 
     res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
     nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(ctx.cb, res_type, res_type, res_type)
@@ -290,8 +290,8 @@ end
     @noinline get_tile_block_id(axis::Integer) = compilerbarrier(:const, zero(Int32))
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), args)
-    axis = @something get_constant(ctx, args[1]) error("get_tile_block_id() axis must be a compile-time constant")
-    axis in (0, 1, 2) || error("get_tile_block_id() axis must be 0, 1, or 2, got $axis")
+    axis = @something get_constant(ctx, args[1]) throw(IRError("get_tile_block_id() axis must be a compile-time constant"))
+    axis in (0, 1, 2) || throw(IRError("get_tile_block_id() axis must be 0, 1, or 2, got $axis"))
 
     res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
     bid_x, bid_y, bid_z = encode_GetTileBlockIdOp!(ctx.cb, res_type, res_type, res_type)
@@ -320,12 +320,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
 
     # Extract shape
     shape = get_constant(ctx, args[1])
-    shape isa Tuple || error("iota() shape must be a compile-time constant tuple")
+    shape isa Tuple || throw(IRError("iota() shape must be a compile-time constant tuple"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "arange")
 
     # Extract dtype from Type{T} argument
-    elem_type = @something get_constant(ctx, args[2]) error("iota() requires a compile-time element type")
+    elem_type = @something get_constant(ctx, args[2]) throw(IRError("iota() requires a compile-time element type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -355,7 +355,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     rhs = emit_value!(ctx, args[2])
     acc = emit_value!(ctx, args[3])
 
-    (lhs === nothing || rhs === nothing || acc === nothing) && error("Cannot resolve operands for mma()")
+    (lhs === nothing || rhs === nothing || acc === nothing) && throw(IRError("Cannot resolve operands for mma()"))
 
     result = encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v)
 
@@ -382,12 +382,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
 
     # Get base pointer (arg 1)
     base_ptr_tv = emit_value!(ctx, args[1])
-    base_ptr_tv === nothing && error("offset: cannot resolve base pointer")
+    base_ptr_tv === nothing && throw(IRError("offset: cannot resolve base pointer"))
     base_ptr = base_ptr_tv.v
 
     # Get offsets tile (arg 2)
     offsets_tv = emit_value!(ctx, args[2])
-    offsets_tv === nothing && error("offset: cannot resolve offsets tile")
+    offsets_tv === nothing && throw(IRError("offset: cannot resolve offsets tile"))
     offsets = offsets_tv.v
     tile_shape = offsets_tv.shape
 
@@ -438,14 +438,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
 
     # Get source tile
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve source operand for permute()")
+    source === nothing && throw(IRError("Cannot resolve source operand for permute()"))
 
     input_shape = source.shape
-    isempty(input_shape) && error("Cannot determine tile shape for permute()")
+    isempty(input_shape) && throw(IRError("Cannot determine tile shape for permute()"))
 
     # Extract permutation from Val{Perm} argument
     perm_tuple = get_constant(ctx, args[2])
-    perm_tuple isa Tuple || error("permute() permutation must be a compile-time constant tuple")
+    perm_tuple isa Tuple || throw(IRError("permute() permutation must be a compile-time constant tuple"))
 
     # Convert to 0-indexed vector for bytecode
     permutation = collect(Int, perm_tuple)
@@ -484,10 +484,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
     tt = ctx.tt
 
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve operand for transpose()")
+    source === nothing && throw(IRError("Cannot resolve operand for transpose()"))
 
     input_shape = source.shape
-    isempty(input_shape) && error("Cannot determine tile shape for transpose()")
+    isempty(input_shape) && throw(IRError("Cannot determine tile shape for transpose()"))
 
     output_shape = reverse(input_shape)
 
@@ -535,35 +535,35 @@ function emit_reduce!(ctx::CGCtx, args)
 
     # Extract tile CGVals from the tuple argument
     first_tv = emit_value!(ctx, args[1])
-    first_tv === nothing && error("Cannot resolve input for reduction")
-    first_tv.tuple === nothing && error("reduce() requires a tuple of tiles (got $(first_tv.jltype))")
+    first_tv === nothing && throw(IRError("Cannot resolve input for reduction"))
+    first_tv.tuple === nothing && throw(IRError("reduce() requires a tuple of tiles (got $(first_tv.jltype))"))
     tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
-        tv === nothing && error("Cannot resolve tile operand in reduce")
+        tv === nothing && throw(IRError("Cannot resolve tile operand in reduce"))
         tv
     end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
     # Get reduction axis
-    axis = @something get_constant(ctx, args[2]) error("Reduction axis must be a compile-time constant")
+    axis = @something get_constant(ctx, args[2]) throw(IRError("Reduction axis must be a compile-time constant"))
 
     # Resolve combiner function
-    func = resolve_function(ctx, args[3])
+    func = get_constant(ctx, args[3])
 
     # Resolve identity values from the identities tuple
     id_tv = emit_value!(ctx, args[4])
-    id_tv === nothing && error("Cannot resolve identity tuple for reduce")
+    id_tv === nothing && throw(IRError("Cannot resolve identity tuple for reduce"))
     identity_vals = if id_tv.tuple !== nothing
         Any[something(something(emit_value!(ctx, ref)).constant)
             for ref in id_tv.tuple]
     elseif id_tv.constant !== nothing
         collect(Any, something(id_tv.constant))
     else
-        error("reduce() identities must be a tuple of compile-time constants")
+        throw(IRError("reduce() identities must be a tuple of compile-time constants"))
     end
 
     # Get shapes from the first tile
     input_shape = tile_tvs[1].shape
-    isempty(input_shape) && error("Cannot reduce scalar tile")
+    isempty(input_shape) && throw(IRError("Cannot reduce scalar tile"))
 
     # ReduceOp removes the dimension; we'll reshape after to reintroduce it as size 1
     reduced_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
@@ -659,11 +659,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
 
     # Get source tile
     source = emit_value!(ctx, args[1])
-    source === nothing && error("Cannot resolve source operand for reshape()")
+    source === nothing && throw(IRError("Cannot resolve source operand for reshape()"))
 
     # Extract target shape from Val{Shape} argument
     target_shape_tuple = get_constant(ctx, args[2])
-    target_shape_tuple isa Tuple || error("reshape() shape must be a compile-time constant tuple")
+    target_shape_tuple isa Tuple || throw(IRError("reshape() shape must be a compile-time constant tuple"))
     target_shape = collect(Int, target_shape_tuple)
     validate_tile_shape(target_shape, "reshape")
 
@@ -732,30 +732,30 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
 
     # Extract tile CGVals from the tuple argument
     first_tv = emit_value!(ctx, args[1])
-    first_tv === nothing && error("Cannot resolve input for scan")
-    first_tv.tuple === nothing && error("scan() requires a tuple of tiles (got $(first_tv.jltype))")
+    first_tv === nothing && throw(IRError("Cannot resolve input for scan"))
+    first_tv.tuple === nothing && throw(IRError("scan() requires a tuple of tiles (got $(first_tv.jltype))"))
     tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
-        tv === nothing && error("Cannot resolve tile operand in scan")
+        tv === nothing && throw(IRError("Cannot resolve tile operand in scan"))
         tv
     end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
     # Get scan axis
-    axis = @something get_constant(ctx, args[2]) error("Scan axis must be a compile-time constant")
+    axis = @something get_constant(ctx, args[2]) throw(IRError("Scan axis must be a compile-time constant"))
 
     # Resolve combiner function
-    func = resolve_function(ctx, args[3])
+    func = get_constant(ctx, args[3])
 
     # Resolve identity values from the identities tuple
     id_tv = emit_value!(ctx, args[4])
-    id_tv === nothing && error("Cannot resolve identity tuple for scan")
+    id_tv === nothing && throw(IRError("Cannot resolve identity tuple for scan"))
     identity_vals = if id_tv.tuple !== nothing
         Any[something(something(emit_value!(ctx, ref)).constant)
             for ref in id_tv.tuple]
     elseif id_tv.constant !== nothing
         collect(Any, something(id_tv.constant))
     else
-        error("scan() identities must be a tuple of compile-time constants")
+        throw(IRError("scan() identities must be a tuple of compile-time constants"))
     end
 
     # Get reverse flag (optional, defaults to false)
@@ -767,7 +767,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
 
     # Get shapes from the first tile
     input_shape = tile_tvs[1].shape
-    isempty(input_shape) && error("Cannot scan scalar tile")
+    isempty(input_shape) && throw(IRError("Cannot scan scalar tile"))
 
     # For scan, output shape is same as input shape
     output_shape = copy(input_shape)
@@ -837,7 +837,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     y_tv = emit_value!(ctx, args[3])
 
     (cond_tv === nothing || x_tv === nothing || y_tv === nothing) &&
-        error("Cannot resolve operands for select()")
+        throw(IRError("Cannot resolve operands for select()"))
 
     result = encode_SelectOp!(cb, x_tv.type_id, cond_tv.v, x_tv.v, y_tv.v)
 
@@ -855,7 +855,7 @@ end
 
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.to_scalar), args)
     tv = emit_value!(ctx, args[1])
-    tv === nothing && error("Cannot resolve tile for to_scalar")
+    tv === nothing && throw(IRError("Cannot resolve tile for to_scalar"))
     T = eltype(CC.widenconst(tv.jltype))
     # Reinterpret: jltype becomes scalar T for overlay dispatch.
     # The IR-side shape/type_id/Value stay shaped.
@@ -864,8 +864,8 @@ end
 
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.from_scalar), args)
     tv = emit_value!(ctx, args[1])
-    tv === nothing && error("Cannot resolve scalar for from_scalar")
-    shape_val = @something get_constant(ctx, args[2]) error("from_scalar shape must be constant")
+    tv === nothing && throw(IRError("Cannot resolve scalar for from_scalar"))
+    shape_val = @something get_constant(ctx, args[2]) throw(IRError("from_scalar shape must be constant"))
     T = CC.widenconst(tv.jltype)
     CGVal(tv.v, tv.type_id, Tile{T, shape_val}, tv.shape, nothing, nothing, nothing)
 end

@@ -3,6 +3,21 @@
 # Core types (CGVal, CGCtx) and helper functions for Tile IR code generation.
 
 #=============================================================================
+ IRError: Exception type for IR compilation errors
+=============================================================================#
+
+"""
+    IRError <: Exception
+
+Exception thrown during Tile IR compilation for invalid IR, type mismatches,
+or unsupported operations.
+"""
+struct IRError <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::IRError) = print(io, "IRError: ", e.msg)
+
+#=============================================================================
  CGVal: Unified value representation (analogous to Julia's jl_cgval_t)
 =============================================================================#
 
@@ -257,7 +272,7 @@ Ensure a type is fully concrete (not a UnionAll).
 function require_concrete_type(@nospecialize(T), context::String)
     T_unwrapped = CC.widenconst(T)
     if T_unwrapped isa UnionAll
-        error("Type must be fully concrete in $context, got partial type: $T")
+        throw(IRError("Type must be fully concrete in $context, got partial type: $T"))
     end
     return T_unwrapped
 end
@@ -302,19 +317,19 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     # Tile{T, Shape} -> tile type with shape
     if T <: Tile
         if T isa UnionAll || !isa(T, DataType) || length(T.parameters) < 2
-            error("Tile type must be fully specified with element type and shape, got: $T. " *
-                  "This indicates type instability in the kernel - ensure all tile operations have inferrable shapes.")
+            throw(IRError("Tile type must be fully specified with element type and shape, got: $T. " *
+                          "This indicates type instability in the kernel - ensure all tile operations have inferrable shapes."))
         end
         shape_param = tile_shape(T)
         if !(shape_param isa Tuple)
-            error("Tile shape must be a tuple, got: $shape_param")
+            throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
         elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
         shape = collect(Int, shape_param)
         return tile_type!(tt, elem_dtype, shape)
     end
 
-    error("Unsupported Julia type for Tile IR: $T")
+    throw(IRError("Unsupported Julia type for Tile IR: $T"))
 end
 
 """
@@ -400,7 +415,7 @@ function resolve_or_constant(ctx::CGCtx, @nospecialize(arg), type_id::TypeId)
     # If we have a runtime value, use it
     tv.v !== nothing && return tv.v
     # Otherwise emit a constant from the compile-time value
-    tv.constant === nothing && error("Cannot resolve argument")
+    tv.constant === nothing && throw(IRError("Cannot resolve argument"))
     val = something(tv.constant)
     bytes = reinterpret(UInt8, [Int32(val)])
     encode_ConstantOp!(ctx.cb, type_id, collect(bytes))

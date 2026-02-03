@@ -311,7 +311,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
         results = Value[]
         for ref in tv.tuple
             component = emit_value!(sub_ctx, ref)
-            component === nothing && error("Cannot resolve tuple component in subprogram return")
+            component === nothing && throw(IRError("Cannot resolve tuple component in subprogram return"))
             push!(results, component.v::Value)
         end
     else
