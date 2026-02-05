@@ -28,22 +28,18 @@ function emit_assume_ops!(ctx::CGCtx, array_val::Value, size_vals::Vector{Value}
     end
 
     # Divisibility assumes for sizes
-    if hasproperty(array_spec, :shape_div_by)
-        for (i, div_by) in enumerate(array_spec.shape_div_by)
-            if div_by > 0 && i <= length(size_vals)
-                size_vals[i] = encode_AssumeOp!(cb, scalar_type, size_vals[i], DivBy(div_by))
-            end
+    for (i, div_by) in enumerate(array_spec.shape_div_by)
+        if div_by > 0 && i <= length(size_vals)
+            size_vals[i] = encode_AssumeOp!(cb, scalar_type, size_vals[i], DivBy(div_by))
         end
     end
 
     # Divisibility assumes for strides - only for dynamic strides
-    if hasproperty(array_spec, :stride_div_by)
-        for (i, div_by) in enumerate(array_spec.stride_div_by)
-            if div_by > 0 && i <= length(stride_vals)
-                # Skip if this stride is static (not DYNAMIC_SHAPE)
-                if tv_strides === nothing || tv_strides[i] == DYNAMIC_SHAPE
-                    stride_vals[i] = encode_AssumeOp!(cb, scalar_type, stride_vals[i], DivBy(div_by))
-                end
+    for (i, div_by) in enumerate(array_spec.stride_div_by)
+        if div_by > 0 && i <= length(stride_vals)
+            # Skip if this stride is static (not DYNAMIC_SHAPE)
+            if tv_strides === nothing || tv_strides[i] == DYNAMIC_SHAPE
+                stride_vals[i] = encode_AssumeOp!(cb, scalar_type, stride_vals[i], DivBy(div_by))
             end
         end
     end

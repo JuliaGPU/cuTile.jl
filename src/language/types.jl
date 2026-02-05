@@ -22,23 +22,36 @@ Divisibility values enable optimizations:
 - stride_div_by[i] = 4 means stride[i] is divisible by 4 (enables vectorized access)
 - shape_div_by[i] = 16 means shape[i] is divisible by 16 (no tile boundary handling needed)
 """
-struct ArraySpec{N}
-    alignment::Int
-    contiguous::Bool
-    stride_div_by::NTuple{N, Int}
-    shape_div_by::NTuple{N, Int}
+struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy} end
+
+# Constructors
+function ArraySpec{N}(alignment::Int, contiguous::Bool,
+                      stride_div_by::NTuple{N,Int}, shape_div_by::NTuple{N,Int}) where N
+    ArraySpec{N, alignment, contiguous, stride_div_by, shape_div_by}()
 end
 
-# Convenience constructors
 function ArraySpec(alignment::Int, contiguous::Bool)
     # 0-dimensional fallback (scalar pointers)
-    ArraySpec{0}(alignment, contiguous, (), ())
+    ArraySpec{0, alignment, contiguous, (), ()}()
 end
 
 function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
     # N-dimensional with no divisibility info
     ArraySpec{N}(alignment, contiguous, ntuple(_ -> 0, N), ntuple(_ -> 0, N))
 end
+
+# Property access — preserves existing dot-syntax (spec.alignment, etc.)
+function Base.getproperty(spec::ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy},
+                          s::Symbol) where {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}
+    s === :alignment     && return Alignment
+    s === :contiguous    && return Contiguous
+    s === :stride_div_by && return StrideDivBy
+    s === :shape_div_by  && return ShapeDivBy
+    getfield(spec, s)
+end
+
+Base.propertynames(::ArraySpec) = (:alignment, :contiguous, :stride_div_by, :shape_div_by)
+Base.ndims(::ArraySpec{N}) where N = N
 
 """
     compute_alignment(ptr_int)
