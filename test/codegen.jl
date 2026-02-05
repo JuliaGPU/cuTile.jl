@@ -1547,7 +1547,7 @@ end
             @check "for %loopIdx in"
             @check "loop iter_values"
             # The store MUST use a column index derived from loopIdx, not the spinloop result
-            # After 1→0 index conversion, the store uses (loopIdx - 1), captured as [[IDX]]
+            # After 1→0 index conversion, the store uses (loopIdx - 1)
             @check "[[IDX:%.+]] = subi %loopIdx"
             @check "store_view_tko{{.*}}[%{{[^,]+}}, [[IDX]]]"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},

@@ -94,7 +94,7 @@ tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero, laten
                       allow_tma::Bool=true) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
 @inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{<:Any, Int};
@@ -103,7 +103,7 @@ end
                       allow_tma::Bool=true) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, latency, allow_tma, index - One())
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (index - One(),))
 end
 
 # Load with Constant shape tuple
@@ -114,7 +114,7 @@ end
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
 # Keyword argument version
@@ -125,7 +125,7 @@ end
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
 # Auto-reshape tile to match target array rank for store.
@@ -165,7 +165,7 @@ Returns the stored tile (enables chaining and helps constant folding).
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Bool=true) where {T, N, Shape}
     reshaped = _reshape_for_store(tile, Val(N))
-    _store_reshaped(arr, reshaped, latency, allow_tma, (promote(index...) .- One())...)
+    _store_reshaped(arr, reshaped, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
@@ -173,17 +173,17 @@ end
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Bool=true) where {T, N, Shape}
     reshaped = _reshape_for_store(tile, Val(N))
-    _store_reshaped(arr, reshaped, latency, allow_tma, index - One())
+    _store_reshaped(arr, reshaped, latency, allow_tma, (index - One(),))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T, SShape},
-                                 latency, allow_tma, indices...) where {T, SShape}
+                                 latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T, SShape}
     tv = Intrinsics.make_tensor_view(arr)
     # SShape is a tuple TYPE (e.g., Tuple{16}), convert to VALUE for make_partition_view
     shape_val = Tuple(SShape.parameters)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices...)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices)
 end
 
 # Keyword argument version - dispatch to positional version

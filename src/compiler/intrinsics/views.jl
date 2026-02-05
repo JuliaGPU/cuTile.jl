@@ -80,7 +80,7 @@ end
     @noinline function load_partition_view(pv::PartitionView{T, N, Shape},
                                             latency::Union{Int, Nothing},
                                             allow_tma::Bool,
-                                            index::Vararg{Integer}) where {T, N, Shape}
+                                            indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
         donotdelete(pv, latency, allow_tma)
         # Shape is already a tuple TYPE (e.g., Tuple{64}) from make_partition_view
         Tile{T, Shape}()
@@ -90,7 +90,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (partition_view, latency, allow_tma, indices...)
+    # args: (partition_view, latency, allow_tma, indices)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && throw(IRError("load_partition_view() requires a PartitionView argument"))
     pv_arg.v === nothing && throw(IRError("load_partition_view() requires a materialized PartitionView"))
@@ -121,15 +121,34 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # allow_tma defaults to true if not provided
     allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
 
-    # Extract indices from args[4:end] and infer index type
+    # Extract indices
+    tuple_arg = emit_value!(ctx, args[4])
+    tuple_arg === nothing && throw(IRError("load_partition_view(): cannot resolve index tuple argument"))
+
     index_vals = Value[]
     index_jl_types = Type[]
-    for i in 4:length(args)
-        tv = emit_value!(ctx, args[i])
-        tv === nothing && throw(IRError("load_partition_view(): cannot resolve index argument"))
-        push!(index_vals, tv.v)
-        push!(index_jl_types, tv.jltype)
+
+    # Get tuple element refs from tuple field or constant
+    if tuple_arg.tuple !== nothing
+        # Tuple with component refs
+        for ref in tuple_arg.tuple
+            tv = emit_value!(ctx, ref)
+            tv === nothing && throw(IRError("load_partition_view(): cannot resolve index element"))
+            push!(index_vals, tv.v)
+            push!(index_jl_types, tv.jltype)
+        end
+    elseif tuple_arg.constant !== nothing
+        # Tuple with all constant values
+        tuple_val = something(tuple_arg.constant)
+        for idx_val in tuple_val
+            tv = emit_value!(ctx, idx_val)
+            push!(index_vals, tv.v)
+            push!(index_jl_types, tv.jltype)
+        end
+    else
+        throw(IRError("load_partition_view(): index tuple must have component refs or be constant"))
     end
+
     unique_types = unique(index_jl_types)
     length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
     isempty(unique_types) && ndim > 0 && throw(IRError("load_partition_view(): indices required for $(ndim)D view"))
@@ -352,7 +371,7 @@ end
                                              tile::Tile{T, Shape},
                                              latency::Union{Int, Nothing},
                                              allow_tma::Bool,
-                                             index::Vararg{Integer}) where {T, N, Shape}
+                                             indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
         donotdelete(pv, tile, latency, allow_tma)
         nothing
     end
@@ -361,7 +380,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (partition_view, tile, latency, allow_tma, indices...)
+    # args: (partition_view, tile, latency, allow_tma, indices)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && throw(IRError("store_partition_view() requires a PartitionView argument"))
     pv_arg.v === nothing && throw(IRError("store_partition_view() requires a materialized PartitionView"))
@@ -401,15 +420,34 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     # allow_tma defaults to true if not provided
     allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
 
-    # Extract indices from args[5:end] and infer index type
+    # Extract indices
+    tuple_arg = emit_value!(ctx, args[5])
+    tuple_arg === nothing && throw(IRError("store_partition_view(): cannot resolve index tuple argument"))
+
     index_vals = Value[]
     index_jl_types = Type[]
-    for i in 5:length(args)
-        tv = emit_value!(ctx, args[i])
-        tv === nothing && throw(IRError("store_partition_view(): cannot resolve index argument"))
-        push!(index_vals, tv.v)
-        push!(index_jl_types, tv.jltype)
+
+    # Get tuple element refs from tuple field or constant
+    if tuple_arg.tuple !== nothing
+        # Tuple with component refs
+        for ref in tuple_arg.tuple
+            tv = emit_value!(ctx, ref)
+            tv === nothing && throw(IRError("store_partition_view(): cannot resolve index element"))
+            push!(index_vals, tv.v)
+            push!(index_jl_types, tv.jltype)
+        end
+    elseif tuple_arg.constant !== nothing
+        # Tuple with all constant values
+        tuple_val = something(tuple_arg.constant)
+        for idx_val in tuple_val
+            tv = emit_value!(ctx, idx_val)
+            push!(index_vals, tv.v)
+            push!(index_jl_types, tv.jltype)
+        end
+    else
+        throw(IRError("store_partition_view(): index tuple must have component refs or be constant"))
     end
+
     unique_types = unique(index_jl_types)
     length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
     isempty(unique_types) && actual_ndim > 0 && throw(IRError("store_partition_view(): indices required for $(actual_ndim)D view"))
