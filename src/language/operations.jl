@@ -59,7 +59,7 @@ Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
 # num_tiles(arr, 2, (32, 32)) returns cld(768, 32) = 24
 ```
 """
-@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{<:Any, Int}) where {T, N}
+@inline function num_tiles(arr::TileArray, axis::Integer, shape::NTuple{<:Any, Int})
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
@@ -88,29 +88,29 @@ Index is 1-indexed. Shape must be compile-time constant.
 tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero, latency=3)
 ```
 """
-@inline function load(arr::TileArray{T, N}, index, shape::NTuple{<:Any, Int};
+@inline function load(arr::TileArray, index, shape::NTuple{<:Any, Int};
                       padding_mode::Int=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Bool=true) where {T, N}
+                      allow_tma::Bool=true)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
     Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
-@inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{<:Any, Int};
+@inline function load(arr::TileArray, index::Integer, shape::NTuple{<:Any, Int};
                       padding_mode::Int=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Bool=true) where {T, N}
+                      allow_tma::Bool=true)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
     Intrinsics.load_partition_view(pv, latency, allow_tma, (index - One(),))
 end
 
 # Load with Constant shape tuple
-@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Vararg{Constant{Int}}};
+@inline function load(arr::TileArray, index, shape::Tuple{Vararg{Constant{Int}}};
                       padding_mode::Int=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Bool=true) where {T, N}
+                      allow_tma::Bool=true)
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
@@ -118,10 +118,10 @@ end
 end
 
 # Keyword argument version
-@inline function load(arr::TileArray{T, N}; index, shape,
+@inline function load(arr::TileArray; index, shape,
                       padding_mode::Int=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Bool=true) where {T, N}
+                      allow_tma::Bool=true)
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
@@ -161,18 +161,18 @@ Returns the stored tile (enables chaining and helps constant folding).
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
 """
-@inline function store(arr::TileArray{T,N}, index, tile::Tile{T, Shape};
+@inline function store(arr::TileArray{T}, index, tile::Tile{T};
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T, N, Shape}
-    reshaped = _reshape_for_store(tile, Val(N))
+                       allow_tma::Bool=true) where {T}
+    reshaped = _reshape_for_store(tile, Val(ndims(arr)))
     _store_reshaped(arr, reshaped, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-@inline function store(arr::TileArray{T,N}, index::Integer, tile::Tile{T, Shape};
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T};
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T, N, Shape}
-    reshaped = _reshape_for_store(tile, Val(N))
+                       allow_tma::Bool=true) where {T}
+    reshaped = _reshape_for_store(tile, Val(ndims(arr)))
     _store_reshaped(arr, reshaped, latency, allow_tma, (index - One(),))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end

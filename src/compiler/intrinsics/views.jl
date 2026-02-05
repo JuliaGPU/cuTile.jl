@@ -102,9 +102,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
     pv_type = CC.widenconst(pv_arg.jltype)
     elem_type = eltype(pv_type)
-    # Shape is always a tuple type (e.g., Tuple{64}) from make_partition_view
-    shape_type = pv_type.parameters[3]
-    tile_shape = collect(Int, shape_type.parameters)
+    tile_shape = collect(Int, size(pv_type))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -214,7 +212,7 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
     tilearray_type = get_arg_type(ctx, arg_idx)
     elem_type = eltype(tilearray_type)
     ndim = ndims(tilearray_type)
-    array_spec = get_array_spec(tilearray_type)
+    spec = array_spec(tilearray_type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
@@ -254,12 +252,12 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
 
     # TensorView type
     tv_shape = fill(DYNAMIC_SHAPE, ndim)
-    tv_strides = compute_tensor_view_strides(array_spec, ndim)
+    tv_strides = compute_tensor_view_strides(spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
     # Emit AssumeOps for optimization hints
-    if array_spec !== nothing
-        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_size_type; tv_strides)
+    if spec !== nothing
+        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, spec, dtype, scalar_size_type; tv_strides)
     end
 
     # Filter strides to only pass dynamic ones as operands
@@ -270,14 +268,6 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
 
     # Cache it
     ctx.tensor_views[arg_idx] = (tensor_view, tv_type)
-end
-
-function get_array_spec(@nospecialize(T))
-    if T <: TileArray && length(T.parameters) >= 3
-        S = T.parameters[3]
-        S isa ArraySpec && return S
-    end
-    nothing
 end
 
 """
