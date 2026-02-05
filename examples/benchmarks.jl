@@ -63,10 +63,10 @@ function run_benchmark(name::String)
     isdefined(mod, :run) || return nothing
 
     # Prepare data with benchmark=true for larger sizes
-    data = mod.prepare(; benchmark=true)
+    data = @invokelatest mod.prepare(; benchmark=true)
 
     # Run cuTile
-    result = mod.run(data; nruns=NRUNS, warmup=WARMUP)
+    result = @invokelatest mod.run(data; nruns=NRUNS, warmup=WARMUP)
 
     # Extract times (handle times_fwd/times_bwd for layernorm)
     if hasproperty(result, :times)
@@ -82,7 +82,7 @@ function run_benchmark(name::String)
 
     # Run others if available
     if isdefined(mod, :run_others)
-        others = mod.run_others(data; nruns=NRUNS, warmup=WARMUP)
+        others = @invokelatest mod.run_others(data; nruns=NRUNS, warmup=WARMUP)
         merge!(results, others)
     end
 
