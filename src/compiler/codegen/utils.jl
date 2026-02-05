@@ -293,6 +293,10 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     # Scalar types -> 0-D tile
     if T === Bool
         return tile_type!(tt, I1(tt), Int[])
+    elseif T === Int8 || T === UInt8
+        return tile_type!(tt, I8(tt), Int[])
+    elseif T === Int16 || T === UInt16
+        return tile_type!(tt, I16(tt), Int[])
     elseif T === Int32 || T === UInt32
         return tile_type!(tt, I32(tt), Int[])
     elseif T === Int64 || T === UInt64
