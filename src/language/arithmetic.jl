@@ -103,6 +103,6 @@ end
 ## mixed arithmetic
 
 # direct operators (tile * scalar, tile / scalar)
-@inline Base.:(*)(a::Tile{T, S}, b::Number) where {T <: AbstractFloat, S} = Intrinsics.mulf(a, broadcast_to(Tile(T(b)), S))
-@inline Base.:(*)(a::Number, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.mulf(broadcast_to(Tile(T(a)), S), b)
-@inline Base.:(/)(a::Tile{T, S}, b::Number) where {T <: AbstractFloat, S} = Intrinsics.divf(a, broadcast_to(Tile(T(b)), S))
+@inline Base.:(*)(a::Tile{T, S}, b::Number) where {T <: AbstractFloat, S} = Intrinsics.mulf(a, broadcast_to(Tile(T(b)), Tuple(S.parameters)))
+@inline Base.:(*)(a::Number, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.mulf(broadcast_to(Tile(T(a)), Tuple(S.parameters)), b)
+@inline Base.:(/)(a::Tile{T, S}, b::Number) where {T <: AbstractFloat, S} = Intrinsics.divf(a, broadcast_to(Tile(T(b)), Tuple(S.parameters)))

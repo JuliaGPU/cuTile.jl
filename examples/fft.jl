@@ -108,8 +108,8 @@ function fft_kernel(
     # Reshape to (BS, F2, F1, F0) then permute to (BS, F0F2, F1) for stage 1
     X_r3 = reshape(X_r2, (BS, F2, F1, F0))
     X_i3 = reshape(X_i2, (BS, F2, F1, F0))
-    X_r4 = ct.permute(X_r3, (1, 2, 4, 3))  # (BS, F2, F0, F1)
-    X_i4 = ct.permute(X_i3, (1, 2, 4, 3))
+    X_r4 = permutedims(X_r3, (1, 2, 4, 3))  # (BS, F2, F0, F1)
+    X_i4 = permutedims(X_i3, (1, 2, 4, 3))
     X_r5 = reshape(X_r4, (BS, F0F2, F1))
     X_i5 = reshape(X_i4, (BS, F0F2, F1))
 
@@ -127,8 +127,8 @@ function fft_kernel(
     # Reshape and permute for stage 2
     X_r8 = reshape(X_r7, (BS, F2, F0, F1))
     X_i8 = reshape(X_i7, (BS, F2, F0, F1))
-    X_r9 = ct.permute(X_r8, (1, 3, 4, 2))  # (BS, F0, F1, F2)
-    X_i9 = ct.permute(X_i8, (1, 3, 4, 2))
+    X_r9 = permutedims(X_r8, (1, 3, 4, 2))  # (BS, F0, F1, F2)
+    X_i9 = permutedims(X_i8, (1, 3, 4, 2))
     X_r10 = reshape(X_r9, (BS, F0F1, F2))
     X_i10 = reshape(X_i9, (BS, F0F1, F2))
 

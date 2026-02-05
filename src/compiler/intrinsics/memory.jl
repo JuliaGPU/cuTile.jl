@@ -75,7 +75,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     end
     ctx.token = new_token
 
-    result_jltype = Tile{elem_type, Tuple(tile_shape)}
+    result_jltype = Tile{elem_type, Core.apply_type(Tuple, tile_shape...)}
     CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
 end
 

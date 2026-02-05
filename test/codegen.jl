@@ -165,21 +165,21 @@
             end
         end
 
-        @testset "permute" begin
-            # 2D permute (same as transpose)
+        @testset "permutedims" begin
+            # 2D permutedims with explicit perm (same as transpose)
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "permute"
-                    permuted = ct.permute(tile, (2, 1))
+                    permuted = permutedims(tile, (2, 1))
                     ct.store(b, pid, permuted)
                     return
                 end
             end
 
-            # 3D permute
+            # 3D permutedims
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b
@@ -187,13 +187,13 @@
                     tile = ct.load(a, pid, (2, 4, 8))
                     @check "permute"
                     # (2,4,8) with perm (3,1,2) -> (8,2,4)
-                    permuted = ct.permute(tile, (3, 1, 2))
+                    permuted = permutedims(tile, (3, 1, 2))
                     ct.store(b, pid, permuted)
                     return
                 end
             end
 
-            # 3D identity permute
+            # 3D identity permutedims
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b
@@ -201,8 +201,34 @@
                     tile = ct.load(a, pid, (2, 4, 8))
                     @check "permute"
                     # (2,4,8) with perm (1,2,3) -> (2,4,8) (identity)
-                    permuted = ct.permute(tile, (1, 2, 3))
+                    permuted = permutedims(tile, (1, 2, 3))
                     ct.store(b, pid, permuted)
+                    return
+                end
+            end
+
+            # 2D permutedims with no-arg (defaults to transpose)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 8))
+                    @check "permute"
+                    permuted = permutedims(tile)  # defaults to (2, 1)
+                    ct.store(b, pid, permuted)
+                    return
+                end
+            end
+
+            # 1D permutedims (reshape to row)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (32,))
+                    @check "reshape"
+                    row = permutedims(tile)  # (32,) -> (1, 32)
+                    ct.store(b, pid, row)
                     return
                 end
             end

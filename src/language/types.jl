@@ -212,7 +212,7 @@ mutable struct Tile{T, Shape}
 end
 
 """
-    Tile(val::T) -> Tile{T, ()}
+    Tile(val::T) -> Tile{T, Tuple{}}
 
 Create a 0-dimensional (scalar) tile from a scalar value.
 This is used internally to convert scalars to tiles for broadcasting.
@@ -221,7 +221,7 @@ In kernel code, this is compiled to a ConstantOp.
 """
 @noinline function Tile(val::T) where {T <: Number}
     Base.donotdelete(val)
-    Tile{T, ()}()
+    Tile{T, Tuple{}}()
 end
 
 #=============================================================================
@@ -285,8 +285,9 @@ Constant(val::T) where {T} = Constant{T, val}()
 # Type accessors
 Base.eltype(::Type{Tile{T, Shape}}) where {T, Shape} = T
 Base.eltype(::Tile{T, Shape}) where {T, Shape} = T
-tile_shape(::Type{Tile{T, Shape}}) where {T, Shape} = Shape
-tile_shape(::Tile{T, Shape}) where {T, Shape} = Shape
+# Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for user convenience.
+tile_shape(::Type{Tile{T, Shape}}) where {T, Shape} = Tuple(Shape.parameters)
+tile_shape(::Tile{T, Shape}) where {T, Shape} = Tuple(Shape.parameters)
 replace_eltype(::Type{Tile{T, Shape}}, ::Type{U}) where {T, Shape, U} = Tile{U, Shape}
 replace_eltype(::Type, ::Type{T}) where {T} = T  # fallback for non-Tile types
 

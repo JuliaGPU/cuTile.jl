@@ -365,14 +365,14 @@ end
     end
 end
 
-@testset "permute" begin
-    @testset "2D permute (transpose-like)" begin
+@testset "permutedims" begin
+    @testset "2D permutedims (transpose-like)" begin
         function permute_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             # Load 8x4 tile
             tile = ct.load(x, (bid, 1), (8, 4))
-            # Permute with (1, 0) to swap dimensions: (8, 4) -> (4, 8)
-            permuted = ct.permute(tile, (2, 1))
+            # Permute with (2, 1) to swap dimensions: (8, 4) -> (4, 8)
+            permuted = permutedims(tile, (2, 1))
             ct.store(y, (bid, 1), permuted)
             return
         end
@@ -383,7 +383,7 @@ end
 
         ct.launch(permute_2d_kernel, cld(m, 8), x, y)
 
-        # Verify permute matches transpose
+        # Verify permutedims matches transpose
         x_cpu = Array(x)
         y_cpu = Array(y)
         for bid in 0:(cld(m, 8)-1)
@@ -396,14 +396,14 @@ end
         end
     end
 
-    @testset "permute roundtrip preserves data" begin
+    @testset "permutedims roundtrip preserves data" begin
         function permute_roundtrip_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             # Load 4x8 tile
             tile = ct.load(x, (bid, 1), (4, 8))
-            # Permute with (1, 0), then back with (1, 0)
-            permuted = ct.permute(tile, (2, 1))  # (4, 8) -> (8, 4)
-            back = ct.permute(permuted, (2, 1))  # (8, 4) -> (4, 8)
+            # Permute with (2, 1), then back with (2, 1)
+            permuted = permutedims(tile, (2, 1))  # (4, 8) -> (8, 4)
+            back = permutedims(permuted, (2, 1))  # (8, 4) -> (4, 8)
             ct.store(y, (bid, 1), back)
             return
         end

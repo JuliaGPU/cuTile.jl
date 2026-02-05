@@ -11,6 +11,7 @@
     """
     @noinline function astype(tile::Tile{T1, Shape}, ::Type{T2}) where {T1, Shape, T2}
         donotdelete(tile)
+        # Shape is already a tuple TYPE (e.g., Tuple{16}) from the input tile
         Tile{T2, Shape}()
     end
 end
@@ -70,7 +71,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
         throw(IRError("astype() unsupported conversion: $source_elem -> $target_elem"))
     end
 
-    CGVal(result, target_tile_type, replace_eltype(source_type, target_elem), tile_shape)
+    CGVal(result, target_tile_type, Tile{target_elem, Core.apply_type(Tuple, tile_shape...)}, tile_shape)
 end
 
 # TODO: cuda_tile.bitcast

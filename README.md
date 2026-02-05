@@ -150,7 +150,7 @@ uses standard Julia syntax and is overlaid on `Base`.
 | `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
 | `transpose(tile)` | Transpose 2D tile |
 | `reshape(tile, shape)` | Reshape (same element count) |
-| `ct.permute(tile, perm)` | Permute dimensions |
+| `permutedims(tile, perm)` | Permute dimensions |
 | `ct.extract(tile, index, shape)` | Extract sub-tile |
 | `ct.cat((a, b), axis)` | Concatenate tiles |
 | `dropdims(tile; dims)` | Remove singleton dimensions |
@@ -285,17 +285,17 @@ All index-based operations use Julia's 1-based convention:
 # Python
 bid_x = ct.bid(0)
 bid_y = ct.bid(1)
-ct.permute(tile, (2, 0, 1))
+permutedims(tile, (2, 0, 1))
 ```
 
 ```julia
 # Julia
 bid_x = ct.bid(1)
 bid_y = ct.bid(2)
-ct.permute(tile, (3, 1, 2))
+permutedims(tile, (3, 1, 2))
 ```
 
-This applies to `bid`, `num_blocks`, `permute`, `reshape`, dimension arguments, etc.
+This applies to `bid`, `num_blocks`, `permutedims`, `reshape`, dimension arguments, etc.
 
 ### `Val`-like constants
 

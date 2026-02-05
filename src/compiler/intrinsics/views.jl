@@ -12,17 +12,6 @@ function padding_mode_to_padding_value(mode::Int)
 end
 
 """
-Extract tile shape tuple from a Val{Shape} argument.
-"""
-function get_tile_shape_tuple(ctx::CGCtx, arg)
-    shape = get_constant(ctx, arg)
-    shape isa Tuple || throw(IRError("make_partition_view() shape must be a compile-time constant tuple"))
-    shape_vec = collect(Int, shape)
-    validate_tile_shape(shape_vec, "load")
-    shape_vec
-end
-
-"""
 Get padding value from args, with default.
 """
 function get_padding_value(ctx::CGCtx, args)
@@ -93,6 +82,7 @@ end
                                             allow_tma::Bool,
                                             index::Vararg{Integer}) where {T, N, Shape}
         donotdelete(pv, latency, allow_tma)
+        # Shape is already a tuple TYPE (e.g., Tuple{64}) from make_partition_view
         Tile{T, Shape}()
     end
 end
@@ -112,7 +102,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
     pv_type = CC.widenconst(pv_arg.jltype)
     elem_type = eltype(pv_type)
-    tile_shape = collect(Int, pv_type.parameters[3])
+    # Shape is always a tuple TYPE (e.g., Tuple{64}) from make_partition_view
+    shape_type = pv_type.parameters[3]
+    tile_shape = collect(Int, shape_type.parameters)
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -155,7 +147,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
                                                  token=ctx.token, optimization_hints)
     ctx.token = new_token
 
-    CGVal(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(tile_val, tile_type, Tile{elem_type, Core.apply_type(Tuple, tile_shape...)}, tile_shape)
 end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
@@ -174,15 +166,21 @@ end
     Create a PartitionView from a TensorView with the given tile shape.
     Compiled to cuda_tile.make_partition_view.
     """
-    @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int)::PartitionView{T, N, Shape} where {T, N, Shape}
+    @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int) where {T, N, Shape}
         donotdelete(tv)
-        PartitionView{T, N, Shape}()
+        PartitionView{T, N, Core.apply_type(Tuple, Shape...)}()
     end
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
-    tile_shape = get_tile_shape_tuple(ctx, args[2])
+
+    # User boundary: Val{Shape} contains VALUE tuple from user call (e.g., load(arr, idx, (16,)))
+    shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
+    shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
+    tile_shape = collect(Int, shape)
+    validate_tile_shape(tile_shape, "load")
+
     padding_value = get_padding_value(ctx, args)
 
     tensor_view = tv.v
@@ -193,7 +191,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, collect(0:ndim-1), padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple(tile_shape)}, Int[], nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Core.apply_type(Tuple, tile_shape...)}, Int[], nothing, Some(ndim), nothing)
 end
 
 """

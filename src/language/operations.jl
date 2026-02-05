@@ -130,20 +130,20 @@ end
 
 # Auto-reshape tile to match target array rank for store.
 @inline function _reshape_for_store(tile::Tile{T,Shape}, ::Val{N}) where {T, Shape, N}
-    length(Shape) <= N && return tile
+    length(Shape.parameters) <= N && return tile
     new_shape = _store_shape(Val(Shape), Val(N))
     reshape(tile, new_shape)
 end
 
 @generated function _store_shape(::Val{Shape}, ::Val{N}) where {Shape, N}
-    M = length(Shape)
+    M = length(Shape.parameters)
     to_drop = M - N
-    singletons = [i for i in 1:M if Shape[i] == 1]
+    singletons = [i for i in 1:M if Shape.parameters[i] == 1]
     if length(singletons) < to_drop
         error("cannot squeeze shape $Shape to rank $N: only $(length(singletons)) singleton dims but need to drop $to_drop")
     end
     drop_set = Set(singletons[1:to_drop])
-    kept = tuple((Shape[i] for i in 1:M if !(i in drop_set))...)
+    kept = tuple((Shape.parameters[i] for i in 1:M if !(i in drop_set))...)
     # Partition views require at least 1D
     if isempty(kept)
         kept = (1,)
@@ -180,7 +180,9 @@ end
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T, SShape},
                                  latency, allow_tma, indices...) where {T, SShape}
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(SShape), PaddingMode.Undetermined)
+    # SShape is a tuple TYPE (e.g., Tuple{16}), convert to VALUE for make_partition_view
+    shape_val = Tuple(SShape.parameters)
+    pv = Intrinsics.make_partition_view(tv, Val(shape_val), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices...)
 end
 
@@ -225,8 +227,8 @@ tile = ct.gather(arr, indices; latency=3)
     lt_size = indices_i32 .< size_0d
     mask = ge_zero .& lt_size
 
-    # Padding for OOB (zero)
-    padding = broadcast_to(Tile(zero(T)), S)
+    # Padding for OOB (zero) - convert TYPE to VALUE for broadcast_to
+    padding = broadcast_to(Tile(zero(T)), Tuple(S.parameters))
 
     Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
 end
@@ -246,8 +248,8 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
 
-    # Broadcast indices to common shape
-    S = broadcast_shape(S0, S1)
+    # Broadcast indices to common shape (convert TYPE to VALUE for broadcast_shape)
+    S = broadcast_shape(Tuple(S0.parameters), Tuple(S1.parameters))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
 
@@ -335,8 +337,8 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
 
-    # Broadcast indices to common shape (include value tile shape)
-    S = broadcast_shape(broadcast_shape(S0, S1), Stile)
+    # Broadcast indices to common shape (convert TYPE to VALUE for broadcast_shape)
+    S = broadcast_shape(broadcast_shape(Tuple(S0.parameters), Tuple(S1.parameters)), Tuple(Stile.parameters))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
     tile_bc = broadcast_to(tile, S)
@@ -423,7 +425,7 @@ zeros_tile = ct.zeros((32, 32), Float32)
  Shape & DType
 =============================================================================#
 
-public cat, broadcast_to, permute, astype
+public cat, broadcast_to, astype
 
 """
     cat(tiles::Tuple{Tile, Tile}, axis::Int) -> Tile
@@ -479,7 +481,7 @@ reshaped = reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
     Intrinsics.reshape(tile, Val(shape))
 
 """
-    permute(tile::Tile{T, S}, perm::NTuple{N, Int}) -> Tile{T, permuted_shape}
+    permutedims(tile::Tile{T, S}, perm) -> Tile{T, permuted_shape}
 
 Permute the dimensions of a tile according to the given permutation.
 The permutation uses 1-indexed axes (Julia convention).
@@ -487,14 +489,43 @@ The permutation uses 1-indexed axes (Julia convention).
 # Example
 ```julia
 tile = ct.load(arr, (1, 1, 1), (2, 3, 4))  # Shape (2, 3, 4)
-# Permute axes: new_axis_1 = old_axis_3, new_axis_2 = old_axis_1, new_axis_3 = old_axis_2
-permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
+permuted = permutedims(tile, (3, 1, 2))    # Shape (4, 2, 3)
 ```
 """
-@inline permute(tile::Tile{T}, perm::NTuple{<:Any, Int}) where {T} =
+@inline Base.permutedims(tile::Tile{T}, perm::NTuple{<:Any, Int}) where {T} =
     Intrinsics.permute(tile, Val(map(p -> p - 1, perm)))
-@inline permute(tile::Tile{T}, ::Val{Perm}) where {T, Perm} =
+@inline Base.permutedims(tile::Tile{T}, ::Val{Perm}) where {T, Perm} =
     Intrinsics.permute(tile, Val(map(p -> p - 1, Perm)))
+
+"""
+    permutedims(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
+
+Permute a 2D tile, swapping its dimensions. Defaults to permutation `(2, 1)`.
+
+Differs from `transpose` in that the operation is not recursive. For tiles
+of numeric element types, the two operations are equivalent.
+
+---
+
+    permutedims(tile::Tile{T, (N,)}) -> Tile{T, (1, N)}
+
+Reshape a 1D tile into a `1 × N` row tile.
+
+Differs from `transpose` in that the operation is not recursive.
+"""
+@generated function Base.permutedims(tile::Tile{T, S}) where {T, S}
+    # S is now always a Tuple TYPE like Tuple{4, 8}
+    ndims = length(S.parameters)
+    first_dim = ndims >= 1 ? S.parameters[1] : nothing
+
+    if ndims == 2
+        return :(Intrinsics.permute(tile, Val((1, 0))))
+    elseif ndims == 1
+        return :(Intrinsics.reshape(tile, Val((1, $first_dim))))
+    else
+        return :(throw(ArgumentError("permutedims(tile) only works for 1D or 2D tiles")))
+    end
+end
 
 """
     transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
@@ -694,10 +725,10 @@ indices = argmax(tile; dims=2)  # Column indices of max per row
 ```
 """
 @inline function Base.argmax(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
-    n = S[dims]
+    n = S.parameters[dims]
     indices = reshape(Intrinsics.iota((n,), Int32),
-                      ntuple(i -> i == dims ? n : 1, length(S)))
-    indices = broadcast_to(indices, S)
+                      ntuple(i -> i == dims ? n : 1, length(S.parameters)))
+    indices = broadcast_to(indices, Tuple(S.parameters))
 
     function reducer(accs, elems)
         val_acc, idx_acc = accs
@@ -724,10 +755,10 @@ indices = argmin(tile; dims=2)  # Column indices of min per row
 ```
 """
 @inline function Base.argmin(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
-    n = S[dims]
+    n = S.parameters[dims]
     indices = reshape(Intrinsics.iota((n,), Int32),
-                      ntuple(i -> i == dims ? n : 1, length(S)))
-    indices = broadcast_to(indices, S)
+                      ntuple(i -> i == dims ? n : 1, length(S.parameters)))
+    indices = broadcast_to(indices, Tuple(S.parameters))
 
     function reducer(accs, elems)
         val_acc, idx_acc = accs
@@ -760,7 +791,7 @@ squeezed = dropdims(sums; dims=2)  # (64,)
     _dropdims(tile, Val(dims))
 
 @inline function _dropdims(tile::Tile{T,S}, ::Val{D}) where {T, S, D}
-    new_shape = ntuple(i -> i < D ? S[i] : S[i + 1], Val(length(S) - 1))
+    new_shape = ntuple(i -> i < D ? S.parameters[i] : S.parameters[i + 1], Val(length(S.parameters) - 1))
     reshape(tile, new_shape)
 end
 
@@ -809,22 +840,22 @@ Cumulative product along the specified axis (1-indexed).
 
 # Matrix multiplication (A * B like Julia arrays)
 @inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
-    _matmul(a, b, Val(length(SA)))
+    _matmul(a, b, Val(length(SA.parameters)))
 end
 
 # 2D matmul: (M, K) × (K, N) → (M, N)
 @inline function _matmul(a::Tile{T1, SA}, b::Tile{T2, SB}, ::Val{2}) where {T1, T2, SA, SB}
-    M = SA[1]
-    N = SB[2]
+    M = SA.parameters[1]
+    N = SB.parameters[2]
     acc = zeros((M, N), T1)
     muladd(a, b, acc)
 end
 
 # 3D batched matmul: (B, M, K) × (B, K, N) → (B, M, N)
 @inline function _matmul(a::Tile{T1, SA}, b::Tile{T2, SB}, ::Val{3}) where {T1, T2, SA, SB}
-    B = max(SA[1], SB[1])  # Broadcast batch dimension
-    M = SA[2]
-    N = SB[3]
+    B = max(SA.parameters[1], SB.parameters[1])  # Broadcast batch dimension
+    M = SA.parameters[2]
+    N = SB.parameters[3]
     acc = zeros((B, M, N), T1)
     muladd(a, b, acc)
 end

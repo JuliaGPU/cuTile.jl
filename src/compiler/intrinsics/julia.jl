@@ -63,6 +63,6 @@ function emit_intrinsic!(ctx::CGCtx, func::Type{<:Tile}, args)
     end
 
     # Return as 0D tile type with element type from the constructor
-    result_jltype = Tile{elem_type, ()}
+    result_jltype = Tile{elem_type, Tuple{}}
     CGVal(source.v, source.type_id, result_jltype, source.shape)
 end
