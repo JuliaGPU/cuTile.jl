@@ -13,7 +13,7 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif expr.head === :(=)
         return emit_assignment!(ctx, expr, result_type)
     elseif expr.head === :new
-        return nothing  # Struct construction handled elsewhere
+        return emit_new!(ctx, expr, result_type)
     elseif expr.head === :foreigncall
         throw(IRError("Foreign calls not supported in Tile IR"))
     elseif expr.head === :boundscheck
@@ -22,6 +22,30 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         @warn "Unhandled expression head" expr.head expr
         return nothing
     end
+end
+
+"""
+    emit_new!(ctx, expr::Expr, result_type) -> Union{CGVal, Nothing}
+
+Emit bytecode for a `:new` expression (struct construction).
+
+In Tile IR codegen, only ghost types (zero-size immutables like `Val{V}`,
+`Constant{T,V}`) are supported — these have no runtime representation.
+"""
+function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
+    T = CC.widenconst(result_type)
+
+    # Ghost types: no runtime representation
+    if is_ghost_type(T)
+        if T <: Val && length(T.parameters) == 1
+            return ghost_value(T, T.parameters[1])
+        elseif T <: Constant && length(T.parameters) >= 2
+            return ghost_value(T, T.parameters[2])
+        end
+        return ghost_value(T)
+    end
+
+    throw(IRError("Struct construction not supported in Tile IR: $T"))
 end
 
 function emit_assignment!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
