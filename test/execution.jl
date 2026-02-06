@@ -442,6 +442,48 @@ end
 
         @test out == permutedims(A, (2, 1))
     end
+
+    @testset "load with order=(2,1)" begin
+        function order_load_kernel(
+            src::ct.TileArray{Float32, 2}, dst::ct.TileArray{Float32, 2},
+            t::ct.Constant{Int}
+        )
+            bid_x = ct.bid(1)
+            bid_y = ct.bid(2)
+            tile = ct.load(src, (bid_x, bid_y), (t[], t[]); order=(2, 1))
+            ct.store(dst, (bid_x, bid_y), tile)
+            return
+        end
+
+        n = 64; t = 16
+        src = CuArray(Float32.(reshape(1:n*n, n, n)))
+        dst = CUDA.zeros(Float32, n, n)
+
+        ct.launch(order_load_kernel, (cld(n, t), cld(n, t)), src, dst, ct.Constant(t))
+
+        @test Array(dst) ≈ transpose(Array(src))
+    end
+
+    @testset "store with order=(2,1)" begin
+        function order_store_kernel(
+            src::ct.TileArray{Float32, 2}, dst::ct.TileArray{Float32, 2},
+            t::ct.Constant{Int}
+        )
+            bid_x = ct.bid(1)
+            bid_y = ct.bid(2)
+            tile = ct.load(src, (bid_x, bid_y), (t[], t[]))
+            ct.store(dst, (bid_x, bid_y), tile; order=(2, 1))
+            return
+        end
+
+        n = 64; t = 16
+        src = CuArray(Float32.(reshape(1:n*n, n, n)))
+        dst = CUDA.zeros(Float32, n, n)
+
+        ct.launch(order_store_kernel, (cld(n, t), cld(n, t)), src, dst, ct.Constant(t))
+
+        @test Array(dst) ≈ transpose(Array(src))
+    end
 end
 
 @testset "extract" begin
