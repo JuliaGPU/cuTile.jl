@@ -1351,6 +1351,21 @@
             end
         end
 
+        @testset "rank mismatch load/store" begin
+            # 1D shape on 2D array: should pad shape to (16, 1) internally
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    @check "load_view_tko"
+                    tile = ct.load(a, (pid, 1), (16,))
+                    @check "store_view_tko"
+                    ct.store(b, (pid, 1), tile)
+                    return
+                end
+            end
+        end
+
         @testset "num_tiles helper" begin
             spec = ct.ArraySpec{2}(16, true)
             @test @filecheck begin

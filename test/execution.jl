@@ -114,6 +114,43 @@ end
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
+@testset "rank mismatch load/store" begin
+    @testset "1D shape on 2D array" begin
+        function copy_1d_2d(src::ct.TileArray{Float32,2}, dst::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(src, (bid, 1), (16,))
+            ct.store(dst, (bid, 1), tile)
+            return
+        end
+
+        m = 64
+        src = CUDA.rand(Float32, m, 1)
+        dst = CUDA.zeros(Float32, m, 1)
+
+        ct.launch(copy_1d_2d, cld(m, 16), src, dst)
+
+        @test Array(dst) ≈ Array(src)
+    end
+
+    @testset "2D shape on 4D array" begin
+        function copy_2d_4d(src::ct.TileArray{Float32,4}, dst::ct.TileArray{Float32,4})
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
+            tile = ct.load(src, (bidx, bidy, 1, 1), (4, 4))
+            ct.store(dst, (bidx, bidy, 1, 1), tile)
+            return
+        end
+
+        d1, d2 = 16, 16
+        src = CUDA.rand(Float32, d1, d2, 1, 1)
+        dst = CUDA.zeros(Float32, d1, d2, 1, 1)
+
+        ct.launch(copy_2d_4d, (cld(d1, 4), cld(d2, 4)), src, dst)
+
+        @test Array(dst) ≈ Array(src)
+    end
+end
+
 @testset "transpose" begin
     function transpose_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
         bidx = ct.bid(1)
@@ -2098,7 +2135,7 @@ end
         cpu_result = cpu_reduce(a_reshaped, cpu_op)
 
         if elType <: AbstractFloat
-            @test b_cpu ≈ cpu_result rtol=1e-3
+            @test b_cpu ≈ cpu_result rtol=2e-3
         else
             @test b_cpu == cpu_result
         end

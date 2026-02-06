@@ -368,9 +368,12 @@ result = sum(tile; dims=2)              # (M, N) → (M, 1)
 result = dropdims(sum(tile; dims=2); dims=2)  # (M, N) → (M,)
 ```
 
-### Store reshaping
+### Automatic rank matching
 
-`ct.store` automatically reshapes the tile to match the target array's rank by dropping singleton dimensions (e.g., storing a `(1, N)` tile into a 1D array reshapes it to `(N,)`). Scalar `()` tiles are reshaped to `(1,)`.
+`ct.load` and `ct.store` automatically match the tile rank to that of the target:
+
+- **Lower rank**: trailing `1`s are appended. Loading `(M, N)` from a 4D array internally uses `(M, N, 1, 1)`. Storing a scalar tile into a 2D array pads to `(1, 1)`.
+- **Higher rank**: trailing singletons are squeezed. Storing `(M, 1)` into a 1D array reshapes to `(M,)`.
 
 ### Broadcasting shape alignment
 
