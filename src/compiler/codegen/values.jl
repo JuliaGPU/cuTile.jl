@@ -7,8 +7,27 @@ Emit/resolve a value reference to a CGVal using multiple dispatch.
 """
 function emit_value!(ctx::CGCtx, ssa::SSAValue)
     tv = ctx[ssa]
-    tv !== nothing && return tv
-    throw(IRError("SSAValue %$(ssa.id) not found in context"))
+    tv !== nothing || throw(IRError("SSAValue %$(ssa.id) not found in context"))
+    return maybe_materialize!(ctx, ssa, tv)
+end
+
+"""
+    maybe_materialize!(ctx, ssa, tv) -> CGVal
+
+Materialize a deferred constant into bytecode on demand.
+Only acts on CGVals with `type_id != TypeId(-1)` and no value yet (deferred constants).
+"""
+function maybe_materialize!(ctx::CGCtx, ssa::SSAValue, tv::CGVal)
+    tv.v !== nothing && return tv               # already materialized
+    tv.type_id == TypeId(-1) && return tv       # ghost — nothing to materialize
+    tv.constant === nothing && return tv         # no constant to materialize
+
+    val = something(tv.constant)
+    bytes = constant_to_bytes(val, CC.widenconst(tv.jltype))
+    v = encode_ConstantOp!(ctx.cb, tv.type_id, bytes)
+    materialized = CGVal(v, tv.type_id, tv.jltype, Int[], nothing, tv.constant, nothing)
+    ctx[ssa] = materialized
+    return materialized
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
@@ -61,7 +80,17 @@ end
 
 function emit_value!(ctx::CGCtx, ref::GlobalRef)
     val = getfield(ref.mod, ref.name)
-    ghost_value(typeof(val), val)
+    T = typeof(val)
+    # Ghost types (Nothing, singletons) have no materializable representation.
+    # Non-ghost types with a Tile IR type become deferred constants (materialized on demand).
+    # Everything else (functions, types) is compile-time only → ghost.
+    if !is_ghost_type(T)
+        type_id = tile_type_for_julia!(ctx, T; throw_error=false)
+        if type_id !== nothing
+            return constant_value(T, type_id, val)
+        end
+    end
+    ghost_value(T, val)
 end
 
 function emit_value!(ctx::CGCtx, node::PiNode)
@@ -73,7 +102,7 @@ function emit_value!(ctx::CGCtx, node::PiNode)
     emit_value!(ctx, node.val)
 end
 
-emit_value!(ctx::CGCtx, ::Nothing) = nothing
+emit_value!(ctx::CGCtx, ::Nothing) = ghost_value(Nothing, nothing)
 
 """
     get_constant(ctx, ref) -> Union{Any, Nothing}
@@ -115,7 +144,7 @@ function emit_value!(ctx::CGCtx, @nospecialize(val))
     if T <: Constant && length(T.parameters) >= 2
         return ghost_value(T, T.parameters[2])
     end
-    throw(IRError("Unhandled value type in emit_value!: $(typeof(val))"))
+    ghost_value(T, val)
 end
 
 

@@ -2021,6 +2021,69 @@ end
 end
 
 #=============================================================================
+ External Constants (GlobalRef handling)
+=============================================================================#
+
+# Constants defined outside the kernel (module-level `const`) appear as GlobalRef
+# nodes in Julia IR. These must emit proper ConstantOp for numeric types,
+# not ghost values (which produce nothing in the bytecode).
+
+const _CODEGEN_TEST_FLOAT32 = Float32(1 / log(2))
+const _CODEGEN_TEST_FLOAT64 = 3.14159
+
+@testset "External Constants" begin
+    spec1d = ct.ArraySpec{1}(16, true)
+
+    @testset "external Float32 constant in arithmetic" begin
+        # Bug 1: GlobalRef for Float32 must emit ConstantOp, not a ghost value.
+        # Previously, emit_value!(ctx, ::GlobalRef) wrapped all values as ghosts,
+        # causing MulFOp to receive `nothing` instead of a bytecode Value.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "constant <f32"
+                @check "mulf"
+                Base.donotdelete(tile * _CODEGEN_TEST_FLOAT32)
+                return
+            end
+        end
+    end
+
+    @testset "external Float64 constant in arithmetic" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "constant <f64"
+                @check "mulf"
+                Base.donotdelete(tile * _CODEGEN_TEST_FLOAT64)
+                return
+            end
+        end
+    end
+
+    @testset "external constant assigned to local variable" begin
+        # Bug 2: GlobalRef on RHS of assignment in emit_rhs! returned nothing.
+        # Using a local variable forces Julia to emit an assignment from the GlobalRef.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                local_const = _CODEGEN_TEST_FLOAT32
+                @check "constant <f32"
+                @check "mulf"
+                Base.donotdelete(tile * local_const)
+                return
+            end
+        end
+    end
+end
+
+#=============================================================================
  Entry Hints (kernel-level optimization hints)
 =============================================================================#
 

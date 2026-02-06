@@ -103,6 +103,16 @@ ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, Int[], n
 ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, Some(constant), nothing)
 
 """
+    constant_value(jltype, type_id, constant) -> CGVal
+
+Deferred constant: has a Tile IR type but no bytecode value yet.
+Materialized (ConstantOp emitted) on demand at SSA lookup time.
+Parallel to Julia's non-ghost cgval from mark_julia_const.
+"""
+constant_value(@nospecialize(jltype), type_id::TypeId, constant) =
+    CGVal(nothing, type_id, jltype, Int[], nothing, Some(constant), nothing)
+
+"""
     tuple_value(jltype, component_refs, component_constants) -> CGVal
 
 Create a tuple value with tracked component refs. Derives constant if all components have constants.
@@ -278,15 +288,22 @@ function require_concrete_type(@nospecialize(T), context::String)
 end
 
 """
-    tile_type_for_julia!(ctx, T) -> TypeId
+    tile_type_for_julia!(ctx, T; throw_error=true) -> TypeId or nothing
 
-Get or create a Tile IR type for a Julia type.
+Get or create a Tile IR type for a Julia type. With `throw_error=false`, returns
+`nothing` instead of throwing if the type has no Tile IR representation.
 """
-function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T))
+function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T); throw_error::Bool=true)
     actual_type = CC.widenconst(T)
-    get!(ctx.type_cache, actual_type) do
-        _tile_type_for_julia!(ctx.tt, actual_type)
+    cached = get(ctx.type_cache, actual_type, nothing)
+    cached !== nothing && return cached
+    type_id = _tile_type_for_julia!(ctx.tt, actual_type)
+    if type_id !== nothing
+        ctx.type_cache[actual_type] = type_id
+        return type_id
     end
+    throw_error && throw(IRError("Unsupported Julia type for Tile IR: $actual_type"))
+    return nothing
 end
 
 function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
@@ -333,7 +350,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         return tile_type!(tt, elem_dtype, shape)
     end
 
-    throw(IRError("Unsupported Julia type for Tile IR: $T"))
+    return nothing
 end
 
 """

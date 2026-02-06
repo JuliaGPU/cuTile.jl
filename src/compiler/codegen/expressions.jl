@@ -69,7 +69,7 @@ function emit_rhs!(ctx::CGCtx, @nospecialize(rhs), @nospecialize(result_type))
     elseif rhs isa QuoteNode
         return emit_constant!(ctx, rhs.value, result_type)
     elseif rhs isa GlobalRef
-        return nothing
+        return emit_value!(ctx, rhs)
     else
         return emit_constant!(ctx, rhs, result_type)
     end
