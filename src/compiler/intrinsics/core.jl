@@ -42,8 +42,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     source_type = CC.widenconst(source.jltype)
     source_elem = eltype(source_type)
 
-    # Extract target shape from the constant tuple argument
-    target_shape_tuple = get_constant(ctx, args[2])
+    # Extract target shape from the Val{Shape} type parameter
+    target_shape_tuple = argextype(ctx, args[2]).parameters[1]
     target_shape_tuple isa Tuple || throw(IRError("broadcast() shape must be a compile-time constant tuple"))
     target_shape = collect(Int, target_shape_tuple)
     validate_tile_shape(target_shape, "broadcast")
@@ -137,8 +137,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     rhs = emit_value!(ctx, tuple_tv.tuple[2])
     (lhs === nothing || rhs === nothing) && throw(IRError("Cannot resolve tile operands for cat()"))
 
-    # Get axis from Val{Axis}
-    axis_val = get_constant(ctx, args[2])
+    # Get axis from Val{Axis} type parameter
+    axis_val = argextype(ctx, args[2]).parameters[1]
     axis_val isa Integer || throw(IRError("cat() axis must be a compile-time constant integer"))
 
     # Handle negative axis
@@ -226,12 +226,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     source = emit_value!(ctx, args[1])
     source === nothing && throw(IRError("Cannot resolve source operand for extract()"))
 
-    # Extract index from Val{Index} argument
-    index_tuple = get_constant(ctx, args[2])
+    # Extract index from Val{Index} type parameter
+    index_tuple = argextype(ctx, args[2]).parameters[1]
     index_tuple isa Tuple || throw(IRError("extract() index must be a compile-time constant tuple"))
 
-    # Extract shape from Val{Shape} argument
-    shape_tuple = get_constant(ctx, args[3])
+    # Extract shape from Val{Shape} type parameter
+    shape_tuple = argextype(ctx, args[3]).parameters[1]
     shape_tuple isa Tuple || throw(IRError("extract() shape must be a compile-time constant tuple"))
     output_shape = collect(Int, shape_tuple)
     validate_tile_shape(output_shape, "extract")
@@ -444,8 +444,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     input_shape = source.shape
     isempty(input_shape) && throw(IRError("Cannot determine tile shape for permute()"))
 
-    # Extract permutation from Val{Perm} argument
-    perm_tuple = get_constant(ctx, args[2])
+    # Extract permutation from Val{Perm} type parameter
+    perm_tuple = argextype(ctx, args[2]).parameters[1]
     perm_tuple isa Tuple || throw(IRError("permute() permutation must be a compile-time constant tuple"))
 
     # Convert to 0-indexed vector for bytecode
@@ -546,8 +546,8 @@ function emit_reduce!(ctx::CGCtx, args)
     end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
-    # Get reduction axis
-    axis = @something get_constant(ctx, args[2]) throw(IRError("Reduction axis must be a compile-time constant"))
+    # Get reduction axis from Val{axis} type parameter
+    axis = argextype(ctx, args[2]).parameters[1]
 
     # Resolve combiner function
     func = get_constant(ctx, args[3])
@@ -660,8 +660,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     source = emit_value!(ctx, args[1])
     source === nothing && throw(IRError("Cannot resolve source operand for reshape()"))
 
-    # Extract target shape from Val{Shape} argument
-    target_shape_tuple = get_constant(ctx, args[2])
+    # Extract target shape from Val{Shape} type parameter
+    target_shape_tuple = argextype(ctx, args[2]).parameters[1]
     target_shape_tuple isa Tuple || throw(IRError("reshape() shape must be a compile-time constant tuple"))
     target_shape = collect(Int, target_shape_tuple)
     validate_tile_shape(target_shape, "reshape")
@@ -739,8 +739,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
-    # Get scan axis
-    axis = @something get_constant(ctx, args[2]) throw(IRError("Scan axis must be a compile-time constant"))
+    # Get scan axis from Val{axis} type parameter
+    axis = argextype(ctx, args[2]).parameters[1]
 
     # Resolve combiner function
     func = get_constant(ctx, args[3])
@@ -861,7 +861,7 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.from_scalar), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("Cannot resolve scalar for from_scalar"))
-    shape_val = @something get_constant(ctx, args[2]) throw(IRError("from_scalar shape must be constant"))
+    shape_val = argextype(ctx, args[2]).parameters[1]
     T = CC.widenconst(tv.jltype)
     CGVal(tv.v, tv.type_id, Tile{T, shape_val}, tv.shape, nothing, nothing, nothing)
 end

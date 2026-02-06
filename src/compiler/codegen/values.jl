@@ -119,18 +119,11 @@ function get_constant(ctx::CGCtx, @nospecialize(ref))
     # IR references - extract constant through emit_value!
     tv = emit_value!(ctx, ref)
     tv === nothing && return nothing
-    # Extract compile-time value from ghost type parameters (Val/Constant encode
-    # their payload in type params, so unwrap before checking .constant)
-    T = CC.widenconst(tv.jltype)
-    if T <: Val && length(T.parameters) == 1
-        return T.parameters[1]
-    elseif T <: Constant && length(T.parameters) >= 2
-        return T.parameters[2]
-    end
     if tv.constant !== nothing
         return something(tv.constant)
     end
     # Any ghost singleton can be reconstructed from its type
+    T = CC.widenconst(tv.jltype)
     is_ghost_type(T) && isdefined(T, :instance) && return T.instance
     return nothing
 end

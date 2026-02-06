@@ -183,7 +183,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
 
     # User boundary: Val{Shape} contains VALUE tuple from user call (e.g., load(arr, idx, (16,)))
-    shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
+    shape = argextype(ctx, args[2]).parameters[1]
     shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "load")
