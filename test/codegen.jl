@@ -1291,6 +1291,33 @@
                     return
                 end
             end
+
+            # with order (dim_map)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    @check "dim_map=[1, 0]"
+                    @check "load_view_tko"
+                    tile = ct.load(a, (pid, 1), (4, 8); order=(2, 1))
+                    @check "dim_map=[1, 0]"
+                    @check "store_view_tko"
+                    ct.store(b, (pid, 1), tile; order=(2, 1))
+                    return
+                end
+            end
+
+            # default order has no dim_map in output
+            @test @filecheck begin
+                @check_label "entry"
+                @check_not "dim_map"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, (pid, 1), (4, 8))
+                    ct.store(b, (pid, 1), tile)
+                    return
+                end
+            end
         end
 
         @testset "num_tiles helper" begin

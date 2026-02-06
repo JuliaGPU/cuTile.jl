@@ -166,12 +166,14 @@ end
 # cuda_tile.make_partition_view
 @eval Intrinsics begin
     """
-        make_partition_view(tv::TensorView, shape_val, padding_mode) -> PartitionView
+        make_partition_view(tv::TensorView, shape_val, padding_mode, order) -> PartitionView
 
     Create a PartitionView from a TensorView with the given tile shape.
+    The `order` parameter (Val{NTuple{N,Int}} or Val{nothing}) specifies
+    the logical-to-physical dimension mapping (1-indexed), or identity if nothing.
     Compiled to cuda_tile.make_partition_view.
     """
-    @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int) where {T, N, Shape}
+    @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int, ::Val{Order}) where {T, N, Shape, Order}
         donotdelete(tv)
         PartitionView{T, N, Tuple{Shape...}}()
     end
@@ -193,7 +195,18 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     elem_type = eltype(tv.jltype)
     ndim = length(tile_shape)
 
-    pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, collect(0:ndim-1), padding_value)
+    # Extract order from Val{Order} (arg 4)
+    # Val{nothing} → identity dim_map, Val{(2,1)} → [1, 0] (1-indexed → 0-indexed)
+    order_arg = emit_value!(ctx, args[4])
+    order_jltype = CC.widenconst(order_arg.jltype)
+    order_val = order_jltype.parameters[1]  # nothing or NTuple{N,Int}
+    if order_val === nothing
+        dim_map = collect(0:ndim-1)
+    else
+        dim_map = collect(Int, map(p -> p - 1, order_val))
+    end
+
+    pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
     CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{tile_shape...}}, Int[], nothing, Some(ndim), nothing)
