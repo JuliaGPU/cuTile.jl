@@ -343,13 +343,18 @@
         @testset "mixed-type integer comparison" begin
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{}) do
+                code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do out
                     a = ct.arange((16,), Int64)
                     b = ct.arange((16,), Int32)
                     # Should promote Int32 to Int64 and compare
                     @check "exti"
                     @check "cmpi"
+                    @check "select"
                     result = a .< b
+                    # Use same-typed operands for where to avoid Union type
+                    b_promoted = ct.astype(b, Int64)
+                    selected = ct.where(result, a, b_promoted)
+                    ct.store(out, Int32(0), selected)
                     return
                 end
             end
@@ -1350,11 +1355,16 @@
             spec = ct.ArraySpec{2}(16, true)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec}}) do a
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}}) do a, b
                     @check "make_tensor_view"
                     @check "make_partition_view"
                     @check "get_index_space_shape"
                     num = ct.num_tiles(a, 1, (32, 32))
+                    # Use num as a tile index to prevent DCE
+                    @check "load_view_tko"
+                    tile = ct.load(a, (num, Int32(0)), (32, 32))
+                    @check "store_view_tko"
+                    ct.store(b, (Int32(0), Int32(0)), tile)
                     return
                 end
             end
