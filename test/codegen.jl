@@ -135,14 +135,14 @@
                 end
             end
 
-            # 1D -> 1D reshape (no permutes needed - optimization)
+            # 1D -> 1D same-shape reshape is a no-op
             @test @filecheck begin
                 @check_label "entry"
-                @check_not "permute"   # should NOT have permute for 1D->1D
+                @check_not "permute"
+                @check_not "reshape"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (32,))
-                    @check "reshape"
                     reshaped = reshape(tile, (32,))
                     ct.store(a, pid, reshaped)
                     return

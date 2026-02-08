@@ -82,14 +82,10 @@ end
 
 # Reshape a tile to match target rank N, preserving data layout.
 @inline function _reshape_to_rank(tile::Tile, ::Val{N}) where {N}
-    ndims(tile) == N && return tile
     new_shape = _match_shape(Val(size(tile)), Val(N))
     reshape(tile, new_shape)
 end
 
-# Reshape a tile back to a requested shape (no-op when already matching).
-@inline _reshape_to_shape(tile::Tile, shape) =
-    size(tile) === shape ? tile : reshape(tile, shape)
 
 """
     load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=true) -> Tile
@@ -132,7 +128,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
     tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
-    _reshape_to_shape(tile, shape)
+    reshape(tile, shape)
 end
 
 # Scalar index → wrap in tuple
@@ -478,8 +474,10 @@ tile = ct.load(arr, (1, 1), (4, 8))  # Shape (4, 8), 32 elements
 reshaped = reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
 ```
 """
-@inline Base.reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
+@inline function Base.reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T}
+    size(tile) === shape && return tile
     Intrinsics.reshape(tile, shape)
+end
 
 """
     permutedims(tile::Tile{T, S}, perm) -> Tile{T, permuted_shape}
