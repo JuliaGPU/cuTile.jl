@@ -166,8 +166,8 @@ Accumulates partial gradients using atomic locks.
 Args:
     DX: Output gradient with respect to X (M, N).
     DY: Input gradient with respect to Y (M, N).
-    DW: Partial gradient with respect to W (GROUP_SIZE_M, N).
-    DB: Partial gradient with respect to B (GROUP_SIZE_M, N).
+    DW: Partial gradient with respect to W (N, GROUP_SIZE_M).
+    DB: Partial gradient with respect to B (N, GROUP_SIZE_M).
     X: Input tensor (M, N).
     W: Weight tensor (N,).
     Mean: Mean tensor (M,).
@@ -211,8 +211,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         tdx = (wdy .- (xhat .* c1 .+ c2)) .* rstd
         ct.store(DX, (bid_m, j), tdx)
 
-        partial_dw = tdy .* xhat
-        partial_db = tdy
+        partial_dw = reshape(tdy .* xhat, (TILE_N[], 1))
+        partial_db = reshape(tdy, (TILE_N[], 1))
 
         # Acquire spinlock
         while ct.atomic_cas(Locks, group_bid_m, 0, 1;
@@ -221,10 +221,10 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         end
 
         # Critical section: accumulate partial gradients
-        partial_dw = partial_dw .+ ct.load(DW, (group_bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-        partial_db = partial_db .+ ct.load(DB, (group_bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-        ct.store(DW, (group_bid_m, j), partial_dw)
-        ct.store(DB, (group_bid_m, j), partial_db)
+        partial_dw = partial_dw .+ ct.load(DW, (j, group_bid_m), (TILE_N[], 1); padding_mode=ct.PaddingMode.Zero)
+        partial_db = partial_db .+ ct.load(DB, (j, group_bid_m), (TILE_N[], 1); padding_mode=ct.PaddingMode.Zero)
+        ct.store(DW, (j, group_bid_m), partial_dw)
+        ct.store(DB, (j, group_bid_m), partial_db)
 
         # Release spinlock
         ct.atomic_xchg(Locks, group_bid_m, 0;
@@ -242,8 +242,8 @@ end
 Backward pass part 2: Final reduction for dW and dB.
 
 Args:
-    DW: Partial gradient with respect to W (TILE_M, N).
-    DB: Partial gradient with respect to B (TILE_M, N).
+    DW: Partial gradient with respect to W (N, TILE_M).
+    DB: Partial gradient with respect to B (N, TILE_M).
     FINAL_DW: Final gradient with respect to W (N,).
     FINAL_DB: Final gradient with respect to B (N,).
     TILE_M: Number of partial gradients to reduce.
@@ -253,18 +253,18 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
                               FINAL_DW::ct.TileArray{Float32, 1}, FINAL_DB::ct.TileArray{Float32, 1},
                               TILE_M::ConstInt, TILE_N::ConstInt)
     bid_n = ct.bid(1)
-    num_tiles = ct.num_tiles(DW, 1, (TILE_M[], TILE_N[]))
+    num_tiles = ct.num_tiles(DW, 2, (TILE_N[], TILE_M[]))
 
-    dw = ct.zeros((TILE_M[], TILE_N[]), Float32)
-    db = ct.zeros((TILE_M[], TILE_N[]), Float32)
+    dw = ct.zeros((TILE_N[], TILE_M[]), Float32)
+    db = ct.zeros((TILE_N[], TILE_M[]), Float32)
     i = Int32(1)
     while i <= num_tiles
-        dw = dw .+ ct.load(DW, (i, bid_n), (TILE_M[], TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-        db = db .+ ct.load(DB, (i, bid_n), (TILE_M[], TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+        dw = dw .+ ct.load(DW, (bid_n, i), (TILE_N[], TILE_M[]); padding_mode=ct.PaddingMode.Zero)
+        db = db .+ ct.load(DB, (bid_n, i), (TILE_N[], TILE_M[]); padding_mode=ct.PaddingMode.Zero)
         i += Int32(1)
     end
-    sum_dw = sum(dw; dims=1)
-    sum_db = sum(db; dims=1)
+    sum_dw = sum(dw; dims=2)
+    sum_db = sum(db; dims=2)
 
     ct.store(FINAL_DW, bid_n, sum_dw)
     ct.store(FINAL_DB, bid_n, sum_db)
@@ -291,8 +291,8 @@ function prepare(; benchmark::Bool=false,
         # Backward inputs/outputs
         DY = 0.1f0 .* CUDA.randn(Float32, M, N),
         DX = CuArray{Float32}(undef, M, N),
-        DW_partial = CuArray{Float32}(undef, GROUP_SIZE_M, N),
-        DB_partial = CuArray{Float32}(undef, GROUP_SIZE_M, N),
+        DW_partial = CuArray{Float32}(undef, N, GROUP_SIZE_M),
+        DB_partial = CuArray{Float32}(undef, N, GROUP_SIZE_M),
         Locks = CuArray{Int}(undef, GROUP_SIZE_M),
         FINAL_DW = CuArray{Float32}(undef, N),
         FINAL_DB = CuArray{Float32}(undef, N),

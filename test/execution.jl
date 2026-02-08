@@ -114,6 +114,43 @@ end
     @test Array(c) ≈ Array(a) + Array(b)
 end
 
+@testset "rank mismatch load/store" begin
+    @testset "1D shape on 2D array" begin
+        function copy_1d_2d(src::ct.TileArray{Float32,2}, dst::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(src, (bid, 1), (16,))
+            ct.store(dst, (bid, 1), tile)
+            return
+        end
+
+        m = 64
+        src = CUDA.rand(Float32, m, 1)
+        dst = CUDA.zeros(Float32, m, 1)
+
+        ct.launch(copy_1d_2d, cld(m, 16), src, dst)
+
+        @test Array(dst) ≈ Array(src)
+    end
+
+    @testset "2D shape on 4D array" begin
+        function copy_2d_4d(src::ct.TileArray{Float32,4}, dst::ct.TileArray{Float32,4})
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
+            tile = ct.load(src, (bidx, bidy, 1, 1), (4, 4))
+            ct.store(dst, (bidx, bidy, 1, 1), tile)
+            return
+        end
+
+        d1, d2 = 16, 16
+        src = CUDA.rand(Float32, d1, d2, 1, 1)
+        dst = CUDA.zeros(Float32, d1, d2, 1, 1)
+
+        ct.launch(copy_2d_4d, (cld(d1, 4), cld(d2, 4)), src, dst)
+
+        @test Array(dst) ≈ Array(src)
+    end
+end
+
 @testset "transpose" begin
     function transpose_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
         bidx = ct.bid(1)
@@ -1160,6 +1197,31 @@ end
     b_cpu = Array(b)
     for i in 1:m
         @test b_cpu[i] ≈ sum(x -> x^2, a_cpu[i, :]) rtol=1e-3
+    end
+end
+
+@testset "dropdims" begin
+    # Mean-subtract pattern: reduce row to get mean, dropdims the singleton,
+    # then broadcast-subtract from the original tile and store the column norms.
+    function dropdims_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))            # (1, 128)
+        row_sum = sum(tile; dims=2)                       # (1, 1)
+        row_sum_1d = dropdims(row_sum; dims=2)            # (1,)
+        ct.store(b, pid, row_sum_1d)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(dropdims_kernel, m, a, b)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
     end
 end
 

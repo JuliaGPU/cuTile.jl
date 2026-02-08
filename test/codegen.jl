@@ -135,14 +135,14 @@
                 end
             end
 
-            # 1D -> 1D reshape (no permutes needed - optimization)
+            # 1D -> 1D same-shape reshape is a no-op
             @test @filecheck begin
                 @check_label "entry"
-                @check_not "permute"   # should NOT have permute for 1D->1D
+                @check_not "permute"
+                @check_not "reshape"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (32,))
-                    @check "reshape"
                     reshaped = reshape(tile, (32,))
                     ct.store(a, pid, reshaped)
                     return
@@ -160,6 +160,34 @@
                     @check "permute"   # post-permute
                     reshaped = reshape(tile, (8, 4))
                     ct.store(a, pid, reshaped)
+                    return
+                end
+            end
+        end
+
+        @testset "dropdims" begin
+            # dropdims on dim 1: (1, 8) -> dropdims(; dims=2) -> (8,)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, (pid, 1), (1, 8))
+                    @check "reshape"
+                    squeezed = dropdims(tile; dims=1)
+                    ct.store(b, pid, squeezed)
+                    return
+                end
+            end
+
+            # dropdims on dim 2: (8, 1) -> dropdims(; dims=2) -> (8,)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, (1, pid), (8, 1))
+                    @check "reshape"
+                    squeezed = dropdims(tile; dims=2)
+                    ct.store(b, pid, squeezed)
                     return
                 end
             end
@@ -1351,6 +1379,21 @@
             end
         end
 
+        @testset "rank mismatch load/store" begin
+            # 1D shape on 2D array: should pad shape to (16, 1) internally
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    @check "load_view_tko"
+                    tile = ct.load(a, (pid, 1), (16,))
+                    @check "store_view_tko"
+                    ct.store(b, (pid, 1), tile)
+                    return
+                end
+            end
+        end
+
         @testset "num_tiles helper" begin
             spec = ct.ArraySpec{2}(16, true)
             @test @filecheck begin
@@ -1741,7 +1784,7 @@ end
         TILE_N = 1024
 
         # Use ArraySpec with shape_div_by to match real CuArray behavior
-        spec2d = ct.ArraySpec{2}(128, true, (0, 4), (32, 32))
+        spec2d = ct.ArraySpec{2}(128, true, (4, 0), (32, 32))
         spec1d = ct.ArraySpec{1}(128, true, (0,), (32,))
 
         @test @filecheck begin
@@ -1755,19 +1798,19 @@ end
                            ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
                            ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
                 bid_n = ct.bid(1)
-                num_tiles = ct.num_tiles(DW, 1, (_TILE_M[], _TILE_N[]))
+                num_tiles = ct.num_tiles(DW, 2, (_TILE_N[], _TILE_M[]))
 
-                dw = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
-                db = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
+                dw = ct.zeros((_TILE_N[], _TILE_M[]), Float32)
+                db = ct.zeros((_TILE_N[], _TILE_M[]), Float32)
                 i = Int32(1)
                 while i <= num_tiles
-                    dw = dw .+ ct.load(DW, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-                    db = db .+ ct.load(DB, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N[], _TILE_M[]); padding_mode=ct.PaddingMode.Zero)
+                    db = db .+ ct.load(DB, (bid_n, i), (_TILE_N[], _TILE_M[]); padding_mode=ct.PaddingMode.Zero)
                     i += Int32(1)
                 end
 
-                sum_dw = sum(dw; dims=1)
-                sum_db = sum(db; dims=1)
+                sum_dw = sum(dw; dims=2)
+                sum_db = sum(db; dims=2)
 
                 ct.store(FINAL_DW, bid_n, sum_dw)
                 ct.store(FINAL_DB, bid_n, sum_db)
