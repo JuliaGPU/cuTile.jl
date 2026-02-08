@@ -407,7 +407,7 @@
                     @check "select"
                     result = a .< b
                     # Use same-typed operands for where to avoid Union type
-                    b_promoted = ct.astype(b, Int64)
+                    b_promoted = convert(ct.Tile{Int64}, b)
                     selected = ct.where(result, a, b_promoted)
                     ct.store(out, Int32(0), selected)
                     return
@@ -779,7 +779,7 @@
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
-                    converted = ct.astype(tile, Float16)
+                    converted = convert(ct.Tile{Float16}, tile)
                     ct.store(b, pid, converted)
                     return
                 end
@@ -793,7 +793,7 @@
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
                     converted = convert(ct.Tile{ct.TFloat32}, tile)
-                    ct.store(b, pid, ct.astype(converted, Float32))
+                    ct.store(b, pid, convert(ct.Tile{Float32}, converted))
                     return
                 end
             end
@@ -806,7 +806,45 @@
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
                     converted = convert(ct.Tile{ct.BFloat16}, tile)
-                    ct.store(b, pid, ct.astype(converted, Float32))
+                    ct.store(b, pid, convert(ct.Tile{Float32}, converted))
+                    return
+                end
+            end
+
+            # Broadcasting syntax: Float16.(tile)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float16,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "ftof"
+                    ct.store(b, pid, Float16.(tile))
+                    return
+                end
+            end
+
+            # Broadcasting syntax: BFloat16.(tile)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "ftof"
+                    @check "ftof"
+                    ct.store(b, pid, Float32.(ct.BFloat16.(tile)))
+                    return
+                end
+            end
+
+            # Broadcasting syntax: TFloat32.(tile)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "ftof"
+                    @check "ftof"
+                    ct.store(b, pid, Float32.(ct.TFloat32.(tile)))
                     return
                 end
             end

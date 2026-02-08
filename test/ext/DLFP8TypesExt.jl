@@ -12,7 +12,7 @@ spec1d = ct.ArraySpec{1}(16, true)
         tile = ct.load(a, pid, (16,))
         @check "ftof"
         converted = convert(ct.Tile{Float8_E4M3FN}, tile)
-        ct.store(b, pid, ct.astype(converted, Float32))
+        ct.store(b, pid, convert(ct.Tile{Float32}, converted))
         return
     end
 end
@@ -25,7 +25,7 @@ end
         tile = ct.load(a, pid, (16,))
         @check "ftof"
         converted = convert(ct.Tile{Float8_E5M2}, tile)
-        ct.store(b, pid, ct.astype(converted, Float32))
+        ct.store(b, pid, convert(ct.Tile{Float32}, converted))
         return
     end
 end

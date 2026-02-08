@@ -2269,7 +2269,7 @@ end
         tile = ct.load(a, ct.bid(1), (tileSz[],))
         mask = tile .> 0.0f0
         result = any(mask; dims=1)
-        ct.store(b, ct.bid(1), ct.astype(result, Int32))
+        ct.store(b, ct.bid(1), convert(ct.Tile{Int32}, result))
         return nothing
     end
 
@@ -2278,7 +2278,7 @@ end
         tile = ct.load(a, ct.bid(1), (tileSz[],))
         mask = tile .> 0.0f0
         result = all(mask; dims=1)
-        ct.store(b, ct.bid(1), ct.astype(result, Int32))
+        ct.store(b, ct.bid(1), convert(ct.Tile{Int32}, result))
         return nothing
     end
 

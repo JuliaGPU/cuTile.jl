@@ -258,7 +258,7 @@ tile = ct.gather(arr, indices; latency=3)
     indices_0 = indices .- one(I)
 
     # Convert to Int32 for consistency with array.sizes
-    indices_i32 = astype(indices_0, Int32)
+    indices_i32 = convert(Tile{Int32}, indices_0)
 
     # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
@@ -297,8 +297,8 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     idx1_bc = broadcast_to(idx1_0, S)
 
     # Convert to Int32 for linear index computation
-    idx0_i32 = astype(idx0_bc, Int32)
-    idx1_i32 = astype(idx1_bc, Int32)
+    idx0_i32 = convert(Tile{Int32}, idx0_bc)
+    idx1_i32 = convert(Tile{Int32}, idx1_bc)
 
     # Get strides and broadcast to tile shape
     stride0_0d = Tile(array.strides[1])
@@ -350,7 +350,7 @@ ct.scatter(arr, indices, result_tile; latency=3)
     indices_0 = indices .- one(I)
 
     # Convert to Int32 for consistency with array.sizes
-    indices_i32 = astype(indices_0, Int32)
+    indices_i32 = convert(Tile{Int32}, indices_0)
 
     # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
@@ -387,8 +387,8 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     tile_bc = broadcast_to(tile, S)
 
     # Convert to Int32 for linear index computation
-    idx0_i32 = astype(idx0_bc, Int32)
-    idx1_i32 = astype(idx1_bc, Int32)
+    idx0_i32 = convert(Tile{Int32}, idx0_bc)
+    idx1_i32 = convert(Tile{Int32}, idx1_bc)
 
     # Get strides and broadcast to tile shape
     stride0_0d = Tile(array.strides[1])
@@ -468,7 +468,7 @@ zeros_tile = ct.zeros((32, 32), Float32)
  Shape & DType
 =============================================================================#
 
-public cat, broadcast_to, astype
+public cat, broadcast_to
 
 """
     cat(tiles::Tuple{Tile, Tile}, axis::Int) -> Tile
@@ -580,23 +580,8 @@ Equivalent to `permute(tile, (2, 1))`.
 @inline Base.transpose(tile::Tile{T}) where {T} =
     Intrinsics.transpose(tile)
 
-"""
-    astype(tile::Tile{T1, Shape}, ::Type{T2}) -> Tile{T2, Shape}
-
-Convert a tile's element type from T1 to T2.
-
-# Example
-```julia
-acc = ct.full((64, 64), 0.0f0, Float32)
-result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
-```
-"""
-@inline astype(tile::Tile{T1, Shape}, ::Type{T2}) where {T1, Shape, T2} =
-    Intrinsics.astype(tile, T2)
-
-# Julia-style convert syntax
 @inline Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} =
-    astype(tile, T2)
+    map(T2, tile)
 
 #=============================================================================
  Reduction
@@ -754,7 +739,7 @@ n_positive = count(tile .> 0.0f0; dims=1)
 ```
 """
 @inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
-    sum(astype(tile, Int32); dims)
+    sum(convert(Tile{Int32}, tile); dims)
 end
 
 """

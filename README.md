@@ -208,8 +208,8 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Type Conversion
 | Operation | Description |
 |-----------|-------------|
-| `ct.astype(tile, T)` | Convert element type |
-| `convert(Tile{T}, tile)` | Julia-style conversion |
+| `convert(Tile{T}, tile)` | Convert element type |
+| `T.(tile)` | Broadcasting conversion (e.g. `Float16.(tile)`) |
 
 ### Integer Arithmetic
 | Operation | Description |
@@ -412,6 +412,15 @@ b = ct.load(B, (expert_id, k, bid_n), shape=(1, TILE_K, TILE_N))
 expert_id = ids[bid_m]
 b = ct.load(B, (expert_id, k, bid_n), (1, TILE_K, TILE_N))
 ```
+
+
+## Differences from Julia
+
+### Float-to-integer conversion truncates
+
+Inside cuTile kernels, `Int32(x::Float32)` and similar float-to-integer constructors
+truncate toward zero (like C-style casts), rather than throwing `InexactError` as in
+standard Julia. This matches the behavior of GPU hardware and cuTile Python's `ct.astype`.
 
 
 ## Limitations

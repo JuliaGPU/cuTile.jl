@@ -16,7 +16,7 @@ end
 # Generic overlays don't take precedence over Core's Int64(x::BuiltinInts) etc.
 const SignedInts = (Int8, Int16, Int32, Int64)
 const UnsignedInts = (UInt8, UInt16, UInt32, UInt64)
-const Floats = (Float16, Float32, Float64)
+const Floats = (Float16, BFloat16, Float32, TFloat32, Float64)
 
 # Integer to integer (specific type pairs for promotion/truncation)
 for T in SignedInts, S in SignedInts
@@ -75,5 +75,15 @@ for F in Floats
     end
     for I in UnsignedInts
         @eval @overlay Base.unsafe_trunc(::Type{$I}, x::$F) = Intrinsics.ftoi(x, $I, SignednessUnsigned)
+    end
+end
+
+# Float to integer (direct constructor - truncates like C-style cast)
+for F in Floats
+    for I in SignedInts
+        @eval @overlay $I(x::$F) = Intrinsics.ftoi(x, $I, SignednessSigned)
+    end
+    for I in UnsignedInts
+        @eval @overlay $I(x::$F) = Intrinsics.ftoi(x, $I, SignednessUnsigned)
     end
 end

@@ -948,7 +948,7 @@ end
 # to_scalar: jltype becomes scalar T (for overlay dispatch), but IR value stays shaped.
 # from_scalar: restores jltype to Tile{T, S}.
 @eval Intrinsics begin
-    @noinline to_scalar(tile::Tile{T, S}) where {T, S} = compilerbarrier(:const, T(0))
+    @noinline to_scalar(tile::Tile{T, S}) where {T, S} = compilerbarrier(:type, nothing)
     @noinline from_scalar(x::T, ::Type{S}) where {T, S} = Tile{T, S}()
 end
 function tfunc(::typeof(Intrinsics.from_scalar), argtypes::Vector{Any})
@@ -958,6 +958,12 @@ function tfunc(::typeof(Intrinsics.from_scalar), argtypes::Vector{Any})
     shape_type <: Type || return nothing
     S = shape_type.parameters[1]
     return Tile{T, S}
+end
+function tfunc(::typeof(Intrinsics.to_scalar), argtypes::Vector{Any})
+    length(argtypes) >= 2 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    return eltype(tile_type)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.to_scalar), args)
     tv = emit_value!(ctx, args[1])
