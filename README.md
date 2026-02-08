@@ -395,6 +395,24 @@ b = ct.load(...)              # (M, N)
 result = reshape(a, (1, N)) .+ b  # (1, N) .+ (M, N) → (M, N)
 ```
 
+### Scalar access and 0-D tiles
+
+cuTile Python represents single-element loads as 0-D tiles (`shape=()`), which can be used
+directly as indices. cuTile.jl uses Julia's standard indexing syntax instead — `getindex`
+returns a scalar `T` and `setindex!` stores a scalar:
+
+```python
+# Python
+expert_id = ct.load(ids, index=bid_m, shape=())
+b = ct.load(B, (expert_id, k, bid_n), shape=(1, TILE_K, TILE_N))
+```
+
+```julia
+# Julia
+expert_id = ids[bid_m]
+b = ct.load(B, (expert_id, k, bid_n), (1, TILE_K, TILE_N))
+```
+
 
 ## Limitations
 
