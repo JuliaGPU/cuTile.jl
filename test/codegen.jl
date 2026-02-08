@@ -2174,6 +2174,45 @@ const _CODEGEN_TEST_FLOAT64 = 3.14159
             end
         end
     end
+
+    @testset "scalar arg multiplied by external constant" begin
+        # Regression test for issue #77: scalar × global constant failed
+        # because encode_MulFOp! received Nothing from the ghost-wrapped GlobalRef.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, scale
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "constant <f32"
+                @check "mulf"
+                total_scale = scale * _CODEGEN_TEST_FLOAT32
+                @check "broadcast"
+                @check "mulf"
+                Base.donotdelete(tile .* total_scale)
+                return
+            end
+        end
+    end
+
+    @testset "external constant as first operand in scalar addition" begin
+        # Regression test for issue #77: global constant used in scalar arithmetic
+        # must emit a ConstantOp, not a ghost value. Tests GlobalRef as the first
+        # operand (LHS) to cover both operand positions.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, offset
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "constant <f32"
+                @check "addf"
+                total = _CODEGEN_TEST_FLOAT32 + offset
+                @check "broadcast"
+                @check "addf"
+                Base.donotdelete(tile .+ total)
+                return
+            end
+        end
+    end
 end
 
 #=============================================================================

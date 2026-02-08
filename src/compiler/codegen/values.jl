@@ -8,26 +8,7 @@ Emit/resolve a value reference to a CGVal using multiple dispatch.
 function emit_value!(ctx::CGCtx, ssa::SSAValue)
     tv = ctx[ssa]
     tv !== nothing || throw(IRError("SSAValue %$(ssa.id) not found in context"))
-    return maybe_materialize!(ctx, ssa, tv)
-end
-
-"""
-    maybe_materialize!(ctx, ssa, tv) -> CGVal
-
-Materialize a deferred constant into bytecode on demand.
-Only acts on CGVals with `type_id != TypeId(-1)` and no value yet (deferred constants).
-"""
-function maybe_materialize!(ctx::CGCtx, ssa::SSAValue, tv::CGVal)
-    tv.v !== nothing && return tv               # already materialized
-    tv.type_id == TypeId(-1) && return tv       # ghost — nothing to materialize
-    tv.constant === nothing && return tv         # no constant to materialize
-
-    val = something(tv.constant)
-    bytes = constant_to_bytes(val, CC.widenconst(tv.jltype))
-    v = encode_ConstantOp!(ctx.cb, tv.type_id, bytes)
-    materialized = CGVal(v, tv.type_id, tv.jltype, Int[], nothing, tv.constant, nothing)
-    ctx[ssa] = materialized
-    return materialized
+    return tv
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
@@ -81,13 +62,12 @@ end
 function emit_value!(ctx::CGCtx, ref::GlobalRef)
     val = getfield(ref.mod, ref.name)
     T = typeof(val)
-    # Ghost types have no materializable representation.
-    # Non-ghost types with a Tile IR type become deferred constants (materialized on demand).
-    # Everything else (functions, enums, etc.) is compile-time only → ghost.
     if !is_ghost_type(T)
         type_id = tile_type_for_julia!(ctx, T; throw_error=false)
         if type_id !== nothing
-            return constant_value(T, type_id, val)
+            bytes = constant_to_bytes(val, T)
+            v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+            return CGVal(v, type_id, T, Int[], nothing, Some(val), nothing)
         end
     end
     ghost_value(T, val)

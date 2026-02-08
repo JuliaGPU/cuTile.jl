@@ -1361,6 +1361,31 @@ end
 
 end
 
+const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
+
+@testset "global constant arithmetic" begin
+    # Regression test for issue #77: scalar × global constant failed during codegen.
+    function global_const_arith_kernel(a::ct.TileArray{Float32,1},
+                                       b::ct.TileArray{Float32,1},
+                                       scale::Float32)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        total_scale = scale * _EXEC_TEST_GLOBAL_CONST
+        ct.store(b, pid, tile .* total_scale)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    scale = 2.5f0
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(global_const_arith_kernel, cld(n, tile_size), a, b, scale)
+
+    @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
+end
+
 @testset "tile broadcasting" begin
 
 @testset "1D broadcast: (1,) .+ (128,)" begin
