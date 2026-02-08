@@ -28,7 +28,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
                         eps::ct.Constant{Float32}, TILE_N::ConstInt)
     bid_m = ct.bid(1)
     num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
-    N = X.sizes[2]
+    N = size(X, 2)
 
     # Compute mean
     mean = ct.full((1, TILE_N[]), 0.0f0, Float32)
@@ -126,7 +126,7 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
                            TILE_N::ConstInt)
     bid_m = ct.bid(1)
     num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
-    N = X.sizes[2]
+    N = size(X, 2)
 
     # Load mean and rstd for this row
     mean = ct.load(Mean, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
@@ -184,7 +184,7 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
                                          GROUP_SIZE_M::ConstInt, TILE_N::ConstInt)
     bid_m = ct.bid(1)
     num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
-    N = X.sizes[2]
+    N = size(X, 2)
     group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M[])) + Int32(1)
 
     # Load mean and rstd for this row

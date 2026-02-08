@@ -161,6 +161,12 @@ Base.eltype(::Type{<:TileArray{T}}) where {T} = T
 Base.eltype(::TileArray{T}) where {T} = T
 Base.ndims(::Type{<:TileArray{<:Any, N}}) where {N} = N
 Base.ndims(::TileArray{<:Any, N}) where {N} = N
+Base.size(arr::TileArray) = arr.sizes
+function Base.size(arr::TileArray{<:Any, N}, d::Integer) where N
+    d < 1 && error("arraysize: dimension out of range") # from Array method
+    return d > N ? Int32(1) : arr.sizes[d]
+end
+Base.length(arr::TileArray) = prod(size(arr))
 # Return the ArraySpec value (third type parameter) if present
 function array_spec(@nospecialize(T::Type{<:TileArray}))
     T isa DataType || return nothing  # UnionAll types don't have full parameters
