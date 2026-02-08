@@ -50,7 +50,7 @@ Get the grid size along the given axis (1=x, 2=y, 3=z).
     num_tiles(arr::TileArray, axis::Integer, shape::NTuple{M, Int}) -> Int32
 
 Get the number of tiles along a specific axis of an array, given the tile shape.
-Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
+Axis is 1-indexed. Equivalent to cld(size(arr, axis), shape[axis]).
 
 # Example
 ```julia
@@ -265,7 +265,7 @@ tile = ct.gather(arr, indices; latency=3)
 
     # Bounds mask: 0 <= indices_i32 < size
     zero_0d = Tile(Int32(0))
-    size_0d = Tile(array.sizes[1])  # Already Int32
+    size_0d = Tile(size(array, 1))  # Already Int32
     ge_zero = indices_i32 .>= zero_0d
     lt_size = indices_i32 .< size_0d
     mask = ge_zero .& lt_size
@@ -315,8 +315,8 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
     zero_0d = Tile(Int32(0))
     zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(array.sizes[1]), S)
-    size1_bc = broadcast_to(Tile(array.sizes[2]), S)
+    size0_bc = broadcast_to(Tile(size(array, 1)), S)
+    size1_bc = broadcast_to(Tile(size(array, 2)), S)
 
     mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
     mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
@@ -357,7 +357,7 @@ ct.scatter(arr, indices, result_tile; latency=3)
 
     # Bounds mask: 0 <= indices_i32 < size
     zero_0d = Tile(Int32(0))
-    size_0d = Tile(array.sizes[1])  # Already Int32
+    size_0d = Tile(size(array, 1))  # Already Int32
     ge_zero = indices_i32 .>= zero_0d
     lt_size = indices_i32 .< size_0d
     mask = ge_zero .& lt_size
@@ -405,8 +405,8 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
     zero_0d = Tile(Int32(0))
     zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(array.sizes[1]), S)
-    size1_bc = broadcast_to(Tile(array.sizes[2]), S)
+    size0_bc = broadcast_to(Tile(size(array, 1)), S)
+    size1_bc = broadcast_to(Tile(size(array, 2)), S)
 
     mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
     mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
