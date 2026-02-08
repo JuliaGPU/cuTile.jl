@@ -103,16 +103,6 @@ ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, Int[], n
 ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, Some(constant), nothing)
 
 """
-    constant_value(jltype, type_id, constant) -> CGVal
-
-Deferred constant: has a Tile IR type but no bytecode value yet.
-Materialized (ConstantOp emitted) on demand at SSA lookup time.
-Parallel to Julia's non-ghost cgval from mark_julia_const.
-"""
-constant_value(@nospecialize(jltype), type_id::TypeId, constant) =
-    CGVal(nothing, type_id, jltype, Int[], nothing, Some(constant), nothing)
-
-"""
     tuple_value(jltype, component_refs, component_constants) -> CGVal
 
 Create a tuple value with tracked component refs. Derives constant if all components have constants.
