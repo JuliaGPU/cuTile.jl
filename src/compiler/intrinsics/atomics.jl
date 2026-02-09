@@ -31,19 +31,9 @@ function memory_scope_to_scope(scope::Int)
 end
 
 # cuda_tile.atomic_cas_tko
-@eval Intrinsics begin
-    """
-        atomic_cas(array, index, expected, desired, memory_order, memory_scope)
-
-    Atomic compare-and-swap at 0-indexed position.
-    Returns the original value.
-    Compiled to cuda_tile.atomic_cas_tko.
-    """
-    @noinline function atomic_cas(array::TileArray{T, N}, index, expected, desired,
-                                   memory_order::Int, memory_scope::Int) where {T, N}
-        compilerbarrier(:const, zero(T))::T
-    end
-end
+@intrinsic atomic_cas(array, index, expected, desired,
+                      memory_order, memory_scope)
+tfunc(::typeof(Intrinsics.atomic_cas), argtypes::Vector{Any}) = eltype(CC.widenconst(argtypes[2]))
 efunc(::typeof(Intrinsics.atomic_cas), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
@@ -170,19 +160,8 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
 end
 
 # cuda_tile.atomic_rmw_tko with XCHG
-@eval Intrinsics begin
-    """
-        atomic_xchg(array, index, val, memory_order, memory_scope)
-
-    Atomic exchange at 0-indexed position.
-    Returns the original value.
-    Compiled to cuda_tile.atomic_rmw_tko with XCHG.
-    """
-    @noinline function atomic_xchg(array::TileArray{T, N}, index, val,
-                                    memory_order::Int, memory_scope::Int) where {T, N}
-        compilerbarrier(:const, zero(T))
-    end
-end
+@intrinsic atomic_xchg(array, index, val, memory_order, memory_scope)
+tfunc(::typeof(Intrinsics.atomic_xchg), argtypes::Vector{Any}) = eltype(CC.widenconst(argtypes[2]))
 efunc(::typeof(Intrinsics.atomic_xchg), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
@@ -190,19 +169,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
 end
 
 # cuda_tile.atomic_rmw_tko with ADD
-@eval Intrinsics begin
-    """
-        atomic_add(array, index, val, memory_order, memory_scope)
-
-    Atomic addition at 0-indexed position.
-    Returns the original value.
-    Compiled to cuda_tile.atomic_rmw_tko with ADD.
-    """
-    @noinline function atomic_add(array::TileArray{T, N}, index, val,
-                                   memory_order::Int, memory_scope::Int) where {T, N}
-        compilerbarrier(:const, zero(T))
-    end
-end
+@intrinsic atomic_add(array, index, val,
+                      memory_order, memory_scope)
+tfunc(::typeof(Intrinsics.atomic_add), argtypes::Vector{Any}) = eltype(CC.widenconst(argtypes[2]))
 efunc(::typeof(Intrinsics.atomic_add), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args)

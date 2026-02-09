@@ -191,6 +191,11 @@ end
             rt = rt_override !== nothing ? rt_override : cm.rt
             efunc_override = is_intr ? efunc(f, cm.effects) : nothing
             effects = efunc_override !== nothing ? efunc_override : cm.effects
+            # Mark intrinsics as non-consistently-overlayed so callers can't be
+            # concrete-eval'd (not_callable() bodies would throw at runtime).
+            if is_intr
+                effects = CC.Effects(effects; nonoverlayed=CC.ALWAYS_FALSE)
+            end
             info = is_intr ? CC.NoCallInfo() : cm.info
             info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
             wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
@@ -218,6 +223,11 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
             rt = rt_override !== nothing ? rt_override : cm.rt
             efunc_override = is_intr ? efunc(f, cm.effects) : nothing
             effects = efunc_override !== nothing ? efunc_override : cm.effects
+            # Mark intrinsics as non-consistently-overlayed so callers can't be
+            # concrete-eval'd (not_callable() bodies would throw at runtime).
+            if is_intr
+                effects = CC.Effects(effects; nonoverlayed=CC.ALWAYS_FALSE)
+            end
             info = is_intr ? CC.NoCallInfo() : cm.info
             info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
             wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
@@ -238,6 +248,11 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
         rt = rt_override !== nothing ? rt_override : result.rt
         efunc_override = is_intr ? efunc(f, result.effects) : nothing
         effects = efunc_override !== nothing ? efunc_override : result.effects
+        # Mark intrinsics as non-consistently-overlayed so callers can't be
+        # concrete-eval'd (not_callable() bodies would throw at runtime).
+        if is_intr
+            effects = CC.Effects(effects; nonoverlayed=CC.ALWAYS_FALSE)
+        end
         info = is_intr ? CC.NoCallInfo() : result.info
         if is_intr || rt_override !== nothing
             return CC.CallMeta(rt, result.exct, effects, info)
@@ -247,11 +262,15 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
 end
 
 # Disable semi-concrete interpretation (broken with overlays per JuliaLang/julia#47349)
+# and block concrete eval for intrinsics (not_callable() bodies return dummy values).
 function CC.concrete_eval_eligible(interp::cuTileInterpreter,
     @nospecialize(f), result::CC.MethodCallResult, arginfo::CC.ArgInfo, sv::CC.InferenceState)
     ret = @invoke CC.concrete_eval_eligible(interp::CC.AbstractInterpreter,
         f::Any, result::CC.MethodCallResult, arginfo::CC.ArgInfo, sv::CC.InferenceState)
     if ret === :semi_concrete_eval
+        return :none
+    end
+    if ret === :concrete_eval && isintrinsic(f)
         return :none
     end
     return ret

@@ -12,13 +12,41 @@ using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
 
-# NOTE: Due to JuliaLang/julia#60583, intrinsics may be called during constant evaluation.
-#       Because of that, such intrinsics (such as basic arithmetic) need to provide an
-#       implementation that actually computes a valid result using Julia intrinsics.
-#
-#       Sometimes that's not possible, e.g., because the functionality required for that is
-#       overlayed by methods calling back into the intrinsic (e.g. `sin`), so for those
-#       intrinsics we disable constant folding using a `compilerbarrier(:const)`
+# NOTE: Intrinsics are never directly folded (concrete_eval_eligible returns :none,
+#       nonoverlayed=ALWAYS_FALSE taints caller effects). However, overlay callers
+#       with @assume_effects :foldable override the propagated effects, causing the
+#       compiler to concrete-evaluate through intrinsic bodies (JuliaLang/julia#60583).
+#       Intrinsics on such paths need callable bodies (function definition form).
+#       All others use compilerbarrier(:type, nothing) as a dummy body (bare signature).
+
+using ExprTools: splitdef, combinedef
+
+"""
+    @intrinsic signature
+    @intrinsic function_definition
+
+Define a Tile IR intrinsic in the `Intrinsics` module.
+
+A bare signature (e.g. `@intrinsic foo(x)`) creates a dummy body using
+`compilerbarrier(:type, nothing)` so body inference returns `Any`. Actual
+return types come from `tfunc` overrides in the interpreter.
+
+A function definition (e.g. `@intrinsic foo(x) = expr`) preserves the body,
+providing a callable implementation for concrete evaluation. This is needed
+when overlay callers with `@assume_effects :foldable` cause the compiler to
+evaluate through intrinsic bodies (JuliaLang/julia#60583). The body should
+provide a correct scalar implementation using `Core.Intrinsics`, or return
+`nothing` for side-effect-only intrinsics.
+"""
+macro intrinsic(ex)
+    if ex isa Expr && ex.head in (:function, :(=))
+        funcdef = combinedef(splitdef(ex))
+    else
+        funcdef = Expr(:function, ex, quote compilerbarrier(:type, nothing) end)
+    end
+    funcdef = Expr(:macrocall, Symbol("@noinline"), nothing, funcdef)
+    return esc(:(Core.eval(Intrinsics, $(QuoteNode(funcdef)))))
+end
 
 emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
 

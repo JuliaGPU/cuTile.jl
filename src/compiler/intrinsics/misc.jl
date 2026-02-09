@@ -1,10 +1,8 @@
 # miscellaneous intrinsics
 
 # cuda_tile.assert
-@eval Intrinsics begin
-    @noinline function assert(cond::Bool, message::String)
-        nothing
-    end
+@intrinsic function assert(cond::Bool, message::String)
+    nothing
 end
 efunc(::typeof(Intrinsics.assert), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)

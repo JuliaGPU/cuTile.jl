@@ -3,41 +3,29 @@
 ## Floating-point math
 
 # cuda_tile.ceil
-@eval Intrinsics begin
-    """Ceiling (round toward positive infinity). Compiled to cuda_tile.ceil."""
-    @noinline ceil(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline ceil(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic ceil(x)
+tfunc(::typeof(Intrinsics.ceil), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ceil), args)
     emit_unop!(ctx, args, encode_CeilOp!)
 end
 
 # cuda_tile.cos
-@eval Intrinsics begin
-    """Cosine. Compiled to cuda_tile.cos."""
-    @noinline cos(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline cos(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic cos(x)
+tfunc(::typeof(Intrinsics.cos), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cos), args)
     emit_unop!(ctx, args, encode_CosOp!)
 end
 
 # cuda_tile.cosh
-@eval Intrinsics begin
-    """Hyperbolic cosine. Compiled to cuda_tile.cosh."""
-    @noinline cosh(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline cosh(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic cosh(x)
+tfunc(::typeof(Intrinsics.cosh), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cosh), args)
     emit_unop!(ctx, args, encode_CosHOp!)
 end
 
 # cuda_tile.exp2
-@eval Intrinsics begin
-    """Base-2 exponential (2^x). Compiled to cuda_tile.exp2."""
-    @noinline exp2(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline exp2(tile::Tile{T, S}, flush_to_zero::Bool=false) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic exp2(x, flush_to_zero=false)
+tfunc(::typeof(Intrinsics.exp2), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp2), args)
     cb = ctx.cb
 
@@ -52,11 +40,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp2), args)
 end
 
 # cuda_tile.exp
-@eval Intrinsics begin
-    """Natural exponential (e^x). Compiled to cuda_tile.exp."""
-    @noinline exp(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline exp(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic exp(x)
+tfunc(::typeof(Intrinsics.exp), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp), args)
     cb = ctx.cb
 
@@ -69,21 +54,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp), args)
 end
 
 # cuda_tile.floor
-@eval Intrinsics begin
-    """Floor (round toward negative infinity). Compiled to cuda_tile.floor."""
-    @noinline floor(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline floor(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic floor(x)
+tfunc(::typeof(Intrinsics.floor), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.floor), args)
     emit_unop!(ctx, args, encode_FloorOp!)
 end
 
 # cuda_tile.fma
-@eval Intrinsics begin
-    """Fused multiply-add: a * b + c. Compiled to cuda_tile.fma."""
-    @noinline fma(x::T, y::T, z::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline fma(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
-end
+@intrinsic fma(x, y, z)
+tfunc(::typeof(Intrinsics.fma), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
     cb = ctx.cb
 
@@ -99,11 +78,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
 end
 
 # cuda_tile.log2
-@eval Intrinsics begin
-    """Base-2 logarithm. Compiled to cuda_tile.log2."""
-    @noinline log2(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline log2(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic log2(x)
+tfunc(::typeof(Intrinsics.log2), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log2), args)
     cb = ctx.cb
 
@@ -116,11 +92,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log2), args)
 end
 
 # cuda_tile.log
-@eval Intrinsics begin
-    """Element-wise natural logarithm. Compiled to cuda_tile.log."""
-    @noinline log(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline log(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic log(x)
+tfunc(::typeof(Intrinsics.log), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
     cb = ctx.cb
 
@@ -133,49 +106,36 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
 end
 
 # cuda_tile.maxf
-@eval Intrinsics begin
-    @noinline maxf(x::T, y::T) where {T<:AbstractFloat} = ifelse(x > y || isnan(x), x, y)
-    @noinline maxf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
-end
+@intrinsic maxf(x, y)
+tfunc(::typeof(Intrinsics.maxf), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args)
     emit_binop!(ctx, args, encode_MaxFOp!)
 end
 
 # cuda_tile.minf
-@eval Intrinsics begin
-    @noinline minf(x::T, y::T) where {T<:AbstractFloat} = ifelse(x < y || isnan(x), x, y)
-    @noinline minf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
-end
+@intrinsic minf(x, y)
+tfunc(::typeof(Intrinsics.minf), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args)
     emit_binop!(ctx, args, encode_MinFOp!)
 end
 
 # cuda_tile.pow
-@eval Intrinsics begin
-    """Element-wise power. Compiled to cuda_tile.pow."""
-    @noinline pow(x::T, y::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline pow(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
-end
+@intrinsic pow(x, y)
+tfunc(::typeof(Intrinsics.pow), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
     emit_binop!(ctx, args, encode_PowOp!)
 end
 
 # cuda_tile.remf
-@eval Intrinsics begin
-    """Element-wise floating-point remainder. Compiled to cuda_tile.remf."""
-    @noinline remf(x::T, y::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline remf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
-end
+@intrinsic remf(x, y)
+tfunc(::typeof(Intrinsics.remf), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remf), args)
     emit_binop!(ctx, args, encode_RemFOp!)
 end
 
 # cuda_tile.rsqrt
-@eval Intrinsics begin
-    """Element-wise reciprocal square root. Compiled to cuda_tile.rsqrt."""
-    @noinline rsqrt(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline rsqrt(tile::Tile{T, S}, flush_to_zero::Bool=false) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic rsqrt(x, flush_to_zero=false)
+tfunc(::typeof(Intrinsics.rsqrt), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.rsqrt), args)
     cb = ctx.cb
 
@@ -190,31 +150,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.rsqrt), args)
 end
 
 # cuda_tile.sin
-@eval Intrinsics begin
-    """Element-wise sine. Compiled to cuda_tile.sin."""
-    @noinline sin(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline sin(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic sin(x)
+tfunc(::typeof(Intrinsics.sin), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sin), args)
     emit_unop!(ctx, args, encode_SinOp!)
 end
 
 # cuda_tile.sinh
-@eval Intrinsics begin
-    """Element-wise hyperbolic sine. Compiled to cuda_tile.sinh."""
-    @noinline sinh(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline sinh(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic sinh(x)
+tfunc(::typeof(Intrinsics.sinh), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sinh), args)
     emit_unop!(ctx, args, encode_SinHOp!)
 end
 
 # cuda_tile.sqrt
-@eval Intrinsics begin
-    """Element-wise square root. Compiled to cuda_tile.sqrt."""
-    @noinline sqrt(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline sqrt(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic sqrt(x)
+tfunc(::typeof(Intrinsics.sqrt), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sqrt), args)
     cb = ctx.cb
 
@@ -227,21 +178,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sqrt), args)
 end
 
 # cuda_tile.tan
-@eval Intrinsics begin
-    """Element-wise tangent. Compiled to cuda_tile.tan."""
-    @noinline tan(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline tan(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic tan(x)
+tfunc(::typeof(Intrinsics.tan), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.tan), args)
     emit_unop!(ctx, args, encode_TanOp!)
 end
 
 # cuda_tile.tanh
-@eval Intrinsics begin
-    """Element-wise hyperbolic tangent. Compiled to cuda_tile.tanh."""
-    @noinline tanh(x::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline tanh(tile::Tile{T, S}) where {T<:AbstractFloat, S} = compilerbarrier(:const, tile)
-end
+@intrinsic tanh(x)
+tfunc(::typeof(Intrinsics.tanh), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.tanh), args)
     emit_unop!(ctx, args, encode_TanHOp!)
 end
