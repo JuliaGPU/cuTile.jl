@@ -92,7 +92,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
         if field === nothing
             # Regular argument - create concrete CGVal
-            @assert length(values) == 1
+            if length(values) != 1
+                throw(IRError("Expected exactly one value for argument $arg_idx, got $(length(values))"))
+            end
             val = values[1]
             type_id = tile_type_for_julia!(ctx, sci.argtypes[arg_idx])
             tv = CGVal(val, type_id, sci.argtypes[arg_idx])
@@ -252,7 +254,9 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     )
 
     # 2. Compile through cuTile pipeline (cached)
-    @assert haskey(ctx.cache, mi) "Expected $func($(join(arg_types, ", "))) to be cached already by inference."
+    if !haskey(ctx.cache, mi)
+        error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
+    end
     sci, _ = emit_ir(ctx.cache, mi)
 
     # 3. Create sub-context
