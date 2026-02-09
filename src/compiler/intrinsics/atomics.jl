@@ -41,7 +41,7 @@ end
     """
     @noinline function atomic_cas(array::TileArray{T, N}, index, expected, desired,
                                    memory_order::Int, memory_scope::Int) where {T, N}
-        donotdelete(array, index, expected, desired)
+        donotdelete()
         compilerbarrier(:const, zero(T))::T
     end
 end
@@ -179,7 +179,7 @@ end
     """
     @noinline function atomic_xchg(array::TileArray{T, N}, index, val,
                                     memory_order::Int, memory_scope::Int) where {T, N}
-        donotdelete(array, index, val)
+        donotdelete()
         compilerbarrier(:const, zero(T))
     end
 end
@@ -198,7 +198,7 @@ end
     """
     @noinline function atomic_add(array::TileArray{T, N}, index, val,
                                    memory_order::Int, memory_scope::Int) where {T, N}
-        donotdelete(array, index, val)
+        donotdelete()
         compilerbarrier(:const, zero(T))
     end
 end

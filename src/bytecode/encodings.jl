@@ -290,6 +290,19 @@ function encode_ConstantOp!(cb::CodeBuilder, result_type::TypeId, value_bytes::V
 end
 
 """
+    encode_AssertOp!(cb, condition, message)
+
+Assert that a condition is true, killing the kernel with a message on failure.
+Opcode: 5
+"""
+function encode_AssertOp!(cb::CodeBuilder, condition::Value, message::String)
+    encode_varint!(cb.buf, Opcode.AssertOp)
+    encode_opattr_str!(cb, message)
+    encode_operand!(cb.buf, condition)
+    return new_op!(cb, 0)
+end
+
+"""
     encode_AssumeOp!(cb, result_type, value, predicate) -> Value
 
 Create an assume operation that annotates a value with a predicate.

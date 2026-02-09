@@ -278,21 +278,32 @@ function require_concrete_type(@nospecialize(T), context::String)
 end
 
 """
-    tile_type_for_julia!(ctx, T) -> TypeId
+    tile_type_for_julia!(ctx, T; throw_error=true) -> TypeId or nothing
 
-Get or create a Tile IR type for a Julia type.
+Get or create a Tile IR type for a Julia type. With `throw_error=false`, returns
+`nothing` instead of throwing if the type has no Tile IR representation.
 """
-function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T))
+function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T); throw_error::Bool=true)
     actual_type = CC.widenconst(T)
-    get!(ctx.type_cache, actual_type) do
-        _tile_type_for_julia!(ctx.tt, actual_type)
+    cached = get(ctx.type_cache, actual_type, nothing)
+    cached !== nothing && return cached
+    type_id = _tile_type_for_julia!(ctx.tt, actual_type)
+    if type_id !== nothing
+        ctx.type_cache[actual_type] = type_id
+        return type_id
     end
+    throw_error && throw(IRError("Unsupported Julia type for Tile IR: $actual_type"))
+    return nothing
 end
 
 function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     # Scalar types -> 0-D tile
     if T === Bool
         return tile_type!(tt, I1(tt), Int[])
+    elseif T === Int8 || T === UInt8
+        return tile_type!(tt, I8(tt), Int[])
+    elseif T === Int16 || T === UInt16
+        return tile_type!(tt, I16(tt), Int[])
     elseif T === Int32 || T === UInt32
         return tile_type!(tt, I32(tt), Int[])
     elseif T === Int64 || T === UInt64
@@ -320,7 +331,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
             throw(IRError("Tile type must be fully specified with element type and shape, got: $T. " *
                           "This indicates type instability in the kernel - ensure all tile operations have inferrable shapes."))
         end
-        shape_param = tile_shape(T)
+        shape_param = size(T)
         if !(shape_param isa Tuple)
             throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
@@ -329,7 +340,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         return tile_type!(tt, elem_dtype, shape)
     end
 
-    throw(IRError("Unsupported Julia type for Tile IR: $T"))
+    return nothing
 end
 
 """
@@ -343,7 +354,7 @@ function tile_type_and_shape_for_julia!(ctx::CGCtx, @nospecialize(T))
 
     # Extract shape from Tile types
     shape = if actual_type <: Tile
-        collect(Int, tile_shape(actual_type))
+        collect(Int, size(actual_type))
     else
         Int[]
     end
@@ -410,17 +421,6 @@ function extract_argument_index(@nospecialize(arg))
     nothing
 end
 
-function resolve_or_constant(ctx::CGCtx, @nospecialize(arg), type_id::TypeId)
-    tv = emit_value!(ctx, arg)
-    # If we have a runtime value, use it
-    tv.v !== nothing && return tv.v
-    # Otherwise emit a constant from the compile-time value
-    tv.constant === nothing && throw(IRError("Cannot resolve argument"))
-    val = something(tv.constant)
-    bytes = reinterpret(UInt8, [Int32(val)])
-    encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-end
-
 #-----------------------------------------------------------------------------
 # Tile helpers
 #-----------------------------------------------------------------------------
@@ -433,7 +433,7 @@ Extract shape from a Tile{T, Shape} type, returning Int[] if not a Tile type.
 function extract_tile_shape(@nospecialize(T))
     T = CC.widenconst(T)
     if T <: Tile
-        return collect(Int, tile_shape(T))
+        return collect(Int, size(T))
     end
     Int[]
 end

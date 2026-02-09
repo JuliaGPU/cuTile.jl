@@ -7,8 +7,8 @@ Emit/resolve a value reference to a CGVal using multiple dispatch.
 """
 function emit_value!(ctx::CGCtx, ssa::SSAValue)
     tv = ctx[ssa]
-    tv !== nothing && return tv
-    throw(IRError("SSAValue %$(ssa.id) not found in context"))
+    tv !== nothing || throw(IRError("SSAValue %$(ssa.id) not found in context"))
+    return tv
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
@@ -61,7 +61,16 @@ end
 
 function emit_value!(ctx::CGCtx, ref::GlobalRef)
     val = getfield(ref.mod, ref.name)
-    ghost_value(typeof(val), val)
+    T = typeof(val)
+    if !is_ghost_type(T)
+        type_id = tile_type_for_julia!(ctx, T; throw_error=false)
+        if type_id !== nothing
+            bytes = constant_to_bytes(val, T)
+            v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+            return CGVal(v, type_id, T, Int[], nothing, Some(val), nothing)
+        end
+    end
+    ghost_value(T, val)
 end
 
 function emit_value!(ctx::CGCtx, node::PiNode)
@@ -73,7 +82,7 @@ function emit_value!(ctx::CGCtx, node::PiNode)
     emit_value!(ctx, node.val)
 end
 
-emit_value!(ctx::CGCtx, ::Nothing) = nothing
+emit_value!(ctx::CGCtx, ::Nothing) = ghost_value(Nothing, nothing)
 
 """
     get_constant(ctx, ref) -> Union{Any, Nothing}
@@ -89,14 +98,24 @@ function get_constant(ctx::CGCtx, @nospecialize(ref))
     end
     # IR references - extract constant through emit_value!
     tv = emit_value!(ctx, ref)
-    tv === nothing ? nothing : (tv.constant === nothing ? nothing : something(tv.constant))
+    tv === nothing && return nothing
+    if tv.constant !== nothing
+        return something(tv.constant)
+    end
+    # Any ghost singleton can be reconstructed from its type
+    T = CC.widenconst(tv.jltype)
+    is_ghost_type(T) && isdefined(T, :instance) && return T.instance
+    return nothing
 end
 
 # Symbols are compile-time only values
 emit_value!(ctx::CGCtx, val::Symbol) = ghost_value(Symbol, val)
 
-# Tuples are compile-time only values
-emit_value!(ctx::CGCtx, val::Tuple) = ghost_value(typeof(val), val)
+# Tuples populate .tuple with elements so emit_value! can recurse uniformly
+function emit_value!(ctx::CGCtx, val::Tuple)
+    elements = collect(Any, val)
+    tuple_value(typeof(val), elements, elements)
+end
 
 # Types are compile-time only values
 emit_value!(ctx::CGCtx, @nospecialize(val::Type)) = ghost_value(Type{val}, val)
@@ -104,15 +123,8 @@ emit_value!(ctx::CGCtx, @nospecialize(val::Type)) = ghost_value(Type{val}, val)
 # Fallback for other types (constants embedded in IR)
 function emit_value!(ctx::CGCtx, @nospecialize(val))
     T = typeof(val)
-    # Handle Val{V} instances
-    if T <: Val && length(T.parameters) == 1
-        return ghost_value(T, T.parameters[1])
-    end
-    # Handle Constant{T, V} instances
-    if T <: Constant && length(T.parameters) >= 2
-        return ghost_value(T, T.parameters[2])
-    end
-    throw(IRError("Unhandled value type in emit_value!: $(typeof(val))"))
+    is_ghost_type(T) && return ghost_value(T, val)
+    throw(IRError("Unsupported value type in Tile IR codegen: $T"))
 end
 
 

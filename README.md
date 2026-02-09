@@ -150,7 +150,7 @@ uses standard Julia syntax and is overlaid on `Base`.
 | `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
 | `transpose(tile)` | Transpose 2D tile |
 | `reshape(tile, shape)` | Reshape (same element count) |
-| `ct.permute(tile, perm)` | Permute dimensions |
+| `permutedims(tile, perm)` | Permute dimensions |
 | `ct.extract(tile, index, shape)` | Extract sub-tile |
 | `ct.cat((a, b), axis)` | Concatenate tiles |
 | `dropdims(tile; dims)` | Remove singleton dimensions |
@@ -208,8 +208,8 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Type Conversion
 | Operation | Description |
 |-----------|-------------|
-| `ct.astype(tile, T)` | Convert element type |
-| `convert(Tile{T}, tile)` | Julia-style conversion |
+| `convert(Tile{T}, tile)` | Convert element type |
+| `T.(tile)` | Broadcasting conversion (e.g. `Float16.(tile)`) |
 
 ### Integer Arithmetic
 | Operation | Description |
@@ -285,17 +285,17 @@ All index-based operations use Julia's 1-based convention:
 # Python
 bid_x = ct.bid(0)
 bid_y = ct.bid(1)
-ct.permute(tile, (2, 0, 1))
+permutedims(tile, (2, 0, 1))
 ```
 
 ```julia
 # Julia
 bid_x = ct.bid(1)
 bid_y = ct.bid(2)
-ct.permute(tile, (3, 1, 2))
+permutedims(tile, (3, 1, 2))
 ```
 
-This applies to `bid`, `num_blocks`, `permute`, `reshape`, dimension arguments, etc.
+This applies to `bid`, `num_blocks`, `permutedims`, `reshape`, dimension arguments, etc.
 
 ### `Val`-like constants
 
@@ -368,9 +368,13 @@ result = sum(tile; dims=2)              # (M, N) → (M, 1)
 result = dropdims(sum(tile; dims=2); dims=2)  # (M, N) → (M,)
 ```
 
-### Store reshaping
+### Automatic rank matching
 
-`ct.store` automatically reshapes the tile to match the target array's rank by dropping singleton dimensions (e.g., storing a `(1, N)` tile into a 1D array reshapes it to `(N,)`). Scalar `()` tiles are reshaped to `(1,)`.
+`ct.load` and `ct.store` automatically match the tile rank to that of the target:
+
+- **Lower rank**: trailing `1`s are appended. Loading `(M, N)` from a 4D array internally uses `(M, N, 1, 1)`. Storing a scalar tile into a 2D array pads to `(1, 1)`.
+- **Higher rank**: trailing `1`s are stripped. Storing `(M, 1)` into a 1D array reshapes to `(M,)`.
+  Non-trailing singletons (e.g., from `sum(tile; dims=1)`) require explicit `dropdims`.
 
 ### Broadcasting shape alignment
 
@@ -390,6 +394,33 @@ a = ct.load(...)              # (N,)
 b = ct.load(...)              # (M, N)
 result = reshape(a, (1, N)) .+ b  # (1, N) .+ (M, N) → (M, N)
 ```
+
+### Scalar access and 0-D tiles
+
+cuTile Python represents single-element loads as 0-D tiles (`shape=()`), which can be used
+directly as indices. cuTile.jl uses Julia's standard indexing syntax instead — `getindex`
+returns a scalar `T` and `setindex!` stores a scalar:
+
+```python
+# Python
+expert_id = ct.load(ids, index=bid_m, shape=())
+b = ct.load(B, (expert_id, k, bid_n), shape=(1, TILE_K, TILE_N))
+```
+
+```julia
+# Julia
+expert_id = ids[bid_m]
+b = ct.load(B, (expert_id, k, bid_n), (1, TILE_K, TILE_N))
+```
+
+
+## Differences from Julia
+
+### Float-to-integer conversion truncates
+
+Inside cuTile kernels, `Int32(x::Float32)` and similar float-to-integer constructors
+truncate toward zero (like C-style casts), rather than throwing `InexactError` as in
+standard Julia. This matches the behavior of GPU hardware and cuTile Python's `ct.astype`.
 
 
 ## Limitations

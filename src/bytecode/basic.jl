@@ -11,7 +11,10 @@ Encode an unsigned integer using variable-length encoding (LEB128-style).
 Each byte uses 7 bits for data and 1 bit to indicate continuation.
 """
 function encode_varint!(buf::Vector{UInt8}, x::Integer)
-    @assert x >= 0 "Varint encoding requires non-negative integers, got $x"
+    if x < 0
+        throw(ArgumentError("Varint encoding requires non-negative integers, got $x"))
+    end
+
     # Handle zero specially
     if x == 0
         push!(buf, 0x00)

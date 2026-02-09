@@ -69,9 +69,11 @@ end
     (Tile(a), _promote_to_tiles(rest...)...)
 
 # Compute combined broadcast shape across all Tile arguments via tuple peeling.
-@inline _broadcast_shapes(::Tile{<:Any, S}) where {S} = S
-@inline _broadcast_shapes(::Tile{<:Any, S}, rest::Tile...) where {S} =
-    broadcast_shape(S, _broadcast_shapes(rest...))
+# Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for broadcast_shape.
+@inline _tile_shape(t::Tile) = size(t)
+@inline _broadcast_shapes(t::Tile) = _tile_shape(t)
+@inline _broadcast_shapes(t::Tile, rest::Tile...) =
+    broadcast_shape(_tile_shape(t), _broadcast_shapes(rest...))
 
 # Broadcast all tiles to shape S via tuple peeling.
 @inline _broadcast_all(S::Tuple) = ()

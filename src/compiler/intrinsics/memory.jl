@@ -18,7 +18,6 @@
                                      latency::Union{Int, Nothing}=nothing,
                                      mask::Union{Tile{Bool, S}, Nothing}=nothing,
                                      padding::Union{Tile{T, S}, Nothing}=nothing) where {T, S}
-        donotdelete(ptrs, latency, mask, padding)
         Tile{T, S}()
     end
 end
@@ -75,7 +74,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     end
     ctx.token = new_token
 
-    result_jltype = Tile{elem_type, Tuple(tile_shape)}
+    result_jltype = Tile{elem_type, Tuple{tile_shape...}}
     CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
 end
 
@@ -96,7 +95,7 @@ end
     @noinline function store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
                                       latency::Union{Int, Nothing},
                                       mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
-        donotdelete(ptrs, values, latency, mask)
+        donotdelete()
         nothing
     end
 end

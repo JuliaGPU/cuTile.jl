@@ -3,6 +3,9 @@ uuid = "0dea8319-8c4a-4662-a73d-20234d115b9a"
 version = "0.1.0"
 authors = ["Tim Besard <tim.besard@gmail.com>"]
 
+[workspace]
+projects = ["test", "examples"]
+
 [deps]
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CompilerCaching = "9db33cc3-5358-4881-8759-fa4194144afd"

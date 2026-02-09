@@ -26,8 +26,8 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
                        tm::ct.Constant{Int}, tn::ct.Constant{Int}, tk::ct.Constant{Int}) where {T}
     # Use 1D grid with swizzle for better cache locality
     bid = ct.bid(1)
-    M = A.sizes[1]
-    N = B.sizes[2]
+    M = size(A, 1)
+    N = size(B, 2)
     # swizzle_2d expects 0-indexed bid, returns 0-indexed tile coords
     bid_m_0, bid_n_0 = swizzle_2d(M, N, tm[], tn[], 8, bid - Int32(1))
     # Convert to 1-indexed tile coordinates

@@ -19,6 +19,15 @@ end
 #       Sometimes that's not possible, e.g., because the functionality required for that is
 #       overlayed by methods calling back into the intrinsic (e.g. `sin`), so for those
 #       intrinsics we disable constant folding using a `compilerbarrier(:const)`
+#
+# NOTE: Side-effectful intrinsics (stores, atomics) use `donotdelete(args...)` in their
+#       bodies to prevent the optimizer from DCE'ing calls. `donotdelete` is a Julia builtin
+#       with `effect_free=ALWAYS_FALSE`, which inference propagates through the function body.
+#       `@assume_effects !:effect_free` does NOT work — `override_effects` can only strengthen
+#       effects (set ALWAYS_TRUE), not weaken them. Spoofing `ipo_effects` via a custom
+#       `CC.finish!` override is possible but fragile (must race against `finishinfer!` setting
+#       `use_const_api` based on pre-override effects). `donotdelete` is the simplest correct
+#       approach.
 
 emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
 

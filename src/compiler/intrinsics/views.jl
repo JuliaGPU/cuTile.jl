@@ -12,17 +12,6 @@ function padding_mode_to_padding_value(mode::Int)
 end
 
 """
-Extract tile shape tuple from a Val{Shape} argument.
-"""
-function get_tile_shape_tuple(ctx::CGCtx, arg)
-    shape = get_constant(ctx, arg)
-    shape isa Tuple || throw(IRError("make_partition_view() shape must be a compile-time constant tuple"))
-    shape_vec = collect(Int, shape)
-    validate_tile_shape(shape_vec, "load")
-    shape_vec
-end
-
-"""
 Get padding value from args, with default.
 """
 function get_padding_value(ctx::CGCtx, args)
@@ -43,7 +32,6 @@ end
     Compiled to cuda_tile.get_index_space_shape.
     """
     @noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer) where {T, N, Shape}
-        donotdelete(pv)
         compilerbarrier(:const, zero(Int32))
     end
 end
@@ -91,16 +79,26 @@ end
     @noinline function load_partition_view(pv::PartitionView{T, N, Shape},
                                             latency::Union{Int, Nothing},
                                             allow_tma::Bool,
-                                            index::Vararg{Integer}) where {T, N, Shape}
-        donotdelete(pv, latency, allow_tma)
-        Tile{T, Shape}()
+                                            indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.load_partition_view), argtypes::Vector{Any})
+    length(argtypes) >= 2 || return nothing
+    pv_type = CC.widenconst(argtypes[2])
+    pv_type <: PartitionView || return nothing
+    pv_type isa DataType || return nothing
+    length(pv_type.parameters) >= 3 || return nothing
+    T = eltype(pv_type)
+    Shape = pv_type.parameters[3]
+    Shape isa Type || return nothing
+    return Tile{T, Shape}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (partition_view, latency, allow_tma, indices...)
+    # args: (partition_view, latency, allow_tma, indices)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && throw(IRError("load_partition_view() requires a PartitionView argument"))
     pv_arg.v === nothing && throw(IRError("load_partition_view() requires a materialized PartitionView"))
@@ -112,7 +110,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
     pv_type = CC.widenconst(pv_arg.jltype)
     elem_type = eltype(pv_type)
-    tile_shape = collect(Int, pv_type.parameters[3])
+    tile_shape = collect(Int, size(pv_type))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -129,15 +127,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # allow_tma defaults to true if not provided
     allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
 
-    # Extract indices from args[4:end] and infer index type
+    # Extract indices
+    tuple_arg = emit_value!(ctx, args[4])
+    tuple_arg === nothing && throw(IRError("load_partition_view(): cannot resolve index tuple argument"))
+
     index_vals = Value[]
     index_jl_types = Type[]
-    for i in 4:length(args)
-        tv = emit_value!(ctx, args[i])
-        tv === nothing && throw(IRError("load_partition_view(): cannot resolve index argument"))
+
+    # Get tuple element refs
+    tuple_arg.tuple !== nothing || throw(IRError("load_partition_view(): index tuple must have component refs"))
+    for ref in tuple_arg.tuple
+        tv = emit_value!(ctx, ref)
+        tv === nothing && throw(IRError("load_partition_view(): cannot resolve index element"))
         push!(index_vals, tv.v)
         push!(index_jl_types, tv.jltype)
     end
+
     unique_types = unique(index_jl_types)
     length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
     isempty(unique_types) && ndim > 0 && throw(IRError("load_partition_view(): indices required for $(ndim)D view"))
@@ -155,7 +160,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
                                                  token=ctx.token, optimization_hints)
     ctx.token = new_token
 
-    CGVal(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(tile_val, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
@@ -169,20 +174,38 @@ end
 # cuda_tile.make_partition_view
 @eval Intrinsics begin
     """
-        make_partition_view(tv::TensorView, shape_val, padding_mode) -> PartitionView
+        make_partition_view(tv::TensorView, shape_val, padding_mode, order) -> PartitionView
 
     Create a PartitionView from a TensorView with the given tile shape.
+    The `order` parameter (NTuple{N,Int} or nothing) specifies
+    the logical-to-physical dimension mapping (1-indexed), or identity if nothing.
     Compiled to cuda_tile.make_partition_view.
     """
-    @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int)::PartitionView{T, N, Shape} where {T, N, Shape}
-        donotdelete(tv)
-        PartitionView{T, N, Shape}()
+    @noinline function make_partition_view(tv::TensorView{T, N}, shape::NTuple{M, Int}, padding_mode::Int, order) where {T, N, M}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.make_partition_view), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tv_type = CC.widenconst(argtypes[2])
+    tv_type <: TensorView || return nothing
+    shape_arg = argtypes[3]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    T = eltype(tv_type)
+    N = ndims(tv_type)
+    return PartitionView{T, N, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
-    tile_shape = get_tile_shape_tuple(ctx, args[2])
+
+    # Shape from user call (e.g., load(arr, idx, (16,)))
+    shape = get_constant(ctx, args[2])
+    shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
+    tile_shape = collect(Int, shape)
+    validate_tile_shape(tile_shape, "load")
+
     padding_value = get_padding_value(ctx, args)
 
     tensor_view = tv.v
@@ -190,10 +213,19 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     elem_type = eltype(tv.jltype)
     ndim = length(tile_shape)
 
-    pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, collect(0:ndim-1), padding_value)
+    # Extract order (arg 4)
+    # nothing → identity dim_map, (2,1) → [1, 0] (1-indexed → 0-indexed)
+    order_val = get_constant(ctx, args[4])
+    if order_val === nothing
+        dim_map = collect(0:ndim-1)
+    else
+        dim_map = collect(Int, map(p -> p - 1, order_val))
+    end
+
+    pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple(tile_shape)}, Int[], nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{tile_shape...}}, Int[], nothing, Some(ndim), nothing)
 end
 
 """
@@ -209,7 +241,7 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
     tilearray_type = get_arg_type(ctx, arg_idx)
     elem_type = eltype(tilearray_type)
     ndim = ndims(tilearray_type)
-    array_spec = get_array_spec(tilearray_type)
+    spec = array_spec(tilearray_type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
@@ -249,12 +281,12 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
 
     # TensorView type
     tv_shape = fill(DYNAMIC_SHAPE, ndim)
-    tv_strides = compute_tensor_view_strides(array_spec, ndim)
+    tv_strides = compute_tensor_view_strides(spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
     # Emit AssumeOps for optimization hints
-    if array_spec !== nothing
-        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_size_type; tv_strides)
+    if spec !== nothing
+        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, spec, dtype, scalar_size_type; tv_strides)
     end
 
     # Filter strides to only pass dynamic ones as operands
@@ -265,14 +297,6 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
 
     # Cache it
     ctx.tensor_views[arg_idx] = (tensor_view, tv_type)
-end
-
-function get_array_spec(@nospecialize(T))
-    if T <: TileArray && length(T.parameters) >= 3
-        S = T.parameters[3]
-        S isa ArraySpec && return S
-    end
-    nothing
 end
 
 """
@@ -320,7 +344,6 @@ end
     Compiled to cuda_tile.make_tensor_view.
     """
     @noinline function make_tensor_view(arr::TileArray{T, N})::TensorView{T, N} where {T, N}
-        donotdelete(arr)
         TensorView{T, N}()
     end
 end
@@ -351,11 +374,11 @@ end
     Compiled to cuda_tile.store_view_tko.
     """
     @noinline function store_partition_view(pv::PartitionView{T, N, Shape},
-                                             tile::Tile{T, Shape},
+                                             tile::Tile{T},
                                              latency::Union{Int, Nothing},
                                              allow_tma::Bool,
-                                             index::Vararg{Integer}) where {T, N, Shape}
-        donotdelete(pv, tile, latency, allow_tma)
+                                             indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
+        donotdelete()
         nothing
     end
 end
@@ -363,7 +386,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (partition_view, tile, latency, allow_tma, indices...)
+    # args: (partition_view, tile, latency, allow_tma, indices)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && throw(IRError("store_partition_view() requires a PartitionView argument"))
     pv_arg.v === nothing && throw(IRError("store_partition_view() requires a materialized PartitionView"))
@@ -403,15 +426,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     # allow_tma defaults to true if not provided
     allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
 
-    # Extract indices from args[5:end] and infer index type
+    # Extract indices
+    tuple_arg = emit_value!(ctx, args[5])
+    tuple_arg === nothing && throw(IRError("store_partition_view(): cannot resolve index tuple argument"))
+
     index_vals = Value[]
     index_jl_types = Type[]
-    for i in 5:length(args)
-        tv = emit_value!(ctx, args[i])
-        tv === nothing && throw(IRError("store_partition_view(): cannot resolve index argument"))
+
+    # Get tuple element refs
+    tuple_arg.tuple !== nothing || throw(IRError("store_partition_view(): index tuple must have component refs"))
+    for ref in tuple_arg.tuple
+        tv = emit_value!(ctx, ref)
+        tv === nothing && throw(IRError("store_partition_view(): cannot resolve index element"))
         push!(index_vals, tv.v)
         push!(index_jl_types, tv.jltype)
     end
+
     unique_types = unique(index_jl_types)
     length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
     isempty(unique_types) && actual_ndim > 0 && throw(IRError("store_partition_view(): indices required for $(actual_ndim)D view"))

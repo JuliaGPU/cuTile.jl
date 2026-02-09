@@ -26,9 +26,19 @@ end
     Explicitly broadcast a tile to a target shape.
     Compiled to cuda_tile.broadcast.
     """
-    @noinline function broadcast(tile::Tile{T}, ::Val{Shape}) where {T, Shape}
-        Tile{T, Shape}()
+    @noinline function broadcast(tile::Tile{T}, shape::NTuple{N, Int}) where {T, N}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.broadcast), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    shape_arg = argtypes[3]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    T = eltype(tile_type)
+    return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     cb = ctx.cb
@@ -42,7 +52,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     source_type = CC.widenconst(source.jltype)
     source_elem = eltype(source_type)
 
-    # Extract target shape from the constant tuple argument
+    # Extract target shape
     target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || throw(IRError("broadcast() shape must be a compile-time constant tuple"))
     target_shape = collect(Int, target_shape_tuple)
@@ -58,7 +68,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
     result_type_id = tile_type!(tt, dtype, target_shape)
 
-    CGVal(result_v, result_type_id, Tile{source_elem, Tuple(target_shape)}, target_shape)
+    CGVal(result_v, result_type_id, Tile{source_elem, Tuple{target_shape...}}, target_shape)
 end
 
 """
@@ -106,18 +116,28 @@ end
     Concatenate two tiles along 0-indexed axis.
     Compiled to cuda_tile.cat.
     """
-    @noinline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, ::Val{Axis}) where {T, S1, S2, Axis}
-        ndims = length(S1)
-        axis = Axis < 0 ? ndims + Axis : Axis
-        result_shape = ntuple(ndims) do i
-            if i == axis + 1  # 0-indexed axis, 1-indexed tuple access
-                S1[i] + S2[i]
-            else
-                S1[i]
-            end
-        end
-        Tile{T, result_shape}()
+    @noinline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, axis::Integer) where {T, S1, S2}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.cat), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tuple_type = CC.widenconst(argtypes[2])
+    tuple_type <: Tuple{Tile, Tile} || return nothing
+    axis_arg = argtypes[3]
+    isa(axis_arg, CC.Const) || return nothing
+    axis = axis_arg.val
+    t1_type = tuple_type.parameters[1]
+    t2_type = tuple_type.parameters[2]
+    (t1_type <: Tile && t2_type <: Tile) || return nothing
+    T = eltype(t1_type)
+    s1 = size(t1_type)
+    s2 = size(t2_type)
+    isempty(s1) && return nothing
+    n = length(s1)
+    a = axis < 0 ? n + axis : axis
+    result_shape = ntuple(i -> i == a + 1 ? s1[i] + s2[i] : s1[i], n)
+    return Tile{T, Tuple{result_shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     cb = ctx.cb
@@ -136,7 +156,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     rhs = emit_value!(ctx, tuple_tv.tuple[2])
     (lhs === nothing || rhs === nothing) && throw(IRError("Cannot resolve tile operands for cat()"))
 
-    # Get axis from Val{Axis}
+    # Get axis
     axis_val = get_constant(ctx, args[2])
     axis_val isa Integer || throw(IRError("cat() axis must be a compile-time constant integer"))
 
@@ -162,7 +182,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     # Emit CatOp (axis is 0-indexed for bytecode)
     result = encode_CatOp!(cb, output_tile_type, lhs.v, rhs.v, axis)
 
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple{output_shape...}}, output_shape)
 end
 
 # cuda_tile.constant
@@ -174,8 +194,18 @@ end
     Compiled to cuda_tile.constant.
     """
     @noinline function constant(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T}
-        Tile{T, shape}()
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.constant), argtypes::Vector{Any})
+    length(argtypes) >= 4 || return nothing
+    shape_arg = argtypes[2]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    type_arg = CC.widenconst(argtypes[4])
+    type_arg <: Type || return nothing
+    T = type_arg.parameters[1]
+    return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     cb = ctx.cb
@@ -200,7 +230,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     value_bytes = constant_to_bytes(value, elem_type)
     result = encode_ConstantOp!(cb, tile_type, value_bytes)
 
-    CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(result, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end
 
 # TODO: cuda_tile.entry
@@ -213,9 +243,19 @@ end
     Extract a sub-tile from tile at 0-indexed slice indices.
     Compiled to cuda_tile.extract.
     """
-    @noinline function extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape}
-        Tile{T, Shape}()
+    @noinline function extract(tile::Tile{T}, index::NTuple{N, Int}, shape::NTuple{N, Int}) where {T, N}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.extract), argtypes::Vector{Any})
+    length(argtypes) >= 4 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    shape_arg = argtypes[4]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    T = eltype(tile_type)
+    return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     cb = ctx.cb
@@ -225,11 +265,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     source = emit_value!(ctx, args[1])
     source === nothing && throw(IRError("Cannot resolve source operand for extract()"))
 
-    # Extract index from Val{Index} argument
+    # Extract index
     index_tuple = get_constant(ctx, args[2])
     index_tuple isa Tuple || throw(IRError("extract() index must be a compile-time constant tuple"))
 
-    # Extract shape from Val{Shape} argument
+    # Extract shape
     shape_tuple = get_constant(ctx, args[3])
     shape_tuple isa Tuple || throw(IRError("extract() shape must be a compile-time constant tuple"))
     output_shape = collect(Int, shape_tuple)
@@ -254,7 +294,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     # Emit ExtractOp
     result = encode_ExtractOp!(cb, output_tile_type, source.v, index_vals)
 
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple{output_shape...}}, output_shape)
 end
 
 # TODO: cuda_tile.get_global
@@ -311,8 +351,18 @@ end
     Compiled to cuda_tile.iota.
     """
     @noinline function iota(shape::NTuple{1, Int}, ::Type{T}) where {T}
-        Tile{T, shape}()
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.iota), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    shape_arg = argtypes[2]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    type_arg = CC.widenconst(argtypes[3])
+    type_arg <: Type || return nothing
+    T = type_arg.parameters[1]
+    return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     cb = ctx.cb
@@ -333,7 +383,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     # Emit IotaOp
     result = encode_IotaOp!(cb, tile_type)
 
-    CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(result, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end
 
 # cuda_tile.mmaf, cuda_tile.mmai
@@ -412,7 +462,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     # Compute offset pointers: base_ptr + offsets (element offset)
     pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, offsets)
 
-    result_jltype = Tile{Ptr{ptr_elem_type}, Tuple(tile_shape)}
+    result_jltype = Tile{Ptr{ptr_elem_type}, Tuple{tile_shape...}}
     CGVal(pointers, ptr_tile_type, result_jltype, tile_shape)
 end
 
@@ -426,11 +476,22 @@ end
     Permute tile dimensions according to 0-indexed permutation.
     Compiled to cuda_tile.permute.
     """
-    @noinline function permute(tile::Tile{T, S}, ::Val{Perm}) where {T, S, Perm}
-        # Compute permuted shape: for each position i in output, take S[Perm[i]+1]
-        permuted_shape = ntuple(i -> S[Perm[i] + 1], length(Perm))
-        Tile{T, permuted_shape}()
+    @noinline function permute(tile::Tile{T, S}, perm::NTuple{N, Int}) where {T, S, N}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.permute), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    perm_arg = argtypes[3]
+    isa(perm_arg, CC.Const) || return nothing
+    perm = perm_arg.val
+    s = size(tile_type)
+    isempty(s) && return nothing
+    T = eltype(tile_type)
+    permuted_shape = ntuple(i -> s[perm[i] + 1], length(perm))
+    return Tile{T, Tuple{permuted_shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     cb = ctx.cb
@@ -443,7 +504,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     input_shape = source.shape
     isempty(input_shape) && throw(IRError("Cannot determine tile shape for permute()"))
 
-    # Extract permutation from Val{Perm} argument
+    # Extract permutation
     perm_tuple = get_constant(ctx, args[2])
     perm_tuple isa Tuple || throw(IRError("permute() permutation must be a compile-time constant tuple"))
 
@@ -464,7 +525,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     # Emit PermuteOp
     result = encode_PermuteOp!(cb, output_tile_type, source.v, permutation)
 
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple{output_shape...}}, output_shape)
 end
 
 # cuda_tile.transpose
@@ -475,9 +536,18 @@ end
     Transpose a 2D tile, swapping its dimensions.
     Compiled to cuda_tile.permute with perm=(1, 0).
     """
-    @noinline function transpose(tile::Tile{T, S}) where {T, S}
-        Tile{T, reverse(S)}()
+    @noinline function transpose(tile::Tile{T}) where {T}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.transpose), argtypes::Vector{Any})
+    length(argtypes) >= 2 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    s = size(tile_type)
+    isempty(s) && return nothing
+    T = eltype(tile_type)
+    return Tile{T, Tuple{reverse(s)...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
     cb = ctx.cb
@@ -501,7 +571,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
 
     result = encode_PermuteOp!(cb, output_tile_type, source.v, permutation)
 
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple{output_shape...}}, output_shape)
 end
 
 
@@ -515,16 +585,32 @@ end
     callers wrap in 1-tuples and unwrap with `[1]`.
     Compiled to cuda_tile.reduce.
     """
-    @noinline function reduce(tiles::Tuple{Tile{T,S}}, ::Val{axis}, f,
-                              identities::Tuple{Any}) where {T, S, axis}
-        reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S[i], length(S))
-        (Tile{T, reduced_shape}(),)
+    @noinline function reduce(tiles::Tuple{Tile{T, S}}, axis::Integer, f,
+                              identities::Tuple{Any}) where {T, S}
+        compilerbarrier(:type, nothing)
     end
-    @noinline function reduce(tiles::Tuple{Tile{T,S}, Tile, Vararg{Tile}}, ::Val{axis}, f,
-                              identities::Tuple{Any, Any, Vararg{Any}}) where {T, S, axis}
-        reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S[i], length(S))
-        (Tile{T, reduced_shape}(), reduce(Base.tail(tiles), Val(axis), f, Base.tail(identities))...)
+    @noinline function reduce(tiles::Tuple{Tile{T1, S}, Tile{T2, S}}, axis::Integer, f,
+                              identities::Tuple{Any, Any}) where {T1, T2, S}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.reduce), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tuple_type = CC.widenconst(argtypes[2])
+    tuple_type isa DataType && tuple_type <: Tuple || return nothing
+    axis_arg = argtypes[3]
+    isa(axis_arg, CC.Const) || return nothing
+    axis = axis_arg.val
+    result_params = Any[]
+    for p in tuple_type.parameters
+        p isa DataType && p <: Tile || return nothing
+        T = eltype(p)
+        s = size(p)
+        isempty(s) && return nothing
+        reduced_shape = ntuple(i -> i == axis + 1 ? 1 : s[i], length(s))
+        push!(result_params, Tile{T, Tuple{reduced_shape...}})
+    end
+    return Tuple{result_params...}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce), args)
     emit_reduce!(ctx, args)
@@ -544,7 +630,7 @@ function emit_reduce!(ctx::CGCtx, args)
     N = length(tile_tvs)
 
     # Get reduction axis
-    axis = @something get_constant(ctx, args[2]) throw(IRError("Reduction axis must be a compile-time constant"))
+    axis = get_constant(ctx, args[2])
 
     # Resolve combiner function
     func = get_constant(ctx, args[3])
@@ -552,14 +638,10 @@ function emit_reduce!(ctx::CGCtx, args)
     # Resolve identity values from the identities tuple
     id_tv = emit_value!(ctx, args[4])
     id_tv === nothing && throw(IRError("Cannot resolve identity tuple for reduce"))
-    identity_vals = if id_tv.tuple !== nothing
-        Any[something(something(emit_value!(ctx, ref)).constant)
-            for ref in id_tv.tuple]
-    elseif id_tv.constant !== nothing
-        collect(Any, something(id_tv.constant))
-    else
-        throw(IRError("reduce() identities must be a tuple of compile-time constants"))
-    end
+    id_tv.tuple !== nothing || throw(IRError("reduce() identities must be a tuple of compile-time constants"))
+    identity_vals = Any[@something(get_constant(ctx, ref),
+                                   throw(IRError("reduce() identity values must be compile-time constants")))
+                        for ref in id_tv.tuple]
 
     # Get shapes from the first tile
     input_shape = tile_tvs[1].shape
@@ -613,7 +695,7 @@ function emit_reduce!(ctx::CGCtx, args)
         out_type = tile_type!(tt, dtypes[k], output_shape)
         reshaped_val = encode_ReshapeOp!(cb, out_type, res)
         push!(reshaped_values, reshaped_val)
-        push!(component_types, Tile{elem_types[k], Tuple(output_shape)})
+        push!(component_types, Tile{elem_types[k], Tuple{output_shape...}})
     end
 
     # Return multi-value CGVal (tuple)
@@ -649,9 +731,19 @@ make_identity_val(val, dtype, ::Type{T}) where T <: Integer =
     Reshape a tile to a new shape (same total elements).
     Compiled to cuda_tile.reshape.
     """
-    @noinline function reshape(tile::Tile{T}, ::Val{Shape}) where {T, Shape}
-        Tile{T, Shape}()
+    @noinline function reshape(tile::Tile{T}, shape::NTuple{N, Int}) where {T, N}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.reshape), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    shape_arg = argtypes[3]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    T = eltype(tile_type)
+    return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     cb = ctx.cb
@@ -661,7 +753,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     source = emit_value!(ctx, args[1])
     source === nothing && throw(IRError("Cannot resolve source operand for reshape()"))
 
-    # Extract target shape from Val{Shape} argument
+    # Extract target shape
     target_shape_tuple = get_constant(ctx, args[2])
     target_shape_tuple isa Tuple || throw(IRError("reshape() shape must be a compile-time constant tuple"))
     target_shape = collect(Int, target_shape_tuple)
@@ -670,7 +762,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     # Get element type and source shape
     source_type = CC.widenconst(source.jltype)
     elem_type = eltype(source_type)
-    source_shape = collect(Int, tile_shape(source_type))
+    source_shape = collect(Int, size(source_type))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
@@ -707,7 +799,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
         result_type_id = tile_type!(tt, dtype, target_shape)
     end
 
-    CGVal(current_val, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
+    CGVal(current_val, result_type_id, Tile{elem_type, Tuple{target_shape...}}, target_shape)
 end
 
 # cuda_tile.scan
@@ -721,10 +813,21 @@ end
     `reverse=true` for a reverse (suffix) scan.
     Compiled to cuda_tile.scan.
     """
-    @noinline function scan(tiles::Tuple{Tile{T, S}}, ::Val{axis}, f,
-                            identities::Tuple{Any}, reverse::Bool=false) where {T, S, axis}
-        (Tile{T, S}(),)
+    @noinline function scan(tiles::Tuple{Tile{T, S}}, axis::Integer, f,
+                            identities::Tuple{Any}, reverse::Bool=false) where {T, S}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.scan), argtypes::Vector{Any})
+    length(argtypes) >= 2 || return nothing
+    tuple_type = CC.widenconst(argtypes[2])
+    tuple_type isa DataType && tuple_type <: Tuple || return nothing
+    result_params = Any[]
+    for p in tuple_type.parameters
+        p isa DataType && p <: Tile || return nothing
+        push!(result_params, p)
+    end
+    return Tuple{result_params...}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     cb = ctx.cb
@@ -741,7 +844,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     N = length(tile_tvs)
 
     # Get scan axis
-    axis = @something get_constant(ctx, args[2]) throw(IRError("Scan axis must be a compile-time constant"))
+    axis = get_constant(ctx, args[2])
 
     # Resolve combiner function
     func = get_constant(ctx, args[3])
@@ -749,14 +852,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     # Resolve identity values from the identities tuple
     id_tv = emit_value!(ctx, args[4])
     id_tv === nothing && throw(IRError("Cannot resolve identity tuple for scan"))
-    identity_vals = if id_tv.tuple !== nothing
-        Any[something(something(emit_value!(ctx, ref)).constant)
-            for ref in id_tv.tuple]
-    elseif id_tv.constant !== nothing
-        collect(Any, something(id_tv.constant))
-    else
-        throw(IRError("scan() identities must be a tuple of compile-time constants"))
-    end
+    id_tv.tuple !== nothing || throw(IRError("scan() identities must be a tuple of compile-time constants"))
+    identity_vals = Any[@something(get_constant(ctx, ref),
+                                   throw(IRError("scan() identity values must be compile-time constants")))
+                        for ref in id_tv.tuple]
 
     # Get reverse flag (optional, defaults to false)
     reverse = false
@@ -810,7 +909,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     # Return multi-value CGVal (tuple)
     component_types = Type[]
     for k in 1:N
-        push!(component_types, Tile{elem_types[k], Tuple(output_shape)})
+        push!(component_types, Tile{elem_types[k], Tuple{output_shape...}})
     end
     jltype = Tuple{component_types...}
     return CGVal(results, jltype)
@@ -849,10 +948,23 @@ end
 # to_scalar: jltype becomes scalar T (for overlay dispatch), but IR value stays shaped.
 # from_scalar: restores jltype to Tile{T, S}.
 @eval Intrinsics begin
-    @noinline to_scalar(tile::Tile{T, S}) where {T, S} = (donotdelete(tile); compilerbarrier(:const, T(0)))
-    @noinline from_scalar(x::T, ::Val{S}) where {T, S} = (donotdelete(x); Tile{T, S}())
+    @noinline to_scalar(tile::Tile{T, S}) where {T, S} = compilerbarrier(:type, nothing)
+    @noinline from_scalar(x::T, ::Type{S}) where {T, S} = Tile{T, S}()
 end
-
+function tfunc(::typeof(Intrinsics.from_scalar), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    T = CC.widenconst(argtypes[2])
+    shape_type = CC.widenconst(argtypes[3])
+    shape_type <: Type || return nothing
+    S = shape_type.parameters[1]
+    return Tile{T, S}
+end
+function tfunc(::typeof(Intrinsics.to_scalar), argtypes::Vector{Any})
+    length(argtypes) >= 2 || return nothing
+    tile_type = CC.widenconst(argtypes[2])
+    tile_type <: Tile || return nothing
+    return eltype(tile_type)
+end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.to_scalar), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("Cannot resolve tile for to_scalar"))
@@ -865,9 +977,9 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.from_scalar), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("Cannot resolve scalar for from_scalar"))
-    shape_val = @something get_constant(ctx, args[2]) throw(IRError("from_scalar shape must be constant"))
+    shape_type = get_constant(ctx, args[2])
     T = CC.widenconst(tv.jltype)
-    CGVal(tv.v, tv.type_id, Tile{T, shape_val}, tv.shape, nothing, nothing, nothing)
+    CGVal(tv.v, tv.type_id, Tile{T, shape_type}, tv.shape, nothing, nothing, nothing)
 end
 
 # TODO: cuda_tile.unpack

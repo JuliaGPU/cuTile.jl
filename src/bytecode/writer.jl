@@ -496,7 +496,9 @@ function write_bytecode!(f::Function, num_functions::Int)
     # Let user build functions
     f(writer, func_buf)
 
-    @assert writer.num_functions == num_functions "Expected $num_functions functions, got $(writer.num_functions)"
+    if writer.num_functions != num_functions
+        throw(ArgumentError("Expected $num_functions functions, got $(writer.num_functions)"))
+    end
 
     # Build final output
     buf = UInt8[]

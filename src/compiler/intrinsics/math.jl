@@ -81,8 +81,8 @@ end
 # cuda_tile.fma
 @eval Intrinsics begin
     """Fused multiply-add: a * b + c. Compiled to cuda_tile.fma."""
-    @noinline fma(x::T, y::T, z::T) where {T<:AbstractFloat} = (donotdelete(y, z); compilerbarrier(:const, x))
-    @noinline fma(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b, c); Tile{T, S}())
+    @noinline fma(x::T, y::T, z::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
+    @noinline fma(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
     cb = ctx.cb
@@ -135,7 +135,7 @@ end
 # cuda_tile.maxf
 @eval Intrinsics begin
     @noinline maxf(x::T, y::T) where {T<:AbstractFloat} = ifelse(x > y || isnan(x), x, y)
-    @noinline maxf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b); Tile{T, S}())
+    @noinline maxf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args)
     emit_binop!(ctx, args, encode_MaxFOp!)
@@ -144,7 +144,7 @@ end
 # cuda_tile.minf
 @eval Intrinsics begin
     @noinline minf(x::T, y::T) where {T<:AbstractFloat} = ifelse(x < y || isnan(x), x, y)
-    @noinline minf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b); Tile{T, S}())
+    @noinline minf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args)
     emit_binop!(ctx, args, encode_MinFOp!)
@@ -153,8 +153,8 @@ end
 # cuda_tile.pow
 @eval Intrinsics begin
     """Element-wise power. Compiled to cuda_tile.pow."""
-    @noinline pow(x::T, y::T) where {T<:AbstractFloat} = (donotdelete(x, y); compilerbarrier(:const, x))
-    @noinline pow(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b); Tile{T, S}())
+    @noinline pow(x::T, y::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
+    @noinline pow(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
     emit_binop!(ctx, args, encode_PowOp!)
@@ -164,7 +164,7 @@ end
 @eval Intrinsics begin
     """Element-wise floating-point remainder. Compiled to cuda_tile.remf."""
     @noinline remf(x::T, y::T) where {T<:AbstractFloat} = compilerbarrier(:const, x)
-    @noinline remf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b); Tile{T, S}())
+    @noinline remf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = Tile{T, S}()
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remf), args)
     emit_binop!(ctx, args, encode_RemFOp!)

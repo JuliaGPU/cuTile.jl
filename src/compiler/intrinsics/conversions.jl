@@ -1,78 +1,5 @@
 # Type conversions
 
-# cuda_tile.astype (high-level tile conversion)
-@eval Intrinsics begin
-    """
-        astype(tile, T2)
-
-    Convert tile element type from T1 to T2.
-    Compiled to cuda_tile.ftof, cuda_tile.ftoi, cuda_tile.itof,
-    cuda_tile.exti, or cuda_tile.trunci based on source/target types.
-    """
-    @noinline function astype(tile::Tile{T1, Shape}, ::Type{T2}) where {T1, Shape, T2}
-        donotdelete(tile)
-        Tile{T2, Shape}()
-    end
-end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    # Get source tile
-    source = @something emit_value!(ctx, args[1]) throw(IRError("astype: cannot resolve source"))
-
-    # Get source element type and shape
-    source_type = CC.widenconst(source.jltype)
-    source_elem = eltype(source_type)
-    tile_shape = source.shape
-
-    # Get target element type from the Type argument
-    target_elem = @something get_constant(ctx, args[2]) throw(IRError("astype() requires a compile-time constant type"))
-    target_elem isa Type || throw(IRError("astype() second argument must be a Type"))
-
-    # Same type? Return source unchanged
-    if source_elem === target_elem
-        return source
-    end
-
-    # Create target type
-    target_dtype = julia_to_tile_dtype!(tt, target_elem)
-    target_tile_type = tile_type!(tt, target_dtype, tile_shape)
-
-    # Emit conversion based on source and target types
-    result = if source_elem <: AbstractFloat && target_elem <: AbstractFloat
-        # Float -> Float
-        encode_FToFOp!(cb, target_tile_type, source.v)
-    elseif source_elem <: Integer && target_elem <: AbstractFloat
-        # Integer -> Float
-        signedness = source_elem <: Signed ? SignednessSigned : SignednessUnsigned
-        encode_IToFOp!(cb, target_tile_type, source.v; signedness)
-    elseif source_elem <: AbstractFloat && target_elem <: Integer
-        # Float -> Integer
-        signedness = target_elem <: Signed ? SignednessSigned : SignednessUnsigned
-        encode_FToIOp!(cb, target_tile_type, source.v; signedness)
-    elseif source_elem <: Integer && target_elem <: Integer
-        # Integer -> Integer
-        source_size = sizeof(source_elem)
-        target_size = sizeof(target_elem)
-        if source_size == target_size
-            # Same size - no conversion needed (just reinterpret)
-            source.v
-        elseif target_size > source_size
-            # Extension (upsize)
-            signedness = source_elem <: Signed ? SignednessSigned : SignednessUnsigned
-            encode_ExtIOp!(cb, target_tile_type, source.v; signedness)
-        else
-            # Truncation (downsize)
-            encode_TruncIOp!(cb, target_tile_type, source.v)
-        end
-    else
-        throw(IRError("astype() unsupported conversion: $source_elem -> $target_elem"))
-    end
-
-    CGVal(result, target_tile_type, replace_eltype(source_type, target_elem), tile_shape)
-end
-
 # TODO: cuda_tile.bitcast
 
 # cuda_tile.exti (scalar integer extension)
@@ -94,7 +21,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
 
     result_v = encode_ExtIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = replace_eltype(src_type, target_type)
+    result_jltype = similar_type(src_type, target_type)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
@@ -116,7 +43,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
 
     result_v = encode_FToFOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = replace_eltype(src_type, target_type)
+    result_jltype = similar_type(src_type, target_type)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
@@ -139,7 +66,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
 
     result_v = encode_FToIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = replace_eltype(src_type, target_type)
+    result_jltype = similar_type(src_type, target_type)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
@@ -162,7 +89,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
 
     result_v = encode_IToFOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = replace_eltype(src_type, target_type)
+    result_jltype = similar_type(src_type, target_type)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
@@ -182,7 +109,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
 
     result_v = encode_TruncIOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)
-    result_jltype = replace_eltype(src_type, target_type)
+    result_jltype = similar_type(src_type, target_type)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
