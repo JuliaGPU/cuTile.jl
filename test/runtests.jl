@@ -43,7 +43,7 @@ args = parse_args(ARGS)
 if filter_tests!(testsuite, args)
     cuda_functional = CUDA.functional()
     filter!(testsuite) do (test, _)
-        if in(test, ["execution"]) || startswith(test, "examples/")
+        if startswith(test, "execution/") || startswith(test, "examples/")
             return cuda_functional
         else
             return true
