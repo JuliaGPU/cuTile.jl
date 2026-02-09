@@ -4,7 +4,7 @@
 
 module Intrinsics
 
-using Base: compilerbarrier
+using Base: compilerbarrier, inferencebarrier
 using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
 using ..cuTile: Signedness, SignednessSigned, SignednessUnsigned
 using ..cuTile: ComparisonPredicate, CmpLessThan, CmpLessThanOrEqual, CmpGreaterThan, CmpGreaterThanOrEqual, CmpEqual, CmpNotEqual
@@ -39,10 +39,16 @@ provide a correct scalar implementation using `Core.Intrinsics`, or return
 `nothing` for side-effect-only intrinsics.
 """
 macro intrinsic(ex)
-    if ex isa Expr && ex.head in (:function, :(=))
-        funcdef = combinedef(splitdef(ex))
+    funcdef = if ex isa Expr && ex.head in (:function, :(=))
+        combinedef(splitdef(ex))
     else
-        funcdef = Expr(:function, ex, quote compilerbarrier(:type, nothing) end)
+        body = quote
+            if inferencebarrier(true)::Bool
+                error("Intrinsic $(string(ex)) cannot be evaluated at compile time")
+            end
+            compilerbarrier(:type, nothing)
+        end
+        Expr(:function, ex, body)
     end
     funcdef = Expr(:macrocall, Symbol("@noinline"), nothing, funcdef)
     return esc(:(Core.eval(Intrinsics, $(QuoteNode(funcdef)))))
