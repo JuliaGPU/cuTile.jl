@@ -95,10 +95,11 @@ end
     @noinline function store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
                                       latency::Union{Int, Nothing},
                                       mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
-        donotdelete()
         nothing
     end
 end
+efunc(::typeof(Intrinsics.store_ptr_tko), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     cb = ctx.cb
     tt = ctx.tt

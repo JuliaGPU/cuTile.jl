@@ -378,10 +378,11 @@ end
                                              latency::Union{Int, Nothing},
                                              allow_tma::Bool,
                                              indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
-        donotdelete()
         nothing
     end
 end
+efunc(::typeof(Intrinsics.store_partition_view), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt

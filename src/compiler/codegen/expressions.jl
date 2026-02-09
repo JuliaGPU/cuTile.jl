@@ -79,9 +79,7 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     func = get_constant(ctx, args[1])
     call_args = args[2:end]
 
-    # TODO: This is normally dynamic dispatch, which we should allow.
-    #       However, we currently trigger this when emitting Julia intrinsics.
-    #       We should switch to our own intrinsics entirely, which are only invoked.
+    # We enter here for dynamic dispatch, but also for all intrinsic functions.
 
     @static if isdefined(Core, :throw_methoderror)
         if func === Core.throw_methoderror

@@ -41,10 +41,11 @@ end
     """
     @noinline function atomic_cas(array::TileArray{T, N}, index, expected, desired,
                                    memory_order::Int, memory_scope::Int) where {T, N}
-        donotdelete()
         compilerbarrier(:const, zero(T))::T
     end
 end
+efunc(::typeof(Intrinsics.atomic_cas), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -179,10 +180,11 @@ end
     """
     @noinline function atomic_xchg(array::TileArray{T, N}, index, val,
                                     memory_order::Int, memory_scope::Int) where {T, N}
-        donotdelete()
         compilerbarrier(:const, zero(T))
     end
 end
+efunc(::typeof(Intrinsics.atomic_xchg), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
     emit_atomic_rmw!(ctx, args, AtomicXCHG)
 end
@@ -198,10 +200,11 @@ end
     """
     @noinline function atomic_add(array::TileArray{T, N}, index, val,
                                    memory_order::Int, memory_scope::Int) where {T, N}
-        donotdelete()
         compilerbarrier(:const, zero(T))
     end
 end
+efunc(::typeof(Intrinsics.atomic_add), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args)
     emit_atomic_rmw!(ctx, args, AtomicADD)
 end
