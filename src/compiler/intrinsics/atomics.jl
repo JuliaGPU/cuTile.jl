@@ -33,7 +33,7 @@ end
 # cuda_tile.atomic_cas_tko
 @intrinsic atomic_cas(array, index, expected, desired,
                       memory_order, memory_scope)
-tfunc(::typeof(Intrinsics.atomic_cas), argtypes::Vector{Any}) = eltype(CC.widenconst(argtypes[2]))
+tfunc(𝕃, ::typeof(Intrinsics.atomic_cas), @nospecialize(array), @nospecialize args...) = eltype(CC.widenconst(array))
 efunc(::typeof(Intrinsics.atomic_cas), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
@@ -161,7 +161,7 @@ end
 
 # cuda_tile.atomic_rmw_tko with XCHG
 @intrinsic atomic_xchg(array, index, val, memory_order, memory_scope)
-tfunc(::typeof(Intrinsics.atomic_xchg), argtypes::Vector{Any}) = eltype(CC.widenconst(argtypes[2]))
+tfunc(𝕃, ::typeof(Intrinsics.atomic_xchg), @nospecialize(array), @nospecialize args...) = eltype(CC.widenconst(array))
 efunc(::typeof(Intrinsics.atomic_xchg), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
@@ -171,7 +171,7 @@ end
 # cuda_tile.atomic_rmw_tko with ADD
 @intrinsic atomic_add(array, index, val,
                       memory_order, memory_scope)
-tfunc(::typeof(Intrinsics.atomic_add), argtypes::Vector{Any}) = eltype(CC.widenconst(argtypes[2]))
+tfunc(𝕃, ::typeof(Intrinsics.atomic_add), @nospecialize(array), @nospecialize args...) = eltype(CC.widenconst(array))
 efunc(::typeof(Intrinsics.atomic_add), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args)

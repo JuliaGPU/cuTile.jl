@@ -25,7 +25,7 @@ end
 
 # cuda_tile.get_index_space_shape
 @intrinsic get_index_space_shape(pv, axis)
-tfunc(::typeof(Intrinsics.get_index_space_shape), argtypes::Vector{Any}) = Int32
+tfunc(𝕃, ::typeof(Intrinsics.get_index_space_shape), @nospecialize(pv), @nospecialize(axis)) = Int32
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -61,9 +61,8 @@ end
 
 # cuda_tile.load_view_tko
 @intrinsic load_partition_view(pv, latency, allow_tma, indices)
-function tfunc(::typeof(Intrinsics.load_partition_view), argtypes::Vector{Any})
-    length(argtypes) >= 2 || return nothing
-    pv_type = CC.widenconst(argtypes[2])
+function tfunc(𝕃, ::typeof(Intrinsics.load_partition_view), @nospecialize(pv), @nospecialize args...)
+    pv_type = CC.widenconst(pv)
     pv_type <: PartitionView || return nothing
     pv_type isa DataType || return nothing
     length(pv_type.parameters) >= 3 || return nothing
@@ -151,11 +150,9 @@ end
 
 # cuda_tile.make_partition_view
 @intrinsic make_partition_view(tv, shape, padding_mode, order)
-function tfunc(::typeof(Intrinsics.make_partition_view), argtypes::Vector{Any})
-    length(argtypes) >= 3 || return nothing
-    tv_type = CC.widenconst(argtypes[2])
+function tfunc(𝕃, ::typeof(Intrinsics.make_partition_view), @nospecialize(tv), @nospecialize(shape_arg), @nospecialize args...)
+    tv_type = CC.widenconst(tv)
     tv_type <: TensorView || return nothing
-    shape_arg = argtypes[3]
     isa(shape_arg, CC.Const) || return nothing
     shape = shape_arg.val
     T = eltype(tv_type)
@@ -302,8 +299,11 @@ function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{I
 end
 
 # cuda_tile.make_tensor_view
-@intrinsic function make_tensor_view(arr::TileArray{T, N})::TensorView{T, N} where {T, N}
-    TensorView{T, N}()
+@intrinsic make_tensor_view(arr::TileArray{T, N}) where {T, N}
+function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view), @nospecialize(arr))
+    t = CC.widenconst(arr)
+    t <: TileArray || return nothing
+    TensorView{eltype(t), ndims(t)}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
     array_arg = args[1]
@@ -324,13 +324,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
 end
 
 # cuda_tile.store_view_tko
-@intrinsic function store_partition_view(pv::PartitionView{T, N, Shape},
-                                                   tile::Tile{T},
-                                                   latency::Union{Int, Nothing},
-                                                   allow_tma::Bool,
-                                                   indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
-    nothing
-end
+@intrinsic store_partition_view(pv::PartitionView{T, N, Shape},
+                                          tile::Tile{T},
+                                          latency::Union{Int, Nothing},
+                                          allow_tma::Bool,
+                                          indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
+tfunc(𝕃, ::typeof(Intrinsics.store_partition_view), @nospecialize args...) = Nothing
 efunc(::typeof(Intrinsics.store_partition_view), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), args)

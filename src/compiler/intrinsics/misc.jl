@@ -1,9 +1,8 @@
 # miscellaneous intrinsics
 
 # cuda_tile.assert
-@intrinsic function assert(cond::Bool, message::String)
-    nothing
-end
+@intrinsic assert(cond::Bool, message::String)
+tfunc(𝕃, ::typeof(Intrinsics.assert), @nospecialize(cond), @nospecialize(message)) = Nothing
 efunc(::typeof(Intrinsics.assert), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assert), args)

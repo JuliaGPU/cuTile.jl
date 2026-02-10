@@ -79,7 +79,7 @@ CC.may_discard_trees(::cuTileInterpreter) = false
 
 # Per-intrinsic return type overrides.
 # Returns nothing when no override applies (fallback).
-tfunc(@nospecialize(f), argtypes::Vector{Any}) = nothing
+tfunc(𝕃, @nospecialize(f), @nospecialize args...) = nothing
 
 # Per-intrinsic effect overrides.
 # Returns nothing when no override applies (fallback).
@@ -179,7 +179,8 @@ end
             arginfo::CC.ArgInfo, si::CC.StmtInfo, vtypes::Union{CC.VarTable,Nothing},
             sv::CC.InferenceState, max_methods::Int)
         is_intr = isintrinsic(f)
-        rt_override = tfunc(f, arginfo.argtypes)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, vtypes, sv)
         !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
@@ -211,7 +212,8 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
             arginfo::CC.ArgInfo, si::CC.StmtInfo,
             sv::CC.InferenceState, max_methods::Int)
         is_intr = isintrinsic(f)
-        rt_override = tfunc(f, arginfo.argtypes)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, nothing, sv)
         !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
@@ -244,7 +246,8 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
             sv::CC.AbsIntState, max_methods::Int)
         _infer_subprogram(interp, f, arginfo, si, nothing, sv)  # side-effect only
         is_intr = isintrinsic(f)
-        rt_override = tfunc(f, arginfo.argtypes)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         rt = rt_override !== nothing ? rt_override : result.rt
         efunc_override = is_intr ? efunc(f, result.effects) : nothing
         effects = efunc_override !== nothing ? efunc_override : result.effects

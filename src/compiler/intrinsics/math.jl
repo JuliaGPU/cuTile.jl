@@ -4,28 +4,28 @@
 
 # cuda_tile.ceil
 @intrinsic ceil(x)
-tfunc(::typeof(Intrinsics.ceil), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.ceil), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ceil), args)
     emit_unop!(ctx, args, encode_CeilOp!)
 end
 
 # cuda_tile.cos
 @intrinsic cos(x)
-tfunc(::typeof(Intrinsics.cos), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.cos), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cos), args)
     emit_unop!(ctx, args, encode_CosOp!)
 end
 
 # cuda_tile.cosh
 @intrinsic cosh(x)
-tfunc(::typeof(Intrinsics.cosh), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.cosh), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cosh), args)
     emit_unop!(ctx, args, encode_CosHOp!)
 end
 
 # cuda_tile.exp2
 @intrinsic exp2(x, flush_to_zero=false)
-tfunc(::typeof(Intrinsics.exp2), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.exp2), @nospecialize(x), @nospecialize args...) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp2), args)
     cb = ctx.cb
 
@@ -41,7 +41,7 @@ end
 
 # cuda_tile.exp
 @intrinsic exp(x)
-tfunc(::typeof(Intrinsics.exp), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.exp), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp), args)
     cb = ctx.cb
 
@@ -55,14 +55,14 @@ end
 
 # cuda_tile.floor
 @intrinsic floor(x)
-tfunc(::typeof(Intrinsics.floor), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.floor), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.floor), args)
     emit_unop!(ctx, args, encode_FloorOp!)
 end
 
 # cuda_tile.fma
 @intrinsic fma(x, y, z)
-tfunc(::typeof(Intrinsics.fma), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.fma), @nospecialize(x), @nospecialize(y), @nospecialize(z)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
     cb = ctx.cb
 
@@ -79,7 +79,7 @@ end
 
 # cuda_tile.log2
 @intrinsic log2(x)
-tfunc(::typeof(Intrinsics.log2), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.log2), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log2), args)
     cb = ctx.cb
 
@@ -93,7 +93,7 @@ end
 
 # cuda_tile.log
 @intrinsic log(x)
-tfunc(::typeof(Intrinsics.log), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.log), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
     cb = ctx.cb
 
@@ -107,35 +107,35 @@ end
 
 # cuda_tile.maxf
 @intrinsic maxf(x, y)
-tfunc(::typeof(Intrinsics.maxf), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.maxf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args)
     emit_binop!(ctx, args, encode_MaxFOp!)
 end
 
 # cuda_tile.minf
 @intrinsic minf(x, y)
-tfunc(::typeof(Intrinsics.minf), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.minf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args)
     emit_binop!(ctx, args, encode_MinFOp!)
 end
 
 # cuda_tile.pow
 @intrinsic pow(x, y)
-tfunc(::typeof(Intrinsics.pow), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.pow), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
     emit_binop!(ctx, args, encode_PowOp!)
 end
 
 # cuda_tile.remf
 @intrinsic remf(x, y)
-tfunc(::typeof(Intrinsics.remf), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.remf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remf), args)
     emit_binop!(ctx, args, encode_RemFOp!)
 end
 
 # cuda_tile.rsqrt
 @intrinsic rsqrt(x, flush_to_zero=false)
-tfunc(::typeof(Intrinsics.rsqrt), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.rsqrt), @nospecialize(x), @nospecialize args...) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.rsqrt), args)
     cb = ctx.cb
 
@@ -151,21 +151,21 @@ end
 
 # cuda_tile.sin
 @intrinsic sin(x)
-tfunc(::typeof(Intrinsics.sin), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.sin), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sin), args)
     emit_unop!(ctx, args, encode_SinOp!)
 end
 
 # cuda_tile.sinh
 @intrinsic sinh(x)
-tfunc(::typeof(Intrinsics.sinh), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.sinh), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sinh), args)
     emit_unop!(ctx, args, encode_SinHOp!)
 end
 
 # cuda_tile.sqrt
 @intrinsic sqrt(x)
-tfunc(::typeof(Intrinsics.sqrt), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.sqrt), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sqrt), args)
     cb = ctx.cb
 
@@ -179,14 +179,14 @@ end
 
 # cuda_tile.tan
 @intrinsic tan(x)
-tfunc(::typeof(Intrinsics.tan), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.tan), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.tan), args)
     emit_unop!(ctx, args, encode_TanOp!)
 end
 
 # cuda_tile.tanh
 @intrinsic tanh(x)
-tfunc(::typeof(Intrinsics.tanh), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.tanh), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.tanh), args)
     emit_unop!(ctx, args, encode_TanHOp!)
 end

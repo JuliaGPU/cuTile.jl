@@ -6,6 +6,12 @@
 @intrinsic function exti(x::I, ::Type{T}, s::Signedness) where {I<:Integer, T<:Integer}
     s === SignednessSigned ? Core.Intrinsics.sext_int(T, x) : Core.Intrinsics.zext_int(T, x)
 end
+function tfunc(𝕃, ::typeof(Intrinsics.exti), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
+    tgt = CC.widenconst(target_type)
+    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    src = CC.widenconst(x)
+    src <: Tile ? similar_type(src, T) : T
+end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -24,8 +30,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
 end
 
 # cuda_tile.ftof (scalar float to float)
-@intrinsic function ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
-    sizeof(F2) > sizeof(F1) ? Core.Intrinsics.fpext(F2, x) : Core.Intrinsics.fptrunc(F2, x)
+@intrinsic ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
+function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type))
+    tgt = CC.widenconst(target_type)
+    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    src = CC.widenconst(x)
+    src <: Tile ? similar_type(src, T) : T
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     cb = ctx.cb
@@ -44,8 +54,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
 end
 
 # cuda_tile.ftoi (scalar float to integer)
-@intrinsic function ftoi(x::AbstractFloat, ::Type{I}, s::Signedness) where {I<:Integer}
-    s === SignednessSigned ? Core.Intrinsics.fptosi(I, x) : Core.Intrinsics.fptoui(I, x)
+@intrinsic ftoi(x::AbstractFloat, ::Type{I}, s::Signedness) where {I<:Integer}
+function tfunc(𝕃, ::typeof(Intrinsics.ftoi), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
+    tgt = CC.widenconst(target_type)
+    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    src = CC.widenconst(x)
+    src <: Tile ? similar_type(src, T) : T
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     cb = ctx.cb
@@ -65,8 +79,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
 end
 
 # cuda_tile.itof (scalar integer to float)
-@intrinsic function itof(x::Integer, ::Type{F}, s::Signedness) where {F<:AbstractFloat}
-    s === SignednessSigned ? Core.Intrinsics.sitofp(F, x) : Core.Intrinsics.uitofp(F, x)
+@intrinsic itof(x::Integer, ::Type{F}, s::Signedness) where {F<:AbstractFloat}
+function tfunc(𝕃, ::typeof(Intrinsics.itof), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
+    tgt = CC.widenconst(target_type)
+    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    src = CC.widenconst(x)
+    src <: Tile ? similar_type(src, T) : T
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     cb = ctx.cb
@@ -86,7 +104,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
 end
 
 # cuda_tile.trunci (scalar integer truncation)
-@intrinsic trunci(x::Integer, ::Type{T}) where {T<:Integer} = Core.Intrinsics.trunc_int(T, x)
+@intrinsic trunci(x::Integer, ::Type{T}) where {T<:Integer}
+function tfunc(𝕃, ::typeof(Intrinsics.trunci), @nospecialize(x), @nospecialize(target_type))
+    tgt = CC.widenconst(target_type)
+    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    src = CC.widenconst(x)
+    src <: Tile ? similar_type(src, T) : T
+end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     cb = ctx.cb
     tt = ctx.tt

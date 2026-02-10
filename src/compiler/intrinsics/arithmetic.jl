@@ -84,31 +84,24 @@ end
 ## Integer arithmetic
 
 # cuda_tile.absi
-@intrinsic absi(x::T) where {T<:Integer} =
-    ifelse(Core.Intrinsics.slt_int(x, zero(T)), Core.Intrinsics.neg_int(x), x)
-@intrinsic absi(a::Tile)
-function tfunc(::typeof(Intrinsics.absi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+@intrinsic absi(x::Integer)
+@intrinsic absi(x::Tile{<:Integer})
+tfunc(𝕃, ::typeof(Intrinsics.absi), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absi), args)
     emit_unop!(ctx, args, encode_AbsIOp!)
 end
 
 # cuda_tile.addi
-@intrinsic addi(x::T, y::T) where {T<:Integer} = Core.Intrinsics.add_int(x, y)
-@intrinsic addi(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.addi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+@intrinsic addi(x::T, y::T) where {T<:Integer}
+@intrinsic addi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
+tfunc(𝕃, ::typeof(Intrinsics.addi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args)
     emit_binop!(ctx, args, encode_AddIOp!)
 end
 
 # cuda_tile.cldi (ceiling division, toward positive infinity)
 @intrinsic cldi(x, y, s)
-tfunc(::typeof(Intrinsics.cldi), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.cldi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cldi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("cldi requires compile-time signedness"))
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingPositiveInf)
@@ -131,13 +124,13 @@ end
     end
 end
 @intrinsic cmpi(a::Tile, b::Tile, pred, s)
-function tfunc(::typeof(Intrinsics.cmpi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
+function tfunc(𝕃, ::typeof(Intrinsics.cmpi), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(s))
+    t = CC.widenconst(x)
     if t <: Tile
         S = t.parameters[2]
         return Tile{Bool, S}
     end
-    return nothing
+    return Bool
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     cb = ctx.cb
@@ -166,6 +159,8 @@ end
 @intrinsic function divi(x::T, y::T, s::Signedness) where {T<:Integer}
     s === SignednessSigned ? Core.Intrinsics.sdiv_int(x, y) : Core.Intrinsics.udiv_int(x, y)
 end
+@intrinsic divi(a::Tile, b::Tile, s)
+tfunc(𝕃, ::typeof(Intrinsics.divi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("divi requires compile-time signedness"))
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingZero)
@@ -173,7 +168,7 @@ end
 
 # cuda_tile.fldi (floor division, toward negative infinity)
 @intrinsic fldi(x, y, s)
-tfunc(::typeof(Intrinsics.fldi), argtypes::Vector{Any}) = CC.widenconst(argtypes[2])
+tfunc(𝕃, ::typeof(Intrinsics.fldi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fldi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("fldi requires compile-time signedness"))
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingNegativeInf)
@@ -185,25 +180,16 @@ end
     ifelse(lt, y, x)
 end
 @intrinsic maxi(a::Tile, b::Tile, s)
-function tfunc(::typeof(Intrinsics.maxi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.maxi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("maxi requires compile-time signedness"))
     emit_binop!(ctx, args, encode_MaxIOp!; signedness)
 end
 
 # cuda_tile.mini
-@intrinsic function mini(x::T, y::T, s::Signedness) where {T<:Integer}
-    lt = s === SignednessSigned ? Core.Intrinsics.slt_int(x, y) : Core.Intrinsics.ult_int(x, y)
-    ifelse(lt, x, y)
-end
+@intrinsic mini(x::T, y::T, s::Signedness) where {T<:Integer}
 @intrinsic mini(a::Tile, b::Tile, s)
-function tfunc(::typeof(Intrinsics.mini), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.mini), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("mini requires compile-time signedness"))
     emit_binop!(ctx, args, encode_MinIOp!; signedness)
@@ -212,42 +198,31 @@ end
 # cuda_tile.muli
 @intrinsic muli(x::T, y::T) where {T<:Integer} = Core.Intrinsics.mul_int(x, y)
 @intrinsic muli(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.muli), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.muli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
     emit_binop!(ctx, args, encode_MulIOp!)
 end
 
 # cuda_tile.mulhii
-@intrinsic function mulhii(x::T, y::T, s::Signedness) where {T<:Integer}
-    ((widen(x) * widen(y)) >>> (8 * sizeof(T))) % T
-end
+@intrinsic mulhii(x::T, y::T, s::Signedness) where {T<:Integer}
 @intrinsic mulhii(a::Tile, b::Tile, s)
-function tfunc(::typeof(Intrinsics.mulhii), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.mulhii), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulhii), args)
     emit_binop!(ctx, args, encode_MulhiIOp!)
 end
 
 # cuda_tile.negi
-@intrinsic negi(x::T) where {T<:Integer} = Core.Intrinsics.neg_int(x)
+@intrinsic negi(x::T) where {T<:Integer}
 @intrinsic negi(a::Tile)
-function tfunc(::typeof(Intrinsics.negi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.negi), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negi), args)
     emit_unop!(ctx, args, encode_NegIOp!; overflow=OverflowNone)
 end
 
 # cuda_tile.remi
-@intrinsic function remi(x::T, y::T, s::Signedness) where {T<:Integer}
-    s === SignednessSigned ? Core.Intrinsics.srem_int(x, y) : Core.Intrinsics.urem_int(x, y)
-end
+@intrinsic remi(x::T, y::T, s::Signedness) where {T<:Integer}
+@intrinsic remi(a::Tile, b::Tile, s)
+tfunc(𝕃, ::typeof(Intrinsics.remi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("remi requires compile-time signedness"))
     emit_binop!(ctx, args, encode_RemIOp!; signedness)
@@ -255,14 +230,16 @@ end
 
 # cuda_tile.shli
 @intrinsic shli(x::T, y::Integer) where {T<:Integer} = Core.Intrinsics.shl_int(x, y % T)
+@intrinsic shli(a::Tile, b::Tile)
+tfunc(𝕃, ::typeof(Intrinsics.shli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shli), args)
     emit_binop!(ctx, args, encode_ShLIOp!)
 end
 
 # cuda_tile.shri
-@intrinsic function shri(x::T, y::Integer, s::Signedness) where {T<:Integer}
-    s === SignednessSigned ? Core.Intrinsics.ashr_int(x, y % T) : Core.Intrinsics.lshr_int(x, y % T)
-end
+@intrinsic shri(x::T, y::Integer, s::Signedness) where {T<:Integer}
+@intrinsic shri(a::Tile, b::Tile, s)
+tfunc(𝕃, ::typeof(Intrinsics.shri), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shri), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("shri requires compile-time signedness"))
     emit_binop!(ctx, args, encode_ShRIOp!; signedness)
@@ -271,10 +248,7 @@ end
 # cuda_tile.subi
 @intrinsic subi(x::T, y::T) where {T<:Integer} = Core.Intrinsics.sub_int(x, y)
 @intrinsic subi(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.subi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.subi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subi), args)
     emit_binop!(ctx, args, encode_SubIOp!)
 end
@@ -283,51 +257,31 @@ end
 ## Floating-point arithmetic
 
 # cuda_tile.absf
-@intrinsic absf(x::T) where {T<:AbstractFloat} = Core.Intrinsics.abs_float(x)
+@intrinsic absf(x::T) where {T<:AbstractFloat}
 @intrinsic absf(a::Tile)
-function tfunc(::typeof(Intrinsics.absf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.absf), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absf), args)
     emit_unop!(ctx, args, encode_AbsFOp!)
 end
 
 # cuda_tile.addf
-@intrinsic addf(x::T, y::T) where {T<:AbstractFloat} = Core.Intrinsics.add_float(x, y)
+@intrinsic addf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic addf(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.addf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.addf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addf), args)
     emit_binop!(ctx, args, encode_AddFOp!)
 end
 
 # cuda_tile.cmpf
-@intrinsic function cmpf(x::T, y::T, pred::ComparisonPredicate) where {T<:AbstractFloat}
-    if pred === CmpLessThan
-        Core.Intrinsics.lt_float(x, y)
-    elseif pred === CmpLessThanOrEqual
-        Core.Intrinsics.le_float(x, y)
-    elseif pred === CmpGreaterThan
-        Core.Intrinsics.lt_float(y, x)
-    elseif pred === CmpGreaterThanOrEqual
-        Core.Intrinsics.le_float(y, x)
-    elseif pred === CmpEqual
-        Core.Intrinsics.eq_float(x, y)
-    else  # CmpNotEqual
-        Core.Intrinsics.ne_float(x, y)
-    end
-end
+@intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate) where {T<:AbstractFloat}
 @intrinsic cmpf(a::Tile, b::Tile, pred)
-function tfunc(::typeof(Intrinsics.cmpf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
+function tfunc(𝕃, ::typeof(Intrinsics.cmpf), @nospecialize(x), @nospecialize(y), @nospecialize(pred))
+    t = CC.widenconst(x)
     if t <: Tile
         S = t.parameters[2]
         return Tile{Bool, S}
     end
-    return nothing
+    return Bool
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     cb = ctx.cb
@@ -352,45 +306,33 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
 end
 
 # cuda_tile.divf
-@intrinsic divf(x::T, y::T) where {T<:AbstractFloat} = Core.Intrinsics.div_float(x, y)
+@intrinsic divf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic divf(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.divf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.divf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divf), args)
     emit_binop!(ctx, args, encode_DivFOp!)
 end
 
 # cuda_tile.mulf
-@intrinsic mulf(x::T, y::T) where {T<:AbstractFloat} = Core.Intrinsics.mul_float(x, y)
+@intrinsic mulf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic mulf(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.mulf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.mulf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulf), args)
     emit_binop!(ctx, args, encode_MulFOp!)
 end
 
 # cuda_tile.negf
-@intrinsic negf(x::T) where {T<:AbstractFloat} = Core.Intrinsics.neg_float(x)
+@intrinsic negf(x::T) where {T<:AbstractFloat}
 @intrinsic negf(a::Tile)
-function tfunc(::typeof(Intrinsics.negf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.negf), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negf), args)
     emit_unop!(ctx, args, encode_NegFOp!)
 end
 
 # cuda_tile.subf
-@intrinsic subf(x::T, y::T) where {T<:AbstractFloat} = Core.Intrinsics.sub_float(x, y)
+@intrinsic subf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic subf(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.subf), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.subf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subf), args)
     emit_binop!(ctx, args, encode_SubFOp!)
 end
@@ -401,10 +343,7 @@ end
 # cuda_tile.andi
 @intrinsic andi(x::T, y::T) where {T<:Integer} = Core.Intrinsics.and_int(x, y)
 @intrinsic andi(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.andi), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.andi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -421,12 +360,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)
 end
 
 # cuda_tile.ori
-@intrinsic ori(x::T, y::T) where {T<:Integer} = Core.Intrinsics.or_int(x, y)
+@intrinsic ori(x::T, y::T) where {T<:Integer}
 @intrinsic ori(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.ori), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.ori), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -443,12 +379,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args)
 end
 
 # cuda_tile.xori
-@intrinsic xori(x::T, y::T) where {T<:Integer} = Core.Intrinsics.xor_int(x, y)
+@intrinsic xori(x::T, y::T) where {T<:Integer}
 @intrinsic xori(a::Tile, b::Tile)
-function tfunc(::typeof(Intrinsics.xori), argtypes::Vector{Any})
-    t = CC.widenconst(argtypes[2])
-    t <: Tile ? t : nothing
-end
+tfunc(𝕃, ::typeof(Intrinsics.xori), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.xori), args)
     cb = ctx.cb
     tt = ctx.tt

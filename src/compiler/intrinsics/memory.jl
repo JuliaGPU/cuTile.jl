@@ -4,9 +4,8 @@
 
 # cuda_tile.load_ptr_tko
 @intrinsic load_ptr_tko(ptrs, latency=nothing, mask=nothing, padding=nothing)
-function tfunc(::typeof(Intrinsics.load_ptr_tko), argtypes::Vector{Any})
-    length(argtypes) >= 2 || return nothing
-    ptrs_type = CC.widenconst(argtypes[2])
+function tfunc(𝕃, ::typeof(Intrinsics.load_ptr_tko), @nospecialize(ptrs), @nospecialize args...)
+    ptrs_type = CC.widenconst(ptrs)
     ptrs_type <: Tile || return nothing
     ptr_type = eltype(ptrs_type)
     ptr_type <: Ptr || return nothing
@@ -74,11 +73,10 @@ end
 # TODO: cuda_tile.make_token
 
 # cuda_tile.store_ptr_tko
-@intrinsic function store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
-                                            latency::Union{Int, Nothing},
-                                            mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
-    nothing
-end
+@intrinsic store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
+                                   latency::Union{Int, Nothing},
+                                   mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
+tfunc(𝕃, ::typeof(Intrinsics.store_ptr_tko), @nospecialize args...) = Nothing
 efunc(::typeof(Intrinsics.store_ptr_tko), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)

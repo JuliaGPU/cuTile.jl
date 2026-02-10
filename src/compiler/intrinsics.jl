@@ -12,12 +12,10 @@ using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
 
-# NOTE: Intrinsics are never directly folded (concrete_eval_eligible returns :none,
-#       nonoverlayed=ALWAYS_FALSE taints caller effects). However, overlay callers
-#       with @assume_effects :foldable override the propagated effects, causing the
-#       compiler to concrete-evaluate through intrinsic bodies (JuliaLang/julia#60583).
-#       Intrinsics on such paths need callable bodies (function definition form).
-#       All others use compilerbarrier(:type, nothing) as a dummy body (bare signature).
+# NOTE: Intrinsics use bare signatures with dummy bodies (compilerbarrier(:type, nothing)).
+#       Return types are provided by tfunc overrides in the interpreter.
+#       Const-prop for overlay callers happens via @assume_effects :foldable at the
+#       overlay level, not through intrinsic bodies.
 
 using ExprTools: splitdef, combinedef
 
