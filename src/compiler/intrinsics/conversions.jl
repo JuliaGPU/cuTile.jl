@@ -3,9 +3,7 @@
 # TODO: cuda_tile.bitcast
 
 # cuda_tile.exti (scalar integer extension)
-@intrinsic function exti(x::I, ::Type{T}, s::Signedness) where {I<:Integer, T<:Integer}
-    s === SignednessSigned ? Core.Intrinsics.sext_int(T, x) : Core.Intrinsics.zext_int(T, x)
-end
+@intrinsic exti(x::I, ::Type{T}, s::Signedness) where {I<:Integer, T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.exti), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     tgt = CC.widenconst(target_type)
     T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing

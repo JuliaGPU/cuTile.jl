@@ -109,21 +109,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cldi), args)
 end
 
 # cuda_tile.cmpi
-@intrinsic function cmpi(x::T, y::T, pred::ComparisonPredicate, s::Signedness) where {T<:Integer}
-    if pred === CmpLessThan
-        s === SignednessSigned ? Core.Intrinsics.slt_int(x, y) : Core.Intrinsics.ult_int(x, y)
-    elseif pred === CmpLessThanOrEqual
-        s === SignednessSigned ? Core.Intrinsics.sle_int(x, y) : Core.Intrinsics.ule_int(x, y)
-    elseif pred === CmpGreaterThan
-        s === SignednessSigned ? Core.Intrinsics.slt_int(y, x) : Core.Intrinsics.ult_int(y, x)
-    elseif pred === CmpGreaterThanOrEqual
-        s === SignednessSigned ? Core.Intrinsics.sle_int(y, x) : Core.Intrinsics.ule_int(y, x)
-    elseif pred === CmpEqual
-        Core.Intrinsics.eq_int(x, y)
-    else  # CmpNotEqual
-        Core.Intrinsics.ne_int(x, y)
-    end
-end
+@intrinsic cmpi(x::T, y::T, pred::ComparisonPredicate, s::Signedness) where {T<:Integer}
 @intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate, s::Signedness) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpi), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(s))
     t = CC.widenconst(x)
@@ -157,9 +143,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
 end
 
 # cuda_tile.divi (truncating division, toward zero)
-@intrinsic function divi(x::T, y::T, s::Signedness) where {T<:Integer}
-    s === SignednessSigned ? Core.Intrinsics.sdiv_int(x, y) : Core.Intrinsics.udiv_int(x, y)
-end
+@intrinsic divi(x::T, y::T, s::Signedness) where {T<:Integer}
 @intrinsic divi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.divi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divi), args)
@@ -177,10 +161,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fldi), args)
 end
 
 # cuda_tile.maxi
-@intrinsic function maxi(x::T, y::T, s::Signedness) where {T<:Integer}
-    lt = s === SignednessSigned ? Core.Intrinsics.slt_int(x, y) : Core.Intrinsics.ult_int(x, y)
-    ifelse(lt, y, x)
-end
+@intrinsic maxi(x::T, y::T, s::Signedness) where {T<:Integer}
 @intrinsic maxi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.maxi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
@@ -198,7 +179,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args)
 end
 
 # cuda_tile.muli
-@intrinsic muli(x::T, y::T) where {T<:Integer} = Core.Intrinsics.mul_int(x, y)
+@intrinsic muli(x::T, y::T) where {T<:Integer}
 @intrinsic muli(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.muli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
@@ -231,7 +212,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remi), args)
 end
 
 # cuda_tile.shli
-@intrinsic shli(x::T, y::Integer) where {T<:Integer} = Core.Intrinsics.shl_int(x, y % T)
+@intrinsic shli(x::T, y::Integer) where {T<:Integer}
 @intrinsic shli(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.shli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shli), args)
@@ -248,7 +229,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shri), args)
 end
 
 # cuda_tile.subi
-@intrinsic subi(x::T, y::T) where {T<:Integer} = Core.Intrinsics.sub_int(x, y)
+@intrinsic subi(x::T, y::T) where {T<:Integer}
 @intrinsic subi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.subi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subi), args)
@@ -343,7 +324,7 @@ end
 ## Boolean arithmetic
 
 # cuda_tile.andi
-@intrinsic andi(x::T, y::T) where {T<:Integer} = Core.Intrinsics.and_int(x, y)
+@intrinsic andi(x::T, y::T) where {T<:Integer}
 @intrinsic andi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.andi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)

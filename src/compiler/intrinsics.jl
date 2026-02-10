@@ -37,14 +37,10 @@ provide a correct scalar implementation using `Core.Intrinsics`, or return
 `nothing` for side-effect-only intrinsics.
 """
 macro intrinsic(ex)
-    funcdef = if ex isa Expr && ex.head in (:function, :(=))
-        combinedef(splitdef(ex))
-    else
-        body = quote
-            compilerbarrier(:type, nothing)
-        end
-        Expr(:function, ex, body)
+    body = quote
+        compilerbarrier(:type, nothing)
     end
+    funcdef = Expr(:function, ex, body)
     funcdef = Expr(:macrocall, Symbol("@noinline"), nothing, funcdef)
     return esc(:(Core.eval(Intrinsics, $(QuoteNode(funcdef)))))
 end
