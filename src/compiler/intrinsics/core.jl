@@ -764,9 +764,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
 end
 
 # cuda_tile.select
-@intrinsic select(cond::Bool, x::T, y::T) where {T} = Core.ifelse(cond, x, y)
+@intrinsic select(cond::Bool, x::T, y::T) where {T}# = Core.ifelse(cond, x, y)
 @intrinsic select(cond::Tile{Bool}, x::T, y::T) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.select), @nospecialize(cond), @nospecialize(x), @nospecialize(y))
+    if cond isa CC.Const
+        return cond.val === true ? x : y
+    end
     CC.widenconst(x)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)

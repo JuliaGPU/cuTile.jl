@@ -41,9 +41,6 @@ macro intrinsic(ex)
         combinedef(splitdef(ex))
     else
         body = quote
-            if inferencebarrier(true)::Bool
-                error("Intrinsic $(string(ex)) cannot be evaluated at compile time")
-            end
             compilerbarrier(:type, nothing)
         end
         Expr(:function, ex, body)
