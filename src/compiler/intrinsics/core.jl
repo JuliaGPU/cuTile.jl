@@ -314,7 +314,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
 end
 
 # cuda_tile.mmaf, cuda_tile.mmai
-@intrinsic mma(a, b, acc)
+@intrinsic mma(a::Tile, b::Tile, acc::Tile)
 tfunc(𝕃, ::typeof(Intrinsics.mma), @nospecialize(a), @nospecialize(b), @nospecialize(acc)) = CC.widenconst(acc)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     cb = ctx.cb
@@ -765,7 +765,7 @@ end
 
 # cuda_tile.select
 @intrinsic select(cond::Bool, x::T, y::T) where {T} = Core.ifelse(cond, x, y)
-@intrinsic select(cond::Tile, x, y)
+@intrinsic select(cond::Tile{Bool}, x::T, y::T) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.select), @nospecialize(cond), @nospecialize(x), @nospecialize(y))
     CC.widenconst(x)
 end
