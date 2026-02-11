@@ -1119,3 +1119,71 @@ end
         end
     end
 end
+
+#=============================================================================
+ Literal SSA Statement Handling
+=============================================================================#
+
+@testset "Literal SSA statements" begin
+    # Regression test: when Julia's optimizer constant-folds an SSA statement
+    # (via concrete eval, SROA, constant propagation), the statement becomes a
+    # bare literal value instead of an Expr(:call, ...). emit_statement! must
+    # register a CGVal for these so downstream SSAValue references resolve.
+    #
+    # Strategy: compile a real kernel, replace one Expr with a literal in the
+    # IRCode (simulating constant folding), then verify codegen succeeds.
+
+    spec = ct.ArraySpec{1}(16, true)
+
+    function _literal_test_kernel(a::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(a, pid, tile)
+        return
+    end
+
+    function _find_intrinsic_call(ir, callee)
+        for (i, inst) in enumerate(ir.stmts)
+            stmt = inst[:stmt]
+            if stmt isa Expr && stmt.head === :call && length(stmt.args) >= 1
+                if stmt.args[1] === callee
+                    return i
+                end
+            end
+        end
+        return nothing
+    end
+
+    function _test_literal_ssa(value)
+        argtypes = Tuple{ct.TileArray{Float32,1,spec}}
+        world = Base.get_world_counter()
+        mi = something(
+            ct.method_instance(_literal_test_kernel, argtypes; world,
+                               method_table=ct.cuTileMethodTable),
+            ct.method_instance(_literal_test_kernel, argtypes; world))
+        ir, _ = ct.code_ircode(mi)
+
+        # Replace first subi(pid, 1) with a literal — simulates constant folding
+        idx = _find_intrinsic_call(ir, ct.Intrinsics.subi)
+        @assert idx !== nothing "test setup: could not find subi call in IR"
+        ir.stmts[idx][:stmt] = value
+
+        sci = ct.StructuredIRCode(ir)
+        bytecode = ct.write_bytecode!(1) do writer, func_buf
+            ct.emit_kernel!(writer, func_buf, sci, Nothing;
+                name="literal_test",
+                cache=ct.CacheView{ct.CuTileResults}(
+                    (:cuTile, (sm_arch=nothing, opt_level=3,
+                               num_ctas=nothing, occupancy=nothing)), world))
+        end
+        return length(bytecode) > 0
+    end
+
+    @testset "Int32 zero literal" begin
+        @test _test_literal_ssa(Int32(0))
+    end
+
+    @testset "Int32 nonzero literal" begin
+        @test _test_literal_ssa(Int32(42))
+    end
+end

@@ -26,9 +26,14 @@ function emit_statement!(ctx::CGCtx, @nospecialize(stmt), ssa_idx::Int, @nospeci
         # PiNode is a type narrowing assertion - store the resolved value
         tv = emit_value!(ctx, stmt)
     elseif stmt === nothing
-        # No-op
+        # Dead code elimination artifact — no value to register
     else
-        @warn "Unhandled statement type" typeof(stmt) stmt
+        # Literal values from constant folding or concrete eval.
+        # Try emit_constant! first (numbers/ghost types), fall back to emit_value!.
+        tv = emit_constant!(ctx, stmt, result_type)
+        if tv === nothing
+            tv = emit_value!(ctx, stmt)
+        end
     end
 
     # Store result by original Julia SSA index
