@@ -17,8 +17,6 @@ end
 #       Const-prop for overlay callers happens via @assume_effects :foldable at the
 #       overlay level, not through intrinsic bodies.
 
-using ExprTools: splitdef, combinedef
-
 """
     @intrinsic signature
     @intrinsic function_definition
