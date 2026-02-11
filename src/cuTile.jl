@@ -39,6 +39,6 @@ include("language/operations.jl")
 include("language/atomics.jl")
 
 public launch
-launch() = error("Please import CUDA.jl before using `cuTile.launch`.")
+launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 end # module cuTile

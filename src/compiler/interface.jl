@@ -337,6 +337,9 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance)
     return res.julia_ir
 end
 
+# Encode characters outside [a-zA-Z0-9_] as _XX hex escapes for PTX/MLIR compatibility.
+sanitize_name(name::String) = replace(name, r"[^a-zA-Z0-9_]" => c -> "_$(string(UInt8(only(c)); base=16, pad=2))")
+
 """
     emit_code(cache, mi) -> Vector{UInt8}
 
@@ -357,7 +360,7 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance)
     # Generate Tile IR bytecode
     bytecode = write_bytecode!(1) do writer, func_buf
         emit_kernel!(writer, func_buf, sci, rettype;
-            name = string(mi.def.name),
+            name = sanitize_name(string(mi.def.name)),
             sm_arch = opts.sm_arch,
             num_ctas = opts.num_ctas,
             occupancy = opts.occupancy,

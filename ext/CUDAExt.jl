@@ -1,7 +1,7 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code
+using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code, sanitize_name
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -51,7 +51,7 @@ function emit_function(cache::CacheView, mi::Core.MethodInstance)
     res = results(cache, ci)
     res.cuda_func !== nothing && return res.cuda_func
 
-    kernel_name = string(mi.def.name)
+    kernel_name = sanitize_name(string(mi.def.name))
     cumod = CuModule(cubin)
     cufunc = CuFunction(cumod, kernel_name)
     res.cuda_func = cufunc

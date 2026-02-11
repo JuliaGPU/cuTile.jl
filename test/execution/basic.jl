@@ -1058,3 +1058,10 @@ const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
     @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
 end
 
+@testset "kernel name with !" begin
+    function kernel!()
+        return
+    end
+    ct.launch(kernel!, 1)
+end
+
