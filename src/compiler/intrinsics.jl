@@ -43,7 +43,21 @@ macro intrinsic(ex)
     return esc(:(Core.eval(Intrinsics, $(QuoteNode(funcdef)))))
 end
 
-emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
+"""
+    instanceof_tfunc(lat) -> Type or nothing
+
+Extract `T` from a lattice element representing `Type{T}`.
+Simplified version of `Base.Compiler.instanceof_tfunc` that handles `Const(T)`
+and `Type{T}` lattice elements. Returns `nothing` when `T` cannot be determined.
+"""
+function instanceof_tfunc(@nospecialize(lat))
+    if isa(lat, CC.Const)
+        val = lat.val
+        return val isa Type ? val : nothing
+    end
+    tgt = CC.widenconst(lat)
+    return tgt isa DataType && tgt <: Type && !isempty(tgt.parameters) ? tgt.parameters[1] : nothing
+end
 
 # Shared helper for creating load/store optimization hints
 function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, allow_tma::Bool=true)
@@ -52,6 +66,8 @@ function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, all
     hints = LoadStoreHints(; latency, allow_tma)
     return make_load_store_hints(ctx.sm_arch, hints)
 end
+
+emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
 
 include("intrinsics/core.jl")
 include("intrinsics/conversions.jl")

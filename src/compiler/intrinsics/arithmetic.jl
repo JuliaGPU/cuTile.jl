@@ -326,7 +326,14 @@ end
 # cuda_tile.andi
 @intrinsic andi(x::T, y::T) where {T<:Integer}
 @intrinsic andi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
-tfunc(𝕃, ::typeof(Intrinsics.andi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+function tfunc(𝕃, ::typeof(Intrinsics.andi), @nospecialize(x), @nospecialize(y))
+    if isa(x, CC.Const) && x.val === false && CC.widenconst(y) === Bool
+        return CC.Const(false)
+    elseif isa(y, CC.Const) && y.val === false && CC.widenconst(x) === Bool
+        return CC.Const(false)
+    end
+    return CC.widenconst(x)
+end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -345,7 +352,14 @@ end
 # cuda_tile.ori
 @intrinsic ori(x::T, y::T) where {T<:Integer}
 @intrinsic ori(a::Tile{T}, b::Tile{T}) where {T<:Integer}
-tfunc(𝕃, ::typeof(Intrinsics.ori), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+function tfunc(𝕃, ::typeof(Intrinsics.ori), @nospecialize(x), @nospecialize(y))
+    if isa(x, CC.Const) && x.val === true && CC.widenconst(y) === Bool
+        return CC.Const(true)
+    elseif isa(y, CC.Const) && y.val === true && CC.widenconst(x) === Bool
+        return CC.Const(true)
+    end
+    return CC.widenconst(x)
+end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args)
     cb = ctx.cb
     tt = ctx.tt

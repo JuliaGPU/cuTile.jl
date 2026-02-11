@@ -167,9 +167,8 @@ end
 function tfunc(𝕃, ::typeof(Intrinsics.constant), @nospecialize(shape_arg), @nospecialize(value), @nospecialize(type_arg_lat))
     isa(shape_arg, CC.Const) || return nothing
     shape = shape_arg.val
-    type_arg = CC.widenconst(type_arg_lat)
-    type_arg <: Type || return nothing
-    T = type_arg.parameters[1]
+    T = instanceof_tfunc(type_arg_lat)
+    T === nothing && return nothing
     return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
@@ -286,9 +285,8 @@ end
 function tfunc(𝕃, ::typeof(Intrinsics.iota), @nospecialize(shape_arg), @nospecialize(type_arg_lat))
     isa(shape_arg, CC.Const) || return nothing
     shape = shape_arg.val
-    type_arg = CC.widenconst(type_arg_lat)
-    type_arg <: Type || return nothing
-    T = type_arg.parameters[1]
+    T = instanceof_tfunc(type_arg_lat)
+    T === nothing && return nothing
     return Tile{T, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
@@ -767,10 +765,16 @@ end
 @intrinsic select(cond::Bool, x::T, y::T) where {T}# = Core.ifelse(cond, x, y)
 @intrinsic select(cond::Tile{Bool}, x::T, y::T) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.select), @nospecialize(cond), @nospecialize(x), @nospecialize(y))
-    if cond isa CC.Const
-        return cond.val === true ? x : y
+    if isa(cond, CC.Const)
+        if cond.val === true
+            return x
+        elseif cond.val === false
+            return y
+        else
+            return Union{}
+        end
     end
-    CC.widenconst(x)
+    return CC.tmerge(𝕃, x, y)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     cb = ctx.cb
@@ -795,9 +799,8 @@ end
 @intrinsic from_scalar(x, S)
 function tfunc(𝕃, ::typeof(Intrinsics.from_scalar), @nospecialize(x), @nospecialize(S_lat))
     T = CC.widenconst(x)
-    shape_type = CC.widenconst(S_lat)
-    shape_type <: Type || return nothing
-    S = shape_type.parameters[1]
+    S = instanceof_tfunc(S_lat)
+    S === nothing && return nothing
     return Tile{T, S}
 end
 function tfunc(𝕃, ::typeof(Intrinsics.to_scalar), @nospecialize(tile_lat))

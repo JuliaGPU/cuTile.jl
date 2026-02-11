@@ -5,8 +5,8 @@
 # cuda_tile.exti (scalar integer extension)
 @intrinsic exti(x::I, ::Type{T}, s::Signedness) where {I<:Integer, T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.exti), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
-    tgt = CC.widenconst(target_type)
-    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
     src = CC.widenconst(x)
     src <: Tile ? similar_type(src, T) : T
 end
@@ -30,8 +30,8 @@ end
 # cuda_tile.ftof (scalar float to float)
 @intrinsic ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type))
-    tgt = CC.widenconst(target_type)
-    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
     src = CC.widenconst(x)
     src <: Tile ? similar_type(src, T) : T
 end
@@ -54,8 +54,8 @@ end
 # cuda_tile.ftoi (scalar float to integer)
 @intrinsic ftoi(x::AbstractFloat, ::Type{I}, s::Signedness) where {I<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.ftoi), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
-    tgt = CC.widenconst(target_type)
-    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
     src = CC.widenconst(x)
     src <: Tile ? similar_type(src, T) : T
 end
@@ -79,8 +79,8 @@ end
 # cuda_tile.itof (scalar integer to float)
 @intrinsic itof(x::Integer, ::Type{F}, s::Signedness) where {F<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.itof), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
-    tgt = CC.widenconst(target_type)
-    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
     src = CC.widenconst(x)
     src <: Tile ? similar_type(src, T) : T
 end
@@ -104,8 +104,8 @@ end
 # cuda_tile.trunci (scalar integer truncation)
 @intrinsic trunci(x::Integer, ::Type{T}) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.trunci), @nospecialize(x), @nospecialize(target_type))
-    tgt = CC.widenconst(target_type)
-    T = tgt isa DataType && tgt <: Type ? tgt.parameters[1] : return nothing
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
     src = CC.widenconst(x)
     src <: Tile ? similar_type(src, T) : T
 end
