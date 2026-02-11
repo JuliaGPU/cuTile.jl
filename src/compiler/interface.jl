@@ -250,15 +250,11 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
 end
 
 # Disable semi-concrete interpretation (broken with overlays per JuliaLang/julia#47349)
-# and block concrete eval for intrinsics (not_callable() bodies return dummy values).
 function CC.concrete_eval_eligible(interp::cuTileInterpreter,
     @nospecialize(f), result::CC.MethodCallResult, arginfo::CC.ArgInfo, sv::CC.InferenceState)
     ret = @invoke CC.concrete_eval_eligible(interp::CC.AbstractInterpreter,
         f::Any, result::CC.MethodCallResult, arginfo::CC.ArgInfo, sv::CC.InferenceState)
     if ret === :semi_concrete_eval
-        return :none
-    end
-    if ret === :concrete_eval && isintrinsic(f)
         return :none
     end
     return ret
