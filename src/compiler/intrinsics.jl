@@ -12,27 +12,12 @@ using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
 
-# NOTE: Intrinsics use bare signatures with dummy bodies (compilerbarrier(:type, nothing)).
-#       Return types are provided by tfunc overrides in the interpreter.
-#       Const-prop for overlay callers happens via @assume_effects :foldable at the
-#       overlay level, not through intrinsic bodies.
-
 """
     @intrinsic signature
-    @intrinsic function_definition
 
-Define a Tile IR intrinsic in the `Intrinsics` module.
-
-A bare signature (e.g. `@intrinsic foo(x)`) creates a dummy body using
-`compilerbarrier(:type, nothing)` so body inference returns `Any`. Actual
-return types come from `tfunc` overrides in the interpreter.
-
-A function definition (e.g. `@intrinsic foo(x) = expr`) preserves the body,
-providing a callable implementation for concrete evaluation. This is needed
-when overlay callers with `@assume_effects :foldable` cause the compiler to
-evaluate through intrinsic bodies (JuliaLang/julia#60583). The body should
-provide a correct scalar implementation using `Core.Intrinsics`, or return
-`nothing` for side-effect-only intrinsics.
+Define a Tile IR intrinsic in the `Intrinsics` module. These intrinsics are
+defined to return `Any`, so need additional `tfunc` and `efunc` definitions
+to specify their behavior.
 """
 macro intrinsic(ex)
     body = quote
