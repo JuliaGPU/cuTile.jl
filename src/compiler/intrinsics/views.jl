@@ -24,17 +24,8 @@ function get_padding_value(ctx::CGCtx, args)
 end
 
 # cuda_tile.get_index_space_shape
-@eval Intrinsics begin
-    """
-        get_index_space_shape(pv::PartitionView, axis) -> Int32
-
-    Get the number of tiles along the given axis (0-indexed).
-    Compiled to cuda_tile.get_index_space_shape.
-    """
-    @noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer) where {T, N, Shape}
-        compilerbarrier(:const, zero(Int32))
-    end
-end
+@intrinsic get_index_space_shape(pv, axis)
+tfunc(𝕃, ::typeof(Intrinsics.get_index_space_shape), @nospecialize(pv), @nospecialize(axis)) = Int32
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -69,23 +60,9 @@ end
 # TODO: cuda_tile.get_tensor_shape
 
 # cuda_tile.load_view_tko
-@eval Intrinsics begin
-    """
-        load_partition_view(pv::PartitionView, latency, allow_tma, index...) -> Tile
-
-    Load a tile from a partition view at the given 0-indexed tile coordinates.
-    Compiled to cuda_tile.load_view_tko.
-    """
-    @noinline function load_partition_view(pv::PartitionView{T, N, Shape},
-                                            latency::Union{Int, Nothing},
-                                            allow_tma::Bool,
-                                            indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
-        compilerbarrier(:type, nothing)
-    end
-end
-function tfunc(::typeof(Intrinsics.load_partition_view), argtypes::Vector{Any})
-    length(argtypes) >= 2 || return nothing
-    pv_type = CC.widenconst(argtypes[2])
+@intrinsic load_partition_view(pv, latency, allow_tma, indices)
+function tfunc(𝕃, ::typeof(Intrinsics.load_partition_view), @nospecialize(pv), @nospecialize args...)
+    pv_type = CC.widenconst(pv)
     pv_type <: PartitionView || return nothing
     pv_type isa DataType || return nothing
     length(pv_type.parameters) >= 3 || return nothing
@@ -172,24 +149,10 @@ function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type:
 end
 
 # cuda_tile.make_partition_view
-@eval Intrinsics begin
-    """
-        make_partition_view(tv::TensorView, shape_val, padding_mode, order) -> PartitionView
-
-    Create a PartitionView from a TensorView with the given tile shape.
-    The `order` parameter (NTuple{N,Int} or nothing) specifies
-    the logical-to-physical dimension mapping (1-indexed), or identity if nothing.
-    Compiled to cuda_tile.make_partition_view.
-    """
-    @noinline function make_partition_view(tv::TensorView{T, N}, shape::NTuple{M, Int}, padding_mode::Int, order) where {T, N, M}
-        compilerbarrier(:type, nothing)
-    end
-end
-function tfunc(::typeof(Intrinsics.make_partition_view), argtypes::Vector{Any})
-    length(argtypes) >= 3 || return nothing
-    tv_type = CC.widenconst(argtypes[2])
+@intrinsic make_partition_view(tv, shape, padding_mode, order)
+function tfunc(𝕃, ::typeof(Intrinsics.make_partition_view), @nospecialize(tv), @nospecialize(shape_arg), @nospecialize args...)
+    tv_type = CC.widenconst(tv)
     tv_type <: TensorView || return nothing
-    shape_arg = argtypes[3]
     isa(shape_arg, CC.Const) || return nothing
     shape = shape_arg.val
     T = eltype(tv_type)
@@ -336,16 +299,11 @@ function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{I
 end
 
 # cuda_tile.make_tensor_view
-@eval Intrinsics begin
-    """
-        make_tensor_view(arr::TileArray) -> TensorView
-
-    Create a TensorView from a TileArray.
-    Compiled to cuda_tile.make_tensor_view.
-    """
-    @noinline function make_tensor_view(arr::TileArray{T, N})::TensorView{T, N} where {T, N}
-        TensorView{T, N}()
-    end
+@intrinsic make_tensor_view(arr::TileArray{T, N}) where {T, N}
+function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view), @nospecialize(arr))
+    t = CC.widenconst(arr)
+    t <: TileArray || return nothing
+    TensorView{eltype(t), ndims(t)}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
     array_arg = args[1]
@@ -366,22 +324,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
 end
 
 # cuda_tile.store_view_tko
-@eval Intrinsics begin
-    """
-        store_partition_view(pv::PartitionView, tile, latency, allow_tma, index...) -> Nothing
-
-    Store a tile to a partition view at the given 0-indexed tile coordinates.
-    Compiled to cuda_tile.store_view_tko.
-    """
-    @noinline function store_partition_view(pv::PartitionView{T, N, Shape},
-                                             tile::Tile{T},
-                                             latency::Union{Int, Nothing},
-                                             allow_tma::Bool,
-                                             indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
-        donotdelete()
-        nothing
-    end
-end
+@intrinsic store_partition_view(pv::PartitionView{T, N, Shape},
+                                          tile::Tile{T},
+                                          latency::Union{Int, Nothing},
+                                          allow_tma::Bool,
+                                          indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
+tfunc(𝕃, ::typeof(Intrinsics.store_partition_view), @nospecialize args...) = Nothing
+efunc(::typeof(Intrinsics.store_partition_view), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt

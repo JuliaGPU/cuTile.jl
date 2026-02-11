@@ -3,23 +3,15 @@
 # TODO: cuda_tile.join_tokens
 
 # cuda_tile.load_ptr_tko
-@eval Intrinsics begin
-    """
-        load_ptr_tko(ptrs, latency, mask=nothing, padding=nothing)
-
-    Load values from a tile of pointers.
-    If mask is provided, masked-out positions return the padding value.
-    Compiled to cuda_tile.load_ptr_tko.
-
-    Note: TMA (allow_tma) is not applicable for pointer-based loads as they
-    support irregular access patterns incompatible with TMA requirements.
-    """
-    @noinline function load_ptr_tko(ptrs::Tile{Ptr{T}, S},
-                                     latency::Union{Int, Nothing}=nothing,
-                                     mask::Union{Tile{Bool, S}, Nothing}=nothing,
-                                     padding::Union{Tile{T, S}, Nothing}=nothing) where {T, S}
-        Tile{T, S}()
-    end
+@intrinsic load_ptr_tko(ptrs, latency=nothing, mask=nothing, padding=nothing)
+function tfunc(𝕃, ::typeof(Intrinsics.load_ptr_tko), @nospecialize(ptrs), @nospecialize args...)
+    ptrs_type = CC.widenconst(ptrs)
+    ptrs_type <: Tile || return nothing
+    ptr_type = eltype(ptrs_type)
+    ptr_type <: Ptr || return nothing
+    T = eltype(ptr_type)
+    S = ptrs_type.parameters[2]
+    return Tile{T, S}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     cb = ctx.cb
@@ -81,24 +73,12 @@ end
 # TODO: cuda_tile.make_token
 
 # cuda_tile.store_ptr_tko
-@eval Intrinsics begin
-    """
-        store_ptr_tko(ptrs, values, latency, mask=nothing)
-
-    Store values to a tile of pointers.
-    If mask is provided, masked-out positions are not written.
-    Compiled to cuda_tile.store_ptr_tko.
-
-    Note: TMA (allow_tma) is not applicable for pointer-based stores as they
-    support irregular access patterns incompatible with TMA requirements.
-    """
-    @noinline function store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
-                                      latency::Union{Int, Nothing},
-                                      mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
-        donotdelete()
-        nothing
-    end
-end
+@intrinsic store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
+                                   latency::Union{Int, Nothing},
+                                   mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
+tfunc(𝕃, ::typeof(Intrinsics.store_ptr_tko), @nospecialize args...) = Nothing
+efunc(::typeof(Intrinsics.store_ptr_tko), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     cb = ctx.cb
     tt = ctx.tt

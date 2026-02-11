@@ -74,14 +74,20 @@ CC.may_compress(::cuTileInterpreter) = true
 CC.may_discard_trees(::cuTileInterpreter) = false
 
 #=============================================================================
- Custom return-type inference (tfuncs) for intrinsics
+ Custom inference for intrinsics
 =============================================================================#
 
-# Per-intrinsic return type overrides using multiple dispatch.
+# Per-intrinsic return type overrides.
 # Returns nothing when no override applies (fallback).
-# Concrete per-intrinsic methods are defined in intrinsics/ (after the
-# Intrinsics module exists).
-tfunc(@nospecialize(f), argtypes::Vector{Any}) = nothing
+tfunc(𝕃, @nospecialize(f), @nospecialize args...) = nothing
+
+# Per-intrinsic effect overrides.
+# Returns nothing when no override applies (fallback).
+efunc(@nospecialize(f), effects::CC.Effects) = nothing
+
+# Predicate for functions defined in the Intrinsics module.
+# These get NoCallInfo() so they stay as Expr(:call) rather than Expr(:invoke).
+isintrinsic(@nospecialize(f)) = isa(f, Function) && parentmodule(f) === Intrinsics
 
 #=============================================================================
  Subprogram inference for reduce/scan
@@ -172,9 +178,11 @@ end
         result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
             arginfo::CC.ArgInfo, si::CC.StmtInfo, vtypes::Union{CC.VarTable,Nothing},
             sv::CC.InferenceState, max_methods::Int)
-        rt_override = tfunc(f, arginfo.argtypes)
+        is_intr = isintrinsic(f)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, vtypes, sv)
-        rt_override === nothing && subprog === nothing && return result
+        !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
         push!(sv.tasks, function (interp′, sv′)
             isready(result) || return false
@@ -182,8 +190,11 @@ end
             cm = result[]
             sp = subprog !== nothing ? subprog[] : nothing
             rt = rt_override !== nothing ? rt_override : cm.rt
-            info = sp !== nothing ? SubprogramCallInfo(cm.info, sp.info) : cm.info
-            wrapped[] = CC.CallMeta(rt, cm.exct, cm.effects, info, cm.refinements)
+            efunc_override = is_intr ? efunc(f, cm.effects) : nothing
+            effects = efunc_override !== nothing ? efunc_override : cm.effects
+            info = is_intr ? CC.NoCallInfo() : cm.info
+            info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
+            wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
             return true
         end)
         return wrapped
@@ -195,9 +206,11 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
         result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
             arginfo::CC.ArgInfo, si::CC.StmtInfo,
             sv::CC.InferenceState, max_methods::Int)
-        rt_override = tfunc(f, arginfo.argtypes)
+        is_intr = isintrinsic(f)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, nothing, sv)
-        rt_override === nothing && subprog === nothing && return result
+        !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
         push!(sv.tasks, function (interp′, sv′)
             isready(result) || return false
@@ -205,8 +218,11 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
             cm = result[]
             sp = subprog !== nothing ? subprog[] : nothing
             rt = rt_override !== nothing ? rt_override : cm.rt
-            info = sp !== nothing ? SubprogramCallInfo(cm.info, sp.info) : cm.info
-            wrapped[] = CC.CallMeta(rt, cm.exct, cm.effects, info, cm.refinements)
+            efunc_override = is_intr ? efunc(f, cm.effects) : nothing
+            effects = efunc_override !== nothing ? efunc_override : cm.effects
+            info = is_intr ? CC.NoCallInfo() : cm.info
+            info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
+            wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
             return true
         end)
         return wrapped
@@ -219,10 +235,15 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
             arginfo::CC.ArgInfo, si::CC.StmtInfo,
             sv::CC.AbsIntState, max_methods::Int)
         _infer_subprogram(interp, f, arginfo, si, nothing, sv)  # side-effect only
-        rt_override = tfunc(f, arginfo.argtypes)
-        if rt_override !== nothing
-            return CC.CallMeta(rt_override, result.exct, result.effects,
-                               result.info)
+        is_intr = isintrinsic(f)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
+        rt = rt_override !== nothing ? rt_override : result.rt
+        efunc_override = is_intr ? efunc(f, result.effects) : nothing
+        effects = efunc_override !== nothing ? efunc_override : result.effects
+        info = is_intr ? CC.NoCallInfo() : result.info
+        if is_intr || rt_override !== nothing
+            return CC.CallMeta(rt, result.exct, effects, info)
         end
         return result
     end

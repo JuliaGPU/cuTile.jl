@@ -688,6 +688,52 @@ end
                 end
             end
         end
+
+        @testset "float constant addition folds through addf" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check_not "addf"
+                @check "constant <f32: 5"
+                @check "mulf"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    scale = 2.0f0 + 3.0f0
+                    Base.donotdelete(tile .* scale)
+                    return
+                end
+            end
+        end
+
+        @testset "integer constant subtraction folds through subi" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check_not "subi"
+                @check "load_view"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    idx = Int32(5) - Int32(2)
+                    tile = ct.load(a, idx, (16,))
+                    Base.donotdelete(tile)
+                    return
+                end
+            end
+        end
+
+        @testset "float constant multiplication folds through mulf" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check "constant <f32: 6"
+                @check "broadcast"
+                @check "mulf"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    scale = 2.0f0 * 3.0f0
+                    Base.donotdelete(tile .* scale)
+                    return
+                end
+            end
+        end
     end
 end
 

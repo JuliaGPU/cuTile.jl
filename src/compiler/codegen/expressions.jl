@@ -17,7 +17,9 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif expr.head === :foreigncall
         throw(IRError("Foreign calls not supported in Tile IR"))
     elseif expr.head === :boundscheck
-        return nothing
+        # Bounds checking is always disabled in Tile IR kernels.
+        # Emit false so IfOps referencing this SSA can resolve the condition.
+        return emit_constant!(ctx, false, Bool)
     else
         @warn "Unhandled expression head" expr.head expr
         return nothing
@@ -79,9 +81,7 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     func = get_constant(ctx, args[1])
     call_args = args[2:end]
 
-    # TODO: This is normally dynamic dispatch, which we should allow.
-    #       However, we currently trigger this when emitting Julia intrinsics.
-    #       We should switch to our own intrinsics entirely, which are only invoked.
+    # We enter here for dynamic dispatch, but also for all intrinsic functions.
 
     @static if isdefined(Core, :throw_methoderror)
         if func === Core.throw_methoderror

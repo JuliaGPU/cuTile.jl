@@ -1,12 +1,10 @@
 # miscellaneous intrinsics
 
 # cuda_tile.assert
-@eval Intrinsics begin
-    @noinline function assert(cond::Bool, message::String)
-        donotdelete(cond, message)
-        nothing
-    end
-end
+@intrinsic assert(cond::Bool, message::String)
+tfunc(𝕃, ::typeof(Intrinsics.assert), @nospecialize(cond), @nospecialize(message)) = Nothing
+efunc(::typeof(Intrinsics.assert), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assert), args)
     cond = @something emit_value!(ctx, args[1]) throw(IRError("assert: cannot resolve condition"))
     message = @something get_constant(ctx, args[2]) throw(IRError("assert: requires constant message"))
