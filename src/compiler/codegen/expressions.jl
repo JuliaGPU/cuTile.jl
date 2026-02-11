@@ -17,7 +17,9 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif expr.head === :foreigncall
         throw(IRError("Foreign calls not supported in Tile IR"))
     elseif expr.head === :boundscheck
-        return nothing
+        # Bounds checking is always disabled in Tile IR kernels.
+        # Emit false so IfOps referencing this SSA can resolve the condition.
+        return emit_constant!(ctx, false, Bool)
     else
         @warn "Unhandled expression head" expr.head expr
         return nothing

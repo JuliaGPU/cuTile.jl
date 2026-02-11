@@ -1124,14 +1124,10 @@ end
  Literal SSA Statement Handling
 =============================================================================#
 
-@testset "Literal SSA statements" begin
-    # Regression test: when Julia's optimizer constant-folds an SSA statement
-    # (via concrete eval, SROA, constant propagation), the statement becomes a
-    # bare literal value instead of an Expr(:call, ...). emit_statement! must
-    # register a CGVal for these so downstream SSAValue references resolve.
-    #
-    # Strategy: compile a real kernel, replace one Expr with a literal in the
-    # IRCode (simulating constant folding), then verify codegen succeeds.
+@testset "Statement emission edge cases" begin
+    # Regression tests: certain IR statement forms (literal values from constant
+    # folding, :boundscheck expressions from inlined @boundscheck blocks) must
+    # register CGVals so downstream SSAValue references resolve.
 
     spec = ct.ArraySpec{1}(16, true)
 
@@ -1185,5 +1181,50 @@ end
 
     @testset "Int32 nonzero literal" begin
         @test _test_literal_ssa(Int32(42))
+    end
+
+    @testset "Expr(:boundscheck) registers CGVal" begin
+        # Regression test: Expr(:boundscheck) must emit a Bool constant so that
+        # downstream SSAValue references (e.g., IfOp conditions) can resolve.
+        # Previously, emit_expr! returned nothing for :boundscheck, leaving the
+        # SSA slot unregistered and causing "SSAValue not found" crashes.
+        #
+        # Strategy: inject Expr(:boundscheck) at the subi position and replace
+        # the downstream reference with a constant so codegen completes cleanly.
+        argtypes = Tuple{ct.TileArray{Float32,1,spec}}
+        world = Base.get_world_counter()
+        mi = something(
+            ct.method_instance(_literal_test_kernel, argtypes; world,
+                               method_table=ct.cuTileMethodTable),
+            ct.method_instance(_literal_test_kernel, argtypes; world))
+        ir, _ = ct.code_ircode(mi)
+
+        # Replace first subi with Expr(:boundscheck) — simulates inlined @boundscheck
+        idx = _find_intrinsic_call(ir, ct.Intrinsics.subi)
+        @assert idx !== nothing "test setup: could not find subi call in IR"
+        ir.stmts[idx][:stmt] = Expr(:boundscheck)
+        ir.stmts[idx][:type] = Bool
+        # Fix downstream: replace the SSAValue reference to subi with a constant
+        # so the load_view doesn't fail on a Bool argument
+        for i in (idx+1):length(ir.stmts)
+            stmt = ir.stmts[i][:stmt]
+            if stmt isa Expr
+                for (j, arg) in enumerate(stmt.args)
+                    if arg === Core.SSAValue(idx)
+                        stmt.args[j] = Int32(0)
+                    end
+                end
+            end
+        end
+
+        sci = ct.StructuredIRCode(ir)
+        bytecode = ct.write_bytecode!(1) do writer, func_buf
+            ct.emit_kernel!(writer, func_buf, sci, Nothing;
+                name="boundscheck_test",
+                cache=ct.CacheView{ct.CuTileResults}(
+                    (:cuTile, (sm_arch=nothing, opt_level=3,
+                               num_ctas=nothing, occupancy=nothing)), world))
+        end
+        @test length(bytecode) > 0
     end
 end
