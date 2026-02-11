@@ -17,10 +17,6 @@ IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 
-[sources]
-CompilerCaching = {rev = "main", url = "https://github.com/maleadt/CompilerCaching.jl"}
-IRStructurizer = {rev = "main", url = "https://github.com/maleadt/IRStructurizer.jl"}
-
 [extensions]
 CUDAExt = "CUDA"
 DLFP8TypesExt = "DLFP8Types"
