@@ -8,7 +8,7 @@ using CompilerCaching: CacheView, method_instance, results
 
 import Core.Compiler as CC
 
-using CUDA: CuModule, CuFunction, cudacall, device, capability
+using CUDA: CUDA, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
 public launch
@@ -200,5 +200,7 @@ Other values pass through unchanged.
 """
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
+
+include("autotune/autotune.jl")
 
 end
