@@ -152,10 +152,30 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         cache_tensor_view!(ctx, arg_idx)
     end
 
+    # Run alias analysis FIRST
+    alias_result = alias_analysis_pass!(sci)
+    ctx.alias_result = alias_result
+
     # Create memory ordering token
     token_type = Token(tt)
     ctx.token_type = token_type
-    ctx.token = encode_MakeTokenOp!(cb, token_type)
+    root_token = encode_MakeTokenOp!(cb, token_type)
+
+    ctx.global_token = root_token
+    ctx.token = root_token
+
+    # Initialize token map with root token for all alias sets
+    # Default: all tokens start at root
+    ctx.token_map = Dict{TokenKey, Value}()
+
+    unique_alias_sets = Set(values(alias_result))
+    for alias_set in unique_alias_sets
+        ctx.token_map[last_op_key(alias_set)] = root_token
+        ctx.token_map[last_store_key(alias_set)] = root_token
+    end
+
+    # ACQUIRE token also starts at root
+    ctx.token_map[ACQUIRE_TOKEN_KEY] = root_token
 
     # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, ctx.sci.entry)
