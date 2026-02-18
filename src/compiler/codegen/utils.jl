@@ -2,6 +2,38 @@
 #
 # Core types (CGVal, CGCtx) and helper functions for Tile IR code generation.
 
+
+#=============================================================================
+ Alias Analysis Types
+=============================================================================#
+
+"""
+    AliasUniverse
+
+Singleton type representing the universal alias set (everything may alias everything).
+"""
+struct AliasUniverse end
+const ALIAS_UNIVERSE = AliasUniverse()
+
+# Universe behaves specially in set operations
+Base.union(::AliasUniverse, ::AliasUniverse) = ALIAS_UNIVERSE
+Base.union(::AliasUniverse, other) = ALIAS_UNIVERSE
+Base.union(other, ::AliasUniverse) = ALIAS_UNIVERSE
+Base.intersect(::AliasUniverse, other) = other
+Base.intersect(other, ::AliasUniverse) = other
+Base.:(==)(::AliasUniverse, ::AliasUniverse) = true
+Base.:(==)(::AliasUniverse, other) = false
+Base.:(==)(other, ::AliasUniverse) = false
+
+"""
+    AliasSet
+
+Union type representing either a concrete set of values that may alias,
+or the universal alias set (ALIAS_UNIVERSE).
+"""
+const AliasSet = Union{Set{Any}, AliasUniverse}
+
+
 #=============================================================================
  IRError: Exception type for IR compilation errors
 =============================================================================#
@@ -165,7 +197,9 @@ mutable struct CGCtx
     tt::TypeTable
     sci::StructuredIRCode
 
-    # Memory ordering token
+    # Memory ordering token (kept for backward compatibility)
+    tokens::Dict{UInt64, Value}
+    global_token::Union{Value, Nothing}
     token::Union{Value, Nothing}
     token_type::Union{TypeId, Nothing}
 
@@ -177,6 +211,10 @@ mutable struct CGCtx
 
     # Compilation cache (needed for combiner compilation)
     cache::CacheView
+
+    # Alias-aware token system
+    alias_result::Dict{Any, AliasSet}      # From alias analysis
+    token_map::Dict{Any, Value}       # TokenKey -> current token Value
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
@@ -192,8 +230,19 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Any, Tuple{Value, TypeId}}(),
-        cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
+        Dict{Int, Tuple{Value, TypeId}}(),
+        cb,
+        tt,
+        sci,
+        Dict{UInt64, Value}(),           # tokens (old system)
+        nothing,                         # global_token (old system)
+        token,                           # token (old system)
+        token_type,
+        type_cache,
+        sm_arch,
+        cache,
+        Dict{Any, AliasSet}(),           # alias_result
+        Dict{Any, Value}(),         # token_map
     )
 end
 

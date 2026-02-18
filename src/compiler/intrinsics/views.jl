@@ -108,13 +108,36 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
 
-    # Load tile with token
-    tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, pv_arg.v, index_vals;
-                                                 token=ctx.token, optimization_hints)
-    ctx.token = new_token
+    # Get alias set fall back to simple token threading if unknown
+    alias_set = get_alias_set(ctx, args[1])
+
+    if alias_set isa AliasUniverse
+        # Baseline behavior: use global token directly, no alias tracking overhead
+        tile_val, result_token = encode_LoadViewTkoOp!(
+            cb, tile_type, token_type, pv_arg.v, index_vals;
+            token = ctx.token, optimization_hints
+        )
+        ctx.token = result_token
+    else
+        last_store_key_val = last_store_key(alias_set)
+        input_token, _ = get_input_token!(ctx, last_store_key_val, nothing)
+        tile_val, result_token = encode_LoadViewTkoOp!(
+            cb, tile_type, token_type, pv_arg.v, index_vals;
+            token = input_token, optimization_hints
+        )
+        last_op_key_val = last_op_key(alias_set)
+        last_op_token = get(ctx.token_map, last_op_key_val, result_token)
+        # Only join if last_op_token is not already in the causal chain of result_token.
+        # result_token was produced from input_token, so if last_op_token === input_token
+        # the join is redundant — result_token already implies last_op_token.
+        new_last_op_token = last_op_token === input_token ? result_token :
+            encode_JoinTokensOp!(ctx.cb, token_type, [last_op_token, result_token])
+        ctx.token_map[last_op_key_val] = new_last_op_token
+        # Do NOT update ctx.token — alias-aware path uses token_map only.
+    end
 
     julia_shape = ColMajorShape(tile_shape)
-    CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
+    return CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
 end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
@@ -414,11 +437,28 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
 
-    # Store tile with token
+    # Get alias set — fall back to simple token threading if unknown
+    alias_set = get_alias_set(ctx, args[1])
     token_type = Token(tt)
-    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, pv_arg.v, index_vals;
-                                        token=ctx.token, optimization_hints)
-    ctx.token = new_token
 
-    nothing
+    if alias_set isa AliasUniverse
+        result_token = encode_StoreViewTkoOp!(
+            cb, token_type, tile_val, pv_arg.v, index_vals;
+            token = ctx.token, optimization_hints
+        )
+        ctx.token = result_token
+    else
+        last_op_key_val = last_op_key(alias_set)
+        last_store_key_val = last_store_key(alias_set)
+        input_token, _ = get_input_token!(ctx, last_op_key_val, nothing)
+        result_token = encode_StoreViewTkoOp!(
+            cb, token_type, tile_val, pv_arg.v, index_vals;
+            token = input_token, optimization_hints
+        )
+        ctx.token_map[last_op_key_val] = result_token
+        ctx.token_map[last_store_key_val] = result_token
+        # Do NOT update ctx.token — alias-aware path uses token_map only.
+    end
+
+    return nothing
 end

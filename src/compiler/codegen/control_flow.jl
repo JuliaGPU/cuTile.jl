@@ -88,10 +88,14 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
     # Save token before branches
     token_before = ctx.token
 
+    # Save token_map before branches
+    token_map_before = copy(ctx.token_map)
+
     # Emit IfOp with callback-based region building
     then_body = function(_)
         saved_block_args = copy(ctx.block_args)
         ctx.token = token_before  # Reset to pre-branch token
+        ctx.token_map = copy(token_map_before)  # Reset token_map too
         emit_block!(ctx, then_blk)
         if then_blk.terminator === nothing
             encode_YieldOp!(ctx.cb, [ctx.token])
@@ -102,6 +106,7 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
     else_body = function(_)
         saved_block_args = copy(ctx.block_args)
         ctx.token = token_before  # Reset to pre-branch token
+        ctx.token_map = copy(token_map_before)  # Reset token_map too
         emit_block!(ctx, else_blk)
         if else_blk.terminator === nothing
             encode_YieldOp!(ctx.cb, [ctx.token])
@@ -113,6 +118,12 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
 
     # Last result is the merged token from both branches
     ctx.token = results[end]
+
+    # Merge token_map from both branches
+    # Conservatively reset to token_before for all keys
+    for key in keys(ctx.token_map)
+        ctx.token_map[key] = results[end]
+    end
 
     # Store results at IfOp's SSA index (may be empty for void-returning ifs)
     ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
@@ -164,6 +175,9 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     # Number of user result types (excluding token)
     n_user_results = n_carries
 
+    # Save token_map before loop
+    token_map_before = copy(ctx.token_map)
+
     # Emit ForOp with callback-based region building
     body_builder = function(block_args)
         saved_block_args = copy(ctx.block_args)
@@ -193,8 +207,11 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     end
     results = encode_ForOp!(body_builder, cb, result_types, iv_type, lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
-    # Last result is the token
-    ctx.token = results[end]
+    ctx.token = ctx.global_token
+
+    for key in keys(token_map_before)
+        ctx.token_map[key] = ctx.global_token
+    end
 
     # Store results at the loop's SSA index (may be empty for void-returning loops)
     ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
@@ -230,6 +247,9 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     # Number of user result types (excluding token)
     n_user_results = n_carries
 
+    # Save token_map before loop
+    token_map_before = copy(ctx.token_map)
+
     # Emit LoopOp with callback-based region building
     body_builder = function(block_args)
         saved_block_args = copy(ctx.block_args)
@@ -263,8 +283,11 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
-    # Last result is the token
-    ctx.token = results[end]
+    ctx.token = ctx.global_token
+
+    for key in keys(token_map_before)
+        ctx.token_map[key] = ctx.global_token
+    end
 
     # Store results at the loop's SSA index (may be empty for void-returning loops)
     ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
@@ -300,6 +323,9 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
 
     # Number of user result types (excluding token)
     n_user_results = n_carries
+
+    # Save token_map before loop
+    token_map_before = copy(ctx.token_map)
 
     # Emit WhileOp as cuda_tile.loop with conditional break pattern
     # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
@@ -393,8 +419,11 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
-    # Last result is the token
-    ctx.token = results[end]
+    ctx.token = ctx.global_token
+
+    for key in keys(token_map_before)
+        ctx.token_map[key] = ctx.global_token
+    end
 
     # Store results at the loop's SSA index (may be empty for void-returning loops)
     ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
