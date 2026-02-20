@@ -310,6 +310,8 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         return tile_type!(tt, I64(tt), Int[])
     elseif T === Float16
         return tile_type!(tt, F16(tt), Int[])
+    elseif T === BFloat16
+        return tile_type!(tt, BF16(tt), Int[])
     elseif T === Float32
         return tile_type!(tt, F32(tt), Int[])
     elseif T === Float64
