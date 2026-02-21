@@ -453,6 +453,59 @@ function emit_terminator!(ctx::CGCtx, ::ConditionOp)
     # ConditionOp is handled specially by emit_while_op!, not emitted as a terminator
 end
 
+#=============================================================================
+ Early Return Hoisting
+
+ tileiras rejects ReturnNode (cuda_tile.return) inside IfOp (cuda_tile.if)
+ regions. This pre-pass rewrites the structured IR so that ReturnNode only
+ appears at the top level, replacing nested returns with YieldOp.
+=============================================================================#
+
+"""
+    hoist_returns!(block::Block)
+
+Rewrite `ReturnNode` terminators inside `IfOp` regions into `YieldOp`,
+hoisting the return to the parent block. Operates recursively so that
+nested early returns (multiple successive `if ... return end` patterns)
+are handled automatically.
+
+Only handles the case where BOTH branches of an IfOp terminate with
+ReturnNode (REGION_TERMINATION with 3 children). The 2-child case
+(early return inside a loop) is not handled.
+"""
+function hoist_returns!(block::Block)
+    # First, recurse into all nested control flow ops
+    for (_, entry) in block.body
+        stmt = entry.stmt
+        if stmt isa IfOp
+            hoist_returns!(stmt.then_region)
+            hoist_returns!(stmt.else_region)
+        elseif stmt isa ForOp
+            hoist_returns!(stmt.body)
+        elseif stmt isa WhileOp
+            hoist_returns!(stmt.before)
+            hoist_returns!(stmt.after)
+        elseif stmt isa LoopOp
+            hoist_returns!(stmt.body)
+        end
+    end
+
+    # Now check: does this block contain an IfOp where both branches return?
+    # If so, replace branch ReturnNodes with YieldOp and set block terminator.
+    for (_, entry) in block.body
+        entry.stmt isa IfOp || continue
+        op = entry.stmt::IfOp
+        op.then_region.terminator isa ReturnNode || continue
+        op.else_region.terminator isa ReturnNode || continue
+
+        # Both branches return — hoist to parent block.
+        # Replace branch terminators with YieldOp (void — no values to yield).
+        op.then_region.terminator = YieldOp()
+        op.else_region.terminator = YieldOp()
+        block.terminator = ReturnNode(nothing)
+    end
+end
+
 """
     emit_getfield!(ctx, args) -> Union{CGVal, Nothing}
 
