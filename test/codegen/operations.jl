@@ -1529,6 +1529,21 @@
             end
         end
 
+        @testset "TileArray scalar getindex" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do lengths, out
+                    bid = ct.bid(1)
+                    @check "make_partition_view"
+                    @check "load_view_tko"
+                    @check "reshape"
+                    len = lengths[bid]
+                    ct.store(out, bid, ct.broadcast_to(ct.Tile(len), (16,)))
+                    return
+                end
+            end
+        end
+
         @testset "num_tiles helper" begin
             spec = ct.ArraySpec{2}(16, true)
             @test @filecheck begin
