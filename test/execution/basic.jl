@@ -1065,3 +1065,39 @@ end
     ct.launch(kernel!, 1)
 end
 
+@testset "scalar indexing as loop bound" begin
+    function scalar_index_loop_kernel(data::ct.TileArray{Float32,1},
+                                      lengths::ct.TileArray{Int32,1},
+                                      out::ct.TileArray{Float32,1})
+        bid = ct.bid(1)
+        len = lengths[bid]
+        acc = ct.zeros((16,), Float32)
+        j = Int32(1)
+        while j <= len
+            tile = ct.load(data, j, (16,))
+            acc = acc .+ tile
+            j += Int32(1)
+        end
+        ct.store(out, bid, acc)
+        return
+    end
+
+    # 3 blocks, each sums a different number of tiles
+    n_tiles = Int32[2, 3, 1]
+    data = CUDA.rand(Float32, 48)  # 3 tiles of 16
+    lengths = CuArray(n_tiles)
+    out = CUDA.zeros(Float32, 48)
+
+    ct.launch(scalar_index_loop_kernel, 3, data, lengths, out)
+
+    data_cpu = Array(data)
+    out_cpu = Array(out)
+    for bid in 1:3
+        expected = zeros(Float32, 16)
+        for j in 1:n_tiles[bid]
+            expected .+= data_cpu[(j-1)*16+1 : j*16]
+        end
+        @test out_cpu[(bid-1)*16+1 : bid*16] ≈ expected
+    end
+end
+
