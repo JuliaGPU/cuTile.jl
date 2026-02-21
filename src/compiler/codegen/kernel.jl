@@ -157,6 +157,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     ctx.token_type = token_type
     ctx.token = encode_MakeTokenOp!(cb, token_type)
 
+    # Hoist early returns out of IfOp regions (tileiras rejects ReturnOp inside IfOp)
+    hoist_returns!(ctx.sci.entry)
+
     # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, ctx.sci.entry)
 

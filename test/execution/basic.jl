@@ -1065,3 +1065,67 @@ end
     ct.launch(kernel!, 1)
 end
 
+@testset "early return — taken" begin
+    function early_return_skip(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, flag::Int32)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        if flag == Int32(0)
+            return nothing
+        end
+        ct.store(b, pid, tile .* 2.0f0)
+        return nothing
+    end
+
+    a = CUDA.rand(Float32, 64)
+    b = CUDA.zeros(Float32, 64)
+    ct.launch(early_return_skip, 4, a, b, Int32(0))
+    @test all(Array(b) .== 0.0f0)
+end
+
+@testset "early return — not taken" begin
+    function early_return_store(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, flag::Int32)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        if flag == Int32(0)
+            return nothing
+        end
+        ct.store(b, pid, tile .* 2.0f0)
+        return nothing
+    end
+
+    a = CUDA.rand(Float32, 64)
+    b = CUDA.zeros(Float32, 64)
+    ct.launch(early_return_store, 4, a, b, Int32(1))
+    @test Array(b) ≈ Array(a) .* 2.0f0
+end
+
+@testset "multiple early returns" begin
+    function multi_early_return(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                flag1::Int32, flag2::Int32)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        if flag1 == Int32(0)
+            return nothing
+        end
+        if flag2 == Int32(0)
+            return nothing
+        end
+        ct.store(b, pid, tile .* 2.0f0)
+        return nothing
+    end
+
+    a = CUDA.rand(Float32, 64)
+
+    b1 = CUDA.zeros(Float32, 64)
+    ct.launch(multi_early_return, 4, a, b1, Int32(1), Int32(1))
+    @test Array(b1) ≈ Array(a) .* 2.0f0
+
+    b2 = CUDA.zeros(Float32, 64)
+    ct.launch(multi_early_return, 4, a, b2, Int32(0), Int32(1))
+    @test all(Array(b2) .== 0.0f0)
+
+    b3 = CUDA.zeros(Float32, 64)
+    ct.launch(multi_early_return, 4, a, b3, Int32(1), Int32(0))
+    @test all(Array(b3) .== 0.0f0)
+end
+
