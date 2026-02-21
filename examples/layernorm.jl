@@ -45,7 +45,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
         # Mask for valid elements
-        mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N) .+ ct.arange((TILE_N,), Int32)) .<= N, (1, TILE_N))
+        mask = reshape(((j - Int32(1)) * Int32(TILE_N) .+ ct.arange((TILE_N,), Int32)) .<= N, (1, TILE_N))
         centered_tx = ifelse.(mask, tx .- mean, 0.0f0)
         var = var .+ (centered_tx .^ 2.0f0)
         j += Int32(1)
@@ -96,7 +96,7 @@ bid_m and j are 1-indexed (block ID and tile index).
     indices = ct.arange((TILE_N,), Int32)
     offset = (j - Int32(1)) * Int32(TILE_N)
     global_indices = offset .+ indices
-    mask = ct.broadcast_to(global_indices .<= N, (1, TILE_N))
+    mask = reshape(global_indices .<= N, (1, TILE_N))
 
     xhat_masked = ifelse.(mask, xhat, 0.0f0)
     wdy_masked = ifelse.(mask, wdy, 0.0f0)

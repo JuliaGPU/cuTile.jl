@@ -191,6 +191,27 @@ end
     end
 end
 
+@testset "1D-to-2D broadcast: (64,) .+ (64, 128)" begin
+    function broadcast_1d_2d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,2},
+                                     c::ct.TileArray{Float32,2})
+        col = ct.load(a, 1, (64,))           # 1D: (64,)
+        tile = ct.load(b, (1, 1), (64, 128))  # 2D: (64, 128)
+        result = col .+ tile                   # broadcast (64,) → (64, 1) → (64, 128)
+        ct.store(c, (1, 1), result)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m)
+    b = CUDA.rand(Float32, m, n)
+    c = CUDA.zeros(Float32, m, n)
+
+    ct.launch(broadcast_1d_2d_kernel, 1, a, b, c)
+
+    expected = Array(a) .+ Array(b)  # Julia: (64,) broadcasts along dim 1
+    @test Array(c) ≈ expected
+end
+
 end
 
 @testset "comparison operations" begin

@@ -63,7 +63,7 @@ end
 """
     broadcast_tile_to_shape!(cb, tt, tv::CGVal, target_shape::Vector{Int}, dtype::TypeId) -> Value
 
-Broadcast a tile to a target shape by inserting ReshapeOp (for leading 1s) and BroadcastOp.
+Broadcast a tile to a target shape by inserting ReshapeOp (for trailing 1s) and BroadcastOp.
 Returns the value after broadcasting, or the original value if shapes already match.
 """
 function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
@@ -78,11 +78,11 @@ function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
     current_val = tv.v
     current_shape = src_shape
 
-    # Step 1: Add leading 1s via ReshapeOp if needed (dimension mismatch)
+    # Step 1: Add trailing 1s via ReshapeOp if needed (dimension mismatch)
+    # Follows Julia convention: (n,) pads to (n, 1) — first dimension aligns.
     if length(current_shape) < length(target_shape)
-        # Prepend 1s to match target ndim
         n_extra = length(target_shape) - length(current_shape)
-        new_shape = vcat(fill(1, n_extra), current_shape)
+        new_shape = vcat(current_shape, fill(1, n_extra))
         reshaped_type = tile_type!(tt, dtype, new_shape)
         current_val = encode_ReshapeOp!(cb, reshaped_type, current_val)
         current_shape = new_shape
