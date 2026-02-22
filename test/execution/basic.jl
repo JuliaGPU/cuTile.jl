@@ -1065,3 +1065,36 @@ end
     ct.launch(kernel!, 1)
 end
 
+@testset "non-Constant ghost type argument (nothing)" begin
+    function ghost_nothing_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Nothing)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ghost_nothing_kernel, cld(n, 16), a, b, nothing)
+
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "non-Constant ghost type argument (Val)" begin
+    function ghost_val_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Val{n}) where n
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (n,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ghost_val_kernel, cld(n, 16), a, b, Val(16))
+
+    @test Array(b) ≈ Array(a)
+end
