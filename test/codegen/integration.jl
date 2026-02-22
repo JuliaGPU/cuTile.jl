@@ -1127,7 +1127,7 @@ end
 @testset "Non-Constant Ghost Type Arguments" begin
     spec = ct.ArraySpec{1}(16, true)
 
-    @testset "Nothing argument is skipped" begin
+    @testset "Nothing argument" begin
         @test @filecheck begin
             @check_label "entry"
             @check "load_view_tko"
@@ -1141,26 +1141,12 @@ end
         end
     end
 
-    @testset "Val argument is skipped" begin
+    @testset "Val argument" begin
         @test @filecheck begin
             @check_label "entry"
             @check "load_view_tko"
             @check "store_view_tko"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Val{16}}) do a, b, _
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (16,))
-                ct.store(b, pid, tile)
-                return
-            end
-        end
-    end
-
-    @testset "Type argument is skipped" begin
-        @test @filecheck begin
-            @check_label "entry"
-            @check "load_view_tko"
-            @check "store_view_tko"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Type{Float32}}) do a, b, _
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 ct.store(b, pid, tile)

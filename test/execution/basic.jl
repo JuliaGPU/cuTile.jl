@@ -1098,20 +1098,3 @@ end
 
     @test Array(b) ≈ Array(a)
 end
-
-@testset "non-Constant ghost type argument (Type)" begin
-    function ghost_type_kernel(a::ct.TileArray{Float16,1}, b::ct.TileArray{Float32,1}, ::Type{T}) where T
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, convert(ct.Tile{T}, tile))
-        return
-    end
-
-    n = 256
-    a = CUDA.rand(Float16, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(ghost_type_kernel, cld(n, 16), a, b, Float32)
-
-    @test Array(b) ≈ Float32.(Array(a))
-end

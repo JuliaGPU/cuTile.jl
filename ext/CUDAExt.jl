@@ -113,8 +113,7 @@ function cuTile.launch(@nospecialize(f), grid, args...;
 
     # Unwrap Constant{T,V} → T for MI lookup (kernel sees plain types)
     unwrapped_types = map(tile_args) do arg
-        arg isa Constant ? constant_eltype(typeof(arg)) :
-        arg isa Type ? Type{arg} : typeof(arg)
+        arg isa Constant ? constant_eltype(typeof(arg)) : typeof(arg)
     end
     argtypes = Tuple{unwrapped_types...}
 
