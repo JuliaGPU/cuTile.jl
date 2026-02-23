@@ -166,6 +166,24 @@ for (op, intrinsic) in _ATOMIC_RMW_OPS
                                    memory_scope::Int=MemScope.Device) where {T}
         $fname(array, (indices,), val; memory_order, memory_scope)
     end
+
+    # Tile-space: N-D tuple index + tile value (like store)
+    @eval @inline function $fname(array::TileArray{T, N},
+                                   index::NTuple{N, Integer}, tile::Tile{T};
+                                   memory_order::Int=MemoryOrder.AcqRel,
+                                   memory_scope::Int=MemScope.Device) where {T, N}
+        reshaped = _reshape_to_rank(tile, Val(N))
+        ptr_tile, mask = _tile_space_ptrs_mask(array, index, Val(size(reshaped)))
+        Intrinsics.$intrinsic(ptr_tile, reshaped, mask, memory_order, memory_scope)
+    end
+
+    # Tile-space: 1D convenience (scalar index)
+    @eval @inline function $fname(array::TileArray{T, 1},
+                                   index::Integer, tile::Tile{T};
+                                   memory_order::Int=MemoryOrder.AcqRel,
+                                   memory_scope::Int=MemScope.Device) where {T}
+        $fname(array, (index,), tile; memory_order, memory_scope)
+    end
 end
 
 # --- CAS operations (separate due to different signature) ---
@@ -209,4 +227,62 @@ end
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
     atomic_cas(array, (indices,), expected, desired; memory_order, memory_scope)
+end
+
+# ============================================================================
+# Tile-space atomic operations
+# These accept tile-space integer indices (like store) to atomically operate
+# on contiguous tile-shaped blocks of an array.
+# ============================================================================
+
+# --- Pointer/mask helper for tile-space indexing ---
+
+@inline function _tile_space_ptrs_mask(array::TileArray{T, N},
+                                        index::NTuple{N, Integer},
+                                        ::Val{Shape}) where {T, N, Shape}
+    # Build per-dimension element index tiles (1-indexed)
+    # For dim d: arange [1..Shape[d]], reshaped for N-D broadcasting, plus base offset
+    idx_tiles = ntuple(Val(N)) do d
+        bcast_shape = ntuple(i -> i == d ? Shape[d] : 1, Val(N))
+        base = Int32((index[d] - 1) * Shape[d])
+        reshape(arange((Shape[d],), Int32), bcast_shape) .+ Tile(base)
+    end
+
+    # 0-indexed linear offset: sum((idx[d] - 1) * stride[d])
+    linear_idx = reduce(.+, ntuple(Val(N)) do d
+        (idx_tiles[d] .- Tile(Int32(1))) .* Tile(array.strides[d])
+    end)
+
+    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+
+    # Bounds mask: 1 <= idx[d] <= size(array, d) for all d
+    mask = reduce(.&, ntuple(Val(N)) do d
+        (idx_tiles[d] .>= Tile(Int32(1))) .& (idx_tiles[d] .<= Tile(size(array, d)))
+    end)
+
+    (ptr_tile, mask)
+end
+
+# --- Tile-space CAS ---
+
+# N-D tuple index
+@inline function atomic_cas(array::TileArray{T, N},
+                            index::NTuple{N, Integer},
+                            expected::Tile{T}, desired::Tile{T};
+                            memory_order::Int=MemoryOrder.AcqRel,
+                            memory_scope::Int=MemScope.Device) where {T, N}
+    expected_r = _reshape_to_rank(expected, Val(N))
+    desired_r = _reshape_to_rank(desired, Val(N))
+    ptr_tile, mask = _tile_space_ptrs_mask(array, index, Val(size(expected_r)))
+    Intrinsics.atomic_cas_tile(ptr_tile, expected_r, desired_r, mask,
+                               memory_order, memory_scope)
+end
+
+# 1D convenience
+@inline function atomic_cas(array::TileArray{T, 1},
+                            index::Integer,
+                            expected::Tile{T}, desired::Tile{T};
+                            memory_order::Int=MemoryOrder.AcqRel,
+                            memory_scope::Int=MemScope.Device) where {T}
+    atomic_cas(array, (index,), expected, desired; memory_order, memory_scope)
 end
