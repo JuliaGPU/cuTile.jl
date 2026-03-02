@@ -1384,6 +1384,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
                     bid = ct.bid(1)
+                    @check "offset"
                     @check "atomic_cas_tko"
                     old = ct.atomic_cas(locks, bid, Int32(0), Int32(1);
                                         memory_order=ct.MemoryOrder.Acquire)
@@ -1399,6 +1400,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
                     bid = ct.bid(1)
+                    @check "offset"
                     @check "atomic_rmw_tko"
                     ct.atomic_xchg(locks, bid, Int32(0);
                                   memory_order=ct.MemoryOrder.Release)
@@ -1412,6 +1414,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do counters
                     bid = ct.bid(1)
+                    @check "offset"
                     @check "atomic_rmw_tko"
                     ct.atomic_add(counters, bid, 1.0f0)
                     return
