@@ -428,6 +428,21 @@
             end
         end
 
+        @testset "constant with runtime value" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, val
+                    pid = ct.bid(1)
+                    @check "itof"
+                    @check "reshape"
+                    @check "broadcast"
+                    tile = ct.full((16,), val, Float32)
+                    ct.store(a, pid, tile)
+                    return
+                end
+            end
+        end
+
         @testset "get_num_tile_blocks" begin
             @test @filecheck begin
                 @check_label "entry"
@@ -1524,6 +1539,21 @@
                     tile = ct.load(a, (pid, 1), (16,))
                     @check "store_view_tko"
                     ct.store(b, (pid, 1), tile)
+                    return
+                end
+            end
+        end
+
+        @testset "TileArray scalar getindex" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do lengths, out
+                    bid = ct.bid(1)
+                    @check "make_partition_view"
+                    @check "load_view_tko"
+                    @check "reshape"
+                    len = lengths[bid]
+                    ct.store(out, bid, ct.broadcast_to(ct.Tile(len), (16,)))
                     return
                 end
             end

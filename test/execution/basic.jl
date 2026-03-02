@@ -1058,11 +1058,100 @@ const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
     @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
 end
 
+@testset "full with runtime value" begin
+    function full_runtime_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        # Load a single-element tile to get a runtime scalar
+        val = ct.load(src, 1, (1,))
+        pid = ct.bid(1)
+        tile = ct.full((16,), val, Float32)
+        ct.store(dst, pid, tile)
+        return
+    end
+
+    n = 1024
+    src = CUDA.fill(3.14f0, 1)
+    dst = CUDA.zeros(Float32, n)
+
+    ct.launch(full_runtime_kernel, cld(n, 16), src, dst)
+
+    @test all(Array(dst) .≈ 3.14f0)
+end
+
 @testset "kernel name with !" begin
     function kernel!()
         return
     end
     ct.launch(kernel!, 1)
+end
+
+@testset "non-Constant ghost type argument (nothing)" begin
+    function ghost_nothing_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Nothing)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ghost_nothing_kernel, cld(n, 16), a, b, nothing)
+
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "non-Constant ghost type argument (Val)" begin
+    function ghost_val_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Val{n}) where n
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (n,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ghost_val_kernel, cld(n, 16), a, b, Val(16))
+
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "scalar indexing as loop bound" begin
+    function scalar_index_loop_kernel(data::ct.TileArray{Float32,1},
+                                      lengths::ct.TileArray{Int32,1},
+                                      out::ct.TileArray{Float32,1})
+        bid = ct.bid(1)
+        len = lengths[bid]
+        acc = ct.zeros((16,), Float32)
+        j = Int32(1)
+        while j <= len
+            tile = ct.load(data, j, (16,))
+            acc = acc .+ tile
+            j += Int32(1)
+        end
+        ct.store(out, bid, acc)
+        return
+    end
+
+    # 3 blocks, each sums a different number of tiles
+    n_tiles = Int32[2, 3, 1]
+    data = CUDA.rand(Float32, 48)  # 3 tiles of 16
+    lengths = CuArray(n_tiles)
+    out = CUDA.zeros(Float32, 48)
+
+    ct.launch(scalar_index_loop_kernel, 3, data, lengths, out)
+
+    data_cpu = Array(data)
+    out_cpu = Array(out)
+    for bid in 1:3
+        expected = zeros(Float32, 16)
+        for j in 1:n_tiles[bid]
+            expected .+= data_cpu[(j-1)*16+1 : j*16]
+        end
+        @test out_cpu[(bid-1)*16+1 : bid*16] ≈ expected
+    end
 end
 
 @testset "early return — taken" begin
@@ -1128,4 +1217,3 @@ end
     ct.launch(multi_early_return, 4, a, b3, Int32(1), Int32(0))
     @test all(Array(b3) .== 0.0f0)
 end
-

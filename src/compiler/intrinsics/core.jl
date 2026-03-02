@@ -181,18 +181,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "full")
 
-    # Extract value
-    value = @something get_constant(ctx, args[2]) throw(IRError("full() value must be a compile-time constant"))
-
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
-    # Create constant directly at target shape
-    value_bytes = constant_to_bytes(value, elem_type)
-    result = encode_ConstantOp!(cb, tile_type, value_bytes)
+    tv = emit_value!(ctx, args[2])
+    tv === nothing && throw(IRError("full() value must be a constant or a runtime scalar"))
+    if tv.constant !== nothing
+        # Compile-time constant: use ConstantOp directly
+        value_bytes = constant_to_bytes(something(tv.constant), elem_type)
+        result = encode_ConstantOp!(cb, tile_type, value_bytes)
+    else
+        # Runtime value: broadcast 0D tile to the target shape
+        result = broadcast_tile_to_shape!(cb, tt, tv, tile_shape, dtype)
+    end
 
     CGVal(result, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end

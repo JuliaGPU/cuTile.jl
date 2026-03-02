@@ -135,7 +135,7 @@ end
 @overlay function Base.getindex(arr::TileArray{T, N}, indices::Vararg{Integer, N}) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     shape = ntuple(_ -> 1, Val(N))
-    pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
+    pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     tile = Intrinsics.load_partition_view(pv, nothing, true, promote(indices...) .- One())
     Intrinsics.to_scalar(reshape(tile, ()))
 end
@@ -434,8 +434,10 @@ Create a tile filled with a constant value.
 ones_tile = ct.full((32, 32), 1.0f0, Float32)
 ```
 """
+@inline full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T} =
+    Intrinsics.constant(shape, convert(Tile{T}, value), T)
 @inline full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T} =
-    Intrinsics.constant(shape, value, T)
+    Intrinsics.constant(shape, Tile(T(value)), T)
 
 """
     zeros(shape::NTuple{N, Int}, dtype::Type{T}) -> Tile{T, shape}

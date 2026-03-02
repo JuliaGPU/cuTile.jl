@@ -261,19 +261,23 @@ end
     end
 
     @testset "nested spinloop captures correct outer variable (regression test)" begin
-        # This test catches a bug where nested while loops inside for loops
-        # capture the for loop's induction variable instead of the correct outer variable.
-        # The bug: spinloop uses loopIdx for atomic_cas instead of group_bid_m, causing hangs.
+        # Regression test: nested while loops inside for loops must use the correct
+        # outer variable (group_bid_m) for atomic_cas, not the for loop's induction
+        # variable (%loopIdx).
         #
-        # The inner loop should capture %iterArg0 (group_bid_m), NOT %loopIdx.
-        # Bug produces: loop iter_values(%arg9 = %loopIdx, ...)
-        # Correct:      loop iter_values(%arg9 = %iterArg0, ...)
+        # IRStructurizer threads %loopIdx through the inner loop as an invariant carry,
+        # so it appears in iter_values — but the atomic address must still be derived
+        # from group_bid_m (an SSA value defined before the for loop), not from %loopIdx.
         spec = ct.ArraySpec{2}(16, true)
         spec1d = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
-            # The inner loop must NOT capture %loopIdx - it should capture %iterArg0
-            # Bug: "loop iter_values(%arg9 = %loopIdx"
-            @check_not "iter_values({{.*}}= %loopIdx"
+            @check "for %loopIdx in"
+            @check "loop iter_values"
+            # Between the inner loop header and atomic_cas, the address must NOT
+            # be derived from %loopIdx (the for loop's IV). If the bug reappears,
+            # offset would use %loopIdx instead of group_bid_m.
+            @check_not "offset {{.*}}%loopIdx"
+            @check "atomic_cas_tko"
             ct.code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                                Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(1)
@@ -1115,6 +1119,42 @@ end
                 indices = ct.arange((16,), Int32)
                 ct.scatter(b, indices, tile; latency=5)
                 return nothing
+            end
+        end
+    end
+end
+
+#=============================================================================
+ Ghost Type Arguments
+=============================================================================#
+
+@testset "Non-Constant Ghost Type Arguments" begin
+    spec = ct.ArraySpec{1}(16, true)
+
+    @testset "Nothing argument" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "load_view_tko"
+            @check "store_view_tko"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Nothing}) do a, b, _
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                ct.store(b, pid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "Val argument" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "load_view_tko"
+            @check "store_view_tko"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Val{16}}) do a, b, _
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                ct.store(b, pid, tile)
+                return
             end
         end
     end

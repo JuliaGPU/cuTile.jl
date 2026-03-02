@@ -29,6 +29,11 @@ def batchmatmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int
         b = ct.load(B, index=(pid_batch, k, bidy), shape=(1, tk, tn), padding_mode=zero_pad)
         b = ct.reshape(b, (tk, tn))
 
+        # Convert to TF32 for tensor cores (Float32 inputs only)
+        if A.dtype == ct.float32:
+            a = ct.astype(a, ct.tfloat32)
+            b = ct.astype(b, ct.tfloat32)
+
         accumulator = ct.mma(a, b, acc=accumulator)
 
     result = ct.astype(accumulator, C.dtype)
@@ -61,7 +66,7 @@ def prepare(*, benchmark: bool = False, Batch: int = None, M: int = None, K: int
     }
 
 
-def run(data, *, tm: int = 64, tn: int = 64, tk: int = 64, nruns: int = 1, warmup: int = 0):
+def run(data, *, tm: int = 128, tn: int = 128, tk: int = 64, nruns: int = 1, warmup: int = 0):
     """Run batch matmul kernel with timing."""
     A, B, C = data["A"], data["B"], data["C"]
     Batch, M, N = data["Batch"], data["M"], data["N"]

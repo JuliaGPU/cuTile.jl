@@ -74,7 +74,7 @@ function prepare(; benchmark::Bool=false,
     )
 end
 
-function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int=0)
+function run(data; tm::Int=128, tn::Int=128, tk::Int=64, nruns::Int=1, warmup::Int=0)
     (; A, B, C, M, N, Batch) = data
     grid = (cld(M, tm), cld(N, tn), Batch)
 

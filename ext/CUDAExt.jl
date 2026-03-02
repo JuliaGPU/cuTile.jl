@@ -2,7 +2,7 @@ module CUDAExt
 
 using cuTile
 using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code, sanitize_name,
-              constant_eltype, constant_value
+              constant_eltype, constant_value, is_ghost_type
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -187,9 +187,8 @@ return their fields in order.
 
 This is used by the launch helper to splat arguments to cudacall.
 """
-flatten(x) = (x,)
+flatten(x) = is_ghost_type(typeof(x)) ? () : (x,)
 flatten(arr::TileArray{T, N}) where {T, N} = (arr.ptr, arr.sizes..., arr.strides...)
-flatten(::Constant) = ()  # Ghost types are not passed to cudacall
 
 """
     to_tile_arg(x)
