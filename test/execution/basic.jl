@@ -1058,6 +1058,25 @@ const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
     @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
 end
 
+@testset "full with runtime value" begin
+    function full_runtime_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        # Load a single-element tile to get a runtime scalar
+        val = ct.load(src, 1, (1,))
+        pid = ct.bid(1)
+        tile = ct.full((16,), val, Float32)
+        ct.store(dst, pid, tile)
+        return
+    end
+
+    n = 1024
+    src = CUDA.fill(3.14f0, 1)
+    dst = CUDA.zeros(Float32, n)
+
+    ct.launch(full_runtime_kernel, cld(n, 16), src, dst)
+
+    @test all(Array(dst) .≈ 3.14f0)
+end
+
 @testset "kernel name with !" begin
     function kernel!()
         return

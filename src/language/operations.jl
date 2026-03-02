@@ -434,8 +434,10 @@ Create a tile filled with a constant value.
 ones_tile = ct.full((32, 32), 1.0f0, Float32)
 ```
 """
+@inline full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T} =
+    Intrinsics.constant(shape, convert(Tile{T}, value), T)
 @inline full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T} =
-    Intrinsics.constant(shape, value, T)
+    Intrinsics.constant(shape, Tile(T(value)), T)
 
 """
     zeros(shape::NTuple{N, Int}, dtype::Type{T}) -> Tile{T, shape}

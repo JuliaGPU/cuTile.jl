@@ -428,6 +428,21 @@
             end
         end
 
+        @testset "constant with runtime value" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, val
+                    pid = ct.bid(1)
+                    @check "itof"
+                    @check "reshape"
+                    @check "broadcast"
+                    tile = ct.full((16,), val, Float32)
+                    ct.store(a, pid, tile)
+                    return
+                end
+            end
+        end
+
         @testset "get_num_tile_blocks" begin
             @test @filecheck begin
                 @check_label "entry"
