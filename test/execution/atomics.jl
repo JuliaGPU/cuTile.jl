@@ -166,6 +166,289 @@ end
     @test result == n_blocks
 end
 
+# ============================================================================
+# Tile-indexed atomic operations (scatter-gather style indexing)
+# ============================================================================
+
+@testset "atomic_add tile-indexed 1D" begin
+    function atomic_add_tile_kernel(arr::ct.TileArray{Int,1}, TILE::Int)
+        bid = ct.bid(1)
+        base = (bid - 1) * TILE
+        indices = base .+ ct.arange((TILE,), Int)
+        ct.atomic_add(arr, indices, 1;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    tile_size = 16
+    n = 256
+    n_blocks = div(n, tile_size)
+    arr = CUDA.zeros(Int, n)
+
+    ct.launch(atomic_add_tile_kernel, n_blocks, arr, ct.Constant(tile_size))
+
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-indexed returns old values" begin
+    function atomic_add_return_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
+        indices = ct.arange((16,), Int)
+        old_vals = ct.atomic_add(arr, indices, 1;
+                                memory_order=ct.MemoryOrder.AcqRel)
+        ct.scatter(out, indices, old_vals)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+    out = CUDA.fill(Int(-1), 16)
+
+    ct.launch(atomic_add_return_kernel, 1, arr, out)
+
+    @test all(Array(out) .== 0)
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-indexed Float32" begin
+    function atomic_add_f32_tile_kernel(arr::ct.TileArray{Float32,1}, TILE::Int)
+        bid = ct.bid(1)
+        base = (bid - 1) * TILE
+        indices = base .+ ct.arange((TILE,), Int)
+        ct.atomic_add(arr, indices, 1.5f0;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    tile_size = 16
+    n = 256
+    n_blocks = div(n, tile_size)
+    arr = CUDA.zeros(Float32, n)
+
+    ct.launch(atomic_add_f32_tile_kernel, n_blocks, arr, ct.Constant(tile_size))
+
+    @test all(isapprox.(Array(arr), 1.5f0))
+end
+
+@testset "atomic_add tile-indexed with tile values" begin
+    function atomic_add_tile_val_kernel(arr::ct.TileArray{Int,1},
+                                        vals::ct.TileArray{Int,1})
+        indices = ct.arange((16,), Int)
+        val_tile = ct.gather(vals, indices)
+        ct.atomic_add(arr, indices, val_tile;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+    vals = CuArray(collect(Int, 1:16))
+
+    ct.launch(atomic_add_tile_val_kernel, 1, arr, vals)
+
+    @test Array(arr) == collect(1:16)
+end
+
+@testset "atomic_xchg tile-indexed" begin
+    function atomic_xchg_tile_kernel(arr::ct.TileArray{Int,1})
+        indices = ct.arange((16,), Int)
+        ct.atomic_xchg(arr, indices, 42;
+                      memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+
+    ct.launch(atomic_xchg_tile_kernel, 1, arr)
+
+    @test all(Array(arr) .== 42)
+end
+
+@testset "atomic_cas tile-indexed success" begin
+    function atomic_cas_tile_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
+        indices = ct.arange((16,), Int)
+        old_vals = ct.atomic_cas(arr, indices, 0, 1;
+                                memory_order=ct.MemoryOrder.AcqRel)
+        ct.scatter(out, indices, old_vals)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+    out = CUDA.fill(Int(-1), 16)
+
+    ct.launch(atomic_cas_tile_kernel, 1, arr, out)
+
+    @test all(Array(out) .== 0)
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_cas tile-indexed failure" begin
+    function atomic_cas_fail_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
+        indices = ct.arange((16,), Int)
+        old_vals = ct.atomic_cas(arr, indices, 0, 2;
+                                memory_order=ct.MemoryOrder.AcqRel)
+        ct.scatter(out, indices, old_vals)
+        return
+    end
+
+    arr = CUDA.fill(Int(1), 16)
+    out = CUDA.fill(Int(-1), 16)
+
+    ct.launch(atomic_cas_fail_kernel, 1, arr, out)
+
+    @test all(Array(out) .== 1)   # old values returned
+    @test all(Array(arr) .== 1)   # unchanged (CAS failed)
+end
+
+@testset "atomic_add tile-indexed out-of-bounds" begin
+    function atomic_add_oob_kernel(arr::ct.TileArray{Int,1})
+        # Index tile is larger than array — OOB elements should be masked
+        indices = ct.arange((16,), Int)
+        ct.atomic_add(arr, indices, 1;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 8)
+
+    ct.launch(atomic_add_oob_kernel, 1, arr)
+
+    # Only first 8 elements should be updated
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-indexed 3D" begin
+    function atomic_add_3d_kernel(arr::ct.TileArray{Int,3})
+        # 3D index tiles — each is length 4, will broadcast to (4,4,4) = 64 elements
+        i = ct.reshape(ct.arange((4,), Int), (4, 1, 1))
+        j = ct.reshape(ct.arange((4,), Int), (1, 4, 1))
+        k = ct.reshape(ct.arange((4,), Int), (1, 1, 4))
+        ct.atomic_add(arr, (i, j, k), 1;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 4, 4)
+
+    ct.launch(atomic_add_3d_kernel, 1, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
+# Tile-space atomic operations (block-level indexing, like store)
+
+@testset "atomic_add tile-space 1D" begin
+    function atomic_add_ts_kernel(arr::ct.TileArray{Int,1}, TILE::Int)
+        bid = ct.bid(1)
+        tile = ct.full((TILE,), 1, Int)
+        ct.atomic_add(arr, bid, tile)
+        return
+    end
+
+    TILE = 16
+    arr = CUDA.zeros(Int, 64)
+
+    ct.launch(atomic_add_ts_kernel, 4, arr, ct.Constant(TILE))
+
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-space returns old values" begin
+    function atomic_add_ts_old_kernel(arr::ct.TileArray{Int,1},
+                                      out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        tile = ct.full((16,), 1, Int)
+        old = ct.atomic_add(arr, bid, tile)
+        ct.store(out, bid, old)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+    out = CUDA.fill(Int(-1), 16)
+
+    ct.launch(atomic_add_ts_old_kernel, 1, arr, out)
+
+    @test all(Array(out) .== 0)  # old values were 0
+    @test all(Array(arr) .== 1)  # now incremented
+end
+
+@testset "atomic_add tile-space 1D tuple index" begin
+    # Test the N-D path with a 1-tuple index (not the scalar convenience)
+    function atomic_add_ts_tuple1d_kernel(arr::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        tile = ct.full((16,), 1, Int)
+        ct.atomic_add(arr, (bid,), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 32)
+
+    ct.launch(atomic_add_ts_tuple1d_kernel, 2, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-space 2D" begin
+    function atomic_add_ts_2d_kernel(arr::ct.TileArray{Int,2})
+        bid = ct.bid(1)
+        tile = ct.full((4, 4), 1, Int)
+        ct.atomic_add(arr, (bid, Int32(1)), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 8)  # 4 rows, 8 cols = 2 col-tiles of width 4
+
+    ct.launch(atomic_add_ts_2d_kernel, 1, arr)
+
+    result = Array(arr)
+    @test all(result[:, 1:4] .== 1)   # first col-tile updated
+    @test all(result[:, 5:8] .== 0)   # second col-tile untouched
+end
+
+@testset "atomic_add tile-space 2D both dims" begin
+    # 2 blocks: block 1 writes tile (1,1), block 2 writes tile (1,2)
+    function atomic_add_ts_2d_both_kernel(arr::ct.TileArray{Int,2})
+        bid = ct.bid(1)
+        tile = ct.full((4, 4), 1, Int)
+        ct.atomic_add(arr, (Int32(1), bid), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 8)
+
+    ct.launch(atomic_add_ts_2d_both_kernel, 2, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-space 3D" begin
+    function atomic_add_ts_3d_kernel(arr::ct.TileArray{Int,3})
+        bid = ct.bid(1)
+        tile = ct.full((2, 2, 2), 1, Int)
+        ct.atomic_add(arr, (bid, Int32(1), Int32(1)), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 2, 2)  # 2 tiles along dim 1
+
+    ct.launch(atomic_add_ts_3d_kernel, 2, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_add tile-space trailing singleton" begin
+    # 2D tile into a 3D array — tile should be auto-reshaped to (4, 4, 1)
+    function atomic_add_ts_trailing_kernel(arr::ct.TileArray{Int,3})
+        bid = ct.bid(1)
+        tile = ct.full((4, 4), 1, Int)  # 2D tile
+        ct.atomic_add(arr, (bid, Int32(1), Int32(1)), tile)  # 3D index
+        return
+    end
+
+    arr = CUDA.zeros(Int, 8, 4, 1)  # 2 tiles along dim 1
+
+    ct.launch(atomic_add_ts_trailing_kernel, 2, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
