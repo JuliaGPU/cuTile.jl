@@ -1,6 +1,6 @@
 name = "cuTile"
 uuid = "0dea8319-8c4a-4662-a73d-20234d115b9a"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Tim Besard <tim.besard@gmail.com>"]
 
 [workspace]
