@@ -132,10 +132,26 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
 
+    # Get alias set and token key
+    alias_set = get_alias_set(ctx, args[1])  # Use partition view as source
+    last_store_key_val = last_store_key(alias_set)
+
+    # Load depends on LAST_STORE (read after write)
+    input_token, _ = get_input_token!(ctx, last_store_key_val, nothing)
+
     # Load tile with token
-    tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, pv_arg.v, index_vals;
-                                                 token=ctx.token, optimization_hints)
-    ctx.token = new_token
+    tile_val, result_token = encode_LoadViewTkoOp!(
+        cb, tile_type, token_type, pv_arg.v, index_vals;
+        token = input_token, optimization_hints
+    )
+
+    # Eagerly join with LAST_OP token
+    last_op_key_val = last_op_key(alias_set)
+    last_op_token = get(ctx.token_map, last_op_key_val, result_token)
+    new_last_op_token = encode_JoinTokensOp!(ctx.cb, token_type, [last_op_token, result_token])
+
+    # Update token map
+    ctx.token_map[last_op_key_val] = new_last_op_token
 
     CGVal(tile_val, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end
@@ -404,11 +420,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
 
-    # Store tile with token
-    token_type = Token(tt)
-    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, pv_arg.v, index_vals;
-                                        token=ctx.token, optimization_hints)
-    ctx.token = new_token
+    # Get alias set and token key
+alias_set = get_alias_set(ctx, args[1])  # Use partition view as source
+last_op_key_val = last_op_key(alias_set)
+last_store_key_val = last_store_key(alias_set)
+
+# Store depends on LAST_OP (write after read/write)
+input_token, _ = get_input_token!(ctx, last_op_key_val, nothing)
+
+# Store tile with token
+token_type = Token(tt)
+result_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, pv_arg.v, index_vals;
+                                       token=input_token, optimization_hints)
+
+# Update both LAST_OP and LAST_STORE
+ctx.token_map[last_op_key_val] = result_token
+ctx.token_map[last_store_key_val] = result_token
 
     nothing
 end
