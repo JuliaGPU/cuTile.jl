@@ -1422,6 +1422,18 @@
                 end
             end
         end
+        @testset "bitwise NOT (~)" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "xori"
+                    Base.donotdelete(map(~, tile))
+                    return
+                end
+            end
+        end
     end
 
     #=========================================================================
