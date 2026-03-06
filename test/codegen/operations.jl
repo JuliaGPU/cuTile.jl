@@ -1387,7 +1387,42 @@
     #=========================================================================
      8.9 Bitwise
     =========================================================================#
-    # TODO: andi - bitwise AND
+    @testset "Bitwise" begin
+        spec_i32 = ct.ArraySpec{1}(16, true)
+
+        @testset "andi, ori, xori" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b
+                    pid = ct.bid(1)
+                    ta = ct.load(a, pid, (16,))
+                    tb = ct.load(b, pid, (16,))
+                    @check "andi"
+                    Base.donotdelete(map(&, ta, tb))
+                    @check "ori"
+                    Base.donotdelete(map(|, ta, tb))
+                    @check "xori"
+                    Base.donotdelete(map(xor, ta, tb))
+                    return
+                end
+            end
+        end
+
+        @testset "shli, shri" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "shli"
+                    Base.donotdelete(map(x -> x << Int32(4), tile))
+                    @check "shri"
+                    Base.donotdelete(map(x -> x >> Int32(8), tile))
+                    return
+                end
+            end
+        end
+    end
 
     #=========================================================================
      8.10 Atomics

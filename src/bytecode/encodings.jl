@@ -1524,14 +1524,16 @@ function encode_XOrIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
 end
 
 """
-    encode_ShLIOp!(cb, result_type, lhs, rhs) -> Value
+    encode_ShLIOp!(cb, result_type, lhs, rhs; overflow) -> Value
 
 Shift left.
 Opcode: 96
 """
-function encode_ShLIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value)
+function encode_ShLIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
+                        overflow::IntegerOverflow=OverflowNone)
     encode_varint!(cb.buf, Opcode.ShLIOp)
     encode_typeid!(cb.buf, result_type)
+    encode_enum!(cb.buf, overflow)
     encode_operand!(cb.buf, lhs)
     encode_operand!(cb.buf, rhs)
     return new_op!(cb)
