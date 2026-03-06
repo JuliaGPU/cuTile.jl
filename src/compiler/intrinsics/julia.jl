@@ -1,7 +1,8 @@
 # Julia intrinsics
 
 # Handle Julia Core.Intrinsics that IRStructurizer uses for control flow transformations.
-# These are: add_int (loop increments), slt_int, sle_int, ult_int (loop bounds).
+# These are: add_int / sub_int (loop increments), slt_int / sle_int / ult_int (loop bounds),
+# and not_int (bitwise NOT, used by `for` loop iteration).
 function emit_intrinsic!(ctx::CGCtx, func::Core.IntrinsicFunction, args)
     if func === Core.Intrinsics.add_int
         emit_intrinsic!(ctx, Intrinsics.addi, args)
@@ -13,9 +14,33 @@ function emit_intrinsic!(ctx::CGCtx, func::Core.IntrinsicFunction, args)
         emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., CmpLessThanOrEqual, SignednessSigned])
     elseif func === Core.Intrinsics.ult_int
         emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., CmpLessThan, SignednessUnsigned])
+    elseif func === Core.Intrinsics.not_int
+        emit_not_int!(ctx, args)
     else
         throw(IRError("Unhandled Julia intrinsic: $func"))
     end
+end
+
+# not_int(x) — bitwise NOT.
+# Julia's `for` loops generate `not_int` to negate loop-exit conditions.
+# Emitted as xori(x, allones) where allones is the bitwise complement identity:
+#   Bool    → xori(x, true)     (logical negation)
+#   Integer → xori(x, -1)       (bitwise complement, all bits set)
+function emit_not_int!(ctx::CGCtx, args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    operand = @something emit_value!(ctx, args[1]) throw(IRError("not_int: cannot resolve operand"))
+    jltype = CC.widenconst(operand.jltype)
+
+    # Build the all-ones constant for xori: true for Bool, -1 (all bits set) for integers
+    allones_val = jltype === Bool ? true : jltype(-1)
+    type_id = tile_type_for_julia!(ctx, jltype)
+    allones_bytes = reinterpret(UInt8, [allones_val])
+    allones_v = encode_ConstantOp!(cb, type_id, collect(allones_bytes))
+
+    result = encode_XOrIOp!(cb, type_id, operand.v, allones_v)
+    CGVal(result, type_id, operand.jltype, operand.shape)
 end
 
 # built-in: ===
