@@ -1341,4 +1341,115 @@ end
     @test Array(c) == (Array(a) .& Array(b)) .| (Array(a) .\u22bb Array(b))
 end
 
+@testset "bitwise NOT (~)" begin
+    function bitwise_not_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, map(~, tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
+    b = CUDA.zeros(Int32, n)
+
+    ct.launch(bitwise_not_kernel, cld(n, tile_size), a, b)
+
+    @test Array(b) == .~Array(a)
+end
+
+end
+
+@testset "for-loop iteration" begin
+
+@testset "simple for loop (accumulate)" begin
+    function for_loop_sum_kernel(data::ct.TileArray{Float32,1},
+                                 out::ct.TileArray{Float32,1},
+                                 n_iters::Int32)
+        pid = ct.bid(1)
+        acc = ct.zeros((16,), Float32)
+        for i in Int32(1):n_iters
+            tile = ct.load(data, i, (16,))
+            acc = acc .+ tile
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    n_iters = Int32(4)
+    data = CUDA.rand(Float32, 64)  # 4 tiles of 16
+    out = CUDA.zeros(Float32, 16)
+
+    ct.launch(for_loop_sum_kernel, 1, data, out, n_iters)
+
+    data_cpu = Array(data)
+    expected = zeros(Float32, 16)
+    for i in 1:4
+        expected .+= data_cpu[(i-1)*16+1 : i*16]
+    end
+    @test Array(out) ≈ expected
+end
+
+@testset "for loop with constant bound" begin
+    function for_loop_const_kernel(data::ct.TileArray{Float32,1},
+                                   out::ct.TileArray{Float32,1},
+                                   n_iters::Int)
+        pid = ct.bid(1)
+        acc = ct.zeros((16,), Float32)
+        for i in Int32(1):Int32(n_iters)
+            tile = ct.load(data, i, (16,))
+            acc = acc .+ tile
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    data = CUDA.rand(Float32, 48)  # 3 tiles of 16
+    out = CUDA.zeros(Float32, 16)
+
+    ct.launch(for_loop_const_kernel, 1, data, out, ct.Constant(3))
+
+    data_cpu = Array(data)
+    expected = zeros(Float32, 16)
+    for i in 1:3
+        expected .+= data_cpu[(i-1)*16+1 : i*16]
+    end
+    @test Array(out) ≈ expected
+end
+
+@testset "for loop with dynamic bound" begin
+    # n_iters comes from scalar indexing (runtime value, not constant)
+    function for_loop_dynamic_kernel(data::ct.TileArray{Float32,1},
+                                     lengths::ct.TileArray{Int32,1},
+                                     out::ct.TileArray{Float32,1})
+        bid = ct.bid(1)
+        len = lengths[bid]
+        acc = ct.zeros((16,), Float32)
+        for j in Int32(1):len
+            tile = ct.load(data, j, (16,))
+            acc = acc .+ tile
+        end
+        ct.store(out, bid, acc)
+        return
+    end
+
+    n_tiles = Int32[2, 3, 1]
+    data = CUDA.rand(Float32, 48)  # 3 tiles of 16
+    lengths = CuArray(n_tiles)
+    out = CUDA.zeros(Float32, 48)
+
+    ct.launch(for_loop_dynamic_kernel, 3, data, lengths, out)
+
+    data_cpu = Array(data)
+    out_cpu = Array(out)
+    for bid in 1:3
+        expected = zeros(Float32, 16)
+        for j in 1:n_tiles[bid]
+            expected .+= data_cpu[(j-1)*16+1 : j*16]
+        end
+        @test out_cpu[(bid-1)*16+1 : bid*16] ≈ expected
+    end
+end
+
 end
