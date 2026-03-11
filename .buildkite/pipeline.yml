@@ -7,6 +7,8 @@ steps:
               version: "{{matrix.julia}}"
           - JuliaCI/julia-test#v1:
               test_args: "--quickfail"
+        commands: |
+          unset LD_LIBRARY_PATH
         agents:
           queue: "juliagpu"
           cuda: "*"
