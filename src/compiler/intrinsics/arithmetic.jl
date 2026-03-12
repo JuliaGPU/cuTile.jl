@@ -335,18 +335,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.andi), @nospecialize(x), @nospecialize(
     return CC.widenconst(x)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    lhs = @something emit_value!(ctx, args[1]) throw(IRError("andi: cannot resolve lhs"))
-    rhs = @something emit_value!(ctx, args[2]) throw(IRError("andi: cannot resolve rhs"))
-
-    lhs_type = CC.widenconst(lhs.jltype)
-    dtype = julia_to_tile_dtype!(tt, eltype(lhs_type))
-    result_type_id = tile_type!(tt, dtype, lhs.shape)
-
-    result = encode_AndIOp!(cb, result_type_id, lhs.v, rhs.v)
-    CGVal(result, result_type_id, lhs.jltype, lhs.shape)
+    emit_binop!(ctx, args, encode_AndIOp!)
 end
 
 # cuda_tile.ori
@@ -361,18 +350,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.ori), @nospecialize(x), @nospecialize(y
     return CC.widenconst(x)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    lhs = @something emit_value!(ctx, args[1]) throw(IRError("ori: cannot resolve lhs"))
-    rhs = @something emit_value!(ctx, args[2]) throw(IRError("ori: cannot resolve rhs"))
-
-    lhs_type = CC.widenconst(lhs.jltype)
-    dtype = julia_to_tile_dtype!(tt, eltype(lhs_type))
-    result_type_id = tile_type!(tt, dtype, lhs.shape)
-
-    result = encode_OrIOp!(cb, result_type_id, lhs.v, rhs.v)
-    CGVal(result, result_type_id, lhs.jltype, lhs.shape)
+    emit_binop!(ctx, args, encode_OrIOp!)
 end
 
 # cuda_tile.xori
@@ -380,16 +358,5 @@ end
 @intrinsic xori(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.xori), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.xori), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    lhs = @something emit_value!(ctx, args[1]) throw(IRError("xori: cannot resolve lhs"))
-    rhs = @something emit_value!(ctx, args[2]) throw(IRError("xori: cannot resolve rhs"))
-
-    lhs_type = CC.widenconst(lhs.jltype)
-    dtype = julia_to_tile_dtype!(tt, eltype(lhs_type))
-    result_type_id = tile_type!(tt, dtype, lhs.shape)
-
-    result = encode_XOrIOp!(cb, result_type_id, lhs.v, rhs.v)
-    CGVal(result, result_type_id, lhs.jltype, lhs.shape)
+    emit_binop!(ctx, args, encode_XOrIOp!)
 end
