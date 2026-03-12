@@ -41,6 +41,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     # Check if mask is provided (arg 3 is not nothing)
     has_mask = length(args) >= 3 && get_constant(ctx, args[3]) !== nothing
 
+    # Get alias set and token key
+    alias_set = get_alias_set(ctx, args[1])
+    last_store_key_val = last_store_key(alias_set)
+
+    # Load depends on LAST_STORE (read after write)
+    input_token, _ = get_input_token!(ctx, last_store_key_val, nothing)
+
     if has_mask
         # Get mask tile (arg 3)
         mask_tv = emit_value!(ctx, args[3])
@@ -56,15 +63,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
         tile_val, new_token = encode_LoadPtrTkoOp!(cb, result_tile_type, token_type, pointers;
                                                     mask=mask,
                                                     padding_value=padding,
-                                                    token=ctx.token,
+                                                    token=input_token,
                                                     optimization_hints)
     else
         # Load without mask
         tile_val, new_token = encode_LoadPtrTkoOp!(cb, result_tile_type, token_type, pointers;
-                                                    token=ctx.token,
+                                                    token=input_token,
                                                     optimization_hints)
     end
-    ctx.token = new_token
+
+    # Eagerly join with LAST_OP token
+    last_op_key_val = last_op_key(alias_set)
+    last_op_token = get(ctx.token_map, last_op_key_val, new_token)
+    new_last_op_token = encode_JoinTokensOp!(ctx.cb, token_type, [last_op_token, new_token])
+
+    # Update token map
+    ctx.token_map[last_op_key_val] = new_last_op_token
 
     result_jltype = Tile{elem_type, Tuple{tile_shape...}}
     CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
@@ -105,6 +119,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     # Check if mask is provided (arg 4 is not nothing)
     has_mask = length(args) >= 4 && get_constant(ctx, args[4]) !== nothing
 
+    # Get alias set and token key
+    alias_set = get_alias_set(ctx, args[1])
+    last_op_key_val = last_op_key(alias_set)
+    last_store_key_val = last_store_key(alias_set)
+
+    # Store depends on LAST_OP (write after read/write)
+    input_token, _ = get_input_token!(ctx, last_op_key_val, nothing)
+
     if has_mask
         # Get mask tile (arg 4)
         mask_tv = emit_value!(ctx, args[4])
@@ -114,15 +136,18 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
         # Store with mask
         new_token = encode_StorePtrTkoOp!(cb, token_type, pointers, values;
                                            mask=mask,
-                                           token=ctx.token,
+                                           token=input_token,
                                            optimization_hints)
     else
         # Store without mask
         new_token = encode_StorePtrTkoOp!(cb, token_type, pointers, values;
-                                           token=ctx.token,
+                                           token=input_token,
                                            optimization_hints)
     end
-    ctx.token = new_token
+
+    # Update both LAST_OP and LAST_STORE
+    ctx.token_map[last_op_key_val] = new_token
+    ctx.token_map[last_store_key_val] = new_token
 
     nothing
 end
