@@ -43,7 +43,8 @@ end
     # Test atomic_xchg: each thread exchanges, last one wins
     function atomic_xchg_kernel(arr::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        ct.atomic_xchg(arr, 1, bid + 1;
+        # bid is 1-indexed (1..n_blocks), val is auto-converted from Int32 to Int
+        ct.atomic_xchg(arr, 1, bid;
                       memory_order=ct.MemoryOrder.AcqRel)
         return
     end

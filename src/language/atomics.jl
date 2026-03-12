@@ -107,6 +107,14 @@ end
     S === () ? Intrinsics.to_scalar(result) : result
 end
 
+# Convert mismatched scalar/tile types to match array element type
+@inline function atomic_cas(array::TileArray{T}, indices,
+                            expected::TileOrScalar, desired::TileOrScalar;
+                            memory_order::Int=MemoryOrder.AcqRel,
+                            memory_scope::Int=MemScope.Device) where {T}
+    atomic_cas(array, indices, T(expected), T(desired); memory_order, memory_scope)
+end
+
 # ============================================================================
 # Atomic RMW operations (atomic_add, atomic_xchg)
 # ============================================================================
@@ -149,5 +157,12 @@ for op in (:add, :xchg)
         val_bc = S === () ? Tile(val) : broadcast_to(Tile(val), S)
         result = Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
         S === () ? Intrinsics.to_scalar(result) : result
+    end
+
+    # Convert mismatched scalar/tile types to match array element type
+    @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
+                                   memory_order::Int=MemoryOrder.AcqRel,
+                                   memory_scope::Int=MemScope.Device) where {T}
+        $fname(array, indices, T(val); memory_order, memory_scope)
     end
 end
