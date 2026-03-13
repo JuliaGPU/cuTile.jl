@@ -17,7 +17,7 @@ julia> Pkg.add("cuTile")
 ```
 
 Execution of cuTile kernels requires CUDA.jl to be installed and imported. Furthermore,
-only Blackwell GPUs (compute capability 10+) are supported at this time, and the CUDA driver
+only Ampere, Ada, and Blackwell GPUs are supported at this time (with Hopper support planned), and the CUDA driver
 needs to be version 13 or higher.
 
 ## Quick Start
