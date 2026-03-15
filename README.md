@@ -41,13 +41,13 @@ end
 vector_size = 2^20
 tile_size = 16
 
-blocks = ceil(Int, vector_size / tile_size)
+blocks = cld(Int, vector_size / tile_size)
 grid = (blocks, 1, 1)       
 
 a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size)
 c = CUDA.zeros(Float32, vector_size)
 
-ct.launch(vadd, (cld(vector_size, tile_size), 1, 1), a, b, c, ct.Constant(tile_size))
+ct.launch(vadd, grid, a, b, c, ct.Constant(tile_size))
 
 @assert c == a .+ b
 ```
