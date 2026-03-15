@@ -8,7 +8,7 @@ using CompilerCaching: CacheView, method_instance, results
 
 import Core.Compiler as CC
 
-using CUDA: CuModule, CuFunction, cudacall, device, capability
+using CUDA: CUDA, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
 public launch
@@ -53,6 +53,8 @@ function check_tile_ir_support()
     return VersionNumber(cuda_ver.major, cuda_ver.minor)
 end
 
+const EMIT_CODE_LOCK = ReentrantLock()
+
 """
     emit_binary(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
 
@@ -60,7 +62,9 @@ Binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
 function emit_binary(cache::CacheView, mi::Core.MethodInstance;
                      const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    bytecode = emit_code(cache, mi; const_argtypes)
+    bytecode = lock(EMIT_CODE_LOCK) do
+        emit_code(cache, mi; const_argtypes)
+    end
 
     ci = get(cache, mi)
     res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
@@ -259,5 +263,7 @@ Other values pass through unchanged.
 """
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
+
+include("autotune/autotune.jl")
 
 end
