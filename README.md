@@ -40,6 +40,10 @@ end
 # Launch
 vector_size = 2^20
 tile_size = 16
+
+blocks = ceil(Int, vector_size / tile_size)
+grid = (blocks, 1, 1)       
+
 a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size)
 c = CUDA.zeros(Float32, vector_size)
 
