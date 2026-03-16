@@ -221,7 +221,7 @@ end
 # would DCE the entire call as a pure function with unused result.
 Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::T, indices::Vararg{Integer, N}) where {T, N}
     shape = ntuple(_ -> 1, Val(N))
-    tile = reshape(Intrinsics.from_scalar(val, Val(Tuple{})), shape)
+    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
     store(arr, indices, tile)
     return
 end
@@ -697,15 +697,13 @@ Reduced dimensions become size 1.
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
     reduce(min, tile; dims, init=typemax(T))
 
-# sum/prod/max/min without dims — reduce all dimensions, return 0D Tile{T,Tuple{}}
+# sum/prod/max/min without dims — reduce all dimensions, return scalar T
 for f in (:sum, :prod, :maximum, :minimum)
-    # 1D → 0D tile
     @eval @inline Base.$f(tile::Tile{T,Tuple{A}}) where {T<:Number, A} =
-        reshape($f(tile; dims=1), ())
+        Intrinsics.to_scalar(reshape($f(tile; dims=1), ()))
 
-    # 2D → 0D tile (reduce both dims, then reshape to 0D)
     @eval @inline Base.$f(tile::Tile{T,Tuple{A,B}}) where {T<:Number, A, B} =
-        reshape($f($f(tile; dims=1); dims=2), ())
+        Intrinsics.to_scalar(reshape($f($f(tile; dims=1); dims=2), ()))
 end
 
 """
@@ -741,22 +739,20 @@ n_positive = count(tile .> 0.0f0; dims=1)
     sum(convert(Tile{Int32}, tile); dims)
 end
 
-# any/all/count without dims — reduce all dimensions, return 0D tile
+# any/all without dims — return scalar Bool
 for f in (:any, :all)
-    # 1D → 0D tile
     @eval @inline Base.$f(tile::Tile{Bool,Tuple{A}}) where {A} =
-        reshape($f(tile; dims=1), ())
+        Intrinsics.to_scalar(reshape($f(tile; dims=1), ()))
 
-    # 2D → 0D tile
     @eval @inline Base.$f(tile::Tile{Bool,Tuple{A,B}}) where {A, B} =
-        reshape($f($f(tile; dims=1); dims=2), ())
+        Intrinsics.to_scalar(reshape($f($f(tile; dims=1); dims=2), ()))
 end
 
-# count without dims → 0D Tile{Int32, Tuple{}}
+# count without dims — return scalar Int32
 @inline Base.count(tile::Tile{Bool,Tuple{A}}) where {A} =
-    reshape(count(tile; dims=1), ())
+    Intrinsics.to_scalar(reshape(count(tile; dims=1), ()))
 @inline Base.count(tile::Tile{Bool,Tuple{A,B}}) where {A, B} =
-    reshape(sum(count(tile; dims=1); dims=2), ())
+    Intrinsics.to_scalar(reshape(sum(count(tile; dims=1); dims=2), ()))
 
 """
     argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}

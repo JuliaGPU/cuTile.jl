@@ -571,8 +571,7 @@ end
 @testset "sum without dims (1D)" begin
     function sum_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, tileSz::Int)
         tile = ct.load(a, ct.bid(1), (tileSz,))
-        result = sum(tile)
-        ct.store(b, ct.bid(1), result)
+        b[ct.bid(1)] = sum(tile)
         return nothing
     end
 
@@ -589,8 +588,7 @@ end
     function sum_no_dims_2d(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         tile = ct.load(a, (pid, 1), (1, 128))
-        result = sum(tile)
-        ct.store(b, pid, result)
+        b[pid] = sum(tile)
         return nothing
     end
 
@@ -602,5 +600,60 @@ end
     a_cpu = Array(a)
     for i in 1:m
         @test Array(b)[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
+    end
+end
+
+@testset "any without dims (1D)" begin
+    function any_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1}, tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
+        # Store as Int32 since we can't store Bool scalars directly
+        b[ct.bid(1)] = Int32(any(tile .> 0.0f0))
+        return nothing
+    end
+
+    sz = 32; N = 1024
+    a = CUDA.rand(Float32, N) .- 0.5f0  # some positive, some negative
+    b = CUDA.zeros(Int32, cld(N, sz))
+    ct.launch(any_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = reshape(Array(a), sz, :)
+    for i in 1:cld(N, sz)
+        @test Array(b)[i] == Int32(any(a_cpu[:, i] .> 0.0f0))
+    end
+end
+
+@testset "all without dims (1D)" begin
+    function all_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1}, tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
+        b[ct.bid(1)] = Int32(all(tile .> 0.0f0))
+        return nothing
+    end
+
+    sz = 32; N = 1024
+    a = CUDA.rand(Float32, N)  # all positive
+    b = CUDA.zeros(Int32, cld(N, sz))
+    ct.launch(all_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = reshape(Array(a), sz, :)
+    for i in 1:cld(N, sz)
+        @test Array(b)[i] == Int32(all(a_cpu[:, i] .> 0.0f0))
+    end
+end
+
+@testset "count without dims (1D)" begin
+    function count_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1}, tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
+        b[ct.bid(1)] = count(tile .> 0.0f0)
+        return nothing
+    end
+
+    sz = 32; N = 1024
+    a = CUDA.rand(Float32, N) .- 0.5f0
+    b = CUDA.zeros(Int32, cld(N, sz))
+    ct.launch(count_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = reshape(Array(a), sz, :)
+    for i in 1:cld(N, sz)
+        @test Array(b)[i] == count(a_cpu[:, i] .> 0.0f0)
     end
 end
