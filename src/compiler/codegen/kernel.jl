@@ -287,9 +287,9 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     argtuple = Tuple{arg_types...}
     world = ctx.cache.world
     mi = @something(
-        method_instance(func, argtuple;
-                        world, method_table=cuTileMethodTable),
-        method_instance(func, argtuple; world),
+        match_method_instance(func, argtuple;
+                              world, method_table=cuTileMethodTable),
+        match_method_instance(func, argtuple; world),
         error("No method found for $func($(join(arg_types, ", ")))")
     )
 

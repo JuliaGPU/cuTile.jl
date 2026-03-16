@@ -8,7 +8,7 @@
 export code_tiled, @device_code_tiled
 
 import CompilerCaching
-using CompilerCaching: CacheView, @setup_caching, method_instance, typeinf!, results, get_source
+using CompilerCaching: CacheView, @setup_caching, method_instance, match_method_instance, typeinf!, results, get_source
 
 # Compilation hook for @device_code_* macros - intercepts compilations for reflection
 const compile_hook = Ref{Union{Nothing,Function}}(nothing)
@@ -517,8 +517,8 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     if !Base.isdispatchtuple(tt)
         throw(ArgumentError("code_tiled requires a dispatch tuple, got non-concrete signature"))
     end
-    mi = @something(method_instance(f, stripped; world, method_table=cuTileMethodTable),
-                    method_instance(f, stripped; world),
+    mi = @something(match_method_instance(f, stripped; world, method_table=cuTileMethodTable),
+                    match_method_instance(f, stripped; world),
                     throw(MethodError(f, stripped)))
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
