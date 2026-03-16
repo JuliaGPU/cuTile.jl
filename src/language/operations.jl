@@ -697,6 +697,19 @@ Reduced dimensions become size 1.
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
     reduce(min, tile; dims, init=typemax(T))
 
+# sum/prod/max/min without dims — reduce all dimensions
+# 1D
+@inline Base.sum(tile::Tile{T,Tuple{A}}) where {T<:Number, A} = sum(tile; dims=1)
+@inline Base.prod(tile::Tile{T,Tuple{A}}) where {T<:Number, A} = prod(tile; dims=1)
+@inline Base.maximum(tile::Tile{T,Tuple{A}}) where {T<:Number, A} = maximum(tile; dims=1)
+@inline Base.minimum(tile::Tile{T,Tuple{A}}) where {T<:Number, A} = minimum(tile; dims=1)
+
+# 2D
+@inline Base.sum(tile::Tile{T,Tuple{A,B}}) where {T<:Number, A, B} = sum(sum(tile; dims=2); dims=1)
+@inline Base.prod(tile::Tile{T,Tuple{A,B}}) where {T<:Number, A, B} = prod(prod(tile; dims=2); dims=1)
+@inline Base.maximum(tile::Tile{T,Tuple{A,B}}) where {T<:Number, A, B} = maximum(maximum(tile; dims=2); dims=1)
+@inline Base.minimum(tile::Tile{T,Tuple{A,B}}) where {T<:Number, A, B} = minimum(minimum(tile; dims=2); dims=1)
+
 """
     any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
 

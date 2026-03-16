@@ -567,3 +567,40 @@ end
         @test Array(b_min_rand)[row, 1] == expected_min
     end
 end
+
+@testset "sum without dims (1D)" begin
+    function sum_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
+        result = sum(tile)
+        ct.store(b, ct.bid(1), result)
+        return nothing
+    end
+
+    sz = 32; N = 1024
+    a = CUDA.rand(Float32, N)
+    b = CUDA.zeros(Float32, cld(N, sz))
+    ct.launch(sum_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = reshape(Array(a), sz, :)
+    @test Array(b) ≈ vec(sum(a_cpu; dims=1)) rtol=1e-3
+end
+
+@testset "sum without dims (2D)" begin
+    function sum_no_dims_2d(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        result = sum(tile)
+        ct.store(b, pid, result)
+        return nothing
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+    ct.launch(sum_no_dims_2d, m, a, b)
+
+    a_cpu = Array(a)
+    for i in 1:m
+        @test Array(b)[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
+    end
+end
