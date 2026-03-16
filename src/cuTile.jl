@@ -37,6 +37,7 @@ include("language/arithmetic.jl")
 include("language/math.jl")
 include("language/operations.jl")
 include("language/atomics.jl")
+include("language/broadcast_macro.jl")
 
 public launch, ByTarget, @compiler_options
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
