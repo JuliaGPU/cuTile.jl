@@ -109,7 +109,9 @@ function _gen_kernel(N::Int, ct::Module, kernel_name, dest::Symbol,
     end
 
     # --- Build kernel parameter list ---
-    params = Any[dest]
+    # Dispatch on dest::TileArray{<:Any, N} so all ndims variants are methods of one function
+    dest_type = Expr(:curly, :($ct.TileArray), Expr(:(<:), :Any), N)
+    params = Any[:($(dest)::$(dest_type))]
     for op in operands
         push!(params, op)
     end
@@ -205,7 +207,7 @@ end
 
 function _gen_launch(ct::Module, launch_name, dest::Symbol,
                      operands::Vector{Symbol}, type_syms::Vector{Symbol},
-                     kernel_names::Vector, tile_size_expr)
+                     kernel_name, tile_size_expr)
     # Build the operand argument list (in source order)
     all_args = Any[dest; operands; type_syms]
 
@@ -271,10 +273,6 @@ function _gen_launch(ct::Module, launch_name, dest::Symbol,
             ntuple(d -> isone(size($op, d)), $N_var)))
     end
 
-    # Select kernel by N and launch
-    kernels_var = gensym("kernels")
-    push!(body, :($kernels_var = ($(kernel_names...),)))
-
     # Build the launch call
     launch_args = Any[dest_ta]
     for op in operands
@@ -290,7 +288,7 @@ function _gen_launch(ct::Module, launch_name, dest::Symbol,
     push!(body, :($grid_const_var = $N_var > 3 ? ($ct.Constant)($grid_var[3:end]) : nothing))
 
     push!(body, :($ct.launch(
-        $kernels_var[$N_var], $launch_grid,
+        $kernel_name, $launch_grid,
         $(launch_args...),
         ($ct.Constant)($ts_var),
         ($N_var > 3 ? ($grid_const_var,) : ())...,
@@ -331,15 +329,15 @@ function _fuse_impl(ex, tile_size)
     # Module reference for generated code
     ct = @__MODULE__
 
-    # Generate kernel functions for N=1..MAX_NDIMS
-    kernel_names = [gensym("fuse_kernel_$(N)d") for N in 1:_CUTILE_MAX_NDIMS]
-    kernel_defs = [_gen_kernel(N, ct, kernel_names[N], dest, operands, leaves, type_syms, rhs)
+    # Generate kernel methods (one per ndims, dispatched on dest::TileArray{<:Any, N})
+    kernel_name = gensym("fuse_kernel")
+    kernel_defs = [_gen_kernel(N, ct, kernel_name, dest, operands, leaves, type_syms, rhs)
                    for N in 1:_CUTILE_MAX_NDIMS]
 
     # Generate launch wrapper
     launch_name = gensym("fuse_launch")
     launch_def = _gen_launch(ct, launch_name, dest, operands, type_syms,
-                             kernel_names, tile_size)
+                             kernel_name, tile_size)
 
     # Assemble: define kernels + launch wrapper + call
     all_args = Any[dest; operands; type_syms]
