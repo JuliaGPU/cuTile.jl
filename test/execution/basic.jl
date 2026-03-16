@@ -151,6 +151,22 @@ end
     end
 end
 
+@testset "scalar store" begin
+    function scalar_store_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
+        ct.store(b, ct.bid(1), sum(tile))
+        return nothing
+    end
+
+    sz = 32; N = 1024
+    a = CUDA.rand(Float32, N)
+    b = CUDA.zeros(Float32, cld(N, sz))
+    ct.launch(scalar_store_1d, cld(N, sz), a, b, ct.Constant(sz))
+
+    a_cpu = reshape(Array(a), sz, :)
+    @test Array(b) ≈ vec(sum(a_cpu; dims=1)) rtol=1e-3
+end
+
 @testset "transpose" begin
     function transpose_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
         bidx = ct.bid(1)

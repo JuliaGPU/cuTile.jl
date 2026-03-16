@@ -200,6 +200,16 @@ end
     store(arr, (index,), tile; kwargs...)
 end
 
+# Scalar value → wrap in 1-element tile and store
+@inline function store(arr::TileArray{T}, index, val::T; kwargs...) where {T}
+    shape = ntuple(_ -> 1, Val(ndims(arr)))
+    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    store(arr, index, tile; kwargs...)
+end
+@inline function store(arr::TileArray{T}, index::Integer, val::T; kwargs...) where {T}
+    store(arr, (index,), val; kwargs...)
+end
+
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
                                  order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
