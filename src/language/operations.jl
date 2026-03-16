@@ -708,12 +708,13 @@ Reduced dimensions become size 1.
     reduce(min, tile; dims, init=typemax(T))
 
 # sum/prod/max/min without dims — reduce all dimensions, return scalar T
+# Recursive: reduce dim 1, drop it, recurse. Base case: 1D → scalar.
 for f in (:sum, :prod, :maximum, :minimum)
     @eval @inline Base.$f(tile::Tile{T,Tuple{A}}) where {T<:Number, A} =
         Intrinsics.to_scalar(reshape($f(tile; dims=1), ()))
 
-    @eval @inline Base.$f(tile::Tile{T,Tuple{A,B}}) where {T<:Number, A, B} =
-        Intrinsics.to_scalar(reshape($f($f(tile; dims=1); dims=2), ()))
+    @eval @inline Base.$f(tile::Tile{T,S}) where {T<:Number, S<:Tuple{Any,Any,Vararg}} =
+        $f(dropdims($f(tile; dims=1); dims=1))
 end
 
 """
@@ -754,15 +755,16 @@ for f in (:any, :all)
     @eval @inline Base.$f(tile::Tile{Bool,Tuple{A}}) where {A} =
         Intrinsics.to_scalar(reshape($f(tile; dims=1), ()))
 
-    @eval @inline Base.$f(tile::Tile{Bool,Tuple{A,B}}) where {A, B} =
-        Intrinsics.to_scalar(reshape($f($f(tile; dims=1); dims=2), ()))
+    @eval @inline Base.$f(tile::Tile{Bool,S}) where {S<:Tuple{Any,Any,Vararg}} =
+        $f(dropdims($f(tile; dims=1); dims=1))
 end
 
 # count without dims — return scalar Int32
+# count reduces to Int32 (not Bool), so after first dim use sum for remaining.
 @inline Base.count(tile::Tile{Bool,Tuple{A}}) where {A} =
     Intrinsics.to_scalar(reshape(count(tile; dims=1), ()))
-@inline Base.count(tile::Tile{Bool,Tuple{A,B}}) where {A, B} =
-    Intrinsics.to_scalar(reshape(sum(count(tile; dims=1); dims=2), ()))
+@inline Base.count(tile::Tile{Bool,S}) where {S<:Tuple{Any,Any,Vararg}} =
+    sum(dropdims(count(tile; dims=1); dims=1))
 
 """
     argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}

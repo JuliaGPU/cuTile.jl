@@ -640,6 +640,44 @@ end
     end
 end
 
+@testset "sum without dims (3D)" begin
+    function sum_no_dims_3d(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1, 1), (1, 8, 16))
+        b[pid] = sum(tile)
+        return nothing
+    end
+
+    d1, d2, d3 = 4, 8, 16
+    a = CUDA.rand(Float32, d1, d2, d3)
+    b = CUDA.zeros(Float32, d1)
+    ct.launch(sum_no_dims_3d, d1, a, b)
+
+    a_cpu = Array(a)
+    for i in 1:d1
+        @test Array(b)[i] ≈ sum(a_cpu[i, :, :]) rtol=1e-3
+    end
+end
+
+@testset "maximum without dims (3D)" begin
+    function maximum_no_dims_3d(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1, 1), (1, 8, 16))
+        b[pid] = maximum(tile)
+        return nothing
+    end
+
+    d1, d2, d3 = 4, 8, 16
+    a = CUDA.rand(Float32, d1, d2, d3)
+    b = CUDA.zeros(Float32, d1)
+    ct.launch(maximum_no_dims_3d, d1, a, b)
+
+    a_cpu = Array(a)
+    for i in 1:d1
+        @test Array(b)[i] ≈ maximum(a_cpu[i, :, :]) rtol=1e-3
+    end
+end
+
 @testset "count without dims (1D)" begin
     function count_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1}, tileSz::Int)
         tile = ct.load(a, ct.bid(1), (tileSz,))
