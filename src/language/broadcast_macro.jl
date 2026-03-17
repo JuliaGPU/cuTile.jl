@@ -372,3 +372,13 @@ macro fuse(args...)
     tile_size, ex = _parse_fuse_options(args)
     _fuse_impl(ex, tile_size)
 end
+
+"""
+    @. dest = expr
+
+Like `Base.@.` but generates a fused cuTile kernel.
+`ct.@. c = BFloat16(a) + b` is equivalent to `ct.@fuse c .= BFloat16.(a) .+ b`.
+"""
+macro __dot__(ex)
+    _fuse_impl(Base.Broadcast.__dot__(ex), 64)
+end
