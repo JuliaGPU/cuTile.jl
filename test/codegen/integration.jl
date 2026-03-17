@@ -854,7 +854,7 @@ end
     @testset "num_ctas only" begin
         @test @filecheck begin
             @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=4) do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=4) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t)
@@ -866,7 +866,7 @@ end
     @testset "occupancy only" begin
         @test @filecheck begin
             @check "optimization_hints=<sm_100 = {occupancy = 8}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=8) do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=8) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t)
@@ -878,7 +878,7 @@ end
     @testset "both hints" begin
         @test @filecheck begin
             @check "optimization_hints=<sm_120 = {num_cta_in_cga = 2, occupancy = 4}"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120", num_ctas=2, occupancy=4) do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0", num_ctas=2, occupancy=4) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t)
@@ -890,7 +890,7 @@ end
     @testset "no hints" begin
         @test @filecheck begin
             @check_not "optimization_hints"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t)
@@ -902,7 +902,7 @@ end
     @testset "architecture parameter" begin
         @test @filecheck begin
             @check "optimization_hints=<sm_120 = {num_cta_in_cga = 4}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120", num_ctas=4) do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0", num_ctas=4) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t)
@@ -914,28 +914,28 @@ end
     @testset "num_ctas validation" begin
         # Too small
         @test_throws "num_ctas must be between 1 and 16" begin
-            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=0)
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=0)
         end
 
         # Too large
         @test_throws "num_ctas must be between 1 and 16" begin
-            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=17)
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=17)
         end
 
         # Not power of 2
         @test_throws "num_ctas must be a power of 2" begin
-            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=3)
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=3)
         end
 
         @test_throws "num_ctas must be a power of 2" begin
-            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas=5)
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=5)
         end
 
         # Valid values should succeed
         for num_ctas in [1, 2, 4, 8, 16]
             @test @filecheck begin
                 @check "num_cta_in_cga = $(num_ctas)"
-                ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas)
+                ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas)
             end
         end
     end
@@ -943,23 +943,102 @@ end
     @testset "occupancy validation" begin
         # Too small
         @test_throws "occupancy must be between 1 and 32" begin
-            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=0)
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=0)
         end
 
         # Too large
         @test_throws "occupancy must be between 1 and 32" begin
-            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=33)
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=33)
         end
 
         # Valid boundaries
         @test @filecheck begin
             @check "occupancy = 1"
-            ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=1)
+            ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=1)
         end
 
         @test @filecheck begin
             @check "occupancy = 32"
-            ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=32)
+            ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=32)
+        end
+    end
+
+    @testset "@kernel with ByTarget num_ctas" begin
+        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4) function _kernel_bt_num_ctas(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        # Matching arch
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
+            ct.code_tiled(_kernel_bt_num_ctas, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0")
+        end
+
+        # Non-matching arch → no hints
+        @test @filecheck begin
+            @check_not "optimization_hints"
+            ct.code_tiled(_kernel_bt_num_ctas, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0")
+        end
+    end
+
+    @testset "@kernel with ByTarget default" begin
+        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4; default=2) function _kernel_bt_default(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        # Non-matching arch → uses default
+        @test @filecheck begin
+            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 2}>"
+            ct.code_tiled(_kernel_bt_default, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0")
+        end
+    end
+
+    @testset "@kernel with plain num_ctas" begin
+        ct.@kernel num_ctas=2 function _kernel_plain_ctas(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 2}>"
+            ct.code_tiled(_kernel_plain_ctas, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0")
+        end
+    end
+
+    @testset "@kernel kwarg override" begin
+        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4) function _kernel_override(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        # Explicit kwarg wins over @kernel meta
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 8}>"
+            ct.code_tiled(_kernel_override, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=8)
+        end
+    end
+
+    @testset "@kernel with occupancy ByTarget" begin
+        ct.@kernel occupancy=ct.ByTarget(v"10.0" => 16) function _kernel_bt_occ(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {occupancy = 16}>"
+            ct.code_tiled(_kernel_bt_occ, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0")
         end
     end
 end
@@ -976,7 +1055,7 @@ end
         @test @filecheck begin
             @check "load_view_tko"
             @check "optimization_hints = <sm_120 = {latency = 5}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); latency=5)
                 ct.store(a, pid, t)
@@ -989,7 +1068,7 @@ end
         @test @filecheck begin
             @check "load_view_tko"
             @check "optimization_hints = <sm_120 = {allow_tma = false}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); allow_tma=false)
                 ct.store(a, pid, t)
@@ -1002,7 +1081,7 @@ end
         @test @filecheck begin
             @check "load_view_tko"
             @check "optimization_hints = <sm_120 = {allow_tma = false, latency = 7}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); latency=7, allow_tma=false)
                 ct.store(a, pid, t)
@@ -1015,7 +1094,7 @@ end
         @test @filecheck begin
             @check "store_view_tko"
             @check "optimization_hints = <sm_120 = {latency = 3}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t; latency=3)
@@ -1028,7 +1107,7 @@ end
         @test @filecheck begin
             @check "store_view_tko"
             @check "optimization_hints = <sm_120 = {allow_tma = false}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t; allow_tma=false)
@@ -1041,7 +1120,7 @@ end
         @test @filecheck begin
             @check "store_view_tko"
             @check "optimization_hints = <sm_120 = {allow_tma = false, latency = 2}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
                 ct.store(a, pid, t; allow_tma=false, latency=2)
@@ -1052,7 +1131,7 @@ end
 
     @testset "latency validation" begin
         @test_throws "latency must be between 1 and 10" begin
-            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 ct.load(a, pid, (16,); latency=11)
             end
@@ -1060,7 +1139,7 @@ end
 
         @test @filecheck begin
             @check "optimization_hints = <sm_120 = {latency = 8}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); latency=8)
                 ct.store(a, pid, t)
@@ -1082,7 +1161,7 @@ end
             @check_not "optimization_hints"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d},
                                ct.TileArray{Float32, 1, spec1d},
-                               ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a, b, c
+                               ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b, c
                 pid = ct.bid(1)
                 t1 = ct.load(a, pid, (16,); latency=5)
                 t2 = ct.load(b, pid, (16,); allow_tma=false)
@@ -1099,7 +1178,7 @@ end
         @test @filecheck begin
             @check "load_ptr_tko"
             @check "optimization_hints = <sm_120 = {latency = 3}>"
-            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a, b
+            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 indices = ct.arange((16,), Int32)
                 tile = ct.gather(a, indices; latency=3)
@@ -1113,7 +1192,7 @@ end
         @test @filecheck begin
             @check "store_ptr_tko"
             @check "optimization_hints = <sm_120 = {latency = 5}>"
-            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a, b
+            code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 indices = ct.arange((16,), Int32)

@@ -408,3 +408,56 @@ struct One end
 @inline Base.:-(::One, x::T) where {T<:Integer} = one(T) - x
 @inline Base.:+(::One, x::T) where {T<:Integer} = one(T) + x
 @inline Base.Broadcast.broadcastable(o::One) = Ref(o)
+
+
+#=============================================================================
+ ByTarget: Per-architecture optimization hints
+=============================================================================#
+
+"""
+    ByTarget{T}
+
+Per-architecture value that resolves to a concrete `T` based on the target
+GPU's compute capability. Use with `@kernel` to specify architecture-specific
+optimization hints.
+
+# Example
+```julia
+ct.@kernel num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4) function my_kernel(...)
+    ...
+end
+```
+"""
+struct ByTarget{T}
+    default::Union{Some{T}, Nothing}
+    targets::Dict{VersionNumber, T}
+end
+
+function ByTarget(pairs::Pair{VersionNumber, T}...; default=nothing) where T
+    d = isnothing(default) ? nothing : Some{T}(default)
+    ByTarget{T}(d, Dict{VersionNumber, T}(pairs...))
+end
+
+function ByTarget(pairs::Pair{VersionNumber}...; default=nothing)
+    T = promote_type(typeof(default === nothing ? first(pairs).second : default),
+                     map(p -> typeof(p.second), pairs)...)
+    d = isnothing(default) ? nothing : Some{T}(T(default))
+    ByTarget{T}(d, Dict{VersionNumber, T}(pairs...))
+end
+
+"""
+    resolve(bt::ByTarget{T}, cap::VersionNumber) -> Union{T, Nothing}
+
+Resolve a `ByTarget` value for a specific compute capability.
+Returns the architecture-specific value, the default, or `nothing`.
+"""
+function resolve(bt::ByTarget{T}, cap::VersionNumber) where T
+    val = get(bt.targets, cap, nothing)
+    val !== nothing && return val
+    bt.default !== nothing && return something(bt.default)
+    return nothing
+end
+
+# Pass-through: plain values resolve to themselves
+resolve(val, ::VersionNumber) = val
+resolve(::Nothing, ::VersionNumber) = nothing

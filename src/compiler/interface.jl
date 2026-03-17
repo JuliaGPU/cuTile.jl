@@ -288,7 +288,7 @@ end
 
 # Compilation options for cache sharding
 const CGOpts = @NamedTuple{
-    sm_arch::Union{String, Nothing},
+    sm_arch::Union{VersionNumber, Nothing},
     opt_level::Int,
     num_ctas::Union{Int, Nothing},
     occupancy::Union{Int, Nothing},
@@ -305,9 +305,72 @@ mutable struct CuTileResults
 end
 
 """
-    emit_ir(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype)
+    extract_meta(ir::CC.IRCode) -> Dict{Symbol, Any}
 
-IR phase: run inference if needed and return structured IR.
+Extract cuTile meta nodes from IRCode. Meta nodes are inserted by `@kernel`
+and survive through lowering/optimization. They appear either in `ir.meta`
+(from `typeinf_ircode` path) or as statements (from `inflate_ir` path).
+Unreachable blocks containing only meta stmts are handled by IRStructurizer.
+"""
+function extract_meta(ir::CC.IRCode)
+    meta = Dict{Symbol, Any}()
+    # Scan ir.meta (from typeinf_ircode path)
+    for expr in ir.meta
+        if expr isa Expr && expr.head === :meta && length(expr.args) >= 3 && expr.args[1] === :cuTile
+            meta[expr.args[2]::Symbol] = expr.args[3]
+        end
+    end
+    # Scan ir.stmts (from inflate_ir path — meta nodes are regular stmts here)
+    for i in 1:length(ir.stmts)
+        stmt = ir.stmts[i][:stmt]
+        if stmt isa Expr && stmt.head === :meta && length(stmt.args) >= 3 && stmt.args[1] === :cuTile
+            meta[stmt.args[2]::Symbol] = stmt.args[3]
+        end
+    end
+    return meta
+end
+
+"""
+    extract_kernel_meta_from_source(mi::MethodInstance) -> Dict{Symbol, Any}
+
+Cheaply extract @kernel meta nodes from a method's unoptimized CodeInfo.
+Used for pre-extracting opt_level before compilation (cache key creation).
+"""
+function extract_kernel_meta_from_source(mi::Core.MethodInstance)
+    meta = Dict{Symbol, Any}()
+    src = try
+        Base.uncompressed_ir(mi.def)
+    catch
+        return meta
+    end
+    src === nothing && return meta
+    for stmt in src.code
+        stmt isa Expr || continue
+        stmt.head === :meta || continue
+        length(stmt.args) >= 3 && stmt.args[1] === :cuTile || continue
+        meta[stmt.args[2]::Symbol] = stmt.args[3]
+    end
+    return meta
+end
+
+"""
+    resolve_hint(explicit, kernel_meta, key, sm_arch)
+
+Resolve a hint value with precedence: explicit kwarg > @kernel meta > nothing.
+"""
+function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
+                      sm_arch::Union{VersionNumber, Nothing})
+    explicit !== nothing && return explicit
+    if haskey(kernel_meta, key) && sm_arch !== nothing
+        return resolve(kernel_meta[key], sm_arch)
+    end
+    return nothing
+end
+
+"""
+    emit_ir(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype, kernel_meta)
+
+IR phase: run inference if needed and return structured IR plus extracted kernel meta.
 
 When `const_argtypes` is provided (a `Vector{Any}` with `CC.Const` entries for
 compile-time constants), const-seeded inference is used, producing specialized
@@ -340,18 +403,20 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance;
         res.julia_ir !== nothing && return res.julia_ir
         src = @something get_source(ci, const_argtypes)
         ir = CC.inflate_ir(src, mi)
+        kernel_meta = extract_meta(ir)
         sci = StructuredIRCode(ir)
         rettype = _specialized_rettype(cache, ci, const_argtypes)
-        res.julia_ir = (sci, rettype)
+        res.julia_ir = (sci, rettype, kernel_meta)
         return res.julia_ir
     else
-        # Generic path (unchanged)
+        # Generic path
         res = results(cache, ci)
         res.julia_ir !== nothing && return res.julia_ir
         src = @something get_source(ci)
         ir = CC.inflate_ir(src, mi)
+        kernel_meta = extract_meta(ir)
         sci = StructuredIRCode(ir)
-        res.julia_ir = (sci, ci.rettype)
+        res.julia_ir = (sci, ci.rettype, kernel_meta)
         return res.julia_ir
     end
 end
@@ -384,7 +449,7 @@ Code phase: generate Tile IR bytecode from StructuredIRCode.
 function emit_code(cache::CacheView, mi::Core.MethodInstance;
                    const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     # Delegate to previous phase (handles CI + IR)
-    sci, rettype = emit_ir(cache, mi; const_argtypes)
+    sci, rettype, kernel_meta = emit_ir(cache, mi; const_argtypes)
 
     # Check code cache
     ci = get(cache, mi)
@@ -394,13 +459,17 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance;
     # Compute bytecode
     opts = cache.owner[2]
 
+    # Resolve hints: launch()/code_tiled() kwargs > @kernel meta > defaults
+    resolved_num_ctas = resolve_hint(opts.num_ctas, kernel_meta, :num_ctas, opts.sm_arch)
+    resolved_occupancy = resolve_hint(opts.occupancy, kernel_meta, :occupancy, opts.sm_arch)
+
     # Generate Tile IR bytecode
     bytecode = write_bytecode!(1; version=opts.bytecode_version) do writer, func_buf
         emit_kernel!(writer, func_buf, sci, rettype;
             name = sanitize_name(string(mi.def.name)),
             sm_arch = opts.sm_arch,
-            num_ctas = opts.num_ctas,
-            occupancy = opts.occupancy,
+            num_ctas = resolved_num_ctas,
+            occupancy = resolved_occupancy,
             cache = cache,
             const_argtypes = const_argtypes
         )
@@ -505,8 +574,8 @@ Analogous to `code_llvm`/`code_native`. Uses the compilation cache for
 consistency with `launch`.
 """
 function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
-                    sm_arch::Union{String, Nothing}=nothing,
-                    opt_level::Int=3,
+                    sm_arch::Union{VersionNumber, Nothing}=nothing,
+                    opt_level::Union{Int, Nothing}=nothing,
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
                     bytecode_version::VersionNumber=DEFAULT_BYTECODE_VERSION,
@@ -520,7 +589,18 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     mi = @something(match_method_instance(f, stripped; world, method_table=cuTileMethodTable),
                     match_method_instance(f, stripped; world),
                     throw(MethodError(f, stripped)))
-    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
+
+    # Pre-extract opt_level from @kernel meta if not explicitly provided
+    resolved_opt_level = if opt_level !== nothing
+        opt_level
+    else
+        kmeta = extract_kernel_meta_from_source(mi)
+        raw = get(kmeta, :opt_level, nothing)
+        resolved = sm_arch !== nothing && raw !== nothing ? resolve(raw, sm_arch) : raw
+        resolved !== nothing ? resolved::Int : 3
+    end
+
+    opts = (sm_arch=sm_arch, opt_level=resolved_opt_level, num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
     bytecode = emit_code(cache, mi; const_argtypes)

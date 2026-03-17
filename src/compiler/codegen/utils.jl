@@ -170,8 +170,8 @@ mutable struct CGCtx
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
 
-    # Target architecture (e.g., :sm_100)
-    sm_arch::Union{String, Nothing}
+    # Target architecture (e.g., v"10.0" for sm_100)
+    sm_arch::Union{VersionNumber, Nothing}
 
     # Compilation cache (needed for combiner compilation)
     cache::CacheView
@@ -181,7 +181,7 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
                  token::Union{Value, Nothing} = nothing,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
-                 sm_arch::Union{String, Nothing} = nothing,
+                 sm_arch::Union{VersionNumber, Nothing} = nothing,
                  cache::CacheView)
     CGCtx(
         Dict{Int, CGVal}(),

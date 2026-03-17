@@ -73,6 +73,76 @@ end
 
 end
 
+@testset "@kernel Entry Hints" begin
+
+@testset "@kernel with plain num_ctas" begin
+    ct.@kernel num_ctas=2 function vadd_kernel_at_plain(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    if capability(device()) >= v"10"
+        ct.launch(vadd_kernel_at_plain, 64, a, b, c)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    end
+end
+
+@testset "@kernel with ByTarget num_ctas" begin
+    ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 2) function vadd_kernel_at_bt(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    if capability(device()) >= v"10"
+        ct.launch(vadd_kernel_at_bt, 64, a, b, c)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    end
+end
+
+@testset "launch kwarg overrides @kernel" begin
+    ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 2) function vadd_kernel_at_override(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    if capability(device()) >= v"10"
+        ct.launch(vadd_kernel_at_override, 64, a, b, c; num_ctas=4)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    end
+end
+
+end
+
 
 @testset "Load / Store Optimization Hints" begin
 

@@ -13,7 +13,7 @@ emitted instead. The `const_argtypes` vector is 1-indexed matching `sci.argtypes
 function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       sci::StructuredIRCode, rettype::Type;
                       name::String,
-                      sm_arch::Union{String, Nothing} = nothing,
+                      sm_arch::Union{VersionNumber, Nothing} = nothing,
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing,
@@ -297,7 +297,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     if !haskey(ctx.cache, mi)
         error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
     end
-    sci, _ = emit_ir(ctx.cache, mi)
+    sci, _, _ = emit_ir(ctx.cache, mi)
 
     # 3. Create sub-context
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,

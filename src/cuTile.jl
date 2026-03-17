@@ -38,7 +38,7 @@ include("language/math.jl")
 include("language/operations.jl")
 include("language/atomics.jl")
 
-public launch
+public launch, ByTarget, @kernel
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 end # module cuTile

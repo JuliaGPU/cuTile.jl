@@ -637,9 +637,17 @@ struct OptimizationHints
     hints_by_arch::Vector{Tuple{String, LoadStoreHints}}
 end
 
-function make_load_store_hints(sm_arch::Union{String, Nothing}, hints::LoadStoreHints)
+"""
+    format_sm_arch(cap::VersionNumber) -> String
+
+Format a compute capability VersionNumber as an SM architecture string.
+E.g., `v"10.0"` → `"sm_100"`, `v"12.0"` → `"sm_120"`.
+"""
+format_sm_arch(cap::VersionNumber) = "sm_$(cap.major)$(cap.minor)"
+
+function make_load_store_hints(sm_arch::Union{VersionNumber, Nothing}, hints::LoadStoreHints)
     isnothing(sm_arch) && throw(ArgumentError("sm_arch must be explicitly passed when load/store hints are present"))
-    OptimizationHints([(sm_arch, hints)])
+    OptimizationHints([(format_sm_arch(sm_arch), hints)])
 end
 
 function encode_opattr_optimization_hints!(cb::CodeBuilder, hints::OptimizationHints)
@@ -689,7 +697,7 @@ function validate_occupancy(occupancy::Union{Int, Nothing})
     1 <= occupancy <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $occupancy"))
 end
 
-function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{String, Nothing}, hints::EntryHints)
+function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber, Nothing}, hints::EntryHints)
     validate_num_ctas(hints.num_ctas)
     validate_occupancy(hints.occupancy)
 
@@ -700,7 +708,8 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{String, Nothi
     isempty(items) && return nothing
 
     # Use default architecture if not specified and hints are present
-    arch = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
+    arch_ver = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
+    arch = format_sm_arch(arch_ver)
 
     buf = UInt8[]
 
