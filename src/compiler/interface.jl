@@ -286,10 +286,12 @@ end
  Compilation phases
 =============================================================================#
 
-# Compilation options for cache sharding
+# Compilation options for cache sharding.
+# Hint fields (opt_level, num_ctas, occupancy) represent explicit overrides only;
+# `nothing` means "consult @kernel meta nodes in the IR during compilation."
 const CGOpts = @NamedTuple{
     sm_arch::Union{VersionNumber, Nothing},
-    opt_level::Int,
+    opt_level::Union{Int, Nothing},
     num_ctas::Union{Int, Nothing},
     occupancy::Union{Int, Nothing},
     bytecode_version::VersionNumber
@@ -326,29 +328,6 @@ function extract_meta(ir::CC.IRCode)
         if stmt isa Expr && stmt.head === :meta && length(stmt.args) >= 3 && stmt.args[1] === :cuTile
             meta[stmt.args[2]::Symbol] = stmt.args[3]
         end
-    end
-    return meta
-end
-
-"""
-    extract_kernel_meta_from_source(mi::MethodInstance) -> Dict{Symbol, Any}
-
-Cheaply extract @kernel meta nodes from a method's unoptimized CodeInfo.
-Used for pre-extracting opt_level before compilation (cache key creation).
-"""
-function extract_kernel_meta_from_source(mi::Core.MethodInstance)
-    meta = Dict{Symbol, Any}()
-    src = try
-        Base.uncompressed_ir(mi.def)
-    catch
-        return meta
-    end
-    src === nothing && return meta
-    for stmt in src.code
-        stmt isa Expr || continue
-        stmt.head === :meta || continue
-        length(stmt.args) >= 3 && stmt.args[1] === :cuTile || continue
-        meta[stmt.args[2]::Symbol] = stmt.args[3]
     end
     return meta
 end
@@ -590,17 +569,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     match_method_instance(f, stripped; world),
                     throw(MethodError(f, stripped)))
 
-    # Pre-extract opt_level from @kernel meta if not explicitly provided
-    resolved_opt_level = if opt_level !== nothing
-        opt_level
-    else
-        kmeta = extract_kernel_meta_from_source(mi)
-        raw = get(kmeta, :opt_level, nothing)
-        resolved = sm_arch !== nothing && raw !== nothing ? resolve(raw, sm_arch) : raw
-        resolved !== nothing ? resolved::Int : 3
-    end
-
-    opts = (sm_arch=sm_arch, opt_level=resolved_opt_level, num_ctas=num_ctas, occupancy=occupancy,
+    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
     bytecode = emit_code(cache, mi; const_argtypes)

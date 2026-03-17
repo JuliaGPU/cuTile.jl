@@ -3,7 +3,7 @@ module CUDAExt
 using cuTile
 using cuTile: TileArray, Constant, ByTarget, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
               emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type,
-              extract_kernel_meta_from_source, resolve, format_sm_arch
+              resolve_hint, format_sm_arch
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -69,13 +69,17 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance;
 
     opts = cache.owner[2]
 
+    # Resolve opt_level: explicit kwarg > @kernel meta > default (3)
+    _, _, kernel_meta = res.julia_ir
+    opt_level = something(resolve_hint(opts.opt_level, kernel_meta, :opt_level, opts.sm_arch), 3)
+
     # Run tileiras to produce CUBIN
     input_path = tempname() * ".tile"
     output_path = tempname() * ".cubin"
     compiled = false
     try
         write(input_path, bytecode)
-        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(opts.sm_arch)) -O$(opts.opt_level)`,
+        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(opts.sm_arch)) -O$(opt_level)`,
                      "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
         proc, log = run_and_collect(cmd)
         if !success(proc)
@@ -187,16 +191,6 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
 
-    # Pre-extract opt_level from @kernel meta if not explicitly provided
-    resolved_opt_level = if opt_level !== nothing
-        opt_level
-    else
-        kmeta = extract_kernel_meta_from_source(mi)
-        raw = get(kmeta, :opt_level, nothing)
-        resolved = raw !== nothing ? resolve(raw, resolved_sm_arch) : raw
-        resolved !== nothing ? resolved::Int : 3
-    end
-
     # Build const_argtypes for const-seeded inference
     has_consts = any(x -> x isa Constant, tile_args)
     const_argtypes = if has_consts
@@ -210,7 +204,7 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     end
 
     # Create cache view with compilation options as sharding keys
-    opts = (sm_arch=resolved_sm_arch, opt_level=resolved_opt_level,
+    opts = (sm_arch=resolved_sm_arch, opt_level=opt_level,
             num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
