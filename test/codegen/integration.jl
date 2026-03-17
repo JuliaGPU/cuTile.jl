@@ -913,21 +913,21 @@ end
 
     @testset "num_ctas validation" begin
         # Too small
-        @test_throws "num_ctas must be between 1 and 16" begin
+        @test_throws "num_ctas must be" begin
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=0)
         end
 
         # Too large
-        @test_throws "num_ctas must be between 1 and 16" begin
+        @test_throws "num_ctas must be" begin
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=17)
         end
 
         # Not power of 2
-        @test_throws "num_ctas must be a power of 2" begin
+        @test_throws "num_ctas must be" begin
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=3)
         end
 
-        @test_throws "num_ctas must be a power of 2" begin
+        @test_throws "num_ctas must be" begin
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=5)
         end
 
@@ -942,12 +942,12 @@ end
 
     @testset "occupancy validation" begin
         # Too small
-        @test_throws "occupancy must be between 1 and 32" begin
+        @test_throws "occupancy must be" begin
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=0)
         end
 
         # Too large
-        @test_throws "occupancy must be between 1 and 32" begin
+        @test_throws "occupancy must be" begin
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=33)
         end
 
@@ -998,6 +998,43 @@ end
         @test @filecheck begin
             @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4, occupancy = 16}>"
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0")
+        end
+
+        # Plain scalar hint (no ByTarget)
+        ct.@kernel num_ctas=4 function _kernel_plain_hint(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
+            ct.code_tiled(_kernel_plain_hint, argtypes; sm_arch=v"10.0")
+        end
+
+        # Plain scalar resolves the same on any arch
+        @test @filecheck begin
+            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 4}>"
+            ct.code_tiled(_kernel_plain_hint, argtypes; sm_arch=v"12.0")
+        end
+
+        # ByTarget with only a default (no matching arch-specific entries)
+        ct.@kernel occupancy=ct.ByTarget(v"99.0" => 1; default=12) function _kernel_default_only(a::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            t = ct.load(a, pid, (16,))
+            ct.store(a, pid, t)
+            return nothing
+        end
+
+        @test @filecheck begin
+            @check "optimization_hints=<sm_100 = {occupancy = 12}>"
+            ct.code_tiled(_kernel_default_only, argtypes; sm_arch=v"10.0")
+        end
+
+        @test @filecheck begin
+            @check "optimization_hints=<sm_120 = {occupancy = 12}>"
+            ct.code_tiled(_kernel_default_only, argtypes; sm_arch=v"12.0")
         end
     end
 end

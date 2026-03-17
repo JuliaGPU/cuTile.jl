@@ -3,7 +3,7 @@ module CUDAExt
 using cuTile
 using cuTile: TileArray, Constant, ByTarget, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
               emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type,
-              resolve_hint, format_sm_arch
+              resolve_hint, format_sm_arch, validate_hint
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -69,7 +69,8 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance;
 
     opts = cache.owner[2]
 
-    # Resolve opt_level: explicit kwarg > @kernel meta > default (3)
+    # Resolve opt_level here (not in emit_code) because it's a tileiras flag, not bytecode.
+    # num_ctas/occupancy are resolved in emit_code because they're encoded in bytecode.
     _, _, kernel_meta = res.julia_ir
     opt_level = something(resolve_hint(opts.opt_level, kernel_meta, :opt_level, opts.sm_arch), 3)
 

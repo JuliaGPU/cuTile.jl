@@ -1057,9 +1057,20 @@ macro kernel(args...)
     end
 
     # Evaluate hint values at macro expansion time and embed directly in :meta nodes.
-    # :meta args aren't processed by lowering, so we need concrete values.
+    # Core.eval is needed because :meta nodes are not processed by lowering — they
+    # pass through as-is, so their arguments must be concrete values in the AST.
+    # This means @kernel definitions are expected to be at module scope.
     for (key, val) in reverse(hints)
         evaluated = Core.eval(__module__, val)
+        # Validate concrete values (including inside ByTarget)
+        if evaluated isa ByTarget
+            for v in values(evaluated.targets)
+                validate_hint(key, v)
+            end
+            evaluated.default !== nothing && validate_hint(key, something(evaluated.default))
+        else
+            validate_hint(key, evaluated)
+        end
         insert!(body.args, insert_pos, Expr(:meta, :cuTile, key, evaluated))
     end
 

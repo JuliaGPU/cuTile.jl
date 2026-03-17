@@ -641,9 +641,13 @@ end
     format_sm_arch(cap::VersionNumber) -> String
 
 Format a compute capability VersionNumber as an SM architecture string.
-E.g., `v"10.0"` → `"sm_100"`, `v"12.0"` → `"sm_120"`.
+E.g., `v"10.0"` → `"sm_100"`, `v"9.0-a"` → `"sm_90a"`.
 """
-format_sm_arch(cap::VersionNumber) = "sm_$(cap.major)$(cap.minor)"
+function format_sm_arch(cap::VersionNumber)
+    cap.patch == 0 || throw(ArgumentError("unexpected patch version in sm_arch: $cap"))
+    suffix = isempty(cap.prerelease) ? "" : join(cap.prerelease)
+    "sm_$(cap.major)$(cap.minor)$(suffix)"
+end
 
 function make_load_store_hints(sm_arch::Union{VersionNumber, Nothing}, hints::LoadStoreHints)
     isnothing(sm_arch) && throw(ArgumentError("sm_arch must be explicitly passed when load/store hints are present"))

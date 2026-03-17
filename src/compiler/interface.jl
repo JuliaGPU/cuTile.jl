@@ -339,11 +339,15 @@ Resolve a hint value with precedence: explicit kwarg > @kernel meta > nothing.
 """
 function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
                       sm_arch::Union{VersionNumber, Nothing})
-    explicit !== nothing && return explicit
-    if haskey(kernel_meta, key) && sm_arch !== nothing
-        return resolve(kernel_meta[key], sm_arch)
+    val = if explicit !== nothing
+        explicit
+    elseif haskey(kernel_meta, key) && sm_arch !== nothing
+        resolve(kernel_meta[key], sm_arch)
+    else
+        nothing
     end
-    return nothing
+    validate_hint(key, val)
+    return val
 end
 
 """

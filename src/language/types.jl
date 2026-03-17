@@ -461,3 +461,29 @@ end
 # Pass-through: plain values resolve to themselves
 resolve(val, ::VersionNumber) = val
 resolve(::Nothing, ::VersionNumber) = nothing
+
+"""
+    validate_hint(key::Symbol, val)
+
+Validate a kernel optimization hint value. Throws `ArgumentError` for invalid values.
+
+- `num_ctas`: power of 2 in [1, 16]
+- `occupancy`: integer in [1, 32]
+- `opt_level`: integer in [0, 3]
+"""
+function validate_hint(key::Symbol, val)
+    val === nothing && return
+    if key === :num_ctas
+        val isa Integer || throw(ArgumentError("num_ctas must be an integer, got $(typeof(val))"))
+        1 <= val <= 16 || throw(ArgumentError("num_ctas must be between 1 and 16, got $val"))
+        ispow2(val) || throw(ArgumentError("num_ctas must be a power of 2, got $val"))
+    elseif key === :occupancy
+        val isa Integer || throw(ArgumentError("occupancy must be an integer, got $(typeof(val))"))
+        1 <= val <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $val"))
+    elseif key === :opt_level
+        val isa Integer || throw(ArgumentError("opt_level must be an integer, got $(typeof(val))"))
+        0 <= val <= 3 || throw(ArgumentError("opt_level must be between 0 and 3, got $val"))
+    else
+        throw(ArgumentError("unknown hint key: $key"))
+    end
+end
