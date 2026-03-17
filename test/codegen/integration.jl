@@ -963,9 +963,10 @@ end
         end
     end
 
-    @testset "ct.@kernel" begin
+    @testset "ct.@compiler_options" begin
         # Single kernel with multiple ByTarget hints to exercise all resolution paths
-        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4; default=2) occupancy=ct.ByTarget(v"10.0" => 16) function _kernel_hints(a::ct.TileArray{Float32,1})
+        function _kernel_hints(a::ct.TileArray{Float32,1})
+            ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 4; default=2) occupancy=ct.ByTarget(v"10.0" => 16)
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.store(a, pid, t)
@@ -987,7 +988,7 @@ end
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"12.0")
         end
 
-        # Explicit kwarg overrides @kernel meta
+        # Explicit kwarg overrides @compiler_options meta
         @test @filecheck begin
             @check "optimization_hints=<sm_100 = {num_cta_in_cga = 8, occupancy = 16}>"
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0", num_ctas=8)
@@ -1001,7 +1002,8 @@ end
         end
 
         # Plain scalar hint (no ByTarget)
-        ct.@kernel num_ctas=4 function _kernel_plain_hint(a::ct.TileArray{Float32,1})
+        function _kernel_plain_hint(a::ct.TileArray{Float32,1})
+            ct.@compiler_options num_ctas=4
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.store(a, pid, t)
@@ -1020,7 +1022,8 @@ end
         end
 
         # ByTarget with only a default (no matching arch-specific entries)
-        ct.@kernel occupancy=ct.ByTarget(v"99.0" => 1; default=12) function _kernel_default_only(a::ct.TileArray{Float32,1})
+        function _kernel_default_only(a::ct.TileArray{Float32,1})
+            ct.@compiler_options occupancy=ct.ByTarget(v"99.0" => 1; default=12)
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.store(a, pid, t)

@@ -108,34 +108,40 @@ end
     @test_throws ArgumentError cuTile.format_sm_arch(v"10.0.1")
 end
 
-@testset "@kernel validation" begin
+@testset "@compiler_options validation" begin
     # Invalid num_ctas (not power of 2) should throw at definition time
-    @test_throws "num_ctas must be" @eval ct.@kernel num_ctas=3 function _test_bad_ctas(a::ct.TileArray{Float32,1})
+    @test_throws "num_ctas must be" @eval function _test_bad_ctas(a::ct.TileArray{Float32,1})
+        ct.@compiler_options num_ctas=3
         return
     end
 
     # Invalid occupancy (out of range) should throw at definition time
-    @test_throws "occupancy must be" @eval ct.@kernel occupancy=64 function _test_bad_occ(a::ct.TileArray{Float32,1})
+    @test_throws "occupancy must be" @eval function _test_bad_occ(a::ct.TileArray{Float32,1})
+        ct.@compiler_options occupancy=64
         return
     end
 
     # Invalid opt_level should throw at definition time
-    @test_throws "opt_level must be" @eval ct.@kernel opt_level=5 function _test_bad_opt(a::ct.TileArray{Float32,1})
+    @test_throws "opt_level must be" @eval function _test_bad_opt(a::ct.TileArray{Float32,1})
+        ct.@compiler_options opt_level=5
         return
     end
 
     # ByTarget with invalid inner value should throw
-    @test_throws "num_ctas must be" @eval ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 3) function _test_bad_bt(a::ct.TileArray{Float32,1})
+    @test_throws "num_ctas must be" @eval function _test_bad_bt(a::ct.TileArray{Float32,1})
+        ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 3)
         return
     end
 
     # Valid plain hints should work fine
-    @eval ct.@kernel num_ctas=2 occupancy=8 opt_level=2 function _test_good_hints(a::ct.TileArray{Float32,1})
+    @eval function _test_good_hints(a::ct.TileArray{Float32,1})
+        ct.@compiler_options num_ctas=2 occupancy=8 opt_level=2
         return
     end
 
     # Valid ByTarget should work fine
-    @eval ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 2, v"12.0" => 4; default=1) function _test_good_bt(a::ct.TileArray{Float32,1})
+    @eval function _test_good_bt(a::ct.TileArray{Float32,1})
+        ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 2, v"12.0" => 4; default=1)
         return
     end
 end

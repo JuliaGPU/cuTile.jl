@@ -418,12 +418,13 @@ struct One end
     ByTarget{T}
 
 Per-architecture value that resolves to a concrete `T` based on the target
-GPU's compute capability. Use with `@kernel` to specify architecture-specific
-optimization hints.
+GPU's compute capability. Use with `@compiler_options` to specify
+architecture-specific optimization hints.
 
 # Example
 ```julia
-ct.@kernel num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4) function my_kernel(...)
+function my_kernel(...)
+    ct.@compiler_options num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4)
     ...
 end
 ```

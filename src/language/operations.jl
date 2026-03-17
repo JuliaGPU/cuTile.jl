@@ -991,76 +991,52 @@ macro assert(cond, msg)
 end
 
 #=============================================================================
- @kernel macro
+ @compiler_options macro
 =============================================================================#
 
-const _KERNEL_HINT_NAMES = Set([:num_ctas, :occupancy, :opt_level])
+const _COMPILER_OPTION_NAMES = Set([:num_ctas, :occupancy, :opt_level])
 
 """
-    @kernel [key=val...] function f(args...)
-        ...
-    end
+    @compiler_options key=val...
 
-Annotate a kernel function with per-architecture optimization hints.
-Hints are embedded as `:meta` nodes in the function body and resolved at
-compile time based on the target `sm_arch`.
+Specify per-architecture optimization hints inside a kernel function body.
+Hints are embedded as `:meta` nodes and resolved at compile time based on
+the target `sm_arch`.
 
-Supported hints: `num_ctas`, `occupancy`, `opt_level`.
+Supported options: `num_ctas`, `occupancy`, `opt_level`.
 
 Values can be plain scalars or `ByTarget(...)` for per-architecture dispatch.
 
 # Examples
 ```julia
-ct.@kernel num_ctas=2 function my_kernel(A, B)
+function my_kernel(A, B)
+    ct.@compiler_options num_ctas=2
     ...
 end
 
-ct.@kernel num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4) occupancy=8 function my_kernel(A, B)
+function my_kernel(A, B)
+    ct.@compiler_options num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4) occupancy=8
     ...
 end
 ```
 """
-macro kernel(args...)
-    isempty(args) && error("@kernel requires at least a function definition")
-    func_expr = args[end]
-    hint_exprs = args[1:end-1]
+macro compiler_options(args...)
+    isempty(args) && error("@compiler_options requires at least one key=val pair")
 
     # Validate and collect hints
     hints = Pair{Symbol, Any}[]
-    for h in hint_exprs
-        h isa Expr && h.head === :(=) || error("@kernel: expected key=val, got $h")
+    for h in args
+        h isa Expr && h.head === :(=) || error("@compiler_options: expected key=val, got $h")
         key = h.args[1]::Symbol
-        key in _KERNEL_HINT_NAMES || error("@kernel: unknown hint '$key'; expected one of $(_KERNEL_HINT_NAMES)")
+        key in _COMPILER_OPTION_NAMES || error("@compiler_options: unknown option '$key'; expected one of $(_COMPILER_OPTION_NAMES)")
         push!(hints, key => h.args[2])
-    end
-
-    # Validate function definition
-    if !(func_expr isa Expr && func_expr.head in (:function, :(=)))
-        error("@kernel: last argument must be a function definition")
-    end
-
-    # For each hint value, create a module-level const to hold the evaluated value.
-    # This ensures complex expressions (like ByTarget(...)) are evaluated at
-    # definition time and their results are available as GlobalRefs in :meta nodes.
-    func_expr = copy(func_expr)
-    body = func_expr.args[2]
-    if !(body isa Expr && body.head === :block)
-        error("@kernel: function body must be a block")
-    end
-    body = copy(body)
-    func_expr.args[2] = body
-
-    # Insert meta nodes at the top of the body (after any LineNumberNode)
-    insert_pos = 1
-    while insert_pos <= length(body.args) && body.args[insert_pos] isa LineNumberNode
-        insert_pos += 1
     end
 
     # Evaluate hint values at macro expansion time and embed directly in :meta nodes.
     # Core.eval is needed because :meta nodes are not processed by lowering — they
     # pass through as-is, so their arguments must be concrete values in the AST.
-    # This means @kernel definitions are expected to be at module scope.
-    for (key, val) in reverse(hints)
+    metas = Expr[]
+    for (key, val) in hints
         evaluated = Core.eval(__module__, val)
         # Validate concrete values (including inside ByTarget)
         if evaluated isa ByTarget
@@ -1071,8 +1047,8 @@ macro kernel(args...)
         else
             validate_hint(key, evaluated)
         end
-        insert!(body.args, insert_pos, Expr(:meta, :cuTile, key, evaluated))
+        push!(metas, Expr(:meta, :cuTile, key, evaluated))
     end
 
-    return esc(func_expr)
+    return Expr(:block, metas...)
 end

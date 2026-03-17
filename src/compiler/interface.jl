@@ -288,7 +288,7 @@ end
 
 # Compilation options for cache sharding.
 # Hint fields (opt_level, num_ctas, occupancy) represent explicit overrides only;
-# `nothing` means "consult @kernel meta nodes in the IR during compilation."
+# `nothing` means "consult @compiler_options meta nodes in the IR during compilation."
 const CGOpts = @NamedTuple{
     sm_arch::Union{VersionNumber, Nothing},
     opt_level::Union{Int, Nothing},
@@ -332,7 +332,7 @@ end
 """
     extract_meta(ir::CC.IRCode) -> Dict{Symbol, Any}
 
-Extract cuTile meta nodes from IRCode. Meta nodes are inserted by `@kernel`
+Extract cuTile meta nodes from IRCode. Meta nodes are inserted by `@compiler_options`
 and survive through lowering/optimization. After `process_meta!` normalization,
 all meta nodes reside in `ir.meta`.
 """
@@ -349,7 +349,7 @@ end
 """
     resolve_hint(explicit, kernel_meta, key, sm_arch)
 
-Resolve a hint value with precedence: explicit kwarg > @kernel meta > nothing.
+Resolve a hint value with precedence: explicit kwarg > @compiler_options meta > nothing.
 """
 function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
                       sm_arch::Union{VersionNumber, Nothing})
@@ -458,7 +458,7 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance;
     # Compute bytecode
     opts = cache.owner[2]
 
-    # Resolve hints: launch()/code_tiled() kwargs > @kernel meta > defaults
+    # Resolve hints: launch()/code_tiled() kwargs > @compiler_options meta > defaults
     resolved_num_ctas = resolve_hint(opts.num_ctas, kernel_meta, :num_ctas, opts.sm_arch)
     resolved_occupancy = resolve_hint(opts.occupancy, kernel_meta, :occupancy, opts.sm_arch)
 
