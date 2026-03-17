@@ -690,20 +690,9 @@ Encoded as a dictionary attribute in bytecode.
     occupancy::Union{Int, Nothing} = nothing   # 1-32
 end
 
-function validate_num_ctas(num_ctas::Union{Int, Nothing})
-    isnothing(num_ctas) && return
-    1 <= num_ctas <= 16 || throw(ArgumentError("num_ctas must be between 1 and 16, got $num_ctas"))
-    ispow2(num_ctas) || throw(ArgumentError("num_ctas must be a power of 2, got $num_ctas"))
-end
-
-function validate_occupancy(occupancy::Union{Int, Nothing})
-    isnothing(occupancy) && return
-    1 <= occupancy <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $occupancy"))
-end
-
 function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber, Nothing}, hints::EntryHints)
-    validate_num_ctas(hints.num_ctas)
-    validate_occupancy(hints.occupancy)
+    validate_hint(:num_ctas, hints.num_ctas)
+    validate_hint(:occupancy, hints.occupancy)
 
     # Build items list (only non-nothing values)
     items = Tuple{String, Int}[]
