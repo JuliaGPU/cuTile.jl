@@ -39,7 +39,7 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     num_k = ct.num_tiles(A, 2, (tm, tk))
 
     # Initialize accumulator with Float32 for precision
-    acc = ct.full((tm, tn), zero(Float32), Float32)
+    acc = ct.full(zero(Float32), Float32, (tm, tn))
 
     # K reduction loop - accumulate partial products
     # NOTE: Uses while-loop pattern. Native `for k in 0:n` syntax generates complex

@@ -87,7 +87,7 @@ end
     # Test that token threading enforces memory ordering in spinlock patterns
     function spinlock_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        val = ct.full((1,), 1.0f0, Float32)
+        val = ct.full(1.0f0, Float32, (1,))
 
         # Spin until we acquire the lock (CAS returns old value, 0 means we got it)
         while ct.atomic_cas(lock, 1, 0, 1;
@@ -121,7 +121,7 @@ end
     # Test that explicit memory_order kwargs work correctly
     function explicit_ordering_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        val = ct.full((1,), 1.0f0, Float32)
+        val = ct.full(1.0f0, Float32, (1,))
 
         # Spin until we acquire the lock - use explicit Acquire ordering
         while ct.atomic_cas(lock, 1, 0, 1;
@@ -176,7 +176,7 @@ end
     function atomic_add_tile_kernel(arr::ct.TileArray{Int,1}, TILE::Int)
         bid = ct.bid(1)
         base = (bid - 1) * TILE
-        indices = base .+ ct.arange((TILE,), Int)
+        indices = base .+ ct.arange(TILE, Int)
         ct.atomic_add(arr, indices, 1;
                      memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -194,7 +194,7 @@ end
 
 @testset "atomic_add tile-indexed returns old values" begin
     function atomic_add_return_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         old_vals = ct.atomic_add(arr, indices, 1;
                                 memory_order=ct.MemoryOrder.AcqRel)
         ct.scatter(out, indices, old_vals)
@@ -214,7 +214,7 @@ end
     function atomic_add_f32_tile_kernel(arr::ct.TileArray{Float32,1}, TILE::Int)
         bid = ct.bid(1)
         base = (bid - 1) * TILE
-        indices = base .+ ct.arange((TILE,), Int)
+        indices = base .+ ct.arange(TILE, Int)
         ct.atomic_add(arr, indices, 1.5f0;
                      memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -233,7 +233,7 @@ end
 @testset "atomic_add tile-indexed with tile values" begin
     function atomic_add_tile_val_kernel(arr::ct.TileArray{Int,1},
                                         vals::ct.TileArray{Int,1})
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         val_tile = ct.gather(vals, indices)
         ct.atomic_add(arr, indices, val_tile;
                      memory_order=ct.MemoryOrder.AcqRel)
@@ -250,7 +250,7 @@ end
 
 @testset "atomic_xchg tile-indexed" begin
     function atomic_xchg_tile_kernel(arr::ct.TileArray{Int,1})
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         ct.atomic_xchg(arr, indices, 42;
                       memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -265,7 +265,7 @@ end
 
 @testset "atomic_cas tile-indexed success" begin
     function atomic_cas_tile_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         old_vals = ct.atomic_cas(arr, indices, 0, 1;
                                 memory_order=ct.MemoryOrder.AcqRel)
         ct.scatter(out, indices, old_vals)
@@ -283,7 +283,7 @@ end
 
 @testset "atomic_cas tile-indexed failure" begin
     function atomic_cas_fail_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         old_vals = ct.atomic_cas(arr, indices, 0, 2;
                                 memory_order=ct.MemoryOrder.AcqRel)
         ct.scatter(out, indices, old_vals)
@@ -302,7 +302,7 @@ end
 @testset "atomic_add tile-indexed out-of-bounds" begin
     function atomic_add_oob_kernel(arr::ct.TileArray{Int,1})
         # Index tile is larger than array — OOB elements should be masked
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         ct.atomic_add(arr, indices, 1;
                      memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -319,9 +319,9 @@ end
 @testset "atomic_add tile-indexed 3D" begin
     function atomic_add_3d_kernel(arr::ct.TileArray{Int,3})
         # 3D index tiles — each is length 4, will broadcast to (4,4,4) = 64 elements
-        i = ct.reshape(ct.arange((4,), Int), (4, 1, 1))
-        j = ct.reshape(ct.arange((4,), Int), (1, 4, 1))
-        k = ct.reshape(ct.arange((4,), Int), (1, 1, 4))
+        i = ct.reshape(ct.arange(4, Int), (4, 1, 1))
+        j = ct.reshape(ct.arange(4, Int), (1, 4, 1))
+        k = ct.reshape(ct.arange(4, Int), (1, 1, 4))
         ct.atomic_add(arr, (i, j, k), 1;
                      memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -339,7 +339,7 @@ end
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         # Simple indices 0..15
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         # Gather from source
         tile = ct.gather(src, indices)
         # Store to destination
@@ -363,7 +363,7 @@ end
         # Load from source
         tile = ct.load(src, pid, (16,))
         # Simple indices 0..15
-        indices = ct.arange((16,), Int)
+        indices = ct.arange(16, Int)
         # Scatter to destination
         ct.scatter(dst, indices, tile)
         return

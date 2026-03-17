@@ -419,48 +419,94 @@ end
  Factory
 =============================================================================#
 
-public arange, full, zeros
+public arange, full, fill, zeros
 
 """
-    arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
+    arange(n::Int, T::Type) -> Tile{T, (n,)}
+    arange(shape::NTuple{1, Int}, T::Type) -> Tile{T, shape}
 
-Create a 1D tile with values [1, 2, 3, ..., shape[1]] (1-indexed).
+Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
 # Example
 ```julia
-indices = ct.arange((16,), Int32)  # Creates Tile with [1, 2, 3, ..., 16]
+indices = ct.arange(16, Int32)      # Creates Tile with [1, 2, 3, ..., 16]
+indices = ct.arange((16,), Int32)   # Same thing, tuple form
 ```
 """
-@inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} =
-    Intrinsics.iota(shape, T) .+ one(T)
+@inline arange(n::Int, ::Type{T}) where {T} =
+    Intrinsics.iota((n,), T) .+ one(T)
+@inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} = arange(shape[1], T)
 
 """
-    full(shape::NTuple{N, Int}, value, dtype::Type{T}) -> Tile{T, shape}
+    full(value, T::Type, shape::NTuple{N, Int}) -> Tile{T, shape}
 
-Create a tile filled with a constant value.
+Create a tile filled with a constant value, with explicit element type `T`.
+
+Use [`fill`](@ref) when the type can be inferred from the value.
 
 # Example
 ```julia
-ones_tile = ct.full((32, 32), 1.0f0, Float32)
+ones_tile = ct.full(1.0f0, Float32, (32, 32))
 ```
 """
-@inline full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T} =
-    Intrinsics.constant(shape, convert(Tile{T}, value), T)
-@inline full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T} =
+@inline full(value, ::Type{T}, shape::NTuple{N, Int}) where {N, T} =
     Intrinsics.constant(shape, Tile(T(value)), T)
+@inline full(value::Tile, ::Type{T}, shape::NTuple{N, Int}) where {N, T} =
+    Intrinsics.constant(shape, convert(Tile{T}, value), T)
+
+# Deprecated old argument order
+@inline function full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T}
+    Base.depwarn("`ct.full(shape, value, T)` is deprecated, use `ct.full(value, T, shape)` instead", :full)
+    full(value, T, shape)
+end
+@inline function full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T}
+    Base.depwarn("`ct.full(shape, value, T)` is deprecated, use `ct.full(value, T, shape)` instead", :full)
+    full(value, T, shape)
+end
 
 """
-    zeros(shape::NTuple{N, Int}, dtype::Type{T}) -> Tile{T, shape}
+    fill(value, shape::NTuple{N, Int}) -> Tile{typeof(value), shape}
+    fill(value, dims::Int...) -> Tile{typeof(value), dims}
+
+Create a tile filled with a constant value, with element type inferred from `value`.
+
+Use [`full`](@ref) when the element type should differ from `typeof(value)`.
+
+# Example
+```julia
+ones_tile = ct.fill(1.0f0, (32, 32))
+ones_tile = ct.fill(1.0f0, 32, 32)   # varargs form
+```
+"""
+@inline fill(value, shape::NTuple{N, Int}) where {N} =
+    full(value, typeof(value), shape)
+@inline fill(value, dims::Int...) =
+    fill(value, dims)
+@inline fill(value::Tile{T}, shape::NTuple{N, Int}) where {N, T} =
+    full(value, T, shape)
+
+"""
+    zeros(T::Type, shape::NTuple{N, Int}) -> Tile{T, shape}
+    zeros(T::Type, dims::Int...) -> Tile{T, dims}
 
 Create a tile filled with zeros.
 
 # Example
 ```julia
-zeros_tile = ct.zeros((32, 32), Float32)
+zeros_tile = ct.zeros(Float32, (32, 32))
+zeros_tile = ct.zeros(Float32, 32, 32)   # varargs form
 ```
 """
-@inline zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T} =
-    full(shape, zero(T), T)
+@inline zeros(::Type{T}, shape::NTuple{N, Int}) where {N, T} =
+    full(zero(T), T, shape)
+@inline zeros(::Type{T}, dims::Int...) where {T} =
+    zeros(T, dims)
+
+# Deprecated old argument order
+@inline function zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T}
+    Base.depwarn("`ct.zeros(shape, T)` is deprecated, use `ct.zeros(T, shape)` instead", :zeros)
+    zeros(T, shape)
+end
 
 #=============================================================================
  Shape & DType
@@ -522,6 +568,7 @@ reshaped = reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
     size(tile) === shape && return tile
     Intrinsics.reshape(tile, shape)
 end
+@inline Base.reshape(tile::Tile{T}, dims::Int...) where {T} = reshape(tile, dims)
 
 """
     permutedims(tile::Tile{T, S}, perm) -> Tile{T, permuted_shape}
@@ -917,7 +964,7 @@ end
 @inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}) where {T1}
     M = size(a, 1)
     N = size(b, 2)
-    acc = zeros((M, N), T1)
+    acc = zeros(T1, (M, N))
     muladd(a, b, acc)
 end
 
@@ -926,7 +973,7 @@ end
     B = max(size(a, 1), size(b, 1))  # Broadcast batch dimension
     M = size(a, 2)
     N = size(b, 3)
-    acc = zeros((B, M, N), T1)
+    acc = zeros(T1, (B, M, N))
     muladd(a, b, acc)
 end
 

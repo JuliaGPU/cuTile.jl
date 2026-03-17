@@ -114,7 +114,7 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.Constant{Int,32}, ct.Constant{Int,32}, ct.Constant{Int,16}}) do A, B, C, tm, tn, tk
                 bid = ct.bid(1)
                 num_k = ct.num_tiles(A, 2, (tm, tk))
-                acc = ct.full((tm, tn), zero(Float32), Float32)
+                acc = ct.full(zero(Float32), Float32, (tm, tn))
                 # NOTE: Uses while-loop pattern because Julia's for-loop generates
                 # complex iterator IR with PhiNodes that isn't fully supported.
                 # The structurizer upgrades this counting while-loop to a ForOp.
@@ -150,7 +150,7 @@ end
 
                 # First for loop: compute sum
                 @check "for"
-                acc = ct.full((1, TILE_N), 0.0f0, Float32)
+                acc = ct.full(0.0f0, Float32, (1, TILE_N))
                 j = Int32(1)
                 while j <= num_tiles
                     tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
@@ -247,7 +247,7 @@ end
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
 
-                    val = ct.full((1, TILE_N), 1.0f0, Float32)
+                    val = ct.full(1.0f0, Float32, (1, TILE_N))
                     ct.store(DB, (group_bid_m, j), val)
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
@@ -291,7 +291,7 @@ end
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
 
-                    val = ct.full((1, TILE_N), 1.0f0, Float32)
+                    val = ct.full(1.0f0, Float32, (1, TILE_N))
                     ct.store(DB, (group_bid_m, j), val)
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
@@ -382,8 +382,8 @@ end
                 bid_n = ct.bid(1)
                 num_tiles = ct.num_tiles(DW, 2, (_TILE_N, _TILE_M))
 
-                dw = ct.zeros((_TILE_N, _TILE_M), Float32)
-                db = ct.zeros((_TILE_N, _TILE_M), Float32)
+                dw = ct.zeros(Float32, (_TILE_N, _TILE_M))
+                db = ct.zeros(Float32, (_TILE_N, _TILE_M))
                 i = Int32(1)
                 while i <= num_tiles
                     dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N, _TILE_M); padding_mode=ct.PaddingMode.Zero)
@@ -423,7 +423,7 @@ end
 
                 # First loop: accumulate and reduce
                 @check "for"
-                acc = ct.zeros((TILE_N,), Float32)
+                acc = ct.zeros(Float32, (TILE_N,))
                 i = Int32(1)
                 while i <= num_tiles
                     tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
@@ -435,7 +435,7 @@ end
 
                 # Second loop: use sum_val AND accumulate
                 @check "for"
-                acc2 = ct.zeros((TILE_N,), Float32)
+                acc2 = ct.zeros(Float32, (TILE_N,))
                 i = Int32(1)
                 while i <= num_tiles
                     tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
@@ -465,7 +465,7 @@ end
                     pid = ct.bid(1)
                     # Create index tile (simple: just use arange)
                     @check "iota"
-                    indices = ct.arange((16,), Int32)
+                    indices = ct.arange(16, Int32)
                     # Gather from array
                     @check "offset"
                     @check "load_ptr_tko"
@@ -485,7 +485,7 @@ end
                     tile = ct.load(a, pid, (16,))
                     # Create index tile (simple: just use arange)
                     @check "iota"
-                    indices = ct.arange((16,), Int32)
+                    indices = ct.arange(16, Int32)
                     # Scatter to array
                     @check "offset"
                     @check "store_ptr_tko"
@@ -502,7 +502,7 @@ end
                     pid = ct.bid(1)
                     # Use Int (Int64) to test type conversion
                     @check "iota"
-                    indices = ct.arange((16,), Int)
+                    indices = ct.arange(16, Int)
                     # Should convert to Int32 internally
                     @check "trunci"
                     @check "offset"
@@ -522,7 +522,7 @@ end
                     tile = ct.load(a, pid, (16,))
                     # Use Int (Int64) to test type conversion
                     @check "iota"
-                    indices = ct.arange((16,), Int)
+                    indices = ct.arange(16, Int)
                     # Should convert to Int32 internally
                     @check "trunci"
                     @check "offset"
@@ -610,7 +610,7 @@ end
         @testset "non-power-of-2 full shape rejected" begin
             @test_throws "full: tile dimension 1 must be a power of 2, got 5" begin
                 code_tiled(Tuple{}) do
-                    ct.full((5,), 0.0f0, Float32)
+                    ct.full(0.0f0, Float32, (5,))
                 end
             end
         end
@@ -618,7 +618,7 @@ end
         @testset "non-power-of-2 arange shape rejected" begin
             @test_throws "arange: tile dimension 1 must be a power of 2, got 7" begin
                 code_tiled(Tuple{}) do
-                    ct.arange((7,), Int32)
+                    ct.arange(7, Int32)
                 end
             end
         end
@@ -643,7 +643,7 @@ end
         @testset "negative dimension rejected" begin
             @test_throws "full: tile dimension 1 must be positive, got -4" begin
                 code_tiled(Tuple{}) do
-                    ct.full((-4,), 0.0f0, Float32)
+                    ct.full(0.0f0, Float32, (-4,))
                 end
             end
         end
@@ -1179,7 +1179,7 @@ end
             @check "optimization_hints = <sm_120 = {latency = 3}>"
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
-                indices = ct.arange((16,), Int32)
+                indices = ct.arange(16, Int32)
                 tile = ct.gather(a, indices; latency=3)
                 ct.store(b, pid, tile)
                 return nothing
@@ -1194,7 +1194,7 @@ end
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
-                indices = ct.arange((16,), Int32)
+                indices = ct.arange(16, Int32)
                 ct.scatter(b, indices, tile; latency=5)
                 return nothing
             end

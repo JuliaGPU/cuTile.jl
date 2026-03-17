@@ -23,7 +23,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     num_k = cld(K, Int32(tk))
 
     # Initialize accumulator with Float32 for precision
-    acc = ct.full((tm, tn), zero(Float32), Float32)
+    acc = ct.zeros(Float32, (tm, tn))
 
     # K reduction loop
     k = Int32(1)

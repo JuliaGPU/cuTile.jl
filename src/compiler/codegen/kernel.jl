@@ -330,7 +330,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
             sub_ctx[Argument(va_offset + j - block_idx + 1)] = CGVal(block_args[j], block_type_ids[j], arg_types[j])
             push!(tuple_components, Argument(va_offset + j - block_idx + 1))
         end
-        constants = Vector{Any}(fill(nothing, length(tuple_components)))
+        constants = Vector{Any}(Base.fill(nothing, length(tuple_components)))
         sub_ctx[Argument(n_argtypes)] = tuple_value(sci.argtypes[end], tuple_components, constants)
     else
         for i in 1:n_argtypes

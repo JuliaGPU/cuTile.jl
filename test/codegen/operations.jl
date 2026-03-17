@@ -394,8 +394,8 @@ spec3d = ct.ArraySpec{3}(16, true)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do out
-                a = ct.arange((16,), Int64)
-                b = ct.arange((16,), Int32)
+                a = ct.arange(16, Int64)
+                b = ct.arange(16, Int32)
                 # Should promote Int32 to Int64 and compare
                 @check "exti"
                 @check "cmpi"
@@ -416,7 +416,7 @@ spec3d = ct.ArraySpec{3}(16, true)
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "constant"
-                tile = ct.full((16,), 0.0f0, Float32)
+                tile = ct.full(0.0f0, Float32, (16,))
                 ct.store(a, pid, tile)
                 return
             end
@@ -431,7 +431,7 @@ spec3d = ct.ArraySpec{3}(16, true)
                 @check "itof"
                 @check "reshape"
                 @check "broadcast"
-                tile = ct.full((16,), val, Float32)
+                tile = ct.full(val, Float32, (16,))
                 ct.store(a, pid, tile)
                 return
             end
@@ -468,7 +468,7 @@ spec3d = ct.ArraySpec{3}(16, true)
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "iota"
-                tile = ct.arange((16,), Int32)
+                tile = ct.arange(16, Int32)
                 ct.store(a, pid, tile)
                 return
             end
@@ -483,7 +483,7 @@ spec3d = ct.ArraySpec{3}(16, true)
                 bidy = ct.bid(2)
                 tile_a = ct.load(a, bidx, (32, 16))
                 tile_b = ct.load(b, bidy, (16, 32))
-                acc = ct.full((32, 32), 0.0f0, Float32)
+                acc = ct.full(0.0f0, Float32, (32, 32))
                 @check "mma"
                 result = muladd(tile_a, tile_b, acc)
                 ct.store(c, (bidx, bidy), result)
@@ -959,7 +959,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
                 pid = ct.bid(1)
-                acc = ct.full((16,), 0.0f0, Float32)
+                acc = ct.full(0.0f0, Float32, (16,))
                 @check "for"
                 k = Int32(1)
                 while k <= n
@@ -1485,7 +1485,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
                 @check "iota"
-                indices = ct.arange((16,), Int)
+                indices = ct.arange(16, Int)
                 @check "offset"
                 @check "atomic_cas_tko"
                 ct.atomic_cas(arr, indices, Int32(0), Int32(1))
@@ -1500,9 +1500,9 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,3,spec3d}}) do arr
                 @check "iota"
-                i = ct.arange((4,), Int)
-                j = ct.arange((4,), Int)
-                k = ct.arange((4,), Int)
+                i = ct.arange(4, Int)
+                j = ct.arange(4, Int)
+                k = ct.arange(4, Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, (i, j, k), Int32(1))
@@ -1518,7 +1518,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
                 @check "iota"
-                indices = ct.arange((16,), Int)
+                indices = ct.arange(16, Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_xchg(arr, indices, Int32(42))
@@ -1531,7 +1531,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
                 @check "iota"
-                indices = ct.arange((16,), Int)
+                indices = ct.arange(16, Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, indices, Int32(1))
@@ -1545,7 +1545,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do arr
                 @check "iota"
-                indices = ct.arange((16,), Int)
+                indices = ct.arange(16, Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, indices, 1.5f0)

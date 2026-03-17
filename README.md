@@ -140,9 +140,10 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Construction
 | Operation | Description |
 |-----------|-------------|
-| `ct.zeros(shape, T)` | Zero-filled tile |
-| `ct.full(shape, value, T)` | Constant-filled tile |
-| `ct.arange(shape, T)` | Sequence `[1, 2, 3, ...]` |
+| `ct.zeros(T, shape)` / `ct.zeros(T, dims...)` | Zero-filled tile |
+| `ct.full(value, T, shape)` | Constant-filled tile (explicit type) |
+| `ct.fill(value, shape)` / `ct.fill(value, dims...)` | Constant-filled tile (type inferred) |
+| `ct.arange(n, T)` | Sequence `[1, 2, 3, ..., n]` |
 
 ### Shape
 | Operation | Description |

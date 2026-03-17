@@ -203,7 +203,7 @@ end
                                  b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         base = (pid - 1) * 16
-        indices = base .+ ct.arange((16,), Int32)
+        indices = base .+ ct.arange(16, Int32)
         tile = ct.gather(a, indices; latency=5)
         ct.store(b, pid, tile)
         return nothing
@@ -224,7 +224,7 @@ end
         pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         base = (pid - 1) * 16
-        indices = base .+ ct.arange((16,), Int32)
+        indices = base .+ ct.arange(16, Int32)
         ct.scatter(b, indices, tile; latency=3)
         return nothing
     end

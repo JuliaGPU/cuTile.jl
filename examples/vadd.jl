@@ -31,7 +31,7 @@ function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c:
                                    tile::Int) where {T}
     bid = ct.bid(1)
     # Create index tile for this block's elements
-    offsets = ct.arange((tile,), Int32)
+    offsets = ct.arange(tile, Int32)
     base = ct.Tile((bid - Int32(1)) * Int32(tile))
     indices = ct.broadcast_to(base, (tile,)) .+ offsets
 
