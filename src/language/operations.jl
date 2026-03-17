@@ -545,8 +545,7 @@ permuted = permutedims(tile, (3, 1, 2))    # Shape (4, 2, 3)
 
 Permute a 2D tile, swapping its dimensions. Defaults to permutation `(2, 1)`.
 
-Differs from `transpose` in that the operation is not recursive. For tiles
-of numeric element types, the two operations are equivalent.
+Equivalent to `transpose`.
 
 ---
 
@@ -554,7 +553,7 @@ of numeric element types, the two operations are equivalent.
 
 Reshape a 1D tile into a `1 × N` row tile.
 
-Differs from `transpose` in that the operation is not recursive.
+Equivalent to `transpose`.
 """
 @generated function Base.permutedims(tile::T) where {T <: Tile}
     n = ndims(T)
@@ -573,10 +572,27 @@ end
     transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
 
 Transpose a 2D tile, swapping its dimensions.
-Equivalent to `permute(tile, (2, 1))`.
+
+---
+
+    transpose(tile::Tile{T, (N,)}) -> Tile{T, (1, N)}
+
+Reshape a 1D tile into a `1 × N` row tile.
+
+Equivalent to single-arg `permutedims`.
 """
-@inline Base.transpose(tile::Tile{T}) where {T} =
-    Intrinsics.transpose(tile)
+@generated function Base.transpose(tile::T) where {T <: Tile}
+    n = ndims(T)
+    first_dim = n >= 1 ? size(T, 1) : nothing
+
+    if n == 2
+        return :(Intrinsics.permute(tile, (1, 0)))
+    elseif n == 1
+        return :(Intrinsics.reshape(tile, (1, $first_dim)))
+    else
+        return :(throw(ArgumentError("transpose(tile) only works for 1D or 2D tiles")))
+    end
+end
 
 @inline Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} =
     map(T2, tile)

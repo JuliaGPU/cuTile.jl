@@ -435,41 +435,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     CGVal(result, output_tile_type, Tile{elem_type, Tuple{output_shape...}}, output_shape)
 end
 
-# cuda_tile.transpose
-@intrinsic transpose(tile)
-function tfunc(𝕃, ::typeof(Intrinsics.transpose), @nospecialize(tile_lat))
-    tile_type = CC.widenconst(tile_lat)
-    tile_type <: Tile || return nothing
-    s = size(tile_type)
-    isempty(s) && return nothing
-    T = eltype(tile_type)
-    return Tile{T, Tuple{reverse(s)...}}
-end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    source = emit_value!(ctx, args[1])
-    source === nothing && throw(IRError("Cannot resolve operand for transpose()"))
-
-    input_shape = source.shape
-    isempty(input_shape) && throw(IRError("Cannot determine tile shape for transpose()"))
-
-    output_shape = reverse(input_shape)
-
-    elem_type = eltype(CC.widenconst(source.jltype))
-
-    dtype = julia_to_tile_dtype!(tt, elem_type)
-    output_tile_type = tile_type!(tt, dtype, output_shape)
-
-    ndim = length(output_shape)
-    permutation = collect(ndim-1:-1:0)
-
-    result = encode_PermuteOp!(cb, output_tile_type, source.v, permutation)
-
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple{output_shape...}}, output_shape)
-end
-
 
 # cuda_tile.reduce
 @intrinsic reduce(tiles, axis, f, identities)
