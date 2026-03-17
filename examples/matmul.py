@@ -22,7 +22,7 @@ def swizzle_2d(M, N, tm, tn, GROUP_SIZE_M):
     return bid_m, bid_n
 
 
-@ct.kernel
+@ct.kernel(num_ctas=ct.ByTarget(sm_100=2))
 def matmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk: ct.Constant[int]):
     GROUP_SIZE_M = 8
     M = A.shape[0]

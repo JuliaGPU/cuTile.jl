@@ -24,6 +24,7 @@ end
 # C = A @ B where A is (M, K), B is (K, N), C is (M, N)
 function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArray{T,2},
                        tm::Int, tn::Int, tk::Int) where {T}
+    ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 2)
     # Use 1D grid with swizzle for better cache locality
     bid = ct.bid(1)
     M = size(A, 1)
