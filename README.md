@@ -262,6 +262,44 @@ function vadd(a, b, c)
 end
 ```
 
+### Optimization hints
+
+Python passes optimization hints as `@ct.kernel` decorator arguments. Julia uses
+`ct.@compiler_options` inside the function body (like `@inline`):
+
+```python
+# Python
+@ct.kernel(num_ctas=ct.ByTarget(sm_100=2), occupancy=8)
+def matmul(A, B, C, ...):
+    ...
+```
+
+```julia
+# Julia
+function matmul(A, B, C, ...)
+    ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 2) occupancy=8
+    ...
+end
+```
+
+Supported options:
+
+| Option | Description | Valid values |
+|--------|-------------|--------------|
+| `num_ctas` | Number of CTAs in a CGA (cooperative group array) | Powers of 2 |
+| `occupancy` | Target occupancy (number of concurrent CTAs per SM) | 1–32 |
+| `opt_level` | Optimization level | 0–3 |
+
+Values can be plain scalars or `ct.ByTarget(...)` for per-architecture dispatch.
+`ByTarget` maps compute capabilities to values, with an optional default:
+
+```julia
+ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 4, v"12.0" => 2; default=1)
+```
+
+Hints can also be passed as keyword arguments to `ct.launch` or `ct.code_tiled`,
+which take precedence over `@compiler_options`.
+
 ### Launch Syntax
 
 cuTile.jl implicitly uses the current task-bound stream from CUDA.jl:
