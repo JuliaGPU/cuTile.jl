@@ -319,7 +319,11 @@ function process_meta!(ir::CC.IRCode)
         stmt = ir.stmts[i][:stmt]
         if stmt isa Expr && stmt.head === :meta
             push!(ir.meta, stmt)
-            ir.stmts[i][:stmt] = nothing
+            @static if VERSION >= v"1.12-"
+                ir.stmts[i][:stmt] = nothing
+            else
+                CC.setindex!(ir.stmts[i], nothing, :stmt)
+            end
         end
     end
     return ir
