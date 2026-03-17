@@ -307,26 +307,36 @@ mutable struct CuTileResults
 end
 
 """
+    process_meta!(ir::CC.IRCode) -> ir
+
+Move `:meta` expression nodes from `ir.stmts` into `ir.meta`, mirroring
+Julia's `process_meta!` in `Compiler/src/optimize.jl`. This normalizes IR
+from `inflate_ir` (which leaves meta as stmts) to match the `typeinf_ircode`
+path (which already extracts meta via `convert_to_ircode`).
+"""
+function process_meta!(ir::CC.IRCode)
+    for i in 1:length(ir.stmts)
+        stmt = ir.stmts[i][:stmt]
+        if stmt isa Expr && stmt.head === :meta
+            push!(ir.meta, stmt)
+            ir.stmts[i][:stmt] = nothing
+        end
+    end
+    return ir
+end
+
+"""
     extract_meta(ir::CC.IRCode) -> Dict{Symbol, Any}
 
 Extract cuTile meta nodes from IRCode. Meta nodes are inserted by `@kernel`
-and survive through lowering/optimization. They appear either in `ir.meta`
-(from `typeinf_ircode` path) or as statements (from `inflate_ir` path).
-Unreachable blocks containing only meta stmts are handled by IRStructurizer.
+and survive through lowering/optimization. After `process_meta!` normalization,
+all meta nodes reside in `ir.meta`.
 """
 function extract_meta(ir::CC.IRCode)
     meta = Dict{Symbol, Any}()
-    # Scan ir.meta (from typeinf_ircode path)
     for expr in ir.meta
         if expr isa Expr && expr.head === :meta && length(expr.args) >= 3 && expr.args[1] === :cuTile
             meta[expr.args[2]::Symbol] = expr.args[3]
-        end
-    end
-    # Scan ir.stmts (from inflate_ir path — meta nodes are regular stmts here)
-    for i in 1:length(ir.stmts)
-        stmt = ir.stmts[i][:stmt]
-        if stmt isa Expr && stmt.head === :meta && length(stmt.args) >= 3 && stmt.args[1] === :cuTile
-            meta[stmt.args[2]::Symbol] = stmt.args[3]
         end
     end
     return meta
@@ -386,6 +396,7 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance;
         res.julia_ir !== nothing && return res.julia_ir
         src = @something get_source(ci, const_argtypes)
         ir = CC.inflate_ir(src, mi)
+        process_meta!(ir)
         kernel_meta = extract_meta(ir)
         sci = StructuredIRCode(ir)
         rettype = _specialized_rettype(cache, ci, const_argtypes)
@@ -397,6 +408,7 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance;
         res.julia_ir !== nothing && return res.julia_ir
         src = @something get_source(ci)
         ir = CC.inflate_ir(src, mi)
+        process_meta!(ir)
         kernel_meta = extract_meta(ir)
         sci = StructuredIRCode(ir)
         res.julia_ir = (sci, ci.rettype, kernel_meta)
