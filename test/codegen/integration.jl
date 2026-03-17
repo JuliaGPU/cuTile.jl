@@ -963,82 +963,41 @@ end
         end
     end
 
-    @testset "@kernel with ByTarget num_ctas" begin
-        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4) function _kernel_bt_num_ctas(a::ct.TileArray{Float32,1})
+    @testset "ct.@kernel" begin
+        # Single kernel with multiple ByTarget hints to exercise all resolution paths
+        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4; default=2) occupancy=ct.ByTarget(v"10.0" => 16) function _kernel_hints(a::ct.TileArray{Float32,1})
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.store(a, pid, t)
             return nothing
         end
 
-        # Matching arch
+        argtypes = Tuple{ct.TileArray{Float32, 1, spec1d}}
+
+        # Matching arch: both ByTarget hints resolve
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
-            ct.code_tiled(_kernel_bt_num_ctas, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0")
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4, occupancy = 16}>"
+            ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0")
         end
 
-        # Non-matching arch → no hints
-        @test @filecheck begin
-            @check_not "optimization_hints"
-            ct.code_tiled(_kernel_bt_num_ctas, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0")
-        end
-    end
-
-    @testset "@kernel with ByTarget default" begin
-        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4; default=2) function _kernel_bt_default(a::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            t = ct.load(a, pid, (16,))
-            ct.store(a, pid, t)
-            return nothing
-        end
-
-        # Non-matching arch → uses default
+        # Non-matching arch: num_ctas falls back to default=2, occupancy absent (no default)
         @test @filecheck begin
             @check "optimization_hints=<sm_120 = {num_cta_in_cga = 2}>"
-            ct.code_tiled(_kernel_bt_default, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0")
-        end
-    end
-
-    @testset "@kernel with plain num_ctas" begin
-        ct.@kernel num_ctas=2 function _kernel_plain_ctas(a::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            t = ct.load(a, pid, (16,))
-            ct.store(a, pid, t)
-            return nothing
+            @check_not "occupancy"
+            ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"12.0")
         end
 
+        # Explicit kwarg overrides @kernel meta
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 2}>"
-            ct.code_tiled(_kernel_plain_ctas, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0")
-        end
-    end
-
-    @testset "@kernel kwarg override" begin
-        ct.@kernel num_ctas=ct.ByTarget(v"10.0" => 4) function _kernel_override(a::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            t = ct.load(a, pid, (16,))
-            ct.store(a, pid, t)
-            return nothing
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 8, occupancy = 16}>"
+            ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0", num_ctas=8)
         end
 
-        # Explicit kwarg wins over @kernel meta
+        # Repeating an earlier call exercises cache reuse — if the cache returned
+        # stale results from a different shard, FileCheck would catch the mismatch.
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 8}>"
-            ct.code_tiled(_kernel_override, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=8)
-        end
-    end
-
-    @testset "@kernel with occupancy ByTarget" begin
-        ct.@kernel occupancy=ct.ByTarget(v"10.0" => 16) function _kernel_bt_occ(a::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            t = ct.load(a, pid, (16,))
-            ct.store(a, pid, t)
-            return nothing
-        end
-
-        @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {occupancy = 16}>"
-            ct.code_tiled(_kernel_bt_occ, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0")
+            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4, occupancy = 16}>"
+            ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0")
         end
     end
 end
