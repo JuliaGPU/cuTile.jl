@@ -1375,4 +1375,77 @@ end
     @test Array(b) == .~Array(a)
 end
 
+#=============================================================================
+ For Loop execution (native Julia `for` syntax)
+=============================================================================#
+
+@testset "for loop accumulation" begin
+    function for_loop_acc_kernel(data::ct.TileArray{Float32,1},
+                                 out::ct.TileArray{Float32,1},
+                                 n_iters::Int32)
+        pid = ct.bid(1)
+        acc = ct.zeros((16,), Float32)
+        for i in Int32(1):n_iters
+            acc = acc .+ ct.load(data, i, (16,))
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    n_iters = Int32(4)
+    data = CUDA.rand(Float32, 64)   # 4 tiles of 16
+    out = CUDA.zeros(Float32, 16)
+
+    ct.launch(for_loop_acc_kernel, 1, data, out, n_iters)
+
+    data_cpu = Array(data)
+    expected = sum(reshape(data_cpu, 16, 4); dims=2)[:, 1]
+    @test Array(out) ≈ expected
+end
+
+@testset "for loop with constant bound" begin
+    function for_loop_const_kernel(data::ct.TileArray{Float32,1},
+                                   out::ct.TileArray{Float32,1},
+                                   N::ct.Constant{Int})
+        pid = ct.bid(1)
+        acc = ct.zeros((16,), Float32)
+        for i in Int32(1):Int32(N[])
+            acc = acc .+ ct.load(data, i, (16,))
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    data = CUDA.rand(Float32, 48)   # 3 tiles of 16
+    out = CUDA.zeros(Float32, 16)
+
+    ct.launch(for_loop_const_kernel, 1, data, out, ct.Constant(3))
+
+    data_cpu = Array(data)
+    expected = sum(reshape(data_cpu, 16, 3); dims=2)[:, 1]
+    @test Array(out) ≈ expected
+end
+
+@testset "for loop store each iteration" begin
+    function for_loop_store_kernel(inp::ct.TileArray{Float32,1},
+                                   out::ct.TileArray{Float32,1},
+                                   n_iters::Int32)
+        pid = ct.bid(1)
+        acc = ct.zeros((16,), Float32)
+        for i in Int32(1):n_iters
+            acc = acc .+ ct.load(inp, i, (16,))
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    n_iters = Int32(2)
+    inp = CUDA.ones(Float32, 32)    # 2 tiles of 16, all ones
+    out = CUDA.zeros(Float32, 16)
+
+    ct.launch(for_loop_store_kernel, 1, inp, out, n_iters)
+
+    @test all(Array(out) .≈ 2.0f0)
+end
+
 end

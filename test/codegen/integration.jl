@@ -1237,3 +1237,45 @@ end
         end
     end
 end
+
+#=============================================================================
+ For Loop (native Julia `for` syntax via IRStructurizer v0.2)
+=============================================================================#
+
+@testset "For Loops" begin
+    spec = ct.ArraySpec{1}(16, true)
+
+    @testset "simple accumulation with for loop" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "loop"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Int32}) do data, out, n_iters
+                pid = ct.bid(1)
+                acc = ct.zeros((16,), Float32)
+                for i in Int32(1):n_iters
+                    acc = acc .+ ct.load(data, i, (16,))
+                end
+                ct.store(out, pid, acc)
+                return
+            end
+        end
+    end
+
+    @testset "for loop with broadcast add in loop body" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "loop"
+            @check "addf"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Int32}) do data, out, n_iters
+                pid = ct.bid(1)
+                acc = ct.zeros((16,), Float32)
+                for i in Int32(1):n_iters
+                    tile = ct.load(data, i, (16,))
+                    acc = acc .+ tile
+                end
+                ct.store(out, pid, acc)
+                return
+            end
+        end
+    end
+end
