@@ -22,6 +22,8 @@ function emit_statement!(ctx::CGCtx, @nospecialize(stmt), ssa_idx::Int, @nospeci
         tv = emit_constant!(ctx, stmt.value, result_type)
     elseif stmt isa SlotNumber
         tv = ctx[stmt]
+    elseif stmt isa SSAValue
+        tv = emit_value!(ctx, stmt)
     elseif stmt isa PiNode
         # PiNode is a type narrowing assertion - store the resolved value
         tv = emit_value!(ctx, stmt)
