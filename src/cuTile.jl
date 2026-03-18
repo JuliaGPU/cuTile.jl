@@ -3,7 +3,7 @@ module cuTile
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, BlockArg,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      IfOp, ForOp, WhileOp, LoopOp
+                      IfOp, ForOp, WhileOp, LoopOp, Undef
 
 using Base: compilerbarrier, donotdelete
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,

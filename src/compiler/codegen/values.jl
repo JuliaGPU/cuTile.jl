@@ -120,6 +120,17 @@ end
 # Types are compile-time only values
 emit_value!(ctx::CGCtx, @nospecialize(val::Type)) = ghost_value(Type{val}, val)
 
+# Undef values (dead-code branches, unexported loop slots) -> zero constant
+function emit_value!(ctx::CGCtx, undef::Undef)
+    T = CC.widenconst(undef.type)
+    is_ghost_type(T) && return ghost_value(T)
+    type_id = tile_type_for_julia!(ctx, T)
+    elem_type = T <: Tile ? eltype(T) : T
+    bytes = constant_to_bytes(zero(elem_type), elem_type)
+    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+    CGVal(v, type_id, T)
+end
+
 # Fallback for other types (constants embedded in IR)
 function emit_value!(ctx::CGCtx, @nospecialize(val))
     T = typeof(val)
