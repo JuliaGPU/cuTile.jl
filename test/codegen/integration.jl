@@ -114,7 +114,7 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.Constant{Int,32}, ct.Constant{Int,32}, ct.Constant{Int,16}}) do A, B, C, tm, tn, tk
                 bid = ct.bid(1)
                 num_k = ct.num_tiles(A, 2, (tm, tk))
-                acc = ct.full(zero(Float32), Float32, (tm, tn))
+                acc = zeros(Float32, (tm, tn))
                 # NOTE: Uses while-loop pattern because Julia's for-loop generates
                 # complex iterator IR with PhiNodes that isn't fully supported.
                 # The structurizer upgrades this counting while-loop to a ForOp.
@@ -150,7 +150,7 @@ end
 
                 # First for loop: compute sum
                 @check "for"
-                acc = ct.full(0.0f0, Float32, (1, TILE_N))
+                acc = zeros(Float32, (1, TILE_N))
                 j = Int32(1)
                 while j <= num_tiles
                     tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
@@ -247,7 +247,7 @@ end
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
 
-                    val = ct.full(1.0f0, Float32, (1, TILE_N))
+                    val = fill(1.0f0, (1, TILE_N))
                     ct.store(DB, (group_bid_m, j), val)
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
@@ -291,7 +291,7 @@ end
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
 
-                    val = ct.full(1.0f0, Float32, (1, TILE_N))
+                    val = fill(1.0f0, (1, TILE_N))
                     ct.store(DB, (group_bid_m, j), val)
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
@@ -382,8 +382,8 @@ end
                 bid_n = ct.bid(1)
                 num_tiles = ct.num_tiles(DW, 2, (_TILE_N, _TILE_M))
 
-                dw = ct.zeros(Float32, (_TILE_N, _TILE_M))
-                db = ct.zeros(Float32, (_TILE_N, _TILE_M))
+                dw = zeros(Float32, (_TILE_N, _TILE_M))
+                db = zeros(Float32, (_TILE_N, _TILE_M))
                 i = Int32(1)
                 while i <= num_tiles
                     dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N, _TILE_M); padding_mode=ct.PaddingMode.Zero)
@@ -423,7 +423,7 @@ end
 
                 # First loop: accumulate and reduce
                 @check "for"
-                acc = ct.zeros(Float32, (TILE_N,))
+                acc = zeros(Float32, (TILE_N,))
                 i = Int32(1)
                 while i <= num_tiles
                     tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
@@ -435,7 +435,7 @@ end
 
                 # Second loop: use sum_val AND accumulate
                 @check "for"
-                acc2 = ct.zeros(Float32, (TILE_N,))
+                acc2 = zeros(Float32, (TILE_N,))
                 i = Int32(1)
                 while i <= num_tiles
                     tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
@@ -607,10 +607,10 @@ end
             end
         end
 
-        @testset "non-power-of-2 full shape rejected" begin
-            @test_throws "full: tile dimension 1 must be a power of 2, got 5" begin
+        @testset "non-power-of-2 fill shape rejected" begin
+            @test_throws "fill: tile dimension 1 must be a power of 2, got 5" begin
                 code_tiled(Tuple{}) do
-                    ct.full(0.0f0, Float32, (5,))
+                    zeros(Float32, (5,))
                 end
             end
         end
@@ -641,9 +641,9 @@ end
         end
 
         @testset "negative dimension rejected" begin
-            @test_throws "full: tile dimension 1 must be positive, got -4" begin
+            @test_throws "fill: tile dimension 1 must be positive, got -4" begin
                 code_tiled(Tuple{}) do
-                    ct.full(0.0f0, Float32, (-4,))
+                    zeros(Float32, (-4,))
                 end
             end
         end
@@ -1251,7 +1251,7 @@ end
             @check "loop"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Int32}) do data, out, n_iters
                 pid = ct.bid(1)
-                acc = ct.zeros(Float32, (16,))
+                acc = zeros(Float32, (16,))
                 for i in Int32(1):n_iters
                     acc = acc .+ ct.load(data, i, (16,))
                 end
@@ -1268,7 +1268,7 @@ end
             @check "addf"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Int32}) do data, out, n_iters
                 pid = ct.bid(1)
-                acc = ct.zeros(Float32, (16,))
+                acc = zeros(Float32, (16,))
                 for i in Int32(1):n_iters
                     tile = ct.load(data, i, (16,))
                     acc = acc .+ tile

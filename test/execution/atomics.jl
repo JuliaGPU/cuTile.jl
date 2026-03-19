@@ -87,7 +87,7 @@ end
     # Test that token threading enforces memory ordering in spinlock patterns
     function spinlock_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        val = ct.full(1.0f0, Float32, (1,))
+        val = fill(1.0f0, (1,))
 
         # Spin until we acquire the lock (CAS returns old value, 0 means we got it)
         while ct.atomic_cas(lock, 1, 0, 1;
@@ -121,7 +121,7 @@ end
     # Test that explicit memory_order kwargs work correctly
     function explicit_ordering_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        val = ct.full(1.0f0, Float32, (1,))
+        val = fill(1.0f0, (1,))
 
         # Spin until we acquire the lock - use explicit Acquire ordering
         while ct.atomic_cas(lock, 1, 0, 1;

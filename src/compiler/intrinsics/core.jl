@@ -82,7 +82,7 @@ function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
     # Follows Julia convention: (n,) pads to (n, 1) — first dimension aligns.
     if length(current_shape) < length(target_shape)
         n_extra = length(target_shape) - length(current_shape)
-        new_shape = vcat(current_shape, Base.fill(1, n_extra))
+        new_shape = vcat(current_shape, fill(1, n_extra))
         reshaped_type = tile_type!(tt, dtype, new_shape)
         current_val = encode_ReshapeOp!(cb, reshaped_type, current_val)
         current_shape = new_shape
@@ -177,9 +177,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
 
     # Extract shape
     shape = get_constant(ctx, args[1])
-    shape isa Tuple || throw(IRError("full()/fill() shape must be a compile-time constant tuple"))
+    shape isa Tuple || throw(IRError("fill() shape must be a compile-time constant tuple"))
     tile_shape = collect(Int, shape)
-    validate_tile_shape(tile_shape, "full")
+    validate_tile_shape(tile_shape, "fill")
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
@@ -188,7 +188,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
     tv = emit_value!(ctx, args[2])
-    tv === nothing && throw(IRError("full()/fill() value must be a constant or a runtime scalar"))
+    tv === nothing && throw(IRError("fill() value must be a constant or a runtime scalar"))
     if tv.constant !== nothing
         # Compile-time constant: use ConstantOp directly
         value_bytes = constant_to_bytes(something(tv.constant), elem_type)
@@ -370,7 +370,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     # Broadcast base pointer to tile shape
     ndims = length(tile_shape)
     if ndims > 0
-        ones_shape = Base.fill(1, ndims)
+        ones_shape = fill(1, ndims)
         reshaped_ptr_type = tile_type!(tt, ptr_dtype, ones_shape)
         base_ptr_reshaped = encode_ReshapeOp!(cb, reshaped_ptr_type, base_ptr)
         base_ptr_tile = encode_BroadcastOp!(cb, ptr_tile_type, base_ptr_reshaped)

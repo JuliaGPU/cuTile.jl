@@ -109,3 +109,17 @@ for F in Floats
         end
     end
 end
+
+
+#=============================================================================
+ Tile Constructors
+=============================================================================#
+
+# Base.fill/zeros/ones return Tiles in kernel context, matching Julia's standard API.
+# Marked non-foldable because they return differently-typed objects.
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.fill(v, dims::NTuple{N, Int}) where {N} =
+    _full(v, typeof(v), dims)
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.zeros(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
+    _full(zero(T), T, dims)
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
+    _full(one(T), T, dims)

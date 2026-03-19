@@ -416,7 +416,7 @@ spec3d = ct.ArraySpec{3}(16, true)
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "constant"
-                tile = ct.full(0.0f0, Float32, (16,))
+                tile = zeros(Float32, (16,))
                 ct.store(a, pid, tile)
                 return
             end
@@ -431,7 +431,7 @@ spec3d = ct.ArraySpec{3}(16, true)
                 @check "itof"
                 @check "reshape"
                 @check "broadcast"
-                tile = ct.full(val, Float32, (16,))
+                tile = fill(Float32(val), (16,))
                 ct.store(a, pid, tile)
                 return
             end
@@ -483,7 +483,7 @@ spec3d = ct.ArraySpec{3}(16, true)
                 bidy = ct.bid(2)
                 tile_a = ct.load(a, bidx, (32, 16))
                 tile_b = ct.load(b, bidy, (16, 32))
-                acc = ct.full(0.0f0, Float32, (32, 32))
+                acc = zeros(Float32, (32, 32))
                 @check "mma"
                 result = muladd(tile_a, tile_b, acc)
                 ct.store(c, (bidx, bidy), result)
@@ -959,7 +959,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
                 pid = ct.bid(1)
-                acc = ct.full(0.0f0, Float32, (16,))
+                acc = zeros(Float32, (16,))
                 @check "for"
                 k = Int32(1)
                 while k <= n

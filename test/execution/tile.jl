@@ -158,7 +158,7 @@ end
         # Load a single-element tile to get a runtime scalar
         val = ct.load(src, 1, (1,))
         pid = ct.bid(1)
-        tile = ct.full(val, Float32, (16,))
+        tile = fill(val, (16,))
         ct.store(dst, pid, tile)
         return
     end

@@ -76,7 +76,7 @@ end
                                       out::ct.TileArray{Float32,1})
         bid = ct.bid(1)
         len = lengths[bid]
-        acc = ct.zeros(Float32, (16,))
+        acc = zeros(Float32, (16,))
         j = Int32(1)
         while j <= len
             tile = ct.load(data, j, (16,))
@@ -111,7 +111,7 @@ end
                                  out::ct.TileArray{Float32,1},
                                  n_iters::Int32)
         pid = ct.bid(1)
-        acc = ct.zeros(Float32, (16,))
+        acc = zeros(Float32, (16,))
         for i in Int32(1):n_iters
             acc = acc .+ ct.load(data, i, (16,))
         end
@@ -135,7 +135,7 @@ end
                                    out::ct.TileArray{Float32,1},
                                    N::Int)
         pid = ct.bid(1)
-        acc = ct.zeros(Float32, (16,))
+        acc = zeros(Float32, (16,))
         for i in Int32(1):Int32(N[])
             acc = acc .+ ct.load(data, i, (16,))
         end
@@ -158,7 +158,7 @@ end
                                    out::ct.TileArray{Float32,1},
                                    n_iters::Int32)
         pid = ct.bid(1)
-        acc = ct.zeros(Float32, (16,))
+        acc = zeros(Float32, (16,))
         for i in Int32(1):n_iters
             acc = acc .+ ct.load(inp, i, (16,))
         end

@@ -46,7 +46,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
 
     # Create result types for all dimensions
     scalar_i32 = tile_type!(tt, I32(tt), Int[])
-    result_types = Base.fill(scalar_i32, ndim)
+    result_types = fill(scalar_i32, ndim)
 
     # Emit GetIndexSpaceShapeOp
     shape_vals = encode_GetIndexSpaceShapeOp!(cb, result_types, pv_arg.v)
@@ -243,7 +243,7 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
     end
 
     # TensorView type
-    tv_shape = Base.fill(DYNAMIC_SHAPE, ndim)
+    tv_shape = fill(DYNAMIC_SHAPE, ndim)
     tv_strides = compute_tensor_view_strides(spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
@@ -272,7 +272,7 @@ For contiguous column-major arrays (matching Julia's memory layout),
 stride[1] = 1 is statically known. Higher dimensions are typically dynamic.
 """
 function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
-    strides = Base.fill(DYNAMIC_SHAPE, ndim)
+    strides = fill(DYNAMIC_SHAPE, ndim)
 
     if array_spec !== nothing && array_spec.contiguous && ndim >= 1
         # Contiguous column-major array: first stride is statically known to be 1

@@ -29,7 +29,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     N = size(X, 2)
 
     # Compute mean
-    mean = ct.full(0.0f0, Float32, (1, TILE_N))
+    mean = zeros(Float32,(1, TILE_N))
     j = Int32(1)
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
@@ -40,7 +40,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     ct.store(Mean, bid_m, mean)
 
     # Compute variance
-    var = ct.full(0.0f0, Float32, (1, TILE_N))
+    var = zeros(Float32,(1, TILE_N))
     j = Int32(1)
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
@@ -131,8 +131,8 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
     rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
 
     # First pass: compute c1 and c2 reduction terms
-    c1 = ct.full(0.0f0, Float32, (1, TILE_N))
-    c2 = ct.full(0.0f0, Float32, (1, TILE_N))
+    c1 = zeros(Float32,(1, TILE_N))
+    c2 = zeros(Float32,(1, TILE_N))
     j = Int32(1)
     while j <= num_tiles
         _, xhat, wdy = bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
@@ -190,8 +190,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
     rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
 
     # First pass: compute c1 and c2 reduction terms
-    c1 = ct.full(0.0f0, Float32, (1, TILE_N))
-    c2 = ct.full(0.0f0, Float32, (1, TILE_N))
+    c1 = zeros(Float32,(1, TILE_N))
+    c2 = zeros(Float32,(1, TILE_N))
     j = Int32(1)
     while j <= num_tiles
         _, xhat, wdy = bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
@@ -253,8 +253,8 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
     bid_n = ct.bid(1)
     num_tiles = ct.num_tiles(DW, 2, (TILE_N, TILE_M))
 
-    dw = ct.zeros(Float32, (TILE_N, TILE_M))
-    db = ct.zeros(Float32, (TILE_N, TILE_M))
+    dw = zeros(Float32,(TILE_N, TILE_M))
+    db = zeros(Float32,(TILE_N, TILE_M))
     i = Int32(1)
     while i <= num_tiles
         dw = dw .+ ct.load(DW, (bid_n, i), (TILE_N, TILE_M); padding_mode=ct.PaddingMode.Zero)
