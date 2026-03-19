@@ -396,3 +396,23 @@ end
 
     @test Array(b) ≈ Array(a)
 end
+
+@testset "scalar from heterogeneous tuple in destructured struct" begin
+    struct HetTupleWrapper{A, B}; a::A; b::B; end
+
+    function het_tuple_kernel(dest::ct.TileArray{Float32,1,S},
+                              w::HetTupleWrapper{ct.TileArray{Float32,1,S2}, Int32},
+                              ts) where {S, S2}
+        bid = ct.bid(1)
+        tile = ct.load(w.a, bid, (ts[1],))
+        result = tile .+ w.b
+        ct.store(dest, bid, result)
+        return
+    end
+
+    A = CUDA.ones(Float32, 64)
+    B = CUDA.ones(Float32, 64)
+    ct.launch(het_tuple_kernel, 1, ct.TileArray(A),
+              HetTupleWrapper(ct.TileArray(B), Int32(5)), ct.Constant((64,)))
+    @test all(Array(A) .≈ 6.0f0)
+end

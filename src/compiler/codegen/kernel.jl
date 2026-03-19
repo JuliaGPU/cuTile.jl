@@ -289,7 +289,16 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
             end
             # Not a simple flat tuple — extend chain (element may be destructured)
             new_chain = Union{Symbol, Int}[chain..., Int(field)]
-            return arg_ref_value(arg_idx, new_chain, CC.widenconst(result_type))
+            rt = CC.widenconst(result_type)
+            # Heterogeneous tuple or nested struct: check per-element path
+            if !is_ghost_type(rt) && !(rt <: Tuple) && !should_destructure(rt)
+                values = get_arg_flat_values(ctx, arg_idx, new_chain)
+                if values !== nothing && length(values) == 1
+                    type_id = tile_type_for_julia!(ctx, rt)
+                    return CGVal(values[1], type_id, rt)
+                end
+            end
+            return arg_ref_value(arg_idx, new_chain, rt)
         end
     end
 
@@ -324,7 +333,16 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
 
         # Otherwise extend the chain
         new_chain = Union{Symbol, Int}[chain..., Int(index)]
-        return arg_ref_value(arg_idx, new_chain, CC.widenconst(result_type))
+        rt = CC.widenconst(result_type)
+        # Heterogeneous tuple: check per-element path
+        if !is_ghost_type(rt) && !(rt <: Tuple) && !should_destructure(rt)
+            values = get_arg_flat_values(ctx, arg_idx, new_chain)
+            if values !== nothing && length(values) == 1
+                type_id = tile_type_for_julia!(ctx, rt)
+                return CGVal(values[1], type_id, rt)
+            end
+        end
+        return arg_ref_value(arg_idx, new_chain, rt)
     end
 
     # Not an arg_ref - not handled here
