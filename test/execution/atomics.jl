@@ -1,6 +1,6 @@
-using CUDA
+# atomic operations
 
-@testset "atomic operations" begin
+using CUDA
 
 @testset "atomic_add Int" begin
     # Test atomic_add with Int: each thread block adds 1 to a counter
@@ -166,6 +166,7 @@ end
     result = Array(counters)[1]
     @test result == n_blocks
 end
+
 
 # ============================================================================
 # Tile-indexed atomic operations (scatter-gather style indexing)
@@ -375,6 +376,4 @@ end
     ct.launch(scatter_simple_kernel, 1, src, dst)
 
     @test Array(dst) ≈ Array(src)
-end
-
 end

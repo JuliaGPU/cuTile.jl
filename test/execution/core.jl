@@ -1,4 +1,30 @@
+# basic execution tests
+
 using CUDA
+
+@testset "compilation cache" begin
+    function cached_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    # First launch triggers compilation
+    ct.launch(cached_kernel, cld(n, tile_size), a, b)
+    @test Array(b) ≈ Array(a)
+
+    # Second launch should use cached CuFunction
+    a2 = CUDA.rand(Float32, n)
+    b2 = CUDA.zeros(Float32, n)
+    ct.launch(cached_kernel, cld(n, tile_size), a2, b2)
+    @test Array(b2) ≈ Array(a2)
+end
 
 @testset "invalidations" begin
 
@@ -233,4 +259,140 @@ end
         @test proc.exitcode != 0
         @test contains(result, "custom assert message")
     end
+end
+
+@testset "Constant parameters" begin
+
+@testset "1D with Constant tile size" begin
+    function vadd_const_tile(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                             c::ct.TileArray{Float32,1}, tile::Int)
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (tile,))
+        tile_b = ct.load(b, pid, (tile,))
+        ct.store(c, pid, tile_a + tile_b)
+        return
+    end
+
+    n = 1024
+    tile_size = 32
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_const_tile, cld(n, tile_size), a, b, c, ct.Constant(tile_size))
+
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
+@testset "2D with Constant tile sizes" begin
+    function madd_const_tiles(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                              c::ct.TileArray{Float32,2},
+                              tx::Int, ty::Int)
+        bidx = ct.bid(1)
+        bidy = ct.bid(2)
+        tile_a = ct.load(a, (bidx, bidy), (tx, ty))
+        tile_b = ct.load(b, (bidx, bidy), (tx, ty))
+        ct.store(c, (bidx, bidy), tile_a + tile_b)
+        return
+    end
+
+    m, n = 256, 256
+    tile_x, tile_y = 64, 64
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.rand(Float32, m, n)
+    c = CUDA.zeros(Float32, m, n)
+
+    ct.launch(madd_const_tiles, (cld(m, tile_x), cld(n, tile_y)), a, b, c,
+              ct.Constant(tile_x), ct.Constant(tile_y))
+
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
+end
+
+@testset "TileArray auto-conversion" begin
+    # Test that CuArrays are automatically converted to TileArray
+    function copy_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(src, pid, (16,))
+        ct.store(dst, pid, tile)
+        return
+    end
+
+
+    n = 512
+    tile_size = 16
+    src = CUDA.rand(Float32, n)
+    dst = CUDA.zeros(Float32, n)
+
+    # Pass CuArrays directly - should auto-convert
+    ct.launch(copy_kernel, cld(n, tile_size), src, dst)
+
+    @test Array(dst) ≈ Array(src)
+end
+
+const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
+
+@testset "global constant arithmetic" begin
+    # Regression test for issue #77: scalar × global constant failed during codegen.
+    function global_const_arith_kernel(a::ct.TileArray{Float32,1},
+                                       b::ct.TileArray{Float32,1},
+                                       scale::Float32)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        total_scale = scale * _EXEC_TEST_GLOBAL_CONST
+        ct.store(b, pid, tile .* total_scale)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    scale = 2.5f0
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(global_const_arith_kernel, cld(n, tile_size), a, b, scale)
+
+    @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
+end
+
+@testset "kernel name with !" begin
+    function kernel!()
+        return
+    end
+    ct.launch(kernel!, 1)
+end
+
+@testset "non-Constant ghost type argument (nothing)" begin
+    function ghost_nothing_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Nothing)
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ghost_nothing_kernel, cld(n, 16), a, b, nothing)
+
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "non-Constant ghost type argument (Val)" begin
+    function ghost_val_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Val{n}) where n
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (n,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(ghost_val_kernel, cld(n, 16), a, b, Val(16))
+
+    @test Array(b) ≈ Array(a)
 end

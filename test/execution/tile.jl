@@ -1,6 +1,6 @@
-using CUDA
+# operations on tiles
 
-@testset "launch" begin
+using CUDA
 
 @testset "1D vector add" begin
     function vadd_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
@@ -65,6 +65,27 @@ end
     @test Array(c) ≈ Array(a) .* Array(b)
 end
 
+@testset "1D vector div" begin
+    function vdiv_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                     c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, tile_a ./ tile_b)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure non-zero
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vdiv_1d, cld(n, tile_size), a, b, c)
+
+    @test Array(c) ≈ Array(a) ./ Array(b)
+end
+
 @testset "2D matrix add" begin
     function madd_2d(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                      c::ct.TileArray{Float32,2})
@@ -112,6 +133,43 @@ end
     ct.launch(tadd_4d, grid, a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
+end
+
+for (op, name) in [
+    (:sqrt,  "sqrt"),  (:abs, "abs"),   (:cos, "cos"),   (:sin, "sin"),
+    (:exp,   "exp"),   (:log, "log"),   (:ceil, "ceil"), (:floor, "floor"),
+]
+    @eval @testset "1D $($name)" begin
+        function $(Symbol("vmath_$(name)"))(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            ct.store(b, pid, $op.(tile))
+            return
+        end
+        a = CUDA.rand(Float32, 1024) .+ 0.1f0
+        b = CUDA.zeros(Float32, 1024)
+        ct.launch($(Symbol("vmath_$(name)")), cld(1024, 16), a, b)
+        @test Array(b) ≈ $op.(Array(a)) rtol=1e-4
+    end
+end
+
+@testset "full with runtime value" begin
+    function full_runtime_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        # Load a single-element tile to get a runtime scalar
+        val = ct.load(src, 1, (1,))
+        pid = ct.bid(1)
+        tile = ct.full((16,), val, Float32)
+        ct.store(dst, pid, tile)
+        return
+    end
+
+    n = 1024
+    src = CUDA.fill(3.14f0, 1)
+    dst = CUDA.zeros(Float32, n)
+
+    ct.launch(full_runtime_kernel, cld(n, 16), src, dst)
+
+    @test all(Array(dst) .≈ 3.14f0)
 end
 
 @testset "rank mismatch load/store" begin
@@ -808,644 +866,4 @@ end
             @test output ≈ input
         end
     end
-end
-
-@testset "matmul" begin
-    @testset "basic matmul" begin
-        function matmul_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
-                               c::ct.TileArray{Float32,2})
-            bidx = ct.bid(1)
-            bidy = ct.bid(2)
-            # Load tiles: a is (M, K), b is (K, N)
-            tile_a = ct.load(a, (bidx, 1), (32, 16))
-            tile_b = ct.load(b, (1, bidy), (16, 32))
-            # matmul: c = a @ b (using * operator)
-            result = tile_a * tile_b
-            ct.store(c, (bidx, bidy), result)
-            return
-        end
-
-        M, K, N = 64, 16, 64
-        a = CUDA.rand(Float32, M, K)
-        b = CUDA.rand(Float32, K, N)
-        c = CUDA.zeros(Float32, M, N)
-
-        grid_x = cld(M, 32)
-        grid_y = cld(N, 32)
-        ct.launch(matmul_kernel, (grid_x, grid_y, 1), a, b, c)
-
-        # Verify against CPU reference
-        a_cpu = Array(a)
-        b_cpu = Array(b)
-        c_cpu = Array(c)
-        c_ref = a_cpu * b_cpu
-
-        @test c_cpu ≈ c_ref
-    end
-end
-
-end
-
-@testset "Constant parameters" begin
-
-@testset "1D with Constant tile size" begin
-    function vadd_const_tile(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                             c::ct.TileArray{Float32,1}, tile::Int)
-        pid = ct.bid(1)
-        tile_a = ct.load(a, pid, (tile,))
-        tile_b = ct.load(b, pid, (tile,))
-        ct.store(c, pid, tile_a + tile_b)
-        return
-    end
-
-    n = 1024
-    tile_size = 32
-    a = CUDA.rand(Float32, n)
-    b = CUDA.rand(Float32, n)
-    c = CUDA.zeros(Float32, n)
-
-    ct.launch(vadd_const_tile, cld(n, tile_size), a, b, c, ct.Constant(tile_size))
-
-    @test Array(c) ≈ Array(a) + Array(b)
-end
-
-@testset "2D with Constant tile sizes" begin
-    function madd_const_tiles(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
-                              c::ct.TileArray{Float32,2},
-                              tx::Int, ty::Int)
-        bidx = ct.bid(1)
-        bidy = ct.bid(2)
-        tile_a = ct.load(a, (bidx, bidy), (tx, ty))
-        tile_b = ct.load(b, (bidx, bidy), (tx, ty))
-        ct.store(c, (bidx, bidy), tile_a + tile_b)
-        return
-    end
-
-    m, n = 256, 256
-    tile_x, tile_y = 64, 64
-    a = CUDA.rand(Float32, m, n)
-    b = CUDA.rand(Float32, m, n)
-    c = CUDA.zeros(Float32, m, n)
-
-    ct.launch(madd_const_tiles, (cld(m, tile_x), cld(n, tile_y)), a, b, c,
-              ct.Constant(tile_x), ct.Constant(tile_y))
-
-    @test Array(c) ≈ Array(a) + Array(b)
-end
-
-end
-
-@testset "data types" begin
-
-@testset "Float64" begin
-    function vadd_f64(a::ct.TileArray{Float64,1}, b::ct.TileArray{Float64,1},
-                      c::ct.TileArray{Float64,1})
-        pid = ct.bid(1)
-        tile_a = ct.load(a, pid, (16,))
-        tile_b = ct.load(b, pid, (16,))
-        ct.store(c, pid, tile_a + tile_b)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float64, n)
-    b = CUDA.rand(Float64, n)
-    c = CUDA.zeros(Float64, n)
-
-    ct.launch(vadd_f64, cld(n, tile_size), a, b, c)
-
-    @test Array(c) ≈ Array(a) + Array(b)
-end
-
-@testset "Float16" begin
-    function vadd_f16(a::ct.TileArray{Float16,1}, b::ct.TileArray{Float16,1},
-                      c::ct.TileArray{Float16,1})
-        pid = ct.bid(1)
-        tile_a = ct.load(a, pid, (16,))
-        tile_b = ct.load(b, pid, (16,))
-        ct.store(c, pid, tile_a + tile_b)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float16, n)
-    b = CUDA.rand(Float16, n)
-    c = CUDA.zeros(Float16, n)
-
-    ct.launch(vadd_f16, cld(n, tile_size), a, b, c)
-
-    @test Array(c) ≈ Array(a) + Array(b)
-end
-
-@testset "BFloat16" begin
-    function vadd_bf16(a::ct.TileArray{ct.BFloat16,1}, b::ct.TileArray{ct.BFloat16,1},
-                      c::ct.TileArray{ct.BFloat16,1})
-        pid = ct.bid(1)
-        tile_a = ct.load(a, pid, (16,))
-        tile_b = ct.load(b, pid, (16,))
-        ct.store(c, pid, tile_a + tile_b)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(ct.BFloat16, n)
-    b = CUDA.rand(ct.BFloat16, n)
-    c = CUDA.zeros(ct.BFloat16, n)
-
-    ct.launch(vadd_bf16, cld(n, tile_size), a, b, c)
-
-    @test Array(c) ≈ Array(a) + Array(b)
-end
-
-end
-
-@testset "compilation cache" begin
-    function cached_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, tile)
-        return
-    end
-
-    n = 256
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    # First launch triggers compilation
-    ct.launch(cached_kernel, cld(n, tile_size), a, b)
-    @test Array(b) ≈ Array(a)
-
-    # Second launch should use cached CuFunction
-    a2 = CUDA.rand(Float32, n)
-    b2 = CUDA.zeros(Float32, n)
-    ct.launch(cached_kernel, cld(n, tile_size), a2, b2)
-    @test Array(b2) ≈ Array(a2)
-end
-
-@testset "TileArray auto-conversion" begin
-    # Test that CuArrays are automatically converted to TileArray
-    function copy_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(src, pid, (16,))
-        ct.store(dst, pid, tile)
-        return
-    end
-
-    n = 512
-    tile_size = 16
-    src = CUDA.rand(Float32, n)
-    dst = CUDA.zeros(Float32, n)
-
-    # Pass CuArrays directly - should auto-convert
-    ct.launch(copy_kernel, cld(n, tile_size), src, dst)
-
-    @test Array(dst) ≈ Array(src)
-end
-
-@testset "math operations" begin
-
-@testset "1D vector div" begin
-    function vdiv_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                     c::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile_a = ct.load(a, pid, (16,))
-        tile_b = ct.load(b, pid, (16,))
-        ct.store(c, pid, tile_a ./ tile_b)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure non-zero
-    c = CUDA.zeros(Float32, n)
-
-    ct.launch(vdiv_1d, cld(n, tile_size), a, b, c)
-
-    @test Array(c) ≈ Array(a) ./ Array(b)
-end
-
-for (op, name) in [
-    (:sqrt,  "sqrt"),  (:abs, "abs"),   (:cos, "cos"),   (:sin, "sin"),
-    (:exp,   "exp"),   (:log, "log"),   (:ceil, "ceil"), (:floor, "floor"),
-]
-    @eval @testset "1D $($name)" begin
-        function $(Symbol("vmath_$(name)"))(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-            pid = ct.bid(1)
-            tile = ct.load(a, pid, (16,))
-            ct.store(b, pid, $op.(tile))
-            return
-        end
-        a = CUDA.rand(Float32, 1024) .+ 0.1f0
-        b = CUDA.zeros(Float32, 1024)
-        ct.launch($(Symbol("vmath_$(name)")), cld(1024, 16), a, b)
-        @test Array(b) ≈ $op.(Array(a)) rtol=1e-4
-    end
-end
-
-end
-
-const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
-
-@testset "global constant arithmetic" begin
-    # Regression test for issue #77: scalar × global constant failed during codegen.
-    function global_const_arith_kernel(a::ct.TileArray{Float32,1},
-                                       b::ct.TileArray{Float32,1},
-                                       scale::Float32)
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        total_scale = scale * _EXEC_TEST_GLOBAL_CONST
-        ct.store(b, pid, tile .* total_scale)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    scale = 2.5f0
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(global_const_arith_kernel, cld(n, tile_size), a, b, scale)
-
-    @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
-end
-
-@testset "full with runtime value" begin
-    function full_runtime_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
-        # Load a single-element tile to get a runtime scalar
-        val = ct.load(src, 1, (1,))
-        pid = ct.bid(1)
-        tile = ct.full((16,), val, Float32)
-        ct.store(dst, pid, tile)
-        return
-    end
-
-    n = 1024
-    src = CUDA.fill(3.14f0, 1)
-    dst = CUDA.zeros(Float32, n)
-
-    ct.launch(full_runtime_kernel, cld(n, 16), src, dst)
-
-    @test all(Array(dst) .≈ 3.14f0)
-end
-
-@testset "kernel name with !" begin
-    function kernel!()
-        return
-    end
-    ct.launch(kernel!, 1)
-end
-
-@testset "non-Constant ghost type argument (nothing)" begin
-    function ghost_nothing_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Nothing)
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, tile)
-        return
-    end
-
-    n = 256
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(ghost_nothing_kernel, cld(n, 16), a, b, nothing)
-
-    @test Array(b) ≈ Array(a)
-end
-
-@testset "non-Constant ghost type argument (Val)" begin
-    function ghost_val_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Val{n}) where n
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (n,))
-        ct.store(b, pid, tile)
-        return
-    end
-
-    n = 256
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(ghost_val_kernel, cld(n, 16), a, b, Val(16))
-
-    @test Array(b) ≈ Array(a)
-end
-
-@testset "scalar indexing as loop bound" begin
-    function scalar_index_loop_kernel(data::ct.TileArray{Float32,1},
-                                      lengths::ct.TileArray{Int32,1},
-                                      out::ct.TileArray{Float32,1})
-        bid = ct.bid(1)
-        len = lengths[bid]
-        acc = ct.zeros((16,), Float32)
-        j = Int32(1)
-        while j <= len
-            tile = ct.load(data, j, (16,))
-            acc = acc .+ tile
-            j += Int32(1)
-        end
-        ct.store(out, bid, acc)
-        return
-    end
-
-    # 3 blocks, each sums a different number of tiles
-    n_tiles = Int32[2, 3, 1]
-    data = CUDA.rand(Float32, 48)  # 3 tiles of 16
-    lengths = CuArray(n_tiles)
-    out = CUDA.zeros(Float32, 48)
-
-    ct.launch(scalar_index_loop_kernel, 3, data, lengths, out)
-
-    data_cpu = Array(data)
-    out_cpu = Array(out)
-    for bid in 1:3
-        expected = zeros(Float32, 16)
-        for j in 1:n_tiles[bid]
-            expected .+= data_cpu[(j-1)*16+1 : j*16]
-        end
-        @test out_cpu[(bid-1)*16+1 : bid*16] ≈ expected
-    end
-end
-
-@testset "early return — taken" begin
-    function early_return_skip(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, flag::Int32)
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        if flag == Int32(0)
-            return nothing
-        end
-        ct.store(b, pid, tile .* 2.0f0)
-        return nothing
-    end
-
-    a = CUDA.rand(Float32, 64)
-    b = CUDA.zeros(Float32, 64)
-    ct.launch(early_return_skip, 4, a, b, Int32(0))
-    @test all(Array(b) .== 0.0f0)
-end
-
-@testset "early return — not taken" begin
-    function early_return_store(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, flag::Int32)
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        if flag == Int32(0)
-            return nothing
-        end
-        ct.store(b, pid, tile .* 2.0f0)
-        return nothing
-    end
-
-    a = CUDA.rand(Float32, 64)
-    b = CUDA.zeros(Float32, 64)
-    ct.launch(early_return_store, 4, a, b, Int32(1))
-    @test Array(b) ≈ Array(a) .* 2.0f0
-end
-
-@testset "multiple early returns" begin
-    function multi_early_return(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                                flag1::Int32, flag2::Int32)
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        if flag1 == Int32(0)
-            return nothing
-        end
-        if flag2 == Int32(0)
-            return nothing
-        end
-        ct.store(b, pid, tile .* 2.0f0)
-        return nothing
-    end
-
-    a = CUDA.rand(Float32, 64)
-
-    b1 = CUDA.zeros(Float32, 64)
-    ct.launch(multi_early_return, 4, a, b1, Int32(1), Int32(1))
-    @test Array(b1) ≈ Array(a) .* 2.0f0
-
-    b2 = CUDA.zeros(Float32, 64)
-    ct.launch(multi_early_return, 4, a, b2, Int32(0), Int32(1))
-    @test all(Array(b2) .== 0.0f0)
-
-    b3 = CUDA.zeros(Float32, 64)
-    ct.launch(multi_early_return, 4, a, b3, Int32(1), Int32(0))
-    @test all(Array(b3) .== 0.0f0)
-end
-
-@testset "bitwise operations" begin
-
-@testset "andi (bitwise AND)" begin
-    function bitwise_and_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1},
-                                c::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        ta = ct.load(a, pid, (16,))
-        tb = ct.load(b, pid, (16,))
-        ct.store(c, pid, map(&, ta, tb))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    c = CUDA.zeros(Int32, n)
-
-    ct.launch(bitwise_and_kernel, cld(n, tile_size), a, b, c)
-
-    @test Array(c) == Array(a) .& Array(b)
-end
-
-@testset "ori (bitwise OR)" begin
-    function bitwise_or_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1},
-                               c::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        ta = ct.load(a, pid, (16,))
-        tb = ct.load(b, pid, (16,))
-        ct.store(c, pid, map(|, ta, tb))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    c = CUDA.zeros(Int32, n)
-
-    ct.launch(bitwise_or_kernel, cld(n, tile_size), a, b, c)
-
-    @test Array(c) == Array(a) .| Array(b)
-end
-
-@testset "xori (bitwise XOR)" begin
-    function bitwise_xor_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1},
-                                c::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        ta = ct.load(a, pid, (16,))
-        tb = ct.load(b, pid, (16,))
-        ct.store(c, pid, map(xor, ta, tb))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    c = CUDA.zeros(Int32, n)
-
-    ct.launch(bitwise_xor_kernel, cld(n, tile_size), a, b, c)
-
-    @test Array(c) == Array(a) .⊻ Array(b)
-end
-
-@testset "shli (shift left)" begin
-    function shift_left_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, map(x -> x << Int32(4), tile))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x0fff_ffff), n))
-    b = CUDA.zeros(Int32, n)
-
-    ct.launch(shift_left_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) == Array(a) .<< Int32(4)
-end
-
-@testset "shri (shift right)" begin
-    function shift_right_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, map(x -> x >> Int32(8), tile))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    b = CUDA.zeros(Int32, n)
-
-    ct.launch(shift_right_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) == Array(a) .>> Int32(8)
-end
-
-@testset "combined bitwise ops" begin
-    # (a & b) | (a ^ b) \u2014 exercises all three ops in a single kernel
-    function combined_bitwise_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1},
-                                     c::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        ta = ct.load(a, pid, (16,))
-        tb = ct.load(b, pid, (16,))
-        ct.store(c, pid, map(|, map(&, ta, tb), map(xor, ta, tb)))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    c = CUDA.zeros(Int32, n)
-
-    ct.launch(combined_bitwise_kernel, cld(n, tile_size), a, b, c)
-
-    @test Array(c) == (Array(a) .& Array(b)) .| (Array(a) .⊻ Array(b))
-end
-
-@testset "bitwise NOT (~)" begin
-    function bitwise_not_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, map(~, tile))
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
-    b = CUDA.zeros(Int32, n)
-
-    ct.launch(bitwise_not_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) == .~Array(a)
-end
-
-#=============================================================================
- For Loop execution (native Julia `for` syntax)
-=============================================================================#
-
-@testset "for loop accumulation" begin
-    function for_loop_acc_kernel(data::ct.TileArray{Float32,1},
-                                 out::ct.TileArray{Float32,1},
-                                 n_iters::Int32)
-        pid = ct.bid(1)
-        acc = ct.zeros((16,), Float32)
-        for i in Int32(1):n_iters
-            acc = acc .+ ct.load(data, i, (16,))
-        end
-        ct.store(out, pid, acc)
-        return
-    end
-
-    n_iters = Int32(4)
-    data = CUDA.rand(Float32, 64)   # 4 tiles of 16
-    out = CUDA.zeros(Float32, 16)
-
-    ct.launch(for_loop_acc_kernel, 1, data, out, n_iters)
-
-    data_cpu = Array(data)
-    expected = sum(reshape(data_cpu, 16, 4); dims=2)[:, 1]
-    @test Array(out) ≈ expected
-end
-
-@testset "for loop with constant bound" begin
-    function for_loop_const_kernel(data::ct.TileArray{Float32,1},
-                                   out::ct.TileArray{Float32,1},
-                                   N::ct.Constant{Int})
-        pid = ct.bid(1)
-        acc = ct.zeros((16,), Float32)
-        for i in Int32(1):Int32(N[])
-            acc = acc .+ ct.load(data, i, (16,))
-        end
-        ct.store(out, pid, acc)
-        return
-    end
-
-    data = CUDA.rand(Float32, 48)   # 3 tiles of 16
-    out = CUDA.zeros(Float32, 16)
-
-    ct.launch(for_loop_const_kernel, 1, data, out, ct.Constant(3))
-
-    data_cpu = Array(data)
-    expected = sum(reshape(data_cpu, 16, 3); dims=2)[:, 1]
-    @test Array(out) ≈ expected
-end
-
-@testset "for loop store each iteration" begin
-    function for_loop_store_kernel(inp::ct.TileArray{Float32,1},
-                                   out::ct.TileArray{Float32,1},
-                                   n_iters::Int32)
-        pid = ct.bid(1)
-        acc = ct.zeros((16,), Float32)
-        for i in Int32(1):n_iters
-            acc = acc .+ ct.load(inp, i, (16,))
-        end
-        ct.store(out, pid, acc)
-        return
-    end
-
-    n_iters = Int32(2)
-    inp = CUDA.ones(Float32, 32)    # 2 tiles of 16, all ones
-    out = CUDA.zeros(Float32, 16)
-
-    ct.launch(for_loop_store_kernel, 1, inp, out, n_iters)
-
-    @test all(Array(out) .≈ 2.0f0)
-end
-
 end
