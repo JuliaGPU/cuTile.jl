@@ -151,12 +151,14 @@ mutable struct CGCtx
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
-    # Destructured argument handling (for TileArray fields)
-    arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
+    # Destructured argument handling: path-keyed flat values
+    # Key: (arg_idx, path) where path is e.g. [:ptr] or [:a, :sizes]
+    arg_flat_values::Dict{Tuple{Int, Vector{Union{Symbol, Int}}}, Vector{Value}}
     arg_types::Dict{Int, Type}
 
-    # Cached TensorViews for TileArray arguments (arg_idx -> (Value, TypeId))
-    tensor_views::Dict{Int, Tuple{Value, TypeId}}
+    # Cached TensorViews for TileArray arguments
+    # Key: arg_idx::Int for top-level, or (arg_idx, path) for nested
+    tensor_views::Dict{Any, Tuple{Value, TypeId}}
 
     # Bytecode infrastructure
     cb::CodeBuilder
@@ -188,9 +190,9 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
+        Dict{Tuple{Int, Vector{Union{Symbol, Int}}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Int, Tuple{Value, TypeId}}(),
+        Dict{Any, Tuple{Value, TypeId}}(),
         cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
     )
 end
@@ -238,12 +240,27 @@ end
 =============================================================================#
 
 """
-    get_arg_flat_values(ctx, arg_idx, field=nothing) -> Union{Vector{Value}, Nothing}
+    get_arg_flat_values(ctx, arg_idx, path) -> Union{Vector{Value}, Nothing}
 
-Get the flat Tile IR values for an argument or its field.
+Get the flat Tile IR values for a destructured argument at the given path.
 """
-function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, field::Union{Nothing, Symbol}=nothing)
-    get(ctx.arg_flat_values, (arg_idx, field), nothing)
+function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Symbol, Int}})
+    get(ctx.arg_flat_values, (arg_idx, path), nothing)
+end
+
+# Convenience: single field name
+function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, field::Symbol)
+    get_arg_flat_values(ctx, arg_idx, Union{Symbol, Int}[field])
+end
+
+# Convenience: no path = top-level
+function get_arg_flat_values(ctx::CGCtx, arg_idx::Int)
+    # Collect all values for this arg_idx across all paths
+    result = Value[]
+    for ((idx, _path), vals) in ctx.arg_flat_values
+        idx == arg_idx && append!(result, vals)
+    end
+    isempty(result) ? nothing : result
 end
 
 """
@@ -385,23 +402,61 @@ end
     should_destructure(T) -> Bool
 
 Check if a type should be destructured into flat parameters.
+Any isbits struct with non-ghost, non-primitive fields qualifies.
 """
 function should_destructure(@nospecialize(T))
     T = CC.widenconst(T)
     isstructtype(T) || return false
     is_ghost_type(T) && return false
     isprimitivetype(T) && return false
-    T <: TileArray && return true
+    T <: Tuple && return false  # Tuples are handled as flat params, not recursed
+    # Must have a concrete layout we can iterate
+    try fieldcount(T) catch; return false end
+    for fi in 1:fieldcount(T)
+        ft = fieldtype(T, fi)
+        _is_kernel_param_type(ft) && return true
+    end
+    return false
+end
+
+# Check if a field type contributes kernel parameters (recursively).
+# Only isbits types (or types containing them) can be kernel parameters.
+function _is_kernel_param_type(@nospecialize(ft))
+    is_ghost_type(ft) && return false
+    isprimitivetype(ft) && return true
+    ft <: Ptr && return true
+    if ft <: Tuple && ft !== Tuple{}
+        # Check if any tuple element is a kernel param type
+        for p in ft.parameters
+            _is_kernel_param_type(p) && return true
+        end
+        return false
+    end
+    # For structs, only recurse if isbits (prevents infinite recursion on DataType etc.)
+    isstructtype(ft) && isbitstype(ft) && should_destructure(ft) && return true
     return false
 end
 
 """
     flat_field_count(T) -> Int
 
-Count flat parameters a type expands to.
+Count flat parameters a type expands to (recursive).
 """
-flat_field_count(::Type{<:NTuple{N, T}}) where {N, T} = N
-flat_field_count(::Type) = 1
+function flat_field_count(@nospecialize(T))
+    if is_ghost_type(T)
+        return 0
+    elseif should_destructure(T)
+        count = 0
+        for fi in 1:fieldcount(T)
+            count += flat_field_count(fieldtype(T, fi))
+        end
+        return count
+    elseif T <: Tuple
+        return length(T.parameters)
+    else
+        return 1
+    end
+end
 
 #-----------------------------------------------------------------------------
 # Argument helpers

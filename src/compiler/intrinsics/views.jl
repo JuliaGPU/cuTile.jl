@@ -192,28 +192,40 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
 end
 
 """
-    cache_tensor_view!(ctx, arg_idx)
+    cache_tensor_view!(ctx, arg_idx[, path, tilearray_type])
 
 Create a TensorView for a TileArray argument at kernel entry.
 Uses TileArray's ndim from type and requires explicit sizes/strides from parameters.
+
+When `path` is provided (non-empty), the TileArray is nested inside a destructured struct
+and its flat values are found at paths like `[path..., :ptr]`.
 """
-function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
+function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
+                            path::Vector{Union{Symbol, Int}}=Union{Symbol, Int}[],
+                            @nospecialize(tilearray_type::Type=Nothing))
     cb = ctx.cb
     tt = ctx.tt
 
-    tilearray_type = get_arg_type(ctx, arg_idx)
+    if tilearray_type === Nothing
+        tilearray_type = get_arg_type(ctx, arg_idx)
+    end
     elem_type = eltype(tilearray_type)
     ndim = ndims(tilearray_type)
     spec = array_spec(tilearray_type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
-    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
-    isempty(ptr_vals) && throw(IRError("Cannot get ptr from TileArray argument"))
+    # Build paths for nested fields
+    ptr_path = Union{Symbol, Int}[path..., :ptr]
+    sizes_path = Union{Symbol, Int}[path..., :sizes]
+    strides_path = Union{Symbol, Int}[path..., :strides]
+
+    ptr_vals = get_arg_flat_values(ctx, arg_idx, ptr_path)
+    (ptr_vals === nothing || isempty(ptr_vals)) && throw(IRError("Cannot get ptr from TileArray argument at path $path"))
     array_val = ptr_vals[1]
 
     # Get sizes and strides from parameters (required at kernel entry)
-    sizes_from_arg = get_arg_flat_values(ctx, arg_idx, :sizes)
-    strides_from_arg = get_arg_flat_values(ctx, arg_idx, :strides)
+    sizes_from_arg = get_arg_flat_values(ctx, arg_idx, sizes_path)
+    strides_from_arg = get_arg_flat_values(ctx, arg_idx, strides_path)
 
     sizes_from_arg === nothing && throw(IRError("TileArray at kernel entry requires explicit sizes"))
     length(sizes_from_arg) < ndim && throw(IRError("TileArray sizes don't match ndim"))
@@ -258,8 +270,9 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int)
     # Create tensor view
     tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, dynamic_stride_vals)
 
-    # Cache it
-    ctx.tensor_views[arg_idx] = (tensor_view, tv_type)
+    # Cache it: use arg_idx for top-level, (arg_idx, path) for nested
+    key = isempty(path) ? arg_idx : (arg_idx, path)
+    ctx.tensor_views[key] = (tensor_view, tv_type)
 end
 
 """
@@ -308,19 +321,29 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
     array_arg = args[1]
 
-    # Extract TileArray argument index
+    # Case 1: Direct top-level argument
     arg_idx = extract_argument_index(array_arg)
-    (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
-        throw(IRError("make_tensor_view() requires a TileArray argument"))
+    if arg_idx !== nothing && is_destructured_arg(ctx, arg_idx)
+        haskey(ctx.tensor_views, arg_idx) || throw(IRError("TensorView not found for arg $arg_idx"))
+        tensor_view, tv_type = ctx.tensor_views[arg_idx]
+        tilearray_type = get_arg_type(ctx, arg_idx)
+        result_jltype = TensorView{eltype(tilearray_type), ndims(tilearray_type)}
+        return CGVal(tensor_view, tv_type, result_jltype)
+    end
 
-    # Look up cached TensorView (created at kernel entry)
-    haskey(ctx.tensor_views, arg_idx) || throw(IRError("TensorView not found for arg $arg_idx"))
-    tensor_view, tv_type = ctx.tensor_views[arg_idx]
+    # Case 2: Lazy arg ref (nested TileArray inside a struct)
+    tv = emit_value!(ctx, array_arg)
+    if tv !== nothing && is_arg_ref(tv)
+        arg_idx, chain = tv.arg_ref
+        key = (arg_idx, chain)
+        haskey(ctx.tensor_views, key) || throw(IRError("TensorView not found for arg $arg_idx at path $chain"))
+        tensor_view, tv_type = ctx.tensor_views[key]
+        ta_type = CC.widenconst(tv.jltype)
+        result_jltype = TensorView{eltype(ta_type), ndims(ta_type)}
+        return CGVal(tensor_view, tv_type, result_jltype)
+    end
 
-    tilearray_type = get_arg_type(ctx, arg_idx)
-    result_jltype = TensorView{eltype(tilearray_type), ndims(tilearray_type)}
-
-    CGVal(tensor_view, tv_type, result_jltype)
+    throw(IRError("make_tensor_view() requires a TileArray argument (direct or nested)"))
 end
 
 # cuda_tile.store_view_tko
