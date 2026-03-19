@@ -197,6 +197,27 @@ end # invalidations
         ct.@device_code_typed io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
         String(take!(buf))
     end
+
+    # @device_code_tiled with Constant arguments
+    function reflect_const_vadd(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                                c::ct.TileArray{Float32,1}, tile_size::Int)
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (tile_size,))
+        tile_b = ct.load(b, pid, (tile_size,))
+        ct.store(c, pid, tile_a + tile_b)
+        return
+    end
+
+    c2 = CUDA.zeros(Float32, n)
+    @test @filecheck begin
+        @check "entry @reflect_const_vadd"
+        @check "load_view"
+        @check "addf"
+        @check "store_view"
+        ct.@device_code_tiled ct.launch(reflect_const_vadd, cld(n, 16), a, b, c2,
+                                        ct.Constant(16))
+    end
+    @test Array(c2) ≈ Array(a) + Array(b)
 end
 
 @testset "assert" begin

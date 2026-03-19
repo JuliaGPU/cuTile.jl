@@ -376,11 +376,24 @@ IR where constant values are folded in.
 function emit_ir(cache::CacheView, mi::Core.MethodInstance;
                  const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     # Invoke compile hook if set (for @device_code_* reflection)
-    # Pass (f, tt) tuple to enable direct use with reflection utilities
+    # Pass (f, tt) tuple to enable direct use with reflection utilities.
+    # Reconstruct Constant{T,V} types from const_argtypes so that code_tiled
+    # can recover const-seeded arguments (MI specTypes have them unwrapped).
     if compile_hook[] !== nothing
         ftype = mi.specTypes.parameters[1]
         f = isdefined(ftype, :instance) ? ftype.instance : ftype
-        tt = Tuple{mi.specTypes.parameters[2:end]...}
+        arg_types = collect(Any, mi.specTypes.parameters[2:end])
+        if const_argtypes !== nothing
+            # const_argtypes is [Const(f), arg2, ...]; arg_types omits f,
+            # so arg_types[i] corresponds to const_argtypes[i+1].
+            for i in eachindex(arg_types)
+                if const_argtypes[i+1] isa CC.Const
+                    val = const_argtypes[i+1].val
+                    arg_types[i] = Constant{typeof(val), val}
+                end
+            end
+        end
+        tt = Tuple{arg_types...}
         compile_hook[](f, tt)
     end
 
