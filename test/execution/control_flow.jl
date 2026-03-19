@@ -133,7 +133,7 @@ end
 @testset "for loop with constant bound" begin
     function for_loop_const_kernel(data::ct.TileArray{Float32,1},
                                    out::ct.TileArray{Float32,1},
-                                   N::ct.Constant{Int})
+                                   N::Int)
         pid = ct.bid(1)
         acc = ct.zeros((16,), Float32)
         for i in Int32(1):Int32(N[])
