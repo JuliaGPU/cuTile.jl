@@ -454,15 +454,11 @@ ones_tile = ct.full(1.0f0, Float32, (32, 32))
 @inline full(value::Tile, ::Type{T}, shape::NTuple{N, Int}) where {N, T} =
     Intrinsics.constant(shape, convert(Tile{T}, value), T)
 
-# Deprecated old argument order
-@inline function full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T}
-    Base.depwarn("`ct.full(shape, value, T)` is deprecated, use `ct.full(value, T, shape)` instead", :full)
+# Deprecated old argument order (no depwarn — these compile through Tile IR where String isn't supported)
+@inline full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T} =
     full(value, T, shape)
-end
-@inline function full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T}
-    Base.depwarn("`ct.full(shape, value, T)` is deprecated, use `ct.full(value, T, shape)` instead", :full)
+@inline full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T} =
     full(value, T, shape)
-end
 
 """
     fill(value, shape::NTuple{N, Int}) -> Tile{typeof(value), shape}
@@ -502,11 +498,9 @@ zeros_tile = ct.zeros(Float32, 32, 32)   # varargs form
 @inline zeros(::Type{T}, dims::Int...) where {T} =
     zeros(T, dims)
 
-# Deprecated old argument order
-@inline function zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T}
-    Base.depwarn("`ct.zeros(shape, T)` is deprecated, use `ct.zeros(T, shape)` instead", :zeros)
+# Deprecated old argument order (no depwarn — these compile through Tile IR where String isn't supported)
+@inline zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T} =
     zeros(T, shape)
-end
 
 #=============================================================================
  Shape & DType

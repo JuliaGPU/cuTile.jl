@@ -1251,7 +1251,7 @@ end
             @check "loop"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Int32}) do data, out, n_iters
                 pid = ct.bid(1)
-                acc = ct.zeros((16,), Float32)
+                acc = ct.zeros(Float32, (16,))
                 for i in Int32(1):n_iters
                     acc = acc .+ ct.load(data, i, (16,))
                 end
@@ -1268,7 +1268,7 @@ end
             @check "addf"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, Int32}) do data, out, n_iters
                 pid = ct.bid(1)
-                acc = ct.zeros((16,), Float32)
+                acc = ct.zeros(Float32, (16,))
                 for i in Int32(1):n_iters
                     tile = ct.load(data, i, (16,))
                     acc = acc .+ tile
