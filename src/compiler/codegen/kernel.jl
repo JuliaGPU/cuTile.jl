@@ -130,9 +130,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # Create TensorViews for all TileArray arguments at kernel entry
-    # Walk the type tree to find all nested TileArrays
     for (arg_idx, argtype) in ctx.arg_types
-        _create_tensor_views_recursive!(ctx, arg_idx, argtype, Union{Symbol, Int}[])
+        create_tensor_views!(ctx, arg_idx, argtype, Union{Symbol, Int}[])
     end
 
     # Create memory ordering token
@@ -150,18 +149,18 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 end
 
 """
-    _create_tensor_views_recursive!(ctx, arg_idx, T, path)
+    create_tensor_views!(ctx, arg_idx, T, path)
 
 Walk the type tree and create TensorViews for all nested TileArrays.
 """
-function _create_tensor_views_recursive!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Union{Symbol, Int}})
+function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Union{Symbol, Int}})
     if T <: TileArray
         cache_tensor_view!(ctx, arg_idx, path, T)
     elseif T <: Tuple
         for i in 1:length(T.parameters)
             ptype = T.parameters[i]
             elem_path = Union{Symbol, Int}[path..., i]
-            _create_tensor_views_recursive!(ctx, arg_idx, ptype, elem_path)
+            create_tensor_views!(ctx, arg_idx, ptype, elem_path)
         end
     else
         for fi in 1:fieldcount(T)
@@ -172,7 +171,7 @@ function _create_tensor_views_recursive!(ctx::CGCtx, arg_idx::Int, @nospecialize
             if ftype <: TileArray
                 cache_tensor_view!(ctx, arg_idx, field_path, ftype)
             elseif should_destructure(ftype) || ftype <: Tuple
-                _create_tensor_views_recursive!(ctx, arg_idx, ftype, field_path)
+                create_tensor_views!(ctx, arg_idx, ftype, field_path)
             end
         end
     end
