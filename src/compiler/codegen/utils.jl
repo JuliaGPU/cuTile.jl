@@ -254,6 +254,22 @@ function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, field::Symbol)
 end
 
 """
+    collect_child_values(ctx, arg_idx, path, n) -> Union{Vector{Value}, Nothing}
+
+Collect values at `[path..., 1]` through `[path..., n]`, each expected to have
+exactly one flat value. Returns `nothing` if any child is missing.
+"""
+function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Symbol, Int}}, n::Int)
+    result = Value[]
+    for i in 1:n
+        child = get_arg_flat_values(ctx, arg_idx, Union{Symbol, Int}[path..., i])
+        child === nothing && return nothing
+        append!(result, child)
+    end
+    isempty(result) ? nothing : result
+end
+
+"""
     try_materialize_scalar(ctx, arg_idx, path, rt) -> Union{CGVal, Nothing}
 
 If `path` maps to exactly one flat value, return a concrete CGVal for it.
@@ -267,12 +283,6 @@ function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Sym
     nothing
 end
 
-"""
-    is_scalar_leaf_type(T) -> Bool
-
-Check if a type is a scalar leaf (not ghost, not a tuple, not destructurable).
-"""
-is_scalar_leaf_type(@nospecialize(T)) = !is_ghost_type(T) && !(T <: Tuple) && !should_destructure(T)
 
 """
     is_destructured_arg(ctx, arg_idx) -> Bool
@@ -409,44 +419,6 @@ function is_ghost_type(@nospecialize(T))
     end
 end
 
-"""
-    should_destructure(T) -> Bool
-
-Check if a type should be destructured into flat parameters.
-Any isbits struct with non-ghost, non-primitive fields qualifies.
-"""
-function should_destructure(@nospecialize(T))
-    T = CC.widenconst(T)
-    isstructtype(T) || return false
-    is_ghost_type(T) && return false
-    isprimitivetype(T) && return false
-    T <: Tuple && return false  # Tuples are handled as flat params, not recursed
-    # Must have a concrete layout we can iterate
-    try fieldcount(T) catch; return false end
-    for fi in 1:fieldcount(T)
-        ft = fieldtype(T, fi)
-        _is_kernel_param_type(ft) && return true
-    end
-    return false
-end
-
-# Check if a field type contributes kernel parameters (recursively).
-# Only isbits types (or types containing them) can be kernel parameters.
-function _is_kernel_param_type(@nospecialize(ft))
-    is_ghost_type(ft) && return false
-    isprimitivetype(ft) && return true
-    ft <: Ptr && return true
-    if ft <: Tuple && ft !== Tuple{}
-        # Check if any tuple element is a kernel param type
-        for p in ft.parameters
-            _is_kernel_param_type(p) && return true
-        end
-        return false
-    end
-    # For structs, only recurse if isbits (prevents infinite recursion on DataType etc.)
-    isstructtype(ft) && isbitstype(ft) && should_destructure(ft) && return true
-    return false
-end
 
 """
     flat_field_count(T) -> Int
@@ -456,44 +428,32 @@ Count flat parameters a type expands to (recursive).
 function flat_field_count(@nospecialize(T))
     if is_ghost_type(T)
         return 0
-    elseif should_destructure(T)
+    elseif isprimitivetype(T)
+        return 1
+    else
         count = 0
         for fi in 1:fieldcount(T)
             count += flat_field_count(fieldtype(T, fi))
         end
         return count
-    elseif T <: Tuple
-        return length(T.parameters)
-    else
-        return 1
     end
 end
 
 """
     flatten(x) -> Tuple
 
-Flatten a value into a tuple of its leaf fields for kernel launch.
-Scalars return themselves wrapped in a tuple. Structs that `should_destructure`
-return their non-ghost leaf fields recursively. Ghost types return `()`.
+Flatten a value into a tuple of its kernel parameter leaf fields.
+Ghost types return `()`, scalars return `(x,)`, structs/tuples recurse.
 """
 flatten(x::TileArray) = (x.ptr, x.sizes..., x.strides...)
 function flatten(x)
     T = typeof(x)
     is_ghost_type(T) && return ()
-    should_destructure(T) || return (x,)
+    isprimitivetype(T) && return (x,)
     result = Any[]
     for fi in 1:fieldcount(T)
         fval = getfield(x, fi)
-        fT = typeof(fval)
-        if is_ghost_type(fT) || !_is_kernel_param_type(fT)
-            continue
-        elseif fval isa Tuple
-            for elem in fval
-                append!(result, flatten(elem))
-            end
-        else
-            append!(result, flatten(fval))
-        end
+        append!(result, flatten(fval))
     end
     return Tuple(result)
 end

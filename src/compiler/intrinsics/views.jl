@@ -224,8 +224,9 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
     array_val = ptr_vals[1]
 
     # Get sizes and strides from parameters (required at kernel entry)
-    sizes_from_arg = get_arg_flat_values(ctx, arg_idx, sizes_path)
-    strides_from_arg = get_arg_flat_values(ctx, arg_idx, strides_path)
+    # Tuple fields are destructured per-element, so collect children
+    sizes_from_arg = collect_child_values(ctx, arg_idx, sizes_path, ndim)
+    strides_from_arg = collect_child_values(ctx, arg_idx, strides_path, ndim)
 
     sizes_from_arg === nothing && throw(IRError("TileArray at kernel entry requires explicit sizes"))
     length(sizes_from_arg) < ndim && throw(IRError("TileArray sizes don't match ndim"))

@@ -46,12 +46,12 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             continue
         elseif is_const_arg(i)
             continue  # const arg: no kernel parameter
-        elseif should_destructure(argtype_unwrapped)
-            flatten_struct_params!(ctx, param_types, param_mapping, i, argtype_unwrapped, Union{Symbol, Int}[])
-            ctx.arg_types[i] = argtype_unwrapped
-        else
+        elseif isprimitivetype(argtype_unwrapped)
             push!(param_types, tile_type_for_julia!(ctx, argtype_unwrapped))
             push!(param_mapping, (i, Union{Symbol, Int}[]))
+        else
+            flatten_struct_params!(ctx, param_types, param_mapping, i, argtype_unwrapped, Union{Symbol, Int}[])
+            ctx.arg_types[i] = argtype_unwrapped
         end
     end
 
@@ -156,23 +156,13 @@ Walk the type tree and create TensorViews for all nested TileArrays.
 function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Union{Symbol, Int}})
     if T <: TileArray
         cache_tensor_view!(ctx, arg_idx, path, T)
-    elseif T <: Tuple
-        for i in 1:length(T.parameters)
-            ptype = T.parameters[i]
-            elem_path = Union{Symbol, Int}[path..., i]
-            create_tensor_views!(ctx, arg_idx, ptype, elem_path)
-        end
     else
         for fi in 1:fieldcount(T)
             ftype = fieldtype(T, fi)
-            is_ghost_type(ftype) && continue
+            (is_ghost_type(ftype) || isprimitivetype(ftype)) && continue
             fname = fieldname(T, fi)
             field_path = Union{Symbol, Int}[path..., fname]
-            if ftype <: TileArray
-                cache_tensor_view!(ctx, arg_idx, field_path, ftype)
-            elseif should_destructure(ftype) || ftype <: Tuple
-                create_tensor_views!(ctx, arg_idx, ftype, field_path)
-            end
+            create_tensor_views!(ctx, arg_idx, ftype, field_path)
         end
     end
 end
@@ -189,51 +179,13 @@ function flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, @nospe
         field_path = Union{Symbol, Int}[path..., fname]
         if is_ghost_type(ftype)
             continue
-        elseif ftype <: Tuple && ftype !== Tuple{}
-            _flatten_tuple_param!(ctx, param_types, param_mapping, arg_idx, ftype, field_path)
-        elseif should_destructure(ftype)
-            flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, ftype, field_path)
-        else
-            # Scalar/Ptr field → 1 flat param (skip if no tile IR type)
+        elseif isprimitivetype(ftype)
             type_id = tile_type_for_julia!(ctx, ftype; throw_error=false)
             type_id === nothing && continue
             push!(param_types, type_id)
             push!(param_mapping, (arg_idx, field_path))
-        end
-    end
-end
-
-"""
-Flatten a Tuple field. If all elements are the same primitive type, emit N grouped
-params under field_path. Otherwise, index each element and recurse if needed.
-"""
-function _flatten_tuple_param!(ctx, param_types, param_mapping, arg_idx, @nospecialize(ftype), field_path)
-    N = length(ftype.parameters)
-    # Check if this is a homogeneous tuple of simple leaf types (NTuple{N, T})
-    et = eltype(ftype)
-    if isconcretetype(et) && !is_ghost_type(et) && !should_destructure(et) && !(et <: Tuple)
-        # Simple case: all elements are the same leaf type (e.g., NTuple{N, Int32})
-        for _ in 1:N
-            push!(param_types, tile_type_for_julia!(ctx, et))
-            push!(param_mapping, (arg_idx, field_path))
-        end
-    else
-        # Heterogeneous or complex tuple: recurse per element
-        for i in 1:N
-            elem_type = ftype.parameters[i]
-            elem_path = Union{Symbol, Int}[field_path..., i]
-            if is_ghost_type(elem_type)
-                continue
-            elseif elem_type <: Tuple && elem_type !== Tuple{}
-                _flatten_tuple_param!(ctx, param_types, param_mapping, arg_idx, elem_type, elem_path)
-            elseif should_destructure(elem_type)
-                flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, elem_type, elem_path)
-            else
-                type_id = tile_type_for_julia!(ctx, elem_type; throw_error=false)
-                type_id === nothing && continue
-                push!(param_types, type_id)
-                push!(param_mapping, (arg_idx, elem_path))
-            end
+        else
+            flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, ftype, field_path)
         end
     end
 end
@@ -285,7 +237,7 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
             new_chain = Union{Symbol, Int}[chain..., Int(field)]
             rt = CC.widenconst(result_type)
             # Heterogeneous tuple or nested struct: check per-element path
-            if is_scalar_leaf_type(rt)
+            if isprimitivetype(rt)
                 cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
                 cv !== nothing && return cv
             end
@@ -326,7 +278,7 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
         new_chain = Union{Symbol, Int}[chain..., Int(index)]
         rt = CC.widenconst(result_type)
         # Heterogeneous tuple: check per-element path
-        if is_scalar_leaf_type(rt)
+        if isprimitivetype(rt)
             cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
             cv !== nothing && return cv
         end
