@@ -198,10 +198,10 @@ Create a TensorView for a TileArray argument at kernel entry.
 Uses TileArray's ndim from type and requires explicit sizes/strides from parameters.
 
 When `path` is provided (non-empty), the TileArray is nested inside a destructured struct
-and its flat values are found at paths like `[path..., :ptr]`.
+and its flat values are found at paths like `[path..., fieldindex(T, :ptr)]`.
 """
 function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
-                            path::Vector{Union{Symbol, Int}}=Union{Symbol, Int}[],
+                            path::Vector{Int}=Int[],
                             @nospecialize(tilearray_type::Type=Nothing))
     cb = ctx.cb
     tt = ctx.tt
@@ -214,10 +214,14 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
     spec = array_spec(tilearray_type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
-    # Build paths for nested fields
-    ptr_path = Union{Symbol, Int}[path..., :ptr]
-    sizes_path = Union{Symbol, Int}[path..., :sizes]
-    strides_path = Union{Symbol, Int}[path..., :strides]
+    # Build paths for nested fields using field indices
+    ptr_fi = Base.fieldindex(tilearray_type, :ptr)
+    sizes_fi = Base.fieldindex(tilearray_type, :sizes)
+    strides_fi = Base.fieldindex(tilearray_type, :strides)
+
+    ptr_path = Int[path..., ptr_fi]
+    sizes_path = Int[path..., sizes_fi]
+    strides_path = Int[path..., strides_fi]
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, ptr_path)
     (ptr_vals === nothing || isempty(ptr_vals)) && throw(IRError("Cannot get ptr from TileArray argument at path $path"))

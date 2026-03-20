@@ -70,9 +70,9 @@ struct CGVal
     type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs or multi-value)
     jltype::Any               # Original Julia type
     shape::Vector{Int}        # Tile shape (empty for scalars)
-    # Lazy argument reference: (arg_idx, [:field, index, ...])
-    # e.g., (1, [:sizes, 2]) means "argument 1, field :sizes, index 2"
-    arg_ref::Union{Tuple{Int, Vector{Union{Symbol, Int}}}, Nothing}
+    # Lazy argument reference: (arg_idx, [field_indices...])
+    # e.g., (1, [2, 1]) means "argument 1, field 2, sub-field 1"
+    arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
     constant::Union{Some, Nothing}  # Nothing = no constant, Some(x) = constant value x
     tuple::Union{Vector{Any}, Nothing}  # For tuples: component refs (SSAValue, etc.)
 end
@@ -89,7 +89,7 @@ CGVal(v::Vector{Value}, @nospecialize(jltype)) =
     CGVal(v, nothing, jltype, Int[], nothing, nothing, nothing)
 
 # Constructor for lazy argument references
-function arg_ref_value(arg_idx::Int, chain::Vector{Union{Symbol, Int}}, @nospecialize(jltype))
+function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
     CGVal(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing, nothing)
 end
 
@@ -152,8 +152,8 @@ mutable struct CGCtx
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
     # Destructured argument handling: path-keyed flat values
-    # Key: (arg_idx, path) where path is e.g. [:ptr] or [:a, :sizes]
-    arg_flat_values::Dict{Tuple{Int, Vector{Union{Symbol, Int}}}, Vector{Value}}
+    # Key: (arg_idx, path) where path is e.g. [1] or [1, 2] (field indices)
+    arg_flat_values::Dict{Tuple{Int, Vector{Int}}, Vector{Value}}
     arg_types::Dict{Int, Type}
 
     # Cached TensorViews for TileArray arguments
@@ -190,7 +190,7 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        Dict{Tuple{Int, Vector{Union{Symbol, Int}}}, Vector{Value}}(),
+        Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Dict{Int, Type}(),
         Dict{Any, Tuple{Value, TypeId}}(),
         cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
@@ -244,13 +244,8 @@ end
 
 Get the flat Tile IR values for a destructured argument at the given path.
 """
-function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Symbol, Int}})
+function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int})
     get(ctx.arg_flat_values, (arg_idx, path), nothing)
-end
-
-# Convenience: single field name
-function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, field::Symbol)
-    get_arg_flat_values(ctx, arg_idx, Union{Symbol, Int}[field])
 end
 
 """
@@ -259,10 +254,10 @@ end
 Collect values at `[path..., 1]` through `[path..., n]`, each expected to have
 exactly one flat value. Returns `nothing` if any child is missing.
 """
-function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Symbol, Int}}, n::Int)
+function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, n::Int)
     result = Value[]
     for i in 1:n
-        child = get_arg_flat_values(ctx, arg_idx, Union{Symbol, Int}[path..., i])
+        child = get_arg_flat_values(ctx, arg_idx, Int[path..., i])
         child === nothing && return nothing
         append!(result, child)
     end
@@ -274,7 +269,7 @@ end
 
 If `path` maps to exactly one flat value, return a concrete CGVal for it.
 """
-function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Symbol, Int}}, @nospecialize(rt))
+function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, @nospecialize(rt))
     values = get_arg_flat_values(ctx, arg_idx, path)
     if values !== nothing && length(values) == 1
         type_id = tile_type_for_julia!(ctx, rt)

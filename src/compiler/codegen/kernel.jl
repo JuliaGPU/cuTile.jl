@@ -38,7 +38,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # Build parameter list, handling ghost types, const args, and struct destructuring
     param_types = TypeId[]
-    param_mapping = Tuple{Int, Vector{Union{Symbol, Int}}}[]
+    param_mapping = Tuple{Int, Vector{Int}}[]
 
     for (i, argtype) in enumerate(sci.argtypes)
         argtype_unwrapped = CC.widenconst(argtype)
@@ -48,9 +48,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             continue  # const arg: no kernel parameter
         elseif isprimitivetype(argtype_unwrapped)
             push!(param_types, tile_type_for_julia!(ctx, argtype_unwrapped))
-            push!(param_mapping, (i, Union{Symbol, Int}[]))
+            push!(param_mapping, (i, Int[]))
         else
-            flatten_struct_params!(ctx, param_types, param_mapping, i, argtype_unwrapped, Union{Symbol, Int}[])
+            flatten_struct_params!(ctx, param_types, param_mapping, i, argtype_unwrapped, Int[])
             ctx.arg_types[i] = argtype_unwrapped
         end
     end
@@ -73,7 +73,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     arg_values = make_block_args!(cb, length(param_types))
 
     # Build arg_flat_values map
-    field_values = Dict{Tuple{Int, Vector{Union{Symbol, Int}}}, Vector{Value}}()
+    field_values = Dict{Tuple{Int, Vector{Int}}, Vector{Value}}()
     for (param_idx, val) in enumerate(arg_values)
         key = param_mapping[param_idx]
         if !haskey(field_values, key)
@@ -124,14 +124,14 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # For destructured args, create lazy CGVals that track the argument index
     for (arg_idx, argtype) in ctx.arg_types
-        tv = arg_ref_value(arg_idx, Union{Symbol, Int}[], argtype)
+        tv = arg_ref_value(arg_idx, Int[], argtype)
         ctx[SlotNumber(arg_idx)] = tv
         ctx[Argument(arg_idx)] = tv
     end
 
     # Create TensorViews for all TileArray arguments at kernel entry
     for (arg_idx, argtype) in ctx.arg_types
-        create_tensor_views!(ctx, arg_idx, argtype, Union{Symbol, Int}[])
+        create_tensor_views!(ctx, arg_idx, argtype, Int[])
     end
 
     # Create memory ordering token
@@ -153,15 +153,14 @@ end
 
 Walk the type tree and create TensorViews for all nested TileArrays.
 """
-function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Union{Symbol, Int}})
+function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Int})
     if T <: TileArray
         cache_tensor_view!(ctx, arg_idx, path, T)
     else
         for fi in 1:fieldcount(T)
             ftype = fieldtype(T, fi)
             (is_ghost_type(ftype) || isprimitivetype(ftype)) && continue
-            fname = fieldname(T, fi)
-            field_path = Union{Symbol, Int}[path..., fname]
+            field_path = Int[path..., fi]
             create_tensor_views!(ctx, arg_idx, ftype, field_path)
         end
     end
@@ -172,11 +171,10 @@ end
 
 Recursively flatten a struct type into kernel parameters.
 """
-function flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, @nospecialize(T), path::Vector{Union{Symbol, Int}})
+function flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, @nospecialize(T), path::Vector{Int})
     for fi in 1:fieldcount(T)
-        fname = fieldname(T, fi)
         ftype = fieldtype(T, fi)
-        field_path = Union{Symbol, Int}[path..., fname]
+        field_path = Int[path..., fi]
         if is_ghost_type(ftype)
             continue
         elseif isprimitivetype(ftype)
@@ -216,33 +214,24 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
     if obj_tv !== nothing && is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref
 
-        if field isa Symbol
-            # Field access: extend chain with symbol
-            new_chain = Union{Symbol, Int}[chain..., field]
-            rt = CC.widenconst(result_type)
-            if !(rt <: Tuple)
-                cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
-                cv !== nothing && return cv
-            end
-            return arg_ref_value(arg_idx, new_chain, rt)
+        # Convert field to integer index
+        idx = if field isa Symbol
+            obj_type = CC.widenconst(obj_tv.jltype)
+            Base.fieldindex(obj_type, field)
         elseif field isa Integer
-            # Tuple indexing into a field
-            # Look up the parent path (which should be a tuple field)
-            values = get_arg_flat_values(ctx, arg_idx, chain)
-            if values !== nothing && 1 <= field <= length(values)
-                type_id = tile_type_for_julia!(ctx, CC.widenconst(result_type))
-                return CGVal(values[field], type_id, CC.widenconst(result_type))
-            end
-            # Not a simple flat tuple — extend chain (element may be destructured)
-            new_chain = Union{Symbol, Int}[chain..., Int(field)]
-            rt = CC.widenconst(result_type)
-            # Heterogeneous tuple or nested struct: check per-element path
-            if isprimitivetype(rt)
-                cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
-                cv !== nothing && return cv
-            end
-            return arg_ref_value(arg_idx, new_chain, rt)
+            Int(field)
+        else
+            nothing
         end
+        idx === nothing && return nothing
+
+        new_chain = Int[chain..., idx]
+        rt = CC.widenconst(result_type)
+        if isprimitivetype(rt)
+            cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
+            cv !== nothing && return cv
+        end
+        return arg_ref_value(arg_idx, new_chain, rt)
     end
 
     nothing
@@ -263,21 +252,11 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
     obj_tv = emit_value!(ctx, obj_arg)
     obj_tv === nothing && return nothing
 
-    # If obj is a lazy arg_ref, try to materialize or extend the chain
+    # If obj is a lazy arg_ref, extend the chain with the index
     if is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref
-
-        # Try to materialize: the chain should point to a tuple field
-        values = get_arg_flat_values(ctx, arg_idx, chain)
-        if values !== nothing && 1 <= index <= length(values)
-            type_id = tile_type_for_julia!(ctx, CC.widenconst(result_type))
-            return CGVal(values[index], type_id, CC.widenconst(result_type))
-        end
-
-        # Otherwise extend the chain
-        new_chain = Union{Symbol, Int}[chain..., Int(index)]
+        new_chain = Int[chain..., Int(index)]
         rt = CC.widenconst(result_type)
-        # Heterogeneous tuple: check per-element path
         if isprimitivetype(rt)
             cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
             cv !== nothing && return cv
