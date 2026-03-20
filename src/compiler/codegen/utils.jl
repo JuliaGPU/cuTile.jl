@@ -253,15 +253,26 @@ function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, field::Symbol)
     get_arg_flat_values(ctx, arg_idx, Union{Symbol, Int}[field])
 end
 
-# Convenience: no path = top-level
-function get_arg_flat_values(ctx::CGCtx, arg_idx::Int)
-    # Collect all values for this arg_idx across all paths
-    result = Value[]
-    for ((idx, _path), vals) in ctx.arg_flat_values
-        idx == arg_idx && append!(result, vals)
+"""
+    try_materialize_scalar(ctx, arg_idx, path, rt) -> Union{CGVal, Nothing}
+
+If `path` maps to exactly one flat value, return a concrete CGVal for it.
+"""
+function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Union{Symbol, Int}}, @nospecialize(rt))
+    values = get_arg_flat_values(ctx, arg_idx, path)
+    if values !== nothing && length(values) == 1
+        type_id = tile_type_for_julia!(ctx, rt)
+        return CGVal(values[1], type_id, rt)
     end
-    isempty(result) ? nothing : result
+    nothing
 end
+
+"""
+    is_scalar_leaf_type(T) -> Bool
+
+Check if a type is a scalar leaf (not ghost, not a tuple, not destructurable).
+"""
+is_scalar_leaf_type(@nospecialize(T)) = !is_ghost_type(T) && !(T <: Tuple) && !should_destructure(T)
 
 """
     is_destructured_arg(ctx, arg_idx) -> Bool

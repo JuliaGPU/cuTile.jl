@@ -254,6 +254,7 @@ return their fields in order.
 
 This is used by the launch helper to splat arguments to cudacall.
 """
+flatten(x::TileArray) = (x.ptr, x.sizes..., x.strides...)
 function flatten(x)
     T = typeof(x)
     is_ghost_type(T) && return ()
@@ -266,10 +267,10 @@ function flatten(x)
             continue
         elseif fval isa Tuple
             for elem in fval
-                push!(result, flatten(elem)...)
+                append!(result, flatten(elem))
             end
         else
-            push!(result, flatten(fval)...)
+            append!(result, flatten(fval))
         end
     end
     return Tuple(result)

@@ -270,13 +270,8 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
             new_chain = Union{Symbol, Int}[chain..., field]
             rt = CC.widenconst(result_type)
             if !(rt <: Tuple)
-                # Check if this path resolves to flat values
-                values = get_arg_flat_values(ctx, arg_idx, new_chain)
-                if values !== nothing && length(values) == 1
-                    # Scalar field - materialize immediately
-                    type_id = tile_type_for_julia!(ctx, rt)
-                    return CGVal(values[1], type_id, rt)
-                end
+                cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
+                cv !== nothing && return cv
             end
             return arg_ref_value(arg_idx, new_chain, rt)
         elseif field isa Integer
@@ -291,12 +286,9 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
             new_chain = Union{Symbol, Int}[chain..., Int(field)]
             rt = CC.widenconst(result_type)
             # Heterogeneous tuple or nested struct: check per-element path
-            if !is_ghost_type(rt) && !(rt <: Tuple) && !should_destructure(rt)
-                values = get_arg_flat_values(ctx, arg_idx, new_chain)
-                if values !== nothing && length(values) == 1
-                    type_id = tile_type_for_julia!(ctx, rt)
-                    return CGVal(values[1], type_id, rt)
-                end
+            if is_scalar_leaf_type(rt)
+                cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
+                cv !== nothing && return cv
             end
             return arg_ref_value(arg_idx, new_chain, rt)
         end
@@ -335,12 +327,9 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
         new_chain = Union{Symbol, Int}[chain..., Int(index)]
         rt = CC.widenconst(result_type)
         # Heterogeneous tuple: check per-element path
-        if !is_ghost_type(rt) && !(rt <: Tuple) && !should_destructure(rt)
-            values = get_arg_flat_values(ctx, arg_idx, new_chain)
-            if values !== nothing && length(values) == 1
-                type_id = tile_type_for_julia!(ctx, rt)
-                return CGVal(values[1], type_id, rt)
-            end
+        if is_scalar_leaf_type(rt)
+            cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
+            cv !== nothing && return cv
         end
         return arg_ref_value(arg_idx, new_chain, rt)
     end
