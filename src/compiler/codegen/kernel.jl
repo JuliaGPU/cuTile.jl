@@ -160,7 +160,7 @@ function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::
         for fi in 1:fieldcount(T)
             ftype = fieldtype(T, fi)
             (is_ghost_type(ftype) || isprimitivetype(ftype)) && continue
-            field_path = Int[path..., fi]
+            field_path = [path..., fi]
             create_tensor_views!(ctx, arg_idx, ftype, field_path)
         end
     end
@@ -174,7 +174,7 @@ Recursively flatten a struct type into kernel parameters.
 function flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, @nospecialize(T), path::Vector{Int})
     for fi in 1:fieldcount(T)
         ftype = fieldtype(T, fi)
-        field_path = Int[path..., fi]
+        field_path = [path..., fi]
         if is_ghost_type(ftype)
             continue
         elseif isprimitivetype(ftype)
@@ -225,7 +225,7 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
         end
         idx === nothing && return nothing
 
-        new_chain = Int[chain..., idx]
+        new_chain = [chain..., idx]
         rt = CC.widenconst(result_type)
         if isprimitivetype(rt)
             cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
@@ -255,7 +255,7 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
     # If obj is a lazy arg_ref, extend the chain with the index
     if is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref
-        new_chain = Int[chain..., Int(index)]
+        new_chain = [chain..., Int(index)]
         rt = CC.widenconst(result_type)
         if isprimitivetype(rt)
             cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)

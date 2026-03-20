@@ -257,7 +257,7 @@ exactly one flat value. Returns `nothing` if any child is missing.
 function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, n::Int)
     result = Value[]
     for i in 1:n
-        child = get_arg_flat_values(ctx, arg_idx, Int[path..., i])
+        child = get_arg_flat_values(ctx, arg_idx, [path..., i])
         child === nothing && return nothing
         append!(result, child)
     end

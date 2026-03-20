@@ -219,9 +219,9 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
     sizes_fi = Base.fieldindex(tilearray_type, :sizes)
     strides_fi = Base.fieldindex(tilearray_type, :strides)
 
-    ptr_path = Int[path..., ptr_fi]
-    sizes_path = Int[path..., sizes_fi]
-    strides_path = Int[path..., strides_fi]
+    ptr_path = [path..., ptr_fi]
+    sizes_path = [path..., sizes_fi]
+    strides_path = [path..., strides_fi]
 
     ptr_vals = get_arg_flat_values(ctx, arg_idx, ptr_path)
     (ptr_vals === nothing || isempty(ptr_vals)) && throw(IRError("Cannot get ptr from TileArray argument at path $path"))
@@ -388,7 +388,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     actual_tile_shape = tile_shape
     if length(tile_shape) == 0
         actual_ndim = 1
-        actual_tile_shape = Int[1]
+        actual_tile_shape = [1]
         tile_1d_type = tile_type!(tt, dtype, actual_tile_shape)
         tile_val = encode_ReshapeOp!(cb, tile_1d_type, tile_val)
     end
