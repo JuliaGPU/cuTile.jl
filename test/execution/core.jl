@@ -397,22 +397,107 @@ end
     @test Array(b) ≈ Array(a)
 end
 
-@testset "scalar from heterogeneous tuple in destructured struct" begin
-    struct HetTupleWrapper{A, B}; a::A; b::B; end
+@testset "struct destructuring" begin
+    @testset "TileArray + scalar field" begin
+        struct ArrayWithScale{T, N, S}
+            arr::ct.TileArray{T, N, S}
+            scale::Float32
+        end
 
-    function het_tuple_kernel(dest::ct.TileArray{Float32,1,S},
-                              w::HetTupleWrapper{ct.TileArray{Float32,1,S2}, Int32},
-                              ts) where {S, S2}
-        bid = ct.bid(1)
-        tile = ct.load(w.a, bid, (ts[1],))
-        result = tile .+ w.b
-        ct.store(dest, bid, result)
-        return
+        function scale_kernel(dest::ct.TileArray{Float32,1}, w::ArrayWithScale{Float32,1}, ts)
+            bid = ct.bid(1)
+            tile = ct.load(w.arr, bid, (ts[1],))
+            ct.store(dest, bid, tile .* w.scale)
+            return
+        end
+
+        A = CUDA.fill(Float32(3), 64)
+        B = CUDA.zeros(Float32, 64)
+        ct.launch(scale_kernel, 1, ct.TileArray(B),
+                  ArrayWithScale(ct.TileArray(A), Float32(2)), ct.Constant((64,)))
+        @test all(Array(B) .≈ 6.0f0)
     end
 
-    A = CUDA.ones(Float32, 64)
-    B = CUDA.ones(Float32, 64)
-    ct.launch(het_tuple_kernel, 1, ct.TileArray(A),
-              HetTupleWrapper(ct.TileArray(B), Int32(5)), ct.Constant((64,)))
-    @test all(Array(A) .≈ 6.0f0)
+    @testset "two TileArrays in one struct" begin
+        struct TwoArrays{T, N, S1, S2}
+            a::ct.TileArray{T, N, S1}
+            b::ct.TileArray{T, N, S2}
+        end
+
+        function add_two_kernel(dest::ct.TileArray{Float32,1}, pair::TwoArrays{Float32,1}, ts)
+            bid = ct.bid(1)
+            ta = ct.load(pair.a, bid, (ts[1],))
+            tb = ct.load(pair.b, bid, (ts[1],))
+            ct.store(dest, bid, ta .+ tb)
+            return
+        end
+
+        X = CUDA.fill(Float32(2), 64)
+        Y = CUDA.fill(Float32(3), 64)
+        Z = CUDA.zeros(Float32, 64)
+        ct.launch(add_two_kernel, 1, ct.TileArray(Z),
+                  TwoArrays(ct.TileArray(X), ct.TileArray(Y)), ct.Constant((64,)))
+        @test all(Array(Z) .≈ 5.0f0)
+    end
+
+    @testset "nested struct (struct inside struct)" begin
+        struct InnerLayer{T, N, S}
+            arr::ct.TileArray{T, N, S}
+            bias::Float32
+        end
+        struct OuterLayer{T, N, S}
+            inner::InnerLayer{T, N, S}
+            multiplier::Float32
+        end
+
+        function nested_kernel(dest::ct.TileArray{Float32,1}, o::OuterLayer{Float32,1}, ts)
+            bid = ct.bid(1)
+            tile = ct.load(o.inner.arr, bid, (ts[1],))
+            ct.store(dest, bid, (tile .+ o.inner.bias) .* o.multiplier)
+            return
+        end
+
+        A = CUDA.fill(Float32(1), 64)
+        B = CUDA.zeros(Float32, 64)
+        ct.launch(nested_kernel, 1, ct.TileArray(B),
+                  OuterLayer(InnerLayer(ct.TileArray(A), Float32(2)), Float32(3)), ct.Constant((64,)))
+        @test all(Array(B) .≈ 9.0f0)
+    end
+
+    @testset "scalar-only struct" begin
+        struct ScalarPair; a::Float32; b::Float32; end
+
+        function scalar_struct_kernel(dest::ct.TileArray{Float32,1}, src::ct.TileArray{Float32,1},
+                                      sp::ScalarPair, ts)
+            bid = ct.bid(1)
+            tile = ct.load(src, bid, (ts[1],))
+            ct.store(dest, bid, tile .* sp.a .+ sp.b)
+            return
+        end
+
+        A = CUDA.fill(Float32(4), 64)
+        B = CUDA.zeros(Float32, 64)
+        ct.launch(scalar_struct_kernel, 1, ct.TileArray(B), ct.TileArray(A),
+                  ScalarPair(Float32(2), Float32(1)), ct.Constant((64,)))
+        @test all(Array(B) .≈ 9.0f0)
+    end
+
+    @testset "heterogeneous tuple in struct" begin
+        struct HetTupleWrapper{A, B}; a::A; b::B; end
+
+        function het_tuple_kernel(dest::ct.TileArray{Float32,1,S},
+                                  w::HetTupleWrapper{ct.TileArray{Float32,1,S2}, Int32},
+                                  ts) where {S, S2}
+            bid = ct.bid(1)
+            tile = ct.load(w.a, bid, (ts[1],))
+            ct.store(dest, bid, tile .+ w.b)
+            return
+        end
+
+        A = CUDA.ones(Float32, 64)
+        B = CUDA.ones(Float32, 64)
+        ct.launch(het_tuple_kernel, 1, ct.TileArray(A),
+                  HetTupleWrapper(ct.TileArray(B), Int32(5)), ct.Constant((64,)))
+        @test all(Array(A) .≈ 6.0f0)
+    end
 end
