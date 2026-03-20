@@ -225,13 +225,7 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
         end
         idx === nothing && return nothing
 
-        new_chain = [chain..., idx]
-        rt = CC.widenconst(result_type)
-        if isprimitivetype(rt)
-            cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
-            cv !== nothing && return cv
-        end
-        return arg_ref_value(arg_idx, new_chain, rt)
+        return resolve_arg_ref(ctx, arg_idx, chain, idx, CC.widenconst(result_type))
     end
 
     nothing
@@ -255,13 +249,7 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
     # If obj is a lazy arg_ref, extend the chain with the index
     if is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref
-        new_chain = [chain..., Int(index)]
-        rt = CC.widenconst(result_type)
-        if isprimitivetype(rt)
-            cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
-            cv !== nothing && return cv
-        end
-        return arg_ref_value(arg_idx, new_chain, rt)
+        return resolve_arg_ref(ctx, arg_idx, chain, Int(index), CC.widenconst(result_type))
     end
 
     # Not an arg_ref - not handled here

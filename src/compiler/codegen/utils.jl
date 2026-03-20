@@ -278,6 +278,19 @@ function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, @no
     nothing
 end
 
+"""
+    resolve_arg_ref(ctx, arg_idx, chain, idx, rt) -> CGVal
+
+Extend an arg_ref chain by `idx`, materializing to a concrete value if the path
+maps to a leaf scalar, otherwise returning a new lazy arg_ref.
+"""
+function resolve_arg_ref(ctx::CGCtx, arg_idx::Int, chain::Vector{Int}, idx::Int, @nospecialize(rt))
+    new_chain = [chain..., idx]
+    cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
+    cv !== nothing && return cv
+    return arg_ref_value(arg_idx, new_chain, rt)
+end
+
 
 """
     is_destructured_arg(ctx, arg_idx) -> Bool
