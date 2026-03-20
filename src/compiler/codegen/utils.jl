@@ -469,6 +469,35 @@ function flat_field_count(@nospecialize(T))
     end
 end
 
+"""
+    flatten(x) -> Tuple
+
+Flatten a value into a tuple of its leaf fields for kernel launch.
+Scalars return themselves wrapped in a tuple. Structs that `should_destructure`
+return their non-ghost leaf fields recursively. Ghost types return `()`.
+"""
+flatten(x::TileArray) = (x.ptr, x.sizes..., x.strides...)
+function flatten(x)
+    T = typeof(x)
+    is_ghost_type(T) && return ()
+    should_destructure(T) || return (x,)
+    result = Any[]
+    for fi in 1:fieldcount(T)
+        fval = getfield(x, fi)
+        fT = typeof(fval)
+        if is_ghost_type(fT) || !_is_kernel_param_type(fT)
+            continue
+        elseif fval isa Tuple
+            for elem in fval
+                append!(result, flatten(elem))
+            end
+        else
+            append!(result, flatten(fval))
+        end
+    end
+    return Tuple(result)
+end
+
 #-----------------------------------------------------------------------------
 # Argument helpers
 #-----------------------------------------------------------------------------
