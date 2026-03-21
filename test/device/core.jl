@@ -218,6 +218,29 @@ end # invalidations
                                         ct.Constant(16))
     end
     @test Array(c2) ≈ Array(a) + Array(b)
+
+    # @device_code_tiled with reduce subprogram
+    # Regression: compile hook tried to compile the reduce combiner (e.g. +) as a
+    # standalone entry, which cuda-tile-translate rejects.
+    function reflect_reduce(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))
+        ct.store(b, pid, sum(tile; dims=2))
+        return
+    end
+
+    m, k = 64, 128
+    a2d = CUDA.rand(Float32, m, k)
+    b1d = CUDA.zeros(Float32, m)
+
+    @test @filecheck begin
+        @check "entry @reflect_reduce"
+        @check "reduce"
+        @check "addf"
+        buf = IOBuffer()
+        ct.@device_code_tiled io=buf ct.launch(reflect_reduce, m, a2d, b1d)
+        String(take!(buf))
+    end
 end
 
 @testset "assert" begin

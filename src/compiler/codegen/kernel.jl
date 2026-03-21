@@ -299,7 +299,15 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     if !haskey(ctx.cache, mi)
         error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
     end
-    sci, _, _ = emit_ir(ctx.cache, mi)
+    # Suppress compile_hook to avoid @device_code_tiled treating
+    # region bodies (e.g. reduce combiners) as standalone entries.
+    old_hook = compile_hook[]
+    compile_hook[] = nothing
+    sci, _, _ = try
+        emit_ir(ctx.cache, mi)
+    finally
+        compile_hook[] = old_hook
+    end
 
     # 3. Create sub-context
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
