@@ -43,6 +43,13 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     for (i, argtype) in enumerate(sci.argtypes)
         argtype_unwrapped = CC.widenconst(argtype)
         if is_ghost_type(argtype_unwrapped)
+            # No kernel parameter, but register a ghost CGVal so codegen
+            # can resolve the value (e.g. get_constant on function singletons)
+            tv = ghost_value(argtype_unwrapped,
+                             Base.issingletontype(argtype_unwrapped) ?
+                                 argtype_unwrapped.instance : nothing)
+            ctx[SlotNumber(i)] = tv
+            ctx[Argument(i)] = tv
             continue
         elseif is_const_arg(i)
             continue  # const arg: no kernel parameter

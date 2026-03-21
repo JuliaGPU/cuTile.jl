@@ -1236,6 +1236,25 @@ end
             end
         end
     end
+
+    @testset "function singleton argument" begin
+        # Ghost function types (e.g. typeof(+)) passed as kernel arguments
+        # must be registered in the codegen context so that get_constant can
+        # resolve them.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "addf"
+            function _ghost_op_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, op)
+                pid = ct.bid(1)
+                tile_a = ct.load(a, pid, (16,))
+                tile_b = ct.load(b, pid, (16,))
+                result = op.(tile_a, tile_b)
+                ct.store(a, pid, result)
+                return
+            end
+            code_tiled(_ghost_op_kernel, Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, typeof(+)})
+        end
+    end
 end
 
 #=============================================================================
