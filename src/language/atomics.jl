@@ -2,7 +2,7 @@
 #
 # Provides atomic compare-and-swap, exchange, and add operations for TileArrays.
 
-public atomic_cas, atomic_xchg, atomic_add
+public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, atomic_and, atomic_xor
 
 """
 Memory ordering for atomic operations.
@@ -146,7 +146,47 @@ ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 """
 function atomic_xchg end
 
-for op in (:add, :xchg)
+"""
+    atomic_max(array::TileArray, index, val; memory_order, memory_scope) -> T
+
+Atomic maximum. Atomically replaces the value at `index` with `max(old, val)`
+and returns the original value. Index is 1-indexed.
+"""
+function atomic_max end
+
+"""
+    atomic_min(array::TileArray, index, val; memory_order, memory_scope) -> T
+
+Atomic minimum. Atomically replaces the value at `index` with `min(old, val)`
+and returns the original value. Index is 1-indexed.
+"""
+function atomic_min end
+
+"""
+    atomic_or(array::TileArray, index, val; memory_order, memory_scope) -> T
+
+Atomic bitwise OR. Atomically replaces the value at `index` with `old | val`
+and returns the original value. Index is 1-indexed.
+"""
+function atomic_or end
+
+"""
+    atomic_and(array::TileArray, index, val; memory_order, memory_scope) -> T
+
+Atomic bitwise AND. Atomically replaces the value at `index` with `old & val`
+and returns the original value. Index is 1-indexed.
+"""
+function atomic_and end
+
+"""
+    atomic_xor(array::TileArray, index, val; memory_order, memory_scope) -> T
+
+Atomic bitwise XOR. Atomically replaces the value at `index` with `old ⊻ val`
+and returns the original value. Index is 1-indexed.
+"""
+function atomic_xor end
+
+for op in (:add, :xchg, :max, :min, :or, :and, :xor)
     fname = Symbol(:atomic_, op)
     intrinsic = Symbol(:atomic_, op)
 

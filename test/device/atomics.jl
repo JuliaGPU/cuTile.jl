@@ -334,6 +334,96 @@ end
     @test all(Array(arr) .== 1)
 end
 
+@testset "atomic_max Int" begin
+    function atomic_max_kernel(out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        ct.atomic_max(out, 1, bid;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    n_blocks = 100
+    out = CUDA.zeros(Int, 1)
+
+    ct.launch(atomic_max_kernel, n_blocks, out)
+
+    result = Array(out)[1]
+    @test result == n_blocks
+end
+
+@testset "atomic_min Int" begin
+    function atomic_min_kernel(out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        ct.atomic_min(out, 1, bid;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    n_blocks = 100
+    out = CUDA.fill(Int(999), 1)
+
+    ct.launch(atomic_min_kernel, n_blocks, out)
+
+    result = Array(out)[1]
+    @test result == 1
+end
+
+@testset "atomic_or Int" begin
+    function atomic_or_kernel(out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        # Set bit (bid-1) — bid is 1-indexed
+        ct.atomic_or(out, 1, 1 << (bid - 1);
+                    memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    n_blocks = 16
+    out = CUDA.zeros(Int, 1)
+
+    ct.launch(atomic_or_kernel, n_blocks, out)
+
+    result = Array(out)[1]
+    @test result == (1 << n_blocks) - 1
+end
+
+@testset "atomic_and Int" begin
+    function atomic_and_kernel(out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        # Clear bit (bid-1)
+        ct.atomic_and(out, 1, ~(1 << (bid - 1));
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    n_blocks = 16
+    out = CUDA.fill(Int((1 << n_blocks) - 1), 1)
+
+    ct.launch(atomic_and_kernel, n_blocks, out)
+
+    result = Array(out)[1]
+    @test result == 0
+end
+
+@testset "atomic_xor Int" begin
+    function atomic_xor_kernel(out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        # XOR with bid — each bid XORs once
+        ct.atomic_xor(out, 1, bid;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    n_blocks = 100
+    out = CUDA.zeros(Int, 1)
+
+    ct.launch(atomic_xor_kernel, n_blocks, out)
+
+    # Expected: XOR of 1..n_blocks
+    expected = reduce(xor, 1:n_blocks)
+    result = Array(out)[1]
+    @test result == expected
+end
+
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})

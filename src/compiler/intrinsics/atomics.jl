@@ -168,20 +168,19 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
 end
 
-# cuda_tile.atomic_rmw_tko with XCHG
-@intrinsic atomic_xchg(ptr_tile, val, mask, memory_order, memory_scope)
-tfunc(𝕃, ::typeof(Intrinsics.atomic_xchg), @nospecialize args...) = atomic_tfunc(𝕃, args...)
-efunc(::typeof(Intrinsics.atomic_xchg), effects::CC.Effects) =
-    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
-    emit_atomic_rmw!(ctx, args, AtomicXCHG)
-end
-
-# cuda_tile.atomic_rmw_tko with ADD
-@intrinsic atomic_add(ptr_tile, val, mask, memory_order, memory_scope)
-tfunc(𝕃, ::typeof(Intrinsics.atomic_add), @nospecialize args...) = atomic_tfunc(𝕃, args...)
-efunc(::typeof(Intrinsics.atomic_add), effects::CC.Effects) =
-    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args)
-    emit_atomic_rmw!(ctx, args, AtomicADD)
+# cuda_tile.atomic_rmw_tko variants
+for (op, mode) in ((:xchg, :AtomicXCHG), (:add, :AtomicADD),
+                    (:max, :AtomicMAX),  (:min, :AtomicMIN),
+                    (:or,  :AtomicOR),   (:and, :AtomicAND),
+                    (:xor, :AtomicXOR))
+    name = Symbol(:atomic_, op)
+    @eval begin
+        @intrinsic $name(ptr_tile, val, mask, memory_order, memory_scope)
+        tfunc(𝕃, ::typeof(Intrinsics.$name), @nospecialize args...) = atomic_tfunc(𝕃, args...)
+        efunc(::typeof(Intrinsics.$name), effects::CC.Effects) =
+            CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
+        function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.$name), args)
+            emit_atomic_rmw!(ctx, args, $mode)
+        end
+    end
 end

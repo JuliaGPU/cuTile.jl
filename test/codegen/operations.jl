@@ -1477,6 +1477,66 @@ end
                 return
             end
         end
+
+        # max
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_max(arr, bid, Int32(0))
+                return
+            end
+        end
+
+        # min
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_min(arr, bid, Int32(0))
+                return
+            end
+        end
+
+        # or
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_or(arr, bid, Int32(1))
+                return
+            end
+        end
+
+        # and
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_and(arr, bid, Int32(-1))
+                return
+            end
+        end
+
+        # xor
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_xor(arr, bid, Int32(1))
+                return
+            end
+        end
     end
 
     @testset "tile-indexed atomic_cas_tko" begin
