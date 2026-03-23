@@ -1,12 +1,20 @@
 using GPUArrays: neutral_element
 
+# Map reduction ops to their atomic counterparts for a given element type.
+# Returns nothing when no hardware atomic is available for the (op, dtype) combo.
+_atomic_op(::typeof(+), ::Type{<:Union{Float32, Int32, Int64}}) = atomic_add
+_atomic_op(::typeof(Base.add_sum), ::Type{<:Union{Float32, Int32, Int64}}) = atomic_add
+_atomic_op(::typeof(max), ::Type{<:Integer}) = atomic_max
+_atomic_op(::typeof(min), ::Type{<:Integer}) = atomic_min
+_atomic_op(::typeof(|), ::Type{<:Integer}) = atomic_or
+_atomic_op(::typeof(&), ::Type{<:Integer}) = atomic_and
+_atomic_op(_, ::Type) = nothing
+
 @generated function mapreduce_kernel(
     dest::TileArray{TD, N}, src::TileArray{TS, N},
     f, op, tile_size, reduce_dims, overflow_grids, init_val, pad_mode,
-    reduce_stride
+    reduce_stride, atomic_op
 ) where {TD, TS, N}
-    f_func = f.instance
-    op_func = op.instance
     quote
         bids = _unflatten_bids(Val{$N}(), overflow_grids)
 
@@ -25,15 +33,28 @@ using GPUArrays: neutral_element
             d -> (idx_d = idx_d + reduce_stride[d]),
             begin
                 tile = load(src, (@ntuple $N d -> idx_d), tile_size; padding_mode=pad_mode)
-                acc = $op_func.(acc, $f_func.(tile))
+                acc = op.(acc, f.(tile))
             end)
 
         # Collapse each reduced dimension within the accumulated tile
         @nexprs $N d -> if d in reduce_dims
-            acc = reduce($op_func, acc; dims=d, init=init_val)
+            acc = reduce(op, acc; dims=d, init=init_val)
         end
 
-        store(dest, bids, acc)
+        if atomic_op !== nothing
+            scalar = reshape(acc, ())
+            @nexprs $N d -> out_d = d in reduce_dims ? Int32(1) : bids[d]
+            linear_idx = Int32(1)
+            stride = Int32(1)
+            @nexprs $N d -> begin
+                linear_idx = linear_idx + (out_d - Int32(1)) * stride
+                stride = stride * size(dest, d)
+            end
+            atomic_op(dest, linear_idx, scalar)
+        else
+            store(dest, bids, acc)
+        end
+
         return
     end
 end
@@ -72,29 +93,43 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
 
     _dim_size(d) = d == par_dim ? par_blocks : d in reduce_dims ? 1 : size(A, d)
 
+    # Atomics only work when each block produces one scalar output element,
+    # i.e., all non-reduce dims have tile size 1
+    scalar_output = all(d -> d in reduce_dims || ts[d] == 1, 1:N)
+    atomic_op = scalar_output ? _atomic_op(op, eltype(R)) : nothing
+
     if par_blocks > 1
-        # Two-pass: parallelize along par_dim, then reduce partials
-        tmp = similar(A, eltype(R), ntuple(_dim_size, N))
         grid = ntuple(N) do d
             d == par_dim ? par_blocks : d in reduce_dims ? 1 : cld(size(A, d), ts[d])
         end
         reduce_stride = ntuple(d -> d == par_dim ? Int32(par_blocks) : Int32(1), N)
-        _launch_mapreduce!(grid, TileArray(tmp), src_ta, f, op, ts, reduce_dims,
-                           init, pad_mode, reduce_stride)
-        _mapreducedim!(identity, op, R, tmp, (par_dim,); init)
+
+        if atomic_op !== nothing
+            fill!(R, init)
+            _launch_mapreduce!(grid, TileArray(R), src_ta, f, op, ts, reduce_dims,
+                               init, pad_mode, reduce_stride, atomic_op)
+        else
+            # Two-pass: parallelize along par_dim, then reduce partials
+            tmp = similar(A, eltype(R), ntuple(_dim_size, N))
+            _launch_mapreduce!(grid, TileArray(tmp), src_ta, f, op, ts, reduce_dims,
+                               init, pad_mode, reduce_stride, nothing)
+            _mapreducedim!(identity, op, R, tmp, (par_dim,); init)
+        end
     else
         grid = ntuple(d -> d in reduce_dims ? 1 : cld(size(A, d), ts[d]), N)
         reduce_stride = ntuple(d -> Int32(1), N)
         _launch_mapreduce!(grid, TileArray(R), src_ta, f, op, ts, reduce_dims,
-                           init, pad_mode, reduce_stride)
+                           init, pad_mode, reduce_stride, nothing)
     end
 end
 
-function _launch_mapreduce!(grid, dest_ta, src_ta, f, op, ts, reduce_dims, init, pad_mode, reduce_stride)
+function _launch_mapreduce!(grid, dest_ta, src_ta, f, op, ts, reduce_dims,
+                            init, pad_mode, reduce_stride, atomic_op)
     launch_grid, overflow = _flatten_grid(grid)
     launch(mapreduce_kernel, launch_grid, dest_ta, src_ta,
            f, op, Constant(ts), Constant(reduce_dims), Constant(overflow),
-           Constant(init), Constant(pad_mode), Constant(reduce_stride))
+           Constant(init), Constant(pad_mode), Constant(reduce_stride),
+           atomic_op === nothing ? Constant(nothing) : atomic_op)
 end
 
 function _mapreduce(f, op, A::AbstractArray; dims, init)
