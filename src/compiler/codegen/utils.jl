@@ -362,8 +362,6 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         return tile_type!(tt, F32(tt), Int[])
     elseif T === Float64
         return tile_type!(tt, F64(tt), Int[])
-    elseif T === Nothing
-        return Token(tt)
     end
 
     # Pointers -> 0-D tile of pointer type
