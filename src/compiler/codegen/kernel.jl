@@ -114,15 +114,19 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             i > length(sci.argtypes) && continue
             val = cat.val
             T = typeof(val)
-            type_id = tile_type_for_julia!(ctx, T; throw_error=false)
-            if type_id !== nothing
-                # Scalar: emit ConstantOp
-                bytes = constant_to_bytes(val, T)
-                v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, T, Int[], nothing, Some(val), nothing)
-            else
-                # Non-primitive (tuple etc.): ghost with constant
+            if is_ghost_type(T)
                 tv = ghost_value(T, val)
+            else
+                type_id = tile_type_for_julia!(ctx, T; throw_error=false)
+                if type_id !== nothing
+                    # Scalar: emit ConstantOp
+                    bytes = constant_to_bytes(val, T)
+                    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+                    tv = CGVal(v, type_id, T, Int[], nothing, Some(val), nothing)
+                else
+                    # Non-primitive (tuple etc.): ghost with constant
+                    tv = ghost_value(T, val)
+                end
             end
             ctx[SlotNumber(i)] = tv
             ctx[Argument(i)] = tv
