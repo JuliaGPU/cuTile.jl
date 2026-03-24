@@ -699,32 +699,38 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     mapreduce(identity, f, tile; dims, init)
 end
 
-# Zero-size callable structs for reduction combiners with custom rounding/ftz.
-# Settings encoded in type parameters → struct is ghost (zero-size singleton).
-struct _AddF{RM, FTZ} end
-struct _MulF{RM, FTZ} end
-struct _MaxF{FTZ} end
-struct _MinF{FTZ} end
-(::_AddF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.addf(a, b, RM, FTZ)
-(::_MulF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.mulf(a, b, RM, FTZ)
-(::_MaxF{FTZ})(a, b) where {FTZ} = Intrinsics.maxf(a, b, FTZ)
-(::_MinF{FTZ})(a, b) where {FTZ} = Intrinsics.minf(a, b, FTZ)
+# Callable operators with rounding/ftz encoded in type parameters,
+# because emit_subprogram! does not support closures with captures.
+struct AddF{RM, FTZ} end
+struct MulF{RM, FTZ} end
+struct MaxF{FTZ} end
+struct MinF{FTZ} end
+(::AddF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.addf(a, b, RM, FTZ)
+(::MulF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.mulf(a, b, RM, FTZ)
+(::MaxF{FTZ})(a, b) where {FTZ} = Intrinsics.maxf(a, b, FTZ)
+(::MinF{FTZ})(a, b) where {FTZ} = Intrinsics.minf(a, b, FTZ)
 
 for (f, op, custom_op, init_expr, has_rounding) in [
-    (:sum,     :(+),   :_AddF,  :(zero(T)),    true),
-    (:prod,    :(*),   :_MulF,  :(one(T)),     true),
-    (:maximum, :(max), :_MaxF,  :(typemin(T)), false),
-    (:minimum, :(min), :_MinF,  :(typemax(T)), false),
+    (:sum,     :(+),   :AddF,  :(zero(T)),    true),
+    (:prod,    :(*),   :MulF,  :(one(T)),     true),
+    (:maximum, :(max), :MaxF,  :(typemin(T)), false),
+    (:minimum, :(min), :MinF,  :(typemax(T)), false),
 ]
+    # Integer: no rounding/ftz kwargs
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims) where {T<:Integer, S}
+        reduce($op, tile; dims, init=$init_expr)
+    end
+
+    # Float: with rounding/ftz kwargs (sum/prod get rounding_mode; max/min don't)
     if has_rounding
         @eval @inline function Base.$f(tile::Tile{T,S}; dims,
-                                        rounding_mode=nothing, flush_to_zero=false) where {T<:Number, S}
+                                        rounding_mode=nothing, flush_to_zero=false) where {T<:AbstractFloat, S}
             op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
             reduce(op, tile; dims, init=$init_expr)
         end
     else
         @eval @inline function Base.$f(tile::Tile{T,S}; dims,
-                                        flush_to_zero=false) where {T<:Number, S}
+                                        flush_to_zero=false) where {T<:AbstractFloat, S}
             op = !flush_to_zero ? $op : $custom_op{flush_to_zero}()
             reduce(op, tile; dims, init=$init_expr)
         end
@@ -734,11 +740,14 @@ end
 # sum/prod/max/min without dims — reduce all dimensions, return scalar T
 # Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
 for f in (:sum, :prod, :maximum, :minimum)
-    @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:Number} =
-        Intrinsics.to_scalar(tile)
+    # Multiple definitions for specificity reasons
+    for T in (:Integer, :AbstractFloat)
+        @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:$T} =
+            Intrinsics.to_scalar(tile)
 
-    @eval @inline Base.$f(tile::Tile{T,S}) where {T<:Number, S<:Tuple{Any,Vararg}} =
-        $f(dropdims($f(tile; dims=1); dims=1))
+        @eval @inline Base.$f(tile::Tile{T,S}) where {T<:$T, S<:Tuple{Any,Vararg}} =
+            $f(dropdims($f(tile; dims=1); dims=1))
+    end
 end
 
 """
@@ -889,18 +898,23 @@ Supported functions: `+`, `*`, `max`, `min`.
     Intrinsics.scan((tile,), dims - 1, f, (T(init),), rev)[1]
 end
 
-@inline function Base.cumsum(tile::Tile{T,S}; dims::Integer,
-                             rev::Bool=false, rounding_mode=nothing,
-                             flush_to_zero=false) where {T<:Number, S}
-    op = rounding_mode === nothing && !flush_to_zero ? (+) : _AddF{rounding_mode, flush_to_zero}()
-    accumulate(op, tile; dims, init=zero(T), rev)
-end
+for (f, op, custom_op, init_expr) in [
+    (:cumsum,  :(+), :AddF, :(zero(T))),
+    (:cumprod, :(*), :MulF, :(one(T))),
+]
+    # Integer: no rounding/ftz kwargs
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims::Integer,
+                                    rev::Bool=false) where {T<:Integer, S}
+        accumulate($op, tile; dims, init=$init_expr, rev)
+    end
 
-@inline function Base.cumprod(tile::Tile{T,S}; dims::Integer,
-                              rev::Bool=false, rounding_mode=nothing,
-                              flush_to_zero=false) where {T<:Number, S}
-    op = rounding_mode === nothing && !flush_to_zero ? (*) : _MulF{rounding_mode, flush_to_zero}()
-    accumulate(op, tile; dims, init=one(T), rev)
+    # Float: with rounding/ftz kwargs
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims::Integer,
+                                    rev::Bool=false, rounding_mode=nothing,
+                                    flush_to_zero=false) where {T<:AbstractFloat, S}
+        op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
+        accumulate(op, tile; dims, init=$init_expr, rev)
+    end
 end
 
 #=============================================================================
