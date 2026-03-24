@@ -93,7 +93,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
 
     latency = @something get_constant(ctx, args[3]) throw(IRError("latency must be a compile-time constant"))
 
-
     optimization_hints = create_optimization_hints(ctx, latency)
 
     mask_tv, has_mask = emit_optional_mask(ctx, args, 4)

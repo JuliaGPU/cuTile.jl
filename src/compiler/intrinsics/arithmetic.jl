@@ -3,8 +3,6 @@
 ## Helpers
 
 # Extract optional rounding_mode (arg 3) and flush_to_zero (arg 4) from intrinsic args.
-# Returns a NamedTuple suitable for splatting into encoder kwargs.
-# Extract optional rounding_mode (arg 3) and flush_to_zero (arg 4) from intrinsic args.
 # User-facing RoundingMode module constants match the bytecode @enum RoundingMode values.
 function _extract_rounding_kwargs(ctx::CGCtx, args)
     kwargs = NamedTuple()
