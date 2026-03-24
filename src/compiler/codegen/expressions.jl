@@ -90,7 +90,10 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
             _throw_method_error(ctx, call_args)
         end
     end
-    if func === Core.getfield
+    if func === Core.kwcall
+        throw(IRError("Keyword argument call (Core.kwcall) was not inlined during compilation. " *
+                      "Ensure all argument types are fully concrete."))
+    elseif func === Core.getfield
         tv = emit_getfield!(ctx, call_args, result_type)
         tv !== nothing && return tv
     elseif func === Base.getindex

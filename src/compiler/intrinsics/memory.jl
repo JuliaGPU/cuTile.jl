@@ -38,13 +38,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency)
 
-    # Check if mask is provided (arg 3 is not nothing)
-    has_mask = length(args) >= 3 && get_constant(ctx, args[3]) !== nothing
+    # Check if mask is provided (arg 3 is a Tile{Bool}, not nothing)
+    mask_tv = length(args) >= 3 ? emit_value!(ctx, args[3]) : nothing
+    has_mask = mask_tv !== nothing && CC.widenconst(mask_tv.jltype) !== Nothing
 
     if has_mask
-        # Get mask tile (arg 3)
-        mask_tv = emit_value!(ctx, args[3])
-        mask_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
 
         # Get padding tile (arg 4)
@@ -102,13 +100,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency)
 
-    # Check if mask is provided (arg 4 is not nothing)
-    has_mask = length(args) >= 4 && get_constant(ctx, args[4]) !== nothing
+    # Check if mask is provided (arg 4 is a Tile{Bool}, not nothing)
+    mask_tv = length(args) >= 4 ? emit_value!(ctx, args[4]) : nothing
+    has_mask = mask_tv !== nothing && CC.widenconst(mask_tv.jltype) !== Nothing
 
     if has_mask
-        # Get mask tile (arg 4)
-        mask_tv = emit_value!(ctx, args[4])
-        mask_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
 
         # Store with mask

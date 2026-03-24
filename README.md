@@ -118,10 +118,22 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Memory
 | Operation | Description |
 |-----------|-------------|
-| `ct.load(arr, index, shape)` | Load a tile from array |
-| `ct.store(arr, index, tile)` | Store a tile to array |
-| `ct.gather(arr, indices)` | Gather elements by index tile |
-| `ct.scatter(arr, indices, tile)` | Scatter elements by index tile |
+| `ct.load(arr, index, shape; ...)` | Load a tile from array |
+| `ct.store(arr, index, tile; ...)` | Store a tile to array |
+| `ct.gather(arr, indices; ...)` | Gather elements by index tile |
+| `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
+
+`load` and `store` accept keyword arguments `order`, `padding_mode`, `latency`, and `allow_tma`.
+`gather` accepts `mask`, `padding_value`, and `latency`.
+`scatter` accepts `mask` and `latency`.
+
+```julia
+# Gather with user mask and custom padding for masked-out elements
+tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
+
+# Scatter with mask (only write where mask is true)
+ct.scatter(arr, indices, tile; mask=active_mask)
+```
 
 ### Grid
 | Operation | Description |
@@ -223,9 +235,17 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Atomics
 | Operation | Description |
 |-----------|-------------|
-| `ct.atomic_cas(arr, idx, expected, desired)` | Compare-and-swap |
-| `ct.atomic_xchg(arr, idx, val)` | Exchange |
-| `ct.atomic_add(arr, idx, val)` | Atomic add |
+| `ct.atomic_cas(arr, idx, expected, desired; ...)` | Compare-and-swap |
+| `ct.atomic_xchg(arr, idx, val; ...)` | Exchange |
+| `ct.atomic_add(arr, idx, val; ...)` | Atomic add |
+| `ct.atomic_max(arr, idx, val; ...)` | Atomic max |
+| `ct.atomic_min(arr, idx, val; ...)` | Atomic min |
+| `ct.atomic_or(arr, idx, val; ...)` | Atomic bitwise OR |
+| `ct.atomic_and(arr, idx, val; ...)` | Atomic bitwise AND |
+| `ct.atomic_xor(arr, idx, val; ...)` | Atomic bitwise XOR |
+
+All atomics accept `memory_order` (default: `ct.MemoryOrder.AcqRel`) and
+`memory_scope` (default: `ct.MemScope.Device`) keyword arguments.
 
 
 ## Differences from cuTile Python
@@ -495,18 +515,20 @@ Also make sure `i`, `n`, and the increment all have the same type.
 
 ### Keyword arguments
 
-`load` and `store` use positional arguments instead of keyword arguments:
+`load` and `store` take `index` and `shape` as positional arguments (not keyword
+arguments like in Python), but optional parameters like `padding_mode`, `latency`,
+`mask`, etc. are keyword arguments in both languages:
 
 ```python
 # Python
-ct.load(arr, index=(i, j), shape=(m, n))
-ct.store(arr, index=(i, j), tile=t)
+ct.load(arr, index=(i, j), shape=(m, n), padding_mode=ct.PaddingMode.ZERO)
+ct.gather(arr, indices, mask=valid_mask, padding_value=0)
 ```
 
 ```julia
 # Julia
-ct.load(arr, (i, j), (m, n))
-ct.store(arr, (i, j), t)
+ct.load(arr, (i, j), (m, n); padding_mode=ct.PaddingMode.Zero)
+ct.gather(arr, indices; mask=valid_mask, padding_value=0)
 ```
 
 

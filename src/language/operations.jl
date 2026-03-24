@@ -236,56 +236,68 @@ Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(
     return
 end
 
+# Combine two masks with AND (dispatch-based to avoid Union types).
+@inline _combine_masks(a::Tile, b::Tile) = a .& b
+@inline _combine_masks(a::Tile, ::Nothing) = a
+@inline _combine_masks(::Nothing, b::Tile) = b
+# Apply custom padding after load: hardware load_ptr_tko always returns zero
+# for masked-out elements, so we overlay custom padding via where().
+@inline _apply_padding(tile, mask, ::Nothing) = tile
+@inline _apply_padding(tile, mask, padding_tile) = where(mask, tile, padding_tile)
+
+# Padding tile: dispatch on padding_value type to avoid conditionals.
+@inline _pad_tile(::Nothing, ::Type{T}, S) where {T} = nothing
+@inline _pad_tile(val, ::Type{T}, S) where {T} = broadcast_to(Tile(T(val)), S)
+
 """
-    gather(array::TileArray{T, 1}, indices::Tile{I, S}; latency=nothing) -> Tile{T, S}
+    gather(array::TileArray{T, 1}, indices::Tile{I, S}; kwargs...) -> Tile{T, S}
 
 Gather elements from a 1D array using index tile.
-Indices are 1-indexed. Out-of-bounds indices return zero.
+Indices are 1-indexed. Out-of-bounds indices return `padding_value` (default: zero).
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `padding_value`: Value for masked-out elements (default: `zero(T)`)
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
 indices = base .+ ct.arange((TILE,), Int32)
-tile = ct.gather(arr, indices; latency=3)
+tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 ```
 """
 @inline function gather(array::TileArray{T, 1}, indices::Tile{I};
+                        mask=nothing,
+                        padding_value=nothing,
                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer}
-    # Convert to 0-indexed
     indices_0 = indices .- one(I)
-
-    # Convert to Int32 for consistency with array.sizes
     indices_i32 = convert(Tile{Int32}, indices_0)
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
 
-    # Bounds mask: 0 <= indices_i32 < size
-    zero_0d = Tile(Int32(0))
-    size_0d = Tile(size(array, 1))  # Already Int32
-    ge_zero = indices_i32 .>= zero_0d
-    lt_size = indices_i32 .< size_0d
-    mask = ge_zero .& lt_size
+    bounds_mask = (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+    final_mask = _combine_masks(bounds_mask, mask)
 
-    # Padding for OOB (zero)
-    padding = broadcast_to(Tile(zero(T)), size(indices))
-
-    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
+    zero_pad = broadcast_to(Tile(zero(T)), size(indices))
+    raw = Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, zero_pad)
+    padding = _pad_tile(padding_value, T, size(indices))
+    _apply_padding(raw, final_mask, padding)
 end
 
 """
-    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}; latency=nothing) -> Tile{T, S}
+    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}; kwargs...) -> Tile{T, S}
 
 Gather elements from a 2D array using a tuple of index tiles.
 Indices are 1-indexed. Index tiles are broadcast to a common shape.
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `padding_value`: Value for masked-out elements (default: `zero(T)`)
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
 @inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}};
+                        mask=nothing,
+                        padding_value=nothing,
                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
@@ -317,65 +329,60 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     zero_bc = broadcast_to(zero_0d, S)
     size0_bc = broadcast_to(Tile(size(array, 1)), S)
     size1_bc = broadcast_to(Tile(size(array, 2)), S)
-
     mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
     mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
-    mask = mask0 .& mask1
+    bounds_mask = mask0 .& mask1
+    final_mask = _combine_masks(bounds_mask, mask)
 
-    # Padding for OOB (zero)
-    padding = broadcast_to(Tile(zero(T)), S)
-
-    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
+    zero_pad = broadcast_to(Tile(zero(T)), S)
+    raw = Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, zero_pad)
+    padding = _pad_tile(padding_value, T, S)
+    _apply_padding(raw, final_mask, padding)
 end
 
 """
-    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}; latency=nothing) -> Nothing
+    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}; kwargs...) -> Nothing
 
 Scatter elements to a 1D array at index tile positions.
 Indices are 1-indexed. Out-of-bounds indices are ignored.
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
 indices = base .+ ct.arange((TILE,), Int32)
-ct.scatter(arr, indices, result_tile; latency=3)
+ct.scatter(arr, indices, result_tile; mask=valid_mask)
 ```
 """
 @inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
+                         mask=nothing,
                          latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
-    # Convert to 0-indexed
     indices_0 = indices .- one(I)
-
-    # Convert to Int32 for consistency with array.sizes
     indices_i32 = convert(Tile{Int32}, indices_0)
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
 
-    # Bounds mask: 0 <= indices_i32 < size
-    zero_0d = Tile(Int32(0))
-    size_0d = Tile(size(array, 1))  # Already Int32
-    ge_zero = indices_i32 .>= zero_0d
-    lt_size = indices_i32 .< size_0d
-    mask = ge_zero .& lt_size
+    bounds_mask = (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+    final_mask = _combine_masks(bounds_mask, mask)
 
-    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, mask)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, final_mask)
 end
 
 """
-    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile; latency=nothing) -> Nothing
+    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile; kwargs...) -> Nothing
 
 Scatter elements to a 2D array at index tile positions.
 Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
 @inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}}, tile::Tile{T};
-                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
+                         mask=nothing,
+                          latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
@@ -407,12 +414,12 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     zero_bc = broadcast_to(zero_0d, S)
     size0_bc = broadcast_to(Tile(size(array, 1)), S)
     size1_bc = broadcast_to(Tile(size(array, 2)), S)
-
     mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
     mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
-    mask = mask0 .& mask1
+    bounds_mask = mask0 .& mask1
+    final_mask = _combine_masks(bounds_mask, mask)
 
-    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, latency, mask)
+    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, latency, final_mask)
 end
 
 #=============================================================================
