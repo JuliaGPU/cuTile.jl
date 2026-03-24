@@ -465,7 +465,7 @@ end
                     pid = ct.bid(1)
                     # Create index tile (simple: just use arange)
                     @check "iota"
-                    indices = ct.arange(16, Int32)
+                    indices = ct.arange(16)
                     # Gather from array
                     @check "offset"
                     @check "load_ptr_tko"
@@ -485,7 +485,7 @@ end
                     tile = ct.load(a, pid, (16,))
                     # Create index tile (simple: just use arange)
                     @check "iota"
-                    indices = ct.arange(16, Int32)
+                    indices = ct.arange(16)
                     # Scatter to array
                     @check "offset"
                     @check "store_ptr_tko"
@@ -502,7 +502,7 @@ end
                     pid = ct.bid(1)
                     # Use Int (Int64) to test type conversion
                     @check "iota"
-                    indices = ct.arange(16, Int)
+                    indices = ct.arange(16; dtype=Int)
                     # Should convert to Int32 internally
                     @check "trunci"
                     @check "offset"
@@ -522,7 +522,7 @@ end
                     tile = ct.load(a, pid, (16,))
                     # Use Int (Int64) to test type conversion
                     @check "iota"
-                    indices = ct.arange(16, Int)
+                    indices = ct.arange(16; dtype=Int)
                     # Should convert to Int32 internally
                     @check "trunci"
                     @check "offset"
@@ -618,7 +618,7 @@ end
         @testset "non-power-of-2 arange shape rejected" begin
             @test_throws "arange: tile dimension 1 must be a power of 2, got 7" begin
                 code_tiled(Tuple{}) do
-                    ct.arange(7, Int32)
+                    ct.arange(7)
                 end
             end
         end
@@ -1179,7 +1179,7 @@ end
             @check "optimization_hints = <sm_120 = {latency = 3}>"
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
-                indices = ct.arange(16, Int32)
+                indices = ct.arange(16)
                 tile = ct.gather(a, indices; latency=3)
                 ct.store(b, pid, tile)
                 return nothing
@@ -1194,7 +1194,7 @@ end
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
-                indices = ct.arange(16, Int32)
+                indices = ct.arange(16)
                 ct.scatter(b, indices, tile; latency=5)
                 return nothing
             end

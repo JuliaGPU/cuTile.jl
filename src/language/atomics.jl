@@ -33,47 +33,48 @@ end
 # ============================================================================
 
 # Scalar index -> 0D pointer tile, no mask
-@inline function _atomic_ptr_and_mask(array::TileArray{T}, index::Integer) where {T}
+@inline function _atomic_ptr_and_mask(array::TileArray{T}, index::Integer; check_bounds::Bool=true) where {T}
     idx_0 = Tile(Int32(index - One()))
     ptr_tile = Intrinsics.offset(array.ptr, idx_0)
     (ptr_tile, nothing, ())
 end
 
-# N-D tile indices -> N-D pointer tile with bounds mask
+# N-D tile indices -> N-D pointer tile with optional bounds mask
 @inline function _atomic_ptr_and_mask(array::TileArray{T, N},
-                                       indices::NTuple{N, Tile{<:Integer}}) where {T, N}
-    # Convert each index to 0-indexed
+                                       indices::NTuple{N, Tile{<:Integer}};
+                                       check_bounds::Bool=true) where {T, N}
     indices_0 = ntuple(Val(N)) do d
         indices[d] .- one(eltype(indices[d]))
     end
 
-    # Broadcast all index tiles to a common shape
     S = reduce(broadcast_shape, ntuple(d -> size(indices[d]), Val(N)))
 
-    # Broadcast and convert to Int32
     indices_i32 = ntuple(Val(N)) do d
         convert(Tile{Int32}, broadcast_to(indices_0[d], S))
     end
 
-    # Linear index: sum(idx[d] * stride[d])
     linear_idx = reduce(.+, ntuple(Val(N)) do d
         indices_i32[d] .* broadcast_to(Tile(array.strides[d]), S)
     end)
 
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
 
-    # Bounds mask: 0 <= idx[d] < size[d] for all d
-    zero_bc = broadcast_to(Tile(Int32(0)), S)
-    mask = reduce(.&, ntuple(Val(N)) do d
-        (indices_i32[d] .>= zero_bc) .& (indices_i32[d] .< broadcast_to(Tile(size(array, d)), S))
-    end)
+    mask = if check_bounds
+        zero_bc = broadcast_to(Tile(Int32(0)), S)
+        reduce(.&, ntuple(Val(N)) do d
+            (indices_i32[d] .>= zero_bc) .& (indices_i32[d] .< broadcast_to(Tile(size(array, d)), S))
+        end)
+    else
+        nothing
+    end
 
     (ptr_tile, mask, S)
 end
 
 # 1D convenience: single Tile -> 1-tuple
-@inline function _atomic_ptr_and_mask(array::TileArray{T, 1}, indices::Tile{<:Integer}) where {T}
-    _atomic_ptr_and_mask(array, (indices,))
+@inline function _atomic_ptr_and_mask(array::TileArray{T, 1}, indices::Tile{<:Integer};
+                                       check_bounds::Bool=true) where {T}
+    _atomic_ptr_and_mask(array, (indices,); check_bounds)
 end
 
 # ============================================================================
@@ -97,9 +98,10 @@ end
 """
 @inline function atomic_cas(array::TileArray{T}, indices,
                             expected::TileOrScalar{T}, desired::TileOrScalar{T};
+                            check_bounds::Bool=true,
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
-    ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
+    ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices; check_bounds)
     expected_bc = S === () ? Tile(expected) : broadcast_to(Tile(expected), S)
     desired_bc = S === () ? Tile(desired) : broadcast_to(Tile(desired), S)
     result = Intrinsics.atomic_cas(ptr_tile, expected_bc, desired_bc, mask,
@@ -107,12 +109,12 @@ end
     S === () ? Intrinsics.to_scalar(result) : result
 end
 
-# Convert mismatched scalar/tile types to match array element type
 @inline function atomic_cas(array::TileArray{T}, indices,
                             expected::TileOrScalar, desired::TileOrScalar;
+                            check_bounds::Bool=true,
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
-    atomic_cas(array, indices, T(expected), T(desired); memory_order, memory_scope)
+    atomic_cas(array, indices, T(expected), T(desired); check_bounds, memory_order, memory_scope)
 end
 
 # ============================================================================
@@ -191,18 +193,19 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
     intrinsic = Symbol(:atomic_, op)
 
     @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar{T};
+                                   check_bounds::Bool=true,
                                    memory_order::Int=MemoryOrder.AcqRel,
                                    memory_scope::Int=MemScope.Device) where {T}
-        ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
+        ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices; check_bounds)
         val_bc = S === () ? Tile(val) : broadcast_to(Tile(val), S)
         result = Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
         S === () ? Intrinsics.to_scalar(result) : result
     end
 
-    # Convert mismatched scalar/tile types to match array element type
     @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
+                                   check_bounds::Bool=true,
                                    memory_order::Int=MemoryOrder.AcqRel,
                                    memory_scope::Int=MemScope.Device) where {T}
-        $fname(array, indices, T(val); memory_order, memory_scope)
+        $fname(array, indices, T(val); check_bounds, memory_order, memory_scope)
     end
 end

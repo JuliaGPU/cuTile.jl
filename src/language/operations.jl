@@ -11,7 +11,7 @@
  Load/Store
 =============================================================================#
 
-public bid, num_blocks, num_tiles, load, store, gather, scatter
+public bid, num_blocks, num_tiles, load, store, gather, scatter, Rounding
 
 """
 Padding mode for load operations.
@@ -24,6 +24,18 @@ module PaddingMode
     const Nan = 3
     const PosInf = 4
     const NegInf = 5
+end
+
+"""
+Rounding mode for floating-point operations.
+Use with reduction and scan kwargs (e.g., `sum(tile; dims, rounding_mode=ct.Rounding.Zero)`).
+"""
+module Rounding
+    const NearestEven = 0
+    const Zero = 1
+    const NegInf = 2
+    const PosInf = 3
+    const Approx = 4
 end
 
 """
@@ -295,7 +307,7 @@ Indices are 1-indexed. Out-of-bounds indices return `padding_value` (default: ze
 # Example
 ```julia
 base = (bid - 1) * TILE
-indices = base .+ ct.arange((TILE,), Int32)
+indices = base .+ ct.arange(TILE)
 tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 ```
 """
@@ -369,7 +381,7 @@ Indices are 1-indexed. Out-of-bounds indices are ignored.
 # Example
 ```julia
 base = (bid - 1) * TILE
-indices = base .+ ct.arange((TILE,), Int32)
+indices = base .+ ct.arange(TILE)
 ct.scatter(arr, indices, result_tile; mask=valid_mask)
 ```
 """
@@ -438,20 +450,20 @@ end
 public arange
 
 """
-    arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
-    arange(n::Int, dtype::Type{T}) -> Tile{T, (n,)}
+    arange(shape; dtype=Int32) -> Tile{dtype, shape}
+    arange(n; dtype=Int32) -> Tile{dtype, (n,)}
 
 Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
 # Example
 ```julia
-indices = ct.arange((16,), Int32)  # Creates Tile with [1, 2, 3, ..., 16]
-indices = ct.arange(16, Int32)     # Same thing, scalar form
+indices = ct.arange(16)              # Int32 [1, 2, ..., 16]
+indices = ct.arange(16; dtype=Int64) # Int64 [1, 2, ..., 16]
 ```
 """
-@inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} =
+@inline arange(shape::NTuple{1, Int}; dtype::Type{T}=Int32) where {T} =
     Intrinsics.iota(shape, T) .+ one(T)
-@inline arange(n::Int, ::Type{T}) where {T} = arange((n,), T)
+@inline arange(n::Int; dtype::Type{T}=Int32) where {T} = arange((n,); dtype)
 
 # Internal: create a tile filled with a constant value.
 # Used by Base.fill/zeros/ones overlays (see overlays.jl).
@@ -687,41 +699,37 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     mapreduce(identity, f, tile; dims, init)
 end
 
-"""
-    sum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+# Zero-size callable structs for reduction combiners with custom rounding/ftz.
+# Settings encoded in type parameters → struct is ghost (zero-size singleton).
+struct _AddF{RM, FTZ} end
+struct _MulF{RM, FTZ} end
+struct _MaxF{FTZ} end
+struct _MinF{FTZ} end
+(::_AddF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.addf(a, b, RM, FTZ)
+(::_MulF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.mulf(a, b, RM, FTZ)
+(::_MaxF{FTZ})(a, b) where {FTZ} = Intrinsics.maxf(a, b, FTZ)
+(::_MinF{FTZ})(a, b) where {FTZ} = Intrinsics.minf(a, b, FTZ)
 
-Sum reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.sum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(+, tile; dims, init=zero(T))
-
-"""
-    prod(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
-
-Product reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.prod(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(*, tile; dims, init=one(T))
-
-"""
-    maximum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
-
-Maximum reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.maximum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(max, tile; dims, init=typemin(T))
-
-"""
-    minimum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
-
-Minimum reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(min, tile; dims, init=typemax(T))
+for (f, op, custom_op, init_expr, has_rounding) in [
+    (:sum,     :(+),   :_AddF,  :(zero(T)),    true),
+    (:prod,    :(*),   :_MulF,  :(one(T)),     true),
+    (:maximum, :(max), :_MaxF,  :(typemin(T)), false),
+    (:minimum, :(min), :_MinF,  :(typemax(T)), false),
+]
+    if has_rounding
+        @eval @inline function Base.$f(tile::Tile{T,S}; dims,
+                                        rounding_mode=nothing, flush_to_zero=false) where {T<:Number, S}
+            op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
+            reduce(op, tile; dims, init=$init_expr)
+        end
+    else
+        @eval @inline function Base.$f(tile::Tile{T,S}; dims,
+                                        flush_to_zero=false) where {T<:Number, S}
+            op = !flush_to_zero ? $op : $custom_op{flush_to_zero}()
+            reduce(op, tile; dims, init=$init_expr)
+        end
+    end
+end
 
 # sum/prod/max/min without dims — reduce all dimensions, return scalar T
 # Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
@@ -881,23 +889,19 @@ Supported functions: `+`, `*`, `max`, `min`.
     Intrinsics.scan((tile,), dims - 1, f, (T(init),), rev)[1]
 end
 
-"""
-    cumsum(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
+@inline function Base.cumsum(tile::Tile{T,S}; dims::Integer,
+                             rev::Bool=false, rounding_mode=nothing,
+                             flush_to_zero=false) where {T<:Number, S}
+    op = rounding_mode === nothing && !flush_to_zero ? (+) : _AddF{rounding_mode, flush_to_zero}()
+    accumulate(op, tile; dims, init=zero(T), rev)
+end
 
-Cumulative sum along the specified axis (1-indexed).
-"""
-@inline Base.cumsum(tile::Tile{T,S}; dims::Integer,
-                    rev::Bool=false) where {T<:Number, S} =
-    accumulate(+, tile; dims, init=zero(T), rev)
-
-"""
-    cumprod(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
-
-Cumulative product along the specified axis (1-indexed).
-"""
-@inline Base.cumprod(tile::Tile{T,S}; dims::Integer,
-                     rev::Bool=false) where {T<:Number, S} =
-    accumulate(*, tile; dims, init=one(T), rev)
+@inline function Base.cumprod(tile::Tile{T,S}; dims::Integer,
+                              rev::Bool=false, rounding_mode=nothing,
+                              flush_to_zero=false) where {T<:Number, S}
+    op = rounding_mode === nothing && !flush_to_zero ? (*) : _MulF{rounding_mode, flush_to_zero}()
+    accumulate(op, tile; dims, init=one(T), rev)
+end
 
 #=============================================================================
  Matrix multiplication

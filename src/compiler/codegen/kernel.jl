@@ -342,8 +342,13 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     else
         for i in 1:n_argtypes
             argtype = sci.argtypes[i]
-            if is_ghost_type(CC.widenconst(argtype))
+            T = CC.widenconst(argtype)
+            if is_ghost_type(T)
                 sub_ctx[Argument(i)] = ghost_value(argtype)
+            elseif block_idx > length(block_args)
+                throw(IRError("emit_subprogram!: non-ghost argument $i ($(T), sizeof=$(sizeof(T))) " *
+                              "has no corresponding block argument. " *
+                              "All non-tile arguments must be zero-size types."))
             else
                 sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], arg_types[block_idx])
                 block_idx += 1

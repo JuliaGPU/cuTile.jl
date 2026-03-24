@@ -12,7 +12,7 @@ using CUDA
                            b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         base = (pid - 1) * 16
-        indices = base .+ ct.arange(16, Int32)
+        indices = base .+ ct.arange(16)
         tile = ct.gather(a, indices)
         ct.store(b, pid, tile)
         return nothing
@@ -33,7 +33,7 @@ end
         pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         base = (pid - 1) * 16
-        indices = base .+ ct.arange(16, Int32)
+        indices = base .+ ct.arange(16)
         ct.scatter(b, indices, tile)
         return nothing
     end
@@ -57,7 +57,7 @@ end
     function gather_oob_kernel(out::ct.TileArray{Float32,1},
                                 arr::ct.TileArray{Float32,1})
         # arr has 16 elements, we access indices 1-32 → last 16 are OOB
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         tile = ct.gather(arr, idx)
         ct.store(out, (ct.bid(1),), tile)
         return nothing
@@ -76,7 +76,7 @@ end
 @testset "scatter OOB ignored" begin
     function scatter_oob_kernel(arr::ct.TileArray{Float32,1})
         # arr has 16 elements, scatter to indices 1-32 → last 16 are OOB and ignored
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         tile = ct.broadcast_to(ct.Tile(42.0f0), (32,))
         ct.scatter(arr, idx, tile)
         return nothing
@@ -97,7 +97,7 @@ end
 @testset "gather with mask" begin
     function masked_gather_kernel(out::ct.TileArray{Float32,1},
                                    arr::ct.TileArray{Float32,1})
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         # Only gather first 16 elements
         user_mask = idx .<= ct.Tile(Int32(16))
         tile = ct.gather(arr, idx; mask=user_mask)
@@ -123,7 +123,7 @@ end
     function padding_gather_kernel(out::ct.TileArray{Float32,1},
                                     arr::ct.TileArray{Float32,1})
         # arr has 16 elements, access 1-32 → last 16 OOB get padding
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         tile = ct.gather(arr, idx; padding_value=-1.0f0)
         ct.store(out, (ct.bid(1),), tile)
         return nothing
@@ -146,7 +146,7 @@ end
 @testset "gather with mask and padding_value" begin
     function mask_pad_gather_kernel(out::ct.TileArray{Float32,1},
                                      arr::ct.TileArray{Float32,1})
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         # User mask: only first 8 elements
         user_mask = idx .<= ct.Tile(Int32(8))
         tile = ct.gather(arr, idx; mask=user_mask, padding_value=-999.0f0)
@@ -170,7 +170,7 @@ end
 
 @testset "scatter with mask" begin
     function masked_scatter_kernel(arr::ct.TileArray{Float32,1})
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         tile = ct.broadcast_to(ct.Tile(42.0f0), (32,))
         # Only scatter first 16 elements
         user_mask = idx .<= ct.Tile(Int32(16))
@@ -194,7 +194,7 @@ end
 @testset "gather with check_bounds=false" begin
     function unchecked_gather_kernel(out::ct.TileArray{Float32,1},
                                       arr::ct.TileArray{Float32,1})
-        idx = ct.arange(32, Int32)
+        idx = ct.arange(32)
         tile = ct.gather(arr, idx; check_bounds=false)
         ct.store(out, (ct.bid(1),), tile)
         return nothing
@@ -214,7 +214,7 @@ end
         pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         base = (pid - 1) * 16
-        indices = base .+ ct.arange(16, Int32)
+        indices = base .+ ct.arange(16)
         ct.scatter(b, indices, tile; check_bounds=false)
         return nothing
     end
