@@ -80,10 +80,8 @@ Emit bytecode for a function call.
 """
 function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     args = expr.args
-    func = get_constant(ctx, args[1])
+    func = @something get_constant(ctx, args[1]) throw(IRError("Cannot resolve called function"))
     call_args = args[2:end]
-
-    # We enter here for dynamic dispatch, but also for all intrinsic functions.
 
     @static if isdefined(Core, :throw_methoderror)
         if func === Core.throw_methoderror
@@ -117,7 +115,7 @@ Emit bytecode for a method invocation.
 """
 function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     # invoke has: (MethodInstance, func, args...)
-    func = get_constant(ctx, expr.args[2])
+    func = @something get_constant(ctx, expr.args[2]) throw(IRError("Cannot resolve invoked function"))
     call_args = expr.args[3:end]
 
     @static if isdefined(Core, :throw_methoderror)
@@ -163,7 +161,7 @@ function _throw_method_error(ctx::CGCtx, call_args)
     end
 
     func_val = try
-        get_constant(ctx, call_args[1])
+        @something get_constant(ctx, call_args[1]) call_args[1]
     catch
         call_args[1]
     end

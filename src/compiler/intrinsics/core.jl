@@ -42,8 +42,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     source_elem = eltype(source_type)
 
     # Extract target shape
-    target_shape_tuple = get_constant(ctx, args[2])
-    target_shape_tuple isa Tuple || throw(IRError("broadcast() shape must be a compile-time constant tuple"))
+    target_shape_tuple = @something get_constant(ctx, args[2]) throw(IRError("broadcast() shape must be a compile-time constant"))
+    target_shape_tuple isa Tuple || throw(IRError("broadcast() shape must be a tuple, got $(typeof(target_shape_tuple))"))
     target_shape = collect(Int, target_shape_tuple)
     validate_tile_shape(target_shape, "broadcast")
 
@@ -134,8 +134,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     (lhs === nothing || rhs === nothing) && throw(IRError("Cannot resolve tile operands for cat()"))
 
     # Get axis
-    axis_val = get_constant(ctx, args[2])
-    axis_val isa Integer || throw(IRError("cat() axis must be a compile-time constant integer"))
+    axis_val = @something get_constant(ctx, args[2]) throw(IRError("cat() axis must be a compile-time constant"))
+    axis_val isa Integer || throw(IRError("cat() axis must be an integer, got $(typeof(axis_val))"))
 
     # Handle negative axis
     lhs_shape = lhs.shape
@@ -176,8 +176,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     tt = ctx.tt
 
     # Extract shape
-    shape = get_constant(ctx, args[1])
-    shape isa Tuple || throw(IRError("fill() shape must be a compile-time constant tuple"))
+    shape = @something get_constant(ctx, args[1]) throw(IRError("fill() shape must be a compile-time constant"))
+    shape isa Tuple || throw(IRError("fill() shape must be a tuple, got $(typeof(shape))"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "fill")
 
@@ -222,12 +222,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     source === nothing && throw(IRError("Cannot resolve source operand for extract()"))
 
     # Extract index
-    index_tuple = get_constant(ctx, args[2])
-    index_tuple isa Tuple || throw(IRError("extract() index must be a compile-time constant tuple"))
+    index_tuple = @something get_constant(ctx, args[2]) throw(IRError("extract() index must be a compile-time constant"))
+    index_tuple isa Tuple || throw(IRError("extract() index must be a tuple, got $(typeof(index_tuple))"))
 
-    # Extract shape
-    shape_tuple = get_constant(ctx, args[3])
-    shape_tuple isa Tuple || throw(IRError("extract() shape must be a compile-time constant tuple"))
+    shape_tuple = @something get_constant(ctx, args[3]) throw(IRError("extract() shape must be a compile-time constant"))
+    shape_tuple isa Tuple || throw(IRError("extract() shape must be a tuple, got $(typeof(shape_tuple))"))
     output_shape = collect(Int, shape_tuple)
     validate_tile_shape(output_shape, "extract")
 
@@ -298,8 +297,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     tt = ctx.tt
 
     # Extract shape
-    shape = get_constant(ctx, args[1])
-    shape isa Tuple || throw(IRError("iota() shape must be a compile-time constant tuple"))
+    shape = @something get_constant(ctx, args[1]) throw(IRError("iota() shape must be a compile-time constant"))
+    shape isa Tuple || throw(IRError("iota() shape must be a tuple, got $(typeof(shape))"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "arange")
 
@@ -412,8 +411,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     isempty(input_shape) && throw(IRError("Cannot determine tile shape for permute()"))
 
     # Extract permutation
-    perm_tuple = get_constant(ctx, args[2])
-    perm_tuple isa Tuple || throw(IRError("permute() permutation must be a compile-time constant tuple"))
+    perm_tuple = @something get_constant(ctx, args[2]) throw(IRError("permute() permutation must be a compile-time constant"))
+    perm_tuple isa Tuple || throw(IRError("permute() permutation must be a tuple, got $(typeof(perm_tuple))"))
 
     # Convert to 0-indexed vector for bytecode
     permutation = collect(Int, perm_tuple)
@@ -471,13 +470,9 @@ function emit_reduce!(ctx::CGCtx, args)
     end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
-    # Get reduction axis
-    axis = get_constant(ctx, args[2])
+    axis = @something get_constant(ctx, args[2]) throw(IRError("reduce() axis must be a compile-time constant"))
+    func = @something get_constant(ctx, args[3]) throw(IRError("reduce() combiner function must be a compile-time constant"))
 
-    # Resolve combiner function
-    func = get_constant(ctx, args[3])
-
-    # Resolve identity values from the identities tuple
     id_tv = emit_value!(ctx, args[4])
     id_tv === nothing && throw(IRError("Cannot resolve identity tuple for reduce"))
     id_tv.tuple !== nothing || throw(IRError("reduce() identities must be a tuple of compile-time constants"))
@@ -584,8 +579,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     source === nothing && throw(IRError("Cannot resolve source operand for reshape()"))
 
     # Extract target shape
-    target_shape_tuple = get_constant(ctx, args[2])
-    target_shape_tuple isa Tuple || throw(IRError("reshape() shape must be a compile-time constant tuple"))
+    target_shape_tuple = @something get_constant(ctx, args[2]) throw(IRError("reshape() shape must be a compile-time constant"))
+    target_shape_tuple isa Tuple || throw(IRError("reshape() shape must be a tuple, got $(typeof(target_shape_tuple))"))
     target_shape = collect(Int, target_shape_tuple)
     validate_tile_shape(target_shape, "reshape")
 
@@ -658,13 +653,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     end for ref in first_tv.tuple]
     N = length(tile_tvs)
 
-    # Get scan axis
-    axis = get_constant(ctx, args[2])
+    axis = @something get_constant(ctx, args[2]) throw(IRError("scan() axis must be a compile-time constant"))
+    func = @something get_constant(ctx, args[3]) throw(IRError("scan() combiner function must be a compile-time constant"))
 
-    # Resolve combiner function
-    func = get_constant(ctx, args[3])
-
-    # Resolve identity values from the identities tuple
     id_tv = emit_value!(ctx, args[4])
     id_tv === nothing && throw(IRError("Cannot resolve identity tuple for scan"))
     id_tv.tuple !== nothing || throw(IRError("scan() identities must be a tuple of compile-time constants"))
@@ -672,10 +663,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
                                    throw(IRError("scan() identity values must be compile-time constants")))
                         for ref in id_tv.tuple]
 
-    # Get reverse flag (optional, defaults to false)
     reverse = false
     if length(args) >= 5
-        reverse_val = get_constant(ctx, args[5])
+        reverse_val = @something get_constant(ctx, args[5]) false
         reverse = reverse_val === true
     end
 
@@ -789,7 +779,7 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.from_scalar), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("Cannot resolve scalar for from_scalar"))
-    shape_type = get_constant(ctx, args[2])
+    shape_type = @something get_constant(ctx, args[2]) throw(IRError("from_scalar() shape must be a compile-time constant"))
     T = CC.widenconst(tv.jltype)
     CGVal(tv.v, tv.type_id, Tile{T, shape_type}, tv.shape, nothing, nothing, nothing)
 end

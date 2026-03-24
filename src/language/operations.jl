@@ -83,7 +83,7 @@ end
 
 
 """
-    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=true) -> Tile
+    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=nothing) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -104,7 +104,7 @@ Index is 1-indexed. Shape must be compile-time constant.
 
 # Optimization Hints
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
-- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 
 # Example
 ```julia
@@ -118,7 +118,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
                       order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                       padding_mode::Int=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Bool=true)
+                      allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
@@ -172,7 +172,7 @@ end
 end
 
 """
-    store(arr::TileArray, index, tile::Tile; order=nothing, latency=nothing, allow_tma=true) -> Tile
+    store(arr::TileArray, index, tile::Tile; order=nothing, latency=nothing, allow_tma=nothing) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
@@ -184,12 +184,12 @@ Returns the stored tile (enables chaining and helps constant folding).
 
 # Optimization Hints
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
-- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 """
 @inline function store(arr::TileArray{T}, index, tile::Tile{T};
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T}
+                       allow_tma::Union{Bool, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
     _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
@@ -221,7 +221,7 @@ end
 @inline function store(arr::TileArray{T}; index, tile::Tile{T},
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T}
+                       allow_tma::Union{Bool, Nothing}=nothing) where {T}
     store(arr, index, tile; order, latency, allow_tma)
 end
 

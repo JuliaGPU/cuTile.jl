@@ -85,26 +85,30 @@ end
 emit_value!(ctx::CGCtx, ::Nothing) = ghost_value(Nothing, nothing)
 
 """
-    get_constant(ctx, ref) -> Union{Any, Nothing}
+    get_constant(ctx, ref) -> Union{Some, Nothing}
 
 Get the compile-time constant from an IR reference or direct value.
-Returns the value directly if it's not an IR reference.
+Returns `Some(value)` on success (even if the value is `nothing`),
+or `nothing` when the constant cannot be extracted.
+
+Use `@something get_constant(ctx, ref) throw(...)` to require a constant
+and unwrap in one step.
 """
 function get_constant(ctx::CGCtx, @nospecialize(ref))
     # Direct values (not IR references) - return as-is
     if !(ref isa SSAValue || ref isa Argument || ref isa SlotNumber ||
          ref isa Expr || ref isa GlobalRef || ref isa QuoteNode)
-        return ref
+        return Some(ref)
     end
     # IR references - extract constant through emit_value!
     tv = emit_value!(ctx, ref)
     tv === nothing && return nothing
     if tv.constant !== nothing
-        return something(tv.constant)
+        return tv.constant  # already a Some
     end
     # Any ghost singleton can be reconstructed from its type
     T = CC.widenconst(tv.jltype)
-    is_ghost_type(T) && isdefined(T, :instance) && return T.instance
+    is_ghost_type(T) && isdefined(T, :instance) && return Some(T.instance)
     return nothing
 end
 

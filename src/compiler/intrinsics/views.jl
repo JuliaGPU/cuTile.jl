@@ -17,7 +17,7 @@ Get padding value from args, with default.
 function get_padding_value(ctx::CGCtx, args)
     mode = 0  # Default: Undetermined
     if length(args) >= 3
-        pm = get_constant(ctx, args[3])
+        pm = @something get_constant(ctx, args[3]) nothing
         pm isa Integer && (mode = Int(pm))
     end
     padding_mode_to_padding_value(mode)
@@ -36,8 +36,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     pv_arg.v === nothing && throw(IRError("get_index_space_shape() requires a materialized PartitionView"))
 
     # Get axis (0-indexed)
-    axis = get_constant(ctx, args[2])
-    axis === nothing && throw(IRError("get_index_space_shape() axis must be a compile-time constant"))
+    axis = @something get_constant(ctx, args[2]) throw(IRError("get_index_space_shape() axis must be a compile-time constant"))
     axis = Int(axis)
 
     # Get ndim from the PartitionView constant field
@@ -93,16 +92,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 
-    # Extract optimization hints (args[2] = latency, args[3] = allow_tma)
-    latency = get_constant(ctx, args[2])
-    allow_tma = get_constant(ctx, args[3])
-
-    # Verify we got compile-time constants
-    if latency === nothing && allow_tma === nothing
-        throw(IRError("load_partition_view(): latency and allow_tma must be compile-time constants"))
-    end
-    # allow_tma defaults to true if not provided
-    allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
+    latency = @something get_constant(ctx, args[2]) throw(IRError("load_partition_view(): latency must be a compile-time constant"))
+    allow_tma = @something get_constant(ctx, args[3]) throw(IRError("load_partition_view(): allow_tma must be a compile-time constant"))
+    allow_tma_val = allow_tma isa Bool ? allow_tma : true
 
     # Extract indices
     tuple_arg = emit_value!(ctx, args[4])
@@ -164,7 +156,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
 
     # Shape from user call (e.g., load(arr, idx, (16,)))
-    shape = get_constant(ctx, args[2])
+    shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "load")
@@ -178,7 +170,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
 
     # Extract order (arg 4)
     # nothing → identity dim_map, (2,1) → [1, 0] (1-indexed → 0-indexed)
-    order_val = get_constant(ctx, args[4])
+    order_val = @something get_constant(ctx, args[4]) throw(IRError("make_partition_view() order must be a compile-time constant"))
     if order_val === nothing
         dim_map = collect(0:ndim-1)
     else
@@ -394,15 +386,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     end
 
     # Extract optimization hints (args[3] = latency, args[4] = allow_tma)
-    latency = get_constant(ctx, args[3])
-    allow_tma = get_constant(ctx, args[4])
-
-    # Verify we got compile-time constants
-    if latency === nothing && allow_tma === nothing
-        throw(IRError("store_partition_view(): latency and allow_tma must be compile-time constants"))
-    end
-    # allow_tma defaults to true if not provided
-    allow_tma_val = allow_tma === nothing ? true : allow_tma::Bool
+    latency = @something get_constant(ctx, args[3]) throw(IRError("store_partition_view(): latency must be a compile-time constant"))
+    allow_tma = @something get_constant(ctx, args[4]) throw(IRError("store_partition_view(): allow_tma must be a compile-time constant"))
+    allow_tma_val = allow_tma isa Bool ? allow_tma : true
 
     # Extract indices
     tuple_arg = emit_value!(ctx, args[5])
