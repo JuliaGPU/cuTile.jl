@@ -56,7 +56,7 @@ function fft_kernel(
 
     # --- Load Input Data ---
     # Input is (D, BS, N2D) where D=2 for real/imag. Load and reshape to (2, BS, N).
-    X_ri = reshape(ct.load(x_packed_in, (1, bid, 1), (D, BS, N2D)), (2, BS, N))
+    X_ri = reshape(ct.load(x_packed_in; index=(1, bid, 1), shape=(D, BS, N2D)), (2, BS, N))
 
     # Split real and imaginary parts (extract from first dimension)
     X_r = reshape(ct.extract(X_ri, (1, 1, 1), (1, BS, N)), (BS, F1F2, F0))
@@ -64,28 +64,28 @@ function fft_kernel(
 
     # --- Load DFT Matrices ---
     # W0 (F0 x F0) - for right-multiply X @ W0
-    W0_ri = reshape(ct.load(W0, (1, 1, 1), (F0, F0, 2)), (F0, F0, 2))
+    W0_ri = reshape(ct.load(W0; index=(1, 1, 1), shape=(F0, F0, 2)), (F0, F0, 2))
     W0_r = ct.broadcast_to(reshape(ct.extract(W0_ri, (1, 1, 1), (F0, F0, 1)), (1, F0, F0)), (BS, F0, F0))
     W0_i = ct.broadcast_to(reshape(ct.extract(W0_ri, (1, 1, 2), (F0, F0, 1)), (1, F0, F0)), (BS, F0, F0))
 
     # W1 (F1 x F1)
-    W1_ri = reshape(ct.load(W1, (1, 1, 1), (F1, F1, 2)), (F1, F1, 2))
+    W1_ri = reshape(ct.load(W1; index=(1, 1, 1), shape=(F1, F1, 2)), (F1, F1, 2))
     W1_r = ct.broadcast_to(reshape(ct.extract(W1_ri, (1, 1, 1), (F1, F1, 1)), (1, F1, F1)), (BS, F1, F1))
     W1_i = ct.broadcast_to(reshape(ct.extract(W1_ri, (1, 1, 2), (F1, F1, 1)), (1, F1, F1)), (BS, F1, F1))
 
     # W2 (F2 x F2)
-    W2_ri = reshape(ct.load(W2, (1, 1, 1), (F2, F2, 2)), (F2, F2, 2))
+    W2_ri = reshape(ct.load(W2; index=(1, 1, 1), shape=(F2, F2, 2)), (F2, F2, 2))
     W2_r = ct.broadcast_to(reshape(ct.extract(W2_ri, (1, 1, 1), (F2, F2, 1)), (1, F2, F2)), (BS, F2, F2))
     W2_i = ct.broadcast_to(reshape(ct.extract(W2_ri, (1, 1, 2), (F2, F2, 1)), (1, F2, F2)), (BS, F2, F2))
 
     # --- Load Twiddle Factors ---
     # T0 (F1F2, F0) - note swapped from Python's (F0, F1F2)
-    T0_ri = reshape(ct.load(T0, (1, 1, 1), (F1F2, F0, 2)), (F1F2, F0, 2))
+    T0_ri = reshape(ct.load(T0; index=(1, 1, 1), shape=(F1F2, F0, 2)), (F1F2, F0, 2))
     T0_r = reshape(ct.extract(T0_ri, (1, 1, 1), (F1F2, F0, 1)), (1, N))
     T0_i = reshape(ct.extract(T0_ri, (1, 1, 2), (F1F2, F0, 1)), (1, N))
 
     # T1 (F0F2, F1) - note swapped from Python's (F1, F2)
-    T1_ri = reshape(ct.load(T1, (1, 1, 1), (F0F2, F1, 2)), (F0F2, F1, 2))
+    T1_ri = reshape(ct.load(T1; index=(1, 1, 1), shape=(F0F2, F1, 2)), (F0F2, F1, 2))
     T1_r = reshape(ct.extract(T1_ri, (1, 1, 1), (F0F2, F1, 1)), (1, F0F2 * F1))
     T1_i = reshape(ct.extract(T1_ri, (1, 1, 2), (F0F2, F1, 1)), (1, F0F2 * F1))
 
@@ -145,7 +145,7 @@ function fft_kernel(
 
     # --- Concatenate and Store ---
     Y_ri = reshape(ct.cat((X_r_final, X_i_final), 1), (D, BS, N2D))
-    ct.store(y_packed_out, (1, bid, 1), Y_ri)
+    ct.store(y_packed_out; index=(1, bid, 1), tile=Y_ri)
 
     return
 end

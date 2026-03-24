@@ -48,8 +48,8 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     while k <= num_k
         # Load and convert to TF32 for tensor cores (Float32 only)
         # padding_mode=Zero ensures out-of-bounds reads return zero (for non-aligned dimensions)
-        a = ct.load(A, (bid_m, k), (tm, tk); padding_mode=ct.PaddingMode.Zero)
-        b = ct.load(B, (k, bid_n), (tk, tn); padding_mode=ct.PaddingMode.Zero)
+        a = ct.load(A; index=(bid_m, k), shape=(tm, tk), padding_mode=ct.PaddingMode.Zero)
+        b = ct.load(B; index=(k, bid_n), shape=(tk, tn), padding_mode=ct.PaddingMode.Zero)
         if T === Float32
             a = convert(ct.Tile{ct.TFloat32}, a)
             b = convert(ct.Tile{ct.TFloat32}, b)
@@ -59,7 +59,7 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     end
 
     # Convert accumulator to output type and store
-    ct.store(C, (bid_m, bid_n), convert(ct.Tile{T}, acc))
+    ct.store(C; index=(bid_m, bid_n), tile=convert(ct.Tile{T}, acc))
 
     return nothing
 end

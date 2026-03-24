@@ -29,9 +29,9 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     k = Int32(1)
     while k <= num_k
         # Load 3D tiles: (tm, tk, 1) and (tk, tn, 1)
-        a = ct.load(A, (bid_m, k, pid_batch), (tm, tk, 1);
+        a = ct.load(A; index=(bid_m, k, pid_batch), shape=(tm, tk, 1),
                     padding_mode=ct.PaddingMode.Zero)
-        b = ct.load(B, (k, bid_n, pid_batch), (tk, tn, 1);
+        b = ct.load(B; index=(k, bid_n, pid_batch), shape=(tk, tn, 1),
                     padding_mode=ct.PaddingMode.Zero)
 
         # Reshape 3D tiles to 2D for mma
@@ -51,7 +51,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     # Convert to output type, reshape to 3D, and store
     result = convert(ct.Tile{T}, acc)
     result_3d = reshape(result, (tm, tn, 1))
-    ct.store(C, (bid_m, bid_n, pid_batch), result_3d)
+    ct.store(C; index=(bid_m, bid_n, pid_batch), tile=result_3d)
 
     return nothing
 end

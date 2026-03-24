@@ -32,18 +32,18 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     mean = zeros(Float32, (1, TILE_N))
     j = Int32(1)
     while j <= num_tiles
-        tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
+        tx = ct.load(X; index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.Zero)
         mean = mean .+ tx
         j += Int32(1)
     end
     mean = sum(mean; dims=2) / N
-    ct.store(Mean, bid_m, mean)
+    ct.store(Mean; index=bid_m, tile=mean)
 
     # Compute variance
     var = zeros(Float32, (1, TILE_N))
     j = Int32(1)
     while j <= num_tiles
-        tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
+        tx = ct.load(X; index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.Zero)
         # Mask for valid elements
         mask = reshape(((j - Int32(1)) * Int32(TILE_N) .+ ct.arange(TILE_N, Int32)) .<= N, (1, TILE_N))
         centered_tx = ifelse.(mask, tx .- mean, 0.0f0)
@@ -52,17 +52,17 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     end
     var = sum(var; dims=2) / N
     rstd = 1.0f0 ./ sqrt.(var .+ eps)
-    ct.store(Rstd, bid_m, rstd)
+    ct.store(Rstd; index=bid_m, tile=rstd)
 
     # Normalize and apply affine transformation
     j = Int32(1)
     while j <= num_tiles
-        tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
-        tw = reshape(ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
-        tb = reshape(ct.load(B, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
+        tx = ct.load(X; index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.Zero)
+        tw = reshape(ct.load(W; index=j, shape=(TILE_N,), padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
+        tb = reshape(ct.load(B; index=j, shape=(TILE_N,), padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
         ty = (tx .- mean) .* rstd
         ty = ty .* tw .+ tb
-        ct.store(Y, (bid_m, j), ty)
+        ct.store(Y; index=(bid_m, j), tile=ty)
         j += Int32(1)
     end
 
@@ -86,9 +86,9 @@ This gets inlined by Julia's compiler.
 bid_m and j are 1-indexed (block ID and tile index).
 """
 @inline function bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
-    tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
-    tw = reshape(ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
-    tdy = ct.load(DY, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
+    tx = ct.load(X; index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.Zero)
+    tw = reshape(ct.load(W; index=j, shape=(TILE_N,), padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
+    tdy = ct.load(DY; index=(bid_m, j), shape=(1, TILE_N), padding_mode=ct.PaddingMode.Zero)
     xhat = (tx .- mean) .* rstd
     wdy = tw .* tdy
 
@@ -127,8 +127,8 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
     N = size(X, 2)
 
     # Load mean and rstd for this row
-    mean = ct.load(Mean, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
-    rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
+    mean = ct.load(Mean; index=bid_m, shape=(1,), padding_mode=ct.PaddingMode.Zero)
+    rstd = ct.load(Rstd; index=bid_m, shape=(1,), padding_mode=ct.PaddingMode.Zero)
 
     # First pass: compute c1 and c2 reduction terms
     c1 = zeros(Float32, (1, TILE_N))
@@ -148,7 +148,7 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
     while j <= num_tiles
         _, xhat, wdy = bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
         tdx = (wdy .- (xhat .* c1 .+ c2)) .* rstd
-        ct.store(DX, (bid_m, j), tdx)
+        ct.store(DX; index=(bid_m, j), tile=tdx)
         j += Int32(1)
     end
 
@@ -186,8 +186,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
     group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M)) + Int32(1)
 
     # Load mean and rstd for this row
-    mean = ct.load(Mean, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
-    rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
+    mean = ct.load(Mean; index=bid_m, shape=(1,), padding_mode=ct.PaddingMode.Zero)
+    rstd = ct.load(Rstd; index=bid_m, shape=(1,), padding_mode=ct.PaddingMode.Zero)
 
     # First pass: compute c1 and c2 reduction terms
     c1 = zeros(Float32, (1, TILE_N))
@@ -207,7 +207,7 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
     while j <= num_tiles
         tdy, xhat, wdy = bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
         tdx = (wdy .- (xhat .* c1 .+ c2)) .* rstd
-        ct.store(DX, (bid_m, j), tdx)
+        ct.store(DX; index=(bid_m, j), tile=tdx)
 
         partial_dw = reshape(tdy .* xhat, (TILE_N, 1))
         partial_db = reshape(tdy, (TILE_N, 1))
@@ -219,10 +219,10 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         end
 
         # Critical section: accumulate partial gradients
-        partial_dw = partial_dw .+ ct.load(DW, (j, group_bid_m), (TILE_N, 1); padding_mode=ct.PaddingMode.Zero)
-        partial_db = partial_db .+ ct.load(DB, (j, group_bid_m), (TILE_N, 1); padding_mode=ct.PaddingMode.Zero)
-        ct.store(DW, (j, group_bid_m), partial_dw)
-        ct.store(DB, (j, group_bid_m), partial_db)
+        partial_dw = partial_dw .+ ct.load(DW; index=(j, group_bid_m), shape=(TILE_N, 1), padding_mode=ct.PaddingMode.Zero)
+        partial_db = partial_db .+ ct.load(DB; index=(j, group_bid_m), shape=(TILE_N, 1), padding_mode=ct.PaddingMode.Zero)
+        ct.store(DW; index=(j, group_bid_m), tile=partial_dw)
+        ct.store(DB; index=(j, group_bid_m), tile=partial_db)
 
         # Release spinlock
         ct.atomic_xchg(Locks, group_bid_m, 0;
@@ -257,15 +257,15 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
     db = zeros(Float32, (TILE_N, TILE_M))
     i = Int32(1)
     while i <= num_tiles
-        dw = dw .+ ct.load(DW, (bid_n, i), (TILE_N, TILE_M); padding_mode=ct.PaddingMode.Zero)
-        db = db .+ ct.load(DB, (bid_n, i), (TILE_N, TILE_M); padding_mode=ct.PaddingMode.Zero)
+        dw = dw .+ ct.load(DW; index=(bid_n, i), shape=(TILE_N, TILE_M), padding_mode=ct.PaddingMode.Zero)
+        db = db .+ ct.load(DB; index=(bid_n, i), shape=(TILE_N, TILE_M), padding_mode=ct.PaddingMode.Zero)
         i += Int32(1)
     end
     sum_dw = sum(dw; dims=2)
     sum_db = sum(db; dims=2)
 
-    ct.store(FINAL_DW, bid_n, sum_dw)
-    ct.store(FINAL_DB, bid_n, sum_db)
+    ct.store(FINAL_DW; index=bid_n, tile=sum_dw)
+    ct.store(FINAL_DB; index=bid_n, tile=sum_db)
 
     return
 end
