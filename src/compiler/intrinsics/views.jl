@@ -17,8 +17,8 @@ Get padding value from args, with default.
 function get_padding_value(ctx::CGCtx, args)
     mode = 0  # Default: Undetermined
     if length(args) >= 3
-        pm = @something get_constant(ctx, args[3]) nothing
-        pm isa Integer && (mode = Int(pm))
+        gc = get_constant(ctx, args[3])
+        gc !== nothing && something(gc) isa Integer && (mode = Int(something(gc)))
     end
     padding_mode_to_padding_value(mode)
 end

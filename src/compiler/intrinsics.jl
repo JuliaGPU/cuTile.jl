@@ -52,6 +52,15 @@ function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, all
     return make_load_store_hints(ctx.sm_arch, hints)
 end
 
+# Check if an intrinsic argument is a mask (Tile{Bool}) or nothing.
+# Returns (CGVal, true) for a real mask, (nothing, false) for nothing.
+function emit_optional_mask(ctx::CGCtx, args, idx::Int)
+    idx > length(args) && return (nothing, false)
+    tv = emit_value!(ctx, args[idx])
+    has_mask = tv !== nothing && CC.widenconst(tv.jltype) !== Nothing
+    return (has_mask ? tv : nothing, has_mask)
+end
+
 emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
 
 include("intrinsics/core.jl")

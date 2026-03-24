@@ -37,9 +37,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
 
     optimization_hints = create_optimization_hints(ctx, latency)
 
-    # Check if mask is provided (arg 3 is a Tile{Bool}, not nothing)
-    mask_tv = length(args) >= 3 ? emit_value!(ctx, args[3]) : nothing
-    has_mask = mask_tv !== nothing && CC.widenconst(mask_tv.jltype) !== Nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 3)
 
     if has_mask
         mask = mask_tv.v
@@ -98,9 +96,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
 
     optimization_hints = create_optimization_hints(ctx, latency)
 
-    # Check if mask is provided (arg 4 is a Tile{Bool}, not nothing)
-    mask_tv = length(args) >= 4 ? emit_value!(ctx, args[4]) : nothing
-    has_mask = mask_tv !== nothing && CC.widenconst(mask_tv.jltype) !== Nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 4)
 
     if has_mask
         mask = mask_tv.v

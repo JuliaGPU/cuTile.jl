@@ -65,9 +65,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     desired_tv = emit_value!(ctx, args[3])
     desired_tv === nothing && throw(IRError("atomic CAS requires desired value"))
 
-    # Check if mask is provided (arg 4 is a Tile{Bool}, not nothing)
-    mask_tv = emit_value!(ctx, args[4])
-    has_mask = mask_tv !== nothing && CC.widenconst(mask_tv.jltype) !== Nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 4)
 
     memory_order = @something get_constant(ctx, args[5]) throw(IRError("atomic CAS requires constant memory_order"))
     memory_scope = @something get_constant(ctx, args[6]) throw(IRError("atomic CAS requires constant memory_scope"))
@@ -117,11 +115,8 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     val_tv = emit_value!(ctx, args[2])
     val_tv === nothing && throw(IRError("atomic RMW requires value"))
 
-    # Check if mask is provided (arg 3 is a Tile{Bool}, not nothing)
-    mask_tv = emit_value!(ctx, args[3])
-    has_mask = mask_tv !== nothing && CC.widenconst(mask_tv.jltype) !== Nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 3)
 
-    # Get memory order and scope from args
     memory_order = @something get_constant(ctx, args[4]) throw(IRError("atomic RMW requires constant memory_order"))
     memory_scope = @something get_constant(ctx, args[5]) throw(IRError("atomic RMW requires constant memory_scope"))
 

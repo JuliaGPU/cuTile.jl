@@ -136,7 +136,7 @@ end
     tv = Intrinsics.make_tensor_view(arr)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
-    tile = Intrinsics.load_partition_view(pv, nothing, true, promote(indices...) .- One())
+    tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -258,15 +258,16 @@ end
     mask0 .& mask1
 end
 
-# Padding value: dispatch to build broadcast tile or pass nothing.
+# Padding tile for gather: zero(T) when no custom padding requested.
 @inline _pad_value(::Nothing, ::Type{T}, S) where {T} = broadcast_to(Tile(zero(T)), S)
 @inline _pad_value(val, ::Type{T}, S) where {T} = broadcast_to(Tile(T(val)), S)
 
 # Gather load: dispatch on mask type. No mask → maskless load (fast path).
-@inline function _gather_load(ptr_tile, latency, final_mask::Tile, padding, ::Type{T}, S) where {T}
+@inline function _gather_load(ptr_tile, latency, final_mask::Tile, padding_value, ::Type{T}, S) where {T}
+    padding = _pad_value(padding_value, T, S)
     Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, padding)
 end
-@inline function _gather_load(ptr_tile, latency, ::Nothing, padding, ::Type{T}, S) where {T}
+@inline function _gather_load(ptr_tile, latency, ::Nothing, padding_value, ::Type{T}, S) where {T}
     Intrinsics.load_ptr_tko(ptr_tile, latency)
 end
 
@@ -309,8 +310,7 @@ tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-    padding = _pad_value(padding_value, T, size(indices))
-    _gather_load(ptr_tile, latency, final_mask, padding, T, size(indices))
+    _gather_load(ptr_tile, latency, final_mask, padding_value, T, size(indices))
 end
 
 """
@@ -351,8 +351,7 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
 
     bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-    padding = _pad_value(padding_value, T, S)
-    _gather_load(ptr_tile, latency, final_mask, padding, T, S)
+    _gather_load(ptr_tile, latency, final_mask, padding_value, T, S)
 end
 
 """
