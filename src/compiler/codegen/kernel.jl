@@ -282,6 +282,12 @@ A `YieldOp` is emitted with the return value(s).
 """
 function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
                           block_args::Vector{Value}, block_type_ids::Vector{TypeId})
+    F = typeof(func)
+    if !is_ghost_type(F)
+        throw(IRError("emit_subprogram!: function argument $(F) (sizeof=$(sizeof(F))) is not " *
+                      "a zero-size type. All non-tile arguments must be zero-size."))
+    end
+
     # 1. Resolve method instance
     argtuple = Tuple{arg_types...}
     world = ctx.cache.world
@@ -342,13 +348,8 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     else
         for i in 1:n_argtypes
             argtype = sci.argtypes[i]
-            T = CC.widenconst(argtype)
-            if is_ghost_type(T)
+            if is_ghost_type(CC.widenconst(argtype))
                 sub_ctx[Argument(i)] = ghost_value(argtype)
-            elseif block_idx > length(block_args)
-                throw(IRError("emit_subprogram!: non-ghost argument $i ($(T), sizeof=$(sizeof(T))) " *
-                              "has no corresponding block argument. " *
-                              "All non-tile arguments must be zero-size types."))
             else
                 sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], arg_types[block_idx])
                 block_idx += 1
