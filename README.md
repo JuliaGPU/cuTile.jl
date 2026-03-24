@@ -124,8 +124,8 @@ uses standard Julia syntax and is overlaid on `Base`.
 | `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
 
 `load` and `store` accept keyword arguments `order`, `padding_mode`, `latency`, and `allow_tma`.
-`gather` accepts `mask`, `padding_value`, and `latency`.
-`scatter` accepts `mask` and `latency`.
+`gather` accepts `mask`, `padding_value`, `check_bounds`, and `latency`.
+`scatter` accepts `mask`, `check_bounds`, and `latency`.
 
 ```julia
 # Gather with user mask and custom padding for masked-out elements

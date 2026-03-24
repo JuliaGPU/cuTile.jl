@@ -188,6 +188,47 @@ end
 end
 
 #=========================================================================
+ check_bounds=false (fast path: no bounds mask, no padding, maskless load)
+=========================================================================#
+
+@testset "gather with check_bounds=false" begin
+    function unchecked_gather_kernel(out::ct.TileArray{Float32,1},
+                                      arr::ct.TileArray{Float32,1})
+        idx = ct.arange(32, Int32)
+        tile = ct.gather(arr, idx; check_bounds=false)
+        ct.store(out, (ct.bid(1),), tile)
+        return nothing
+    end
+
+    arr = CuArray(Float32.(1:32))
+    out = CUDA.zeros(Float32, 32)
+
+    ct.launch(unchecked_gather_kernel, 1, out, arr)
+
+    @test Array(out) == Float32.(1:32)
+end
+
+@testset "scatter with check_bounds=false" begin
+    function unchecked_scatter_kernel(a::ct.TileArray{Float32,1},
+                                      b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        base = (pid - 1) * 16
+        indices = base .+ ct.arange(16, Int32)
+        ct.scatter(b, indices, tile; check_bounds=false)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(unchecked_scatter_kernel, 64, a, b)
+
+    @test Array(b) ≈ Array(a)
+end
+
+#=========================================================================
  kwargs in @generated function (regression: Core.kwcall was documented
  as failing in bug.jl, verified to work through launch())
 =========================================================================#

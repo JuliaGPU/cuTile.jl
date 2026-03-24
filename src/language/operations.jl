@@ -240,14 +240,43 @@ end
 @inline _combine_masks(a::Tile, b::Tile) = a .& b
 @inline _combine_masks(a::Tile, ::Nothing) = a
 @inline _combine_masks(::Nothing, b::Tile) = b
-# Apply custom padding after load: hardware load_ptr_tko always returns zero
-# for masked-out elements, so we overlay custom padding via where().
-@inline _apply_padding(tile, mask, ::Nothing) = tile
-@inline _apply_padding(tile, mask, padding_tile) = where(mask, tile, padding_tile)
+@inline _combine_masks(::Nothing, ::Nothing) = nothing
 
-# Padding tile: dispatch on padding_value type to avoid conditionals.
-@inline _pad_tile(::Nothing, ::Type{T}, S) where {T} = nothing
-@inline _pad_tile(val, ::Type{T}, S) where {T} = broadcast_to(Tile(T(val)), S)
+# 1D bounds mask: 0 <= index < size
+@inline function _bounds_mask_1d(indices_i32, array)
+    (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+end
+
+# 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
+@inline function _bounds_mask_2d(idx0_i32, idx1_i32, array, S)
+    zero_0d = Tile(Int32(0))
+    zero_bc = broadcast_to(zero_0d, S)
+    size0_bc = broadcast_to(Tile(size(array, 1)), S)
+    size1_bc = broadcast_to(Tile(size(array, 2)), S)
+    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
+    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    mask0 .& mask1
+end
+
+# Padding value: dispatch to build broadcast tile or pass nothing.
+@inline _pad_value(::Nothing, ::Type{T}, S) where {T} = broadcast_to(Tile(zero(T)), S)
+@inline _pad_value(val, ::Type{T}, S) where {T} = broadcast_to(Tile(T(val)), S)
+
+# Gather load: dispatch on mask type. No mask → maskless load (fast path).
+@inline function _gather_load(ptr_tile, latency, final_mask::Tile, padding, ::Type{T}, S) where {T}
+    Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, padding)
+end
+@inline function _gather_load(ptr_tile, latency, ::Nothing, padding, ::Type{T}, S) where {T}
+    Intrinsics.load_ptr_tko(ptr_tile, latency)
+end
+
+# Scatter store: dispatch on mask type. No mask → maskless store (fast path).
+@inline function _scatter_store(ptr_tile, tile, latency, final_mask::Tile)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, final_mask)
+end
+@inline function _scatter_store(ptr_tile, tile, latency, ::Nothing)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency)
+end
 
 """
     gather(array::TileArray{T, 1}, indices::Tile{I, S}; kwargs...) -> Tile{T, S}
@@ -258,6 +287,8 @@ Indices are 1-indexed. Out-of-bounds indices return `padding_value` (default: ze
 # Keyword Arguments
 - `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
 - `padding_value`: Value for masked-out elements (default: `zero(T)`)
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
@@ -270,18 +301,16 @@ tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 @inline function gather(array::TileArray{T, 1}, indices::Tile{I};
                         mask=nothing,
                         padding_value=nothing,
+                        check_bounds::Bool=true,
                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer}
     indices_0 = indices .- one(I)
     indices_i32 = convert(Tile{Int32}, indices_0)
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
 
-    bounds_mask = (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+    bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-
-    zero_pad = broadcast_to(Tile(zero(T)), size(indices))
-    raw = Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, zero_pad)
-    padding = _pad_tile(padding_value, T, size(indices))
-    _apply_padding(raw, final_mask, padding)
+    padding = _pad_value(padding_value, T, size(indices))
+    _gather_load(ptr_tile, latency, final_mask, padding, T, size(indices))
 end
 
 """
@@ -293,51 +322,37 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
 # Keyword Arguments
 - `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
 - `padding_value`: Value for masked-out elements (default: `zero(T)`)
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
 @inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}};
                         mask=nothing,
                         padding_value=nothing,
+                        check_bounds::Bool=true,
                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
-    # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
 
-    # Broadcast indices to common shape
     S = broadcast_shape(size(indices[1]), size(indices[2]))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
 
-    # Convert to Int32 for linear index computation
     idx0_i32 = convert(Tile{Int32}, idx0_bc)
     idx1_i32 = convert(Tile{Int32}, idx1_bc)
 
-    # Get strides and broadcast to tile shape
     stride0_0d = Tile(array.strides[1])
     stride1_0d = Tile(array.strides[2])
     stride0 = broadcast_to(stride0_0d, S)
     stride1 = broadcast_to(stride1_0d, S)
 
-    # Compute linear index = idx0 * stride0 + idx1 * stride1
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
 
-    # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
-    zero_0d = Tile(Int32(0))
-    zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(size(array, 1)), S)
-    size1_bc = broadcast_to(Tile(size(array, 2)), S)
-    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
-    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
-    bounds_mask = mask0 .& mask1
+    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-
-    zero_pad = broadcast_to(Tile(zero(T)), S)
-    raw = Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, zero_pad)
-    padding = _pad_tile(padding_value, T, S)
-    _apply_padding(raw, final_mask, padding)
+    padding = _pad_value(padding_value, T, S)
+    _gather_load(ptr_tile, latency, final_mask, padding, T, S)
 end
 
 """
@@ -348,6 +363,8 @@ Indices are 1-indexed. Out-of-bounds indices are ignored.
 
 # Keyword Arguments
 - `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
@@ -359,15 +376,15 @@ ct.scatter(arr, indices, result_tile; mask=valid_mask)
 """
 @inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
                          mask=nothing,
+                         check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     indices_0 = indices .- one(I)
     indices_i32 = convert(Tile{Int32}, indices_0)
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
 
-    bounds_mask = (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+    bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-
-    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, final_mask)
+    _scatter_store(ptr_tile, tile, latency, final_mask)
 end
 
 """
@@ -378,11 +395,14 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
 # Keyword Arguments
 - `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
 @inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}}, tile::Tile{T};
                          mask=nothing,
-                          latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
+                         check_bounds::Bool=true,
+                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
@@ -405,21 +425,11 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
 
-    # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
-    zero_0d = Tile(Int32(0))
-    zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(size(array, 1)), S)
-    size1_bc = broadcast_to(Tile(size(array, 2)), S)
-    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
-    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
-    bounds_mask = mask0 .& mask1
+    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-
-    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, latency, final_mask)
+    _scatter_store(ptr_tile, tile_bc, latency, final_mask)
 end
 
 #=============================================================================
