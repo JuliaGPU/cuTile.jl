@@ -1,34 +1,5 @@
 # atomics
 
-"""
-Convert integer memory order value to bytecode MemoryOrderingSemantics enum
-"""
-function memory_order_to_semantics(order::Int)
-    if order == 0  # Weak
-        MemoryWeak
-    elseif order == 1  # Relaxed
-        MemoryRelaxed
-    elseif order == 2  # Acquire
-        MemoryAcquire
-    elseif order == 3  # Release
-        MemoryRelease
-    else  # 4 = AcqRel
-        MemoryAcqRel
-    end
-end
-
-"""
-Convert integer memory scope value to bytecode MemoryScope enum
-"""
-function memory_scope_to_scope(scope::Int)
-    if scope == 0  # Block
-        ScopeTLBlock
-    elseif scope == 1  # Device
-        ScopeDevice
-    else  # 2 = System
-        ScopeSystem
-    end
-end
 
 """
     atomic_tfunc(ptrs) -> Type
@@ -82,8 +53,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     token_type = Token(tt)
 
     # Emit atomic CAS
-    mem_ordering = memory_order_to_semantics(memory_order)
-    mem_scope = memory_scope_to_scope(memory_scope)
+    mem_ordering = convert_enum(MemoryOrderingSemantics, memory_order)
+    mem_scope = convert_enum(MemoryScope, memory_scope)
 
     old_val, new_token = if has_mask
         encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
@@ -105,7 +76,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
 end
 
 # cuda_tile.atomic_rmw_tko (shared helper for atomic RMW operations)
-function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
+function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.T)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -134,13 +105,13 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
 
     # Use float add mode for floating point types
     actual_mode = mode
-    if mode == AtomicADD && elem_type <: AbstractFloat
-        actual_mode = AtomicADDF
+    if mode == AtomicRMWMode.ADD && elem_type <: AbstractFloat
+        actual_mode = AtomicRMWMode.ADDF
     end
 
     # Emit atomic RMW
-    mem_ordering = memory_order_to_semantics(memory_order)
-    mem_scope = memory_scope_to_scope(memory_scope)
+    mem_ordering = convert_enum(MemoryOrderingSemantics, memory_order)
+    mem_scope = convert_enum(MemoryScope, memory_scope)
 
     old_val, new_token = if has_mask
         encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
@@ -162,10 +133,10 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
 end
 
 # cuda_tile.atomic_rmw_tko variants
-for (op, mode) in ((:xchg, :AtomicXCHG), (:add, :AtomicADD),
-                    (:max, :AtomicMAX),  (:min, :AtomicMIN),
-                    (:or,  :AtomicOR),   (:and, :AtomicAND),
-                    (:xor, :AtomicXOR))
+for (op, mode) in ((:xchg, AtomicRMWMode.XCHG), (:add, AtomicRMWMode.ADD),
+                    (:max, AtomicRMWMode.MAX),   (:min, AtomicRMWMode.MIN),
+                    (:or,  AtomicRMWMode.OR),    (:and, AtomicRMWMode.AND),
+                    (:xor, AtomicRMWMode.XOR))
     name = Symbol(:atomic_, op)
     @eval begin
         @intrinsic $name(ptr_tile, val, mask, memory_order, memory_scope)

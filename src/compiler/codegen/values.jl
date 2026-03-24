@@ -135,6 +135,11 @@ function emit_value!(ctx::CGCtx, undef::Undef)
     CGVal(v, type_id, T)
 end
 
+# Enum values: treat as compile-time integer constants (not emitted to Tile IR)
+function emit_value!(ctx::CGCtx, val::Enum)
+    ghost_value(typeof(val), val)
+end
+
 # Fallback for other types (constants embedded in IR)
 function emit_value!(ctx::CGCtx, @nospecialize(val))
     T = typeof(val)

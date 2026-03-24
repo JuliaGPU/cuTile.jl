@@ -8,21 +8,21 @@ public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, a
 Memory ordering for atomic operations.
 Use these constants with atomic_cas, atomic_xchg, etc.
 """
-module MemoryOrder
-    const Weak = 0
-    const Relaxed = 1
-    const Acquire = 2
-    const Release = 3
-    const AcqRel = 4
+@enumx MemoryOrder begin
+    Weak = 0
+    Relaxed = 1
+    Acquire = 2
+    Release = 3
+    AcqRel = 4
 end
 
 """
 Memory scope for atomic operations.
 """
-module MemScope
-    const Block = 0
-    const Device = 1
-    const System = 2
+@enumx MemScope begin
+    Block = 0
+    Device = 1
+    System = 2
 end
 
 # ============================================================================
@@ -99,8 +99,8 @@ end
 @inline function atomic_cas(array::TileArray{T}, indices,
                             expected::TileOrScalar{T}, desired::TileOrScalar{T};
                             check_bounds::Bool=true,
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T}
+                            memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
+                            memory_scope::MemScope.T=MemScope.Device) where {T}
     ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices; check_bounds)
     expected_bc = S === () ? Tile(expected) : broadcast_to(Tile(expected), S)
     desired_bc = S === () ? Tile(desired) : broadcast_to(Tile(desired), S)
@@ -112,8 +112,8 @@ end
 @inline function atomic_cas(array::TileArray{T}, indices,
                             expected::TileOrScalar, desired::TileOrScalar;
                             check_bounds::Bool=true,
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T}
+                            memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
+                            memory_scope::MemScope.T=MemScope.Device) where {T}
     atomic_cas(array, indices, T(expected), T(desired); check_bounds, memory_order, memory_scope)
 end
 
@@ -194,8 +194,8 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
 
     @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar{T};
                                    check_bounds::Bool=true,
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T}
+                                   memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
+                                   memory_scope::MemScope.T=MemScope.Device) where {T}
         ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices; check_bounds)
         val_bc = S === () ? Tile(val) : broadcast_to(Tile(val), S)
         result = Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
@@ -204,8 +204,8 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
 
     @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
                                    check_bounds::Bool=true,
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T}
+                                   memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
+                                   memory_scope::MemScope.T=MemScope.Device) where {T}
         $fname(array, indices, T(val); check_bounds, memory_order, memory_scope)
     end
 end

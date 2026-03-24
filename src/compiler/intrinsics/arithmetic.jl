@@ -8,7 +8,7 @@ function _extract_rounding_kwargs(ctx::CGCtx, args)
     kwargs = NamedTuple()
     if length(args) >= 3
         rm = @something get_constant(ctx, args[3]) nothing
-        rm isa Integer && (kwargs = (; kwargs..., rounding_mode=RoundingMode(rm)))
+        rm isa Integer && (kwargs = (; kwargs..., rounding_mode=convert_enum(RoundingMode, rm)))
     end
     if length(args) >= 4
         ftz = @something get_constant(ctx, args[4]) false
@@ -115,17 +115,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args)
 end
 
 # cuda_tile.cldi (ceiling division, toward positive infinity)
-@intrinsic cldi(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic cldi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic cldi(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic cldi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.cldi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cldi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("cldi requires compile-time signedness"))
-    emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingPositiveInf)
+    emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.PositiveInf)
 end
 
 # cuda_tile.cmpi
-@intrinsic cmpi(x::T, y::T, pred::ComparisonPredicate, s::Signedness) where {T<:Integer}
-@intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate, s::Signedness) where {T<:Integer}
+@intrinsic cmpi(x::T, y::T, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Integer}
+@intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpi), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(s))
     t = CC.widenconst(x)
     if t isa DataType && t <: Tile
@@ -158,26 +158,26 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
 end
 
 # cuda_tile.divi (truncating division, toward zero)
-@intrinsic divi(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic divi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic divi(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic divi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.divi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("divi requires compile-time signedness"))
-    emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingZero)
+    emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.Zero)
 end
 
 # cuda_tile.fldi (floor division, toward negative infinity)
-@intrinsic fldi(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic fldi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic fldi(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic fldi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.fldi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fldi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("fldi requires compile-time signedness"))
-    emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingNegativeInf)
+    emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.NegativeInf)
 end
 
 # cuda_tile.maxi
-@intrinsic maxi(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic maxi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic maxi(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic maxi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.maxi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("maxi requires compile-time signedness"))
@@ -185,8 +185,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
 end
 
 # cuda_tile.mini
-@intrinsic mini(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic mini(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic mini(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic mini(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.mini), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("mini requires compile-time signedness"))
@@ -202,8 +202,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
 end
 
 # cuda_tile.mulhii
-@intrinsic mulhii(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic mulhii(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic mulhii(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic mulhii(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.mulhii), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulhii), args)
     emit_binop!(ctx, args, encode_MulhiIOp!)
@@ -214,12 +214,12 @@ end
 @intrinsic negi(a::Tile{<:Integer})
 tfunc(𝕃, ::typeof(Intrinsics.negi), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negi), args)
-    emit_unop!(ctx, args, encode_NegIOp!; overflow=OverflowNone)
+    emit_unop!(ctx, args, encode_NegIOp!; overflow=IntegerOverflow.None)
 end
 
 # cuda_tile.remi
-@intrinsic remi(x::T, y::T, s::Signedness) where {T<:Integer}
-@intrinsic remi(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic remi(x::T, y::T, s::Signedness.T) where {T<:Integer}
+@intrinsic remi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.remi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("remi requires compile-time signedness"))
@@ -235,8 +235,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shli), args)
 end
 
 # cuda_tile.shri
-@intrinsic shri(x::T, y::Integer, s::Signedness) where {T<:Integer}
-@intrinsic shri(a::Tile{T}, b::Tile{T}, s::Signedness) where {T<:Integer}
+@intrinsic shri(x::T, y::Integer, s::Signedness.T) where {T<:Integer}
+@intrinsic shri(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.shri), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shri), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("shri requires compile-time signedness"))
@@ -271,8 +271,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addf), args)
 end
 
 # cuda_tile.cmpf
-@intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate) where {T<:AbstractFloat}
-@intrinsic cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate) where {T<:AbstractFloat}
+@intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate.T) where {T<:AbstractFloat}
+@intrinsic cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T) where {T<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpf), @nospecialize(x), @nospecialize(y), @nospecialize(pred))
     t = CC.widenconst(x)
     if t isa DataType && t <: Tile

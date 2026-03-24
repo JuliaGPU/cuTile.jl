@@ -9,11 +9,11 @@ function emit_intrinsic!(ctx::CGCtx, func::Core.IntrinsicFunction, args)
     elseif func === Core.Intrinsics.sub_int
         emit_intrinsic!(ctx, Intrinsics.subi, args)
     elseif func === Core.Intrinsics.slt_int
-        emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., CmpLessThan, SignednessSigned])
+        emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., ComparisonPredicate.LessThan, Signedness.Signed])
     elseif func === Core.Intrinsics.sle_int
-        emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., CmpLessThanOrEqual, SignednessSigned])
+        emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., ComparisonPredicate.LessThanOrEqual, Signedness.Signed])
     elseif func === Core.Intrinsics.ult_int
-        emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., CmpLessThan, SignednessUnsigned])
+        emit_intrinsic!(ctx, Intrinsics.cmpi, [args..., ComparisonPredicate.LessThan, Signedness.Unsigned])
     elseif func === Core.Intrinsics.not_int
         emit_not_int!(ctx, args)
     else
@@ -54,7 +54,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(===), args)
     result_type_id = tile_type!(tt, I1(tt), Int[])
 
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v;
-                              predicate=CmpEqual, signedness=SignednessSigned)
+                              predicate=ComparisonPredicate.Equal, signedness=Signedness.Signed)
 
     CGVal(result_v, result_type_id, Bool, Int[])
 end

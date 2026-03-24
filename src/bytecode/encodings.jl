@@ -99,68 +99,71 @@ end
 
 # Enums for operation attributes
 
-@enum RoundingMode begin
-    RoundingNearestEven = 0
-    RoundingZero = 1
-    RoundingNegativeInf = 2
-    RoundingPositiveInf = 3
-    RoundingApprox = 4
-    RoundingFull = 5
-    RoundingNearestIntToZero = 6
+@enumx RoundingMode begin
+    NearestEven = 0
+    Zero = 1
+    NegativeInf = 2
+    PositiveInf = 3
+    Approx = 4
+    Full = 5
+    NearestIntToZero = 6
 end
 
-@enum IntegerOverflow begin
-    OverflowNone = 0
-    OverflowNSW = 1
-    OverflowNUW = 2
-    OverflowNW = 3
+@enumx IntegerOverflow begin
+    None = 0
+    NSW = 1
+    NUW = 2
+    NW = 3
 end
 
-@enum MemoryOrderingSemantics begin
-    MemoryWeak = 0
-    MemoryRelaxed = 1
-    MemoryAcquire = 2
-    MemoryRelease = 3
-    MemoryAcqRel = 4
+@enumx MemoryOrderingSemantics begin
+    Weak = 0
+    Relaxed = 1
+    Acquire = 2
+    Release = 3
+    AcqRel = 4
 end
 
-@enum MemoryScope begin
-    ScopeTLBlock = 0
-    ScopeDevice = 1
-    ScopeSystem = 2
+@enumx MemoryScope begin
+    TLBlock = 0
+    Device = 1
+    System = 2
 end
 
-@enum Signedness begin
-    SignednessUnsigned = 0
-    SignednessSigned = 1
+@enumx Signedness begin
+    Unsigned = 0
+    Signed = 1
 end
 
-@enum ComparisonPredicate begin
-    CmpEqual = 0
-    CmpNotEqual = 1
-    CmpLessThan = 2
-    CmpLessThanOrEqual = 3
-    CmpGreaterThan = 4
-    CmpGreaterThanOrEqual = 5
+@enumx ComparisonPredicate begin
+    Equal = 0
+    NotEqual = 1
+    LessThan = 2
+    LessThanOrEqual = 3
+    GreaterThan = 4
+    GreaterThanOrEqual = 5
 end
 
-@enum ComparisonOrdering begin
-    CmpUnordered = 0
-    CmpOrdered = 1
+@enumx ComparisonOrdering begin
+    Unordered = 0
+    Ordered = 1
 end
 
-@enum AtomicRMWMode begin
-    AtomicAND = 0x00
-    AtomicOR = 0x01
-    AtomicXOR = 0x02
-    AtomicADD = 0x03
-    AtomicADDF = 0x04
-    AtomicMAX = 0x05
-    AtomicMIN = 0x06
-    AtomicUMAX = 0x07
-    AtomicUMIN = 0x08
-    AtomicXCHG = 0x09
+@enumx AtomicRMWMode begin
+    AND = 0x00
+    OR = 0x01
+    XOR = 0x02
+    ADD = 0x03
+    ADDF = 0x04
+    MAX = 0x05
+    MIN = 0x06
+    UMAX = 0x07
+    UMIN = 0x08
+    XCHG = 0x09
 end
+
+# Convert between @enumx types (e.g., user-facing → bytecode).
+convert_enum(mod::Module, val) = mod.T(Int(val))
 
 # Helper to encode enum as single byte
 function encode_enum!(buf::Vector{UInt8}, e::Enum)
@@ -434,8 +437,8 @@ function encode_LoadViewTkoOp!(cb::CodeBuilder,
                                view::Value,
                                index::Vector{Value};
                                token::Union{Value, Nothing}=nothing,
-                               memory_ordering::MemoryOrderingSemantics=MemoryWeak,
-                               memory_scope::Union{MemoryScope, Nothing}=nothing,
+                               memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Weak,
+                               memory_scope::Union{MemoryScope.T, Nothing}=nothing,
                                optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.LoadViewTkoOp)
     # Variadic result types
@@ -483,8 +486,8 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
                                 view::Value,
                                 index::Vector{Value};
                                 token::Union{Value, Nothing}=nothing,
-                                memory_ordering::MemoryOrderingSemantics=MemoryWeak,
-                                memory_scope::Union{MemoryScope, Nothing}=nothing,
+                                memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Weak,
+                                memory_scope::Union{MemoryScope.T, Nothing}=nothing,
                                 optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.StoreViewTkoOp)
     # Variadic result types (just token)
@@ -552,8 +555,8 @@ function encode_LoadPtrTkoOp!(cb::CodeBuilder,
                               mask::Union{Value, Nothing}=nothing,
                               padding_value::Union{Value, Nothing}=nothing,
                               token::Union{Value, Nothing}=nothing,
-                              memory_ordering::MemoryOrderingSemantics=MemoryWeak,
-                              memory_scope::Union{MemoryScope, Nothing}=nothing,
+                              memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Weak,
+                              memory_scope::Union{MemoryScope.T, Nothing}=nothing,
                               optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.LoadPtrTkoOp)
     # Result types
@@ -611,8 +614,8 @@ function encode_StorePtrTkoOp!(cb::CodeBuilder,
                                value::Value;
                                mask::Union{Value, Nothing}=nothing,
                                token::Union{Value, Nothing}=nothing,
-                               memory_ordering::MemoryOrderingSemantics=MemoryWeak,
-                               memory_scope::Union{MemoryScope, Nothing}=nothing,
+                               memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Weak,
+                               memory_scope::Union{MemoryScope.T, Nothing}=nothing,
                                optimization_hints::Union{OptimizationHints, Nothing}=nothing)
     encode_varint!(cb.buf, Opcode.StorePtrTkoOp)
     # Result type (token)
@@ -663,7 +666,7 @@ Float addition.
 Opcode: 2
 """
 function encode_AddFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven,
                         flush_to_zero::Bool=false)
     encode_varint!(cb.buf, Opcode.AddFOp)
     encode_typeid!(cb.buf, result_type)
@@ -681,7 +684,7 @@ Integer addition.
 Opcode: 3
 """
 function encode_AddIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        overflow::IntegerOverflow=OverflowNone)
+                        overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.AddIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, overflow)
@@ -697,7 +700,7 @@ Float subtraction.
 Opcode: 103
 """
 function encode_SubFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven,
                         flush_to_zero::Bool=false)
     encode_varint!(cb.buf, Opcode.SubFOp)
     encode_typeid!(cb.buf, result_type)
@@ -715,7 +718,7 @@ Integer subtraction.
 Opcode: 104
 """
 function encode_SubIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        overflow::IntegerOverflow=OverflowNone)
+                        overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.SubIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, overflow)
@@ -731,7 +734,7 @@ Float multiplication.
 Opcode: 73
 """
 function encode_MulFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven,
                         flush_to_zero::Bool=false)
     encode_varint!(cb.buf, Opcode.MulFOp)
     encode_typeid!(cb.buf, result_type)
@@ -749,7 +752,7 @@ Integer multiplication.
 Opcode: 74
 """
 function encode_MulIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        overflow::IntegerOverflow=OverflowNone)
+                        overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.MulIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, overflow)
@@ -779,7 +782,7 @@ Truncate integer to smaller width.
 Opcode: 106
 """
 function encode_TruncIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                          overflow::IntegerOverflow=OverflowNone)
+                          overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.TruncIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, overflow)
@@ -794,7 +797,7 @@ Floating-point division.
 Opcode: 20
 """
 function encode_DivFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven,
                         flush_to_zero::Bool=false)
     encode_varint!(cb.buf, Opcode.DivFOp)
     encode_typeid!(cb.buf, result_type)
@@ -812,7 +815,7 @@ Square root operation.
 Opcode: 100
 """
 function encode_SqrtOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven,
                         flush_to_zero::Bool=false)
     encode_varint!(cb.buf, Opcode.SqrtOp)
     encode_typeid!(cb.buf, result_type)
@@ -1187,8 +1190,8 @@ Integer division.
 Opcode: 21
 """
 function encode_DivIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        signedness::Signedness=SignednessSigned,
-                        rounding::RoundingMode=RoundingZero)
+                        signedness::Signedness.T=Signedness.Signed,
+                        rounding::RoundingMode.T=RoundingMode.Zero)
     encode_varint!(cb.buf, Opcode.DivIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1205,7 +1208,7 @@ Integer remainder (modulo).
 Opcode: 90
 """
 function encode_RemIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        signedness::Signedness=SignednessSigned)
+                        signedness::Signedness.T=Signedness.Signed)
     encode_varint!(cb.buf, Opcode.RemIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1221,7 +1224,7 @@ Integer minimum.
 Opcode: 72
 """
 function encode_MinIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        signedness::Signedness=SignednessSigned)
+                        signedness::Signedness.T=Signedness.Signed)
     encode_varint!(cb.buf, Opcode.MinIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1237,7 +1240,7 @@ Integer maximum.
 Opcode: 70
 """
 function encode_MaxIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        signedness::Signedness=SignednessSigned)
+                        signedness::Signedness.T=Signedness.Signed)
     encode_varint!(cb.buf, Opcode.MaxIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1432,8 +1435,8 @@ Floating-point comparison.
 Opcode: 14
 """
 function encode_CmpFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        predicate::ComparisonPredicate=CmpEqual,
-                        ordering::ComparisonOrdering=CmpOrdered)
+                        predicate::ComparisonPredicate.T=ComparisonPredicate.Equal,
+                        ordering::ComparisonOrdering.T=ComparisonOrdering.Ordered)
     encode_varint!(cb.buf, Opcode.CmpFOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, predicate)
@@ -1450,8 +1453,8 @@ Integer comparison.
 Opcode: 15
 """
 function encode_CmpIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        predicate::ComparisonPredicate=CmpEqual,
-                        signedness::Signedness=SignednessSigned)
+                        predicate::ComparisonPredicate.T=ComparisonPredicate.Equal,
+                        signedness::Signedness.T=Signedness.Signed)
     encode_varint!(cb.buf, Opcode.CmpIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, predicate)
@@ -1530,7 +1533,7 @@ Shift left.
 Opcode: 96
 """
 function encode_ShLIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        overflow::IntegerOverflow=OverflowNone)
+                        overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.ShLIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, overflow)
@@ -1546,7 +1549,7 @@ Shift right. Signed = arithmetic shift, Unsigned = logical shift.
 Opcode: 97
 """
 function encode_ShRIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
-                        signedness::Signedness=SignednessSigned)
+                        signedness::Signedness.T=Signedness.Signed)
     encode_varint!(cb.buf, Opcode.ShRIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1562,7 +1565,7 @@ Integer negation.
 Opcode: 80
 """
 function encode_NegIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        overflow::IntegerOverflow=OverflowNone)
+                        overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.NegIOp)
     encode_typeid!(cb.buf, result_type)
     if cb.version >= v"13.2"
@@ -1596,7 +1599,7 @@ Float to float conversion (e.g., fp32 to fp16, fp32 to tf32).
 Opcode: 42
 """
 function encode_FToFOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        rounding_mode::RoundingMode=RoundingNearestEven)
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven)
     encode_varint!(cb.buf, Opcode.FToFOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, rounding_mode)
@@ -1611,8 +1614,8 @@ Integer to float conversion (e.g., i32 to fp32).
 Opcode: 59
 """
 function encode_IToFOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        signedness::Signedness=SignednessSigned,
-                        rounding_mode::RoundingMode=RoundingNearestEven)
+                        signedness::Signedness.T=Signedness.Signed,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestEven)
     encode_varint!(cb.buf, Opcode.IToFOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1628,8 +1631,8 @@ Float to integer conversion (e.g., fp32 to i32).
 Opcode: 43
 """
 function encode_FToIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        signedness::Signedness=SignednessSigned,
-                        rounding_mode::RoundingMode=RoundingNearestIntToZero)
+                        signedness::Signedness.T=Signedness.Signed,
+                        rounding_mode::RoundingMode.T=RoundingMode.NearestIntToZero)
     encode_varint!(cb.buf, Opcode.FToIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1645,7 +1648,7 @@ Integer extension (e.g., i16 to i32). Sign or zero extends based on signedness.
 Opcode: 37
 """
 function encode_ExtIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        signedness::Signedness=SignednessSigned)
+                        signedness::Signedness.T=Signedness.Signed)
     encode_varint!(cb.buf, Opcode.ExtIOp)
     encode_typeid!(cb.buf, result_type)
     encode_enum!(cb.buf, signedness)
@@ -1785,8 +1788,8 @@ function encode_AtomicCASPtrOp!(cb::CodeBuilder,
                                  val::Value;
                                  mask::Union{Value, Nothing}=nothing,
                                  token::Union{Value, Nothing}=nothing,
-                                 memory_ordering::MemoryOrderingSemantics=MemoryAcqRel,
-                                 memory_scope::MemoryScope=ScopeDevice)
+                                 memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.AcqRel,
+                                 memory_scope::MemoryScope.T=MemoryScope.Device)
     encode_varint!(cb.buf, Opcode.AtomicCASPtrOp)
     # Result types (no length prefix, per Python reference)
     encode_varint!(cb.buf, result_type.id)
@@ -1830,11 +1833,11 @@ function encode_AtomicRMWPtrOp!(cb::CodeBuilder,
                                  token_type::TypeId,
                                  pointers::Value,
                                  arg::Value,
-                                 mode::AtomicRMWMode;
+                                 mode::AtomicRMWMode.T;
                                  mask::Union{Value, Nothing}=nothing,
                                  token::Union{Value, Nothing}=nothing,
-                                 memory_ordering::MemoryOrderingSemantics=MemoryAcqRel,
-                                 memory_scope::MemoryScope=ScopeDevice)
+                                 memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.AcqRel,
+                                 memory_scope::MemoryScope.T=MemoryScope.Device)
     encode_varint!(cb.buf, Opcode.AtomicRMWPtrOp)
     # Result types (no length prefix, per Python reference)
     encode_varint!(cb.buf, result_type.id)
@@ -1966,7 +1969,7 @@ Element-wise hyperbolic tangent.
 Opcode: 106
 """
 function encode_TanHOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
-                        rounding_mode::RoundingMode=RoundingFull)
+                        rounding_mode::RoundingMode.T=RoundingMode.Full)
     encode_varint!(cb.buf, Opcode.TanHOp)
     encode_typeid!(cb.buf, result_type)
     if cb.version >= v"13.2"
@@ -1983,7 +1986,7 @@ Element-wise fused multiply-add: a * b + c.
 Opcode: 40
 """
 function encode_FmaOp!(cb::CodeBuilder, result_type::TypeId, a::Value, b::Value, c::Value;
-                       rounding_mode::RoundingMode=RoundingNearestEven,
+                       rounding_mode::RoundingMode.T=RoundingMode.NearestEven,
                        flush_to_zero::Bool=false)
     encode_varint!(cb.buf, Opcode.FmaOp)
     encode_typeid!(cb.buf, result_type)

@@ -17,25 +17,25 @@ public bid, num_blocks, num_tiles, load, store, gather, scatter, Rounding
 Padding mode for load operations.
 Use these constants with ct.load to specify out-of-bounds behavior.
 """
-module PaddingMode
-    const Undetermined = 0
-    const Zero = 1
-    const NegZero = 2
-    const Nan = 3
-    const PosInf = 4
-    const NegInf = 5
+@enumx PaddingMode begin
+    Undetermined = 0
+    Zero = 1
+    NegZero = 2
+    Nan = 3
+    PosInf = 4
+    NegInf = 5
 end
 
 """
 Rounding mode for floating-point operations.
 Use with reduction and scan kwargs (e.g., `sum(tile; dims, rounding_mode=ct.Rounding.Zero)`).
 """
-module Rounding
-    const NearestEven = 0
-    const Zero = 1
-    const NegInf = 2
-    const PosInf = 3
-    const Approx = 4
+@enumx Rounding begin
+    NearestEven = 0
+    Zero = 1
+    NegInf = 2
+    PosInf = 3
+    Approx = 4
 end
 
 """
@@ -128,7 +128,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
 """
 @inline function load(arr::TileArray, index, shape::NTuple{<:Any, Int};
                       order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
-                      padding_mode::Int=PaddingMode.Undetermined,
+                      padding_mode::PaddingMode.T=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))

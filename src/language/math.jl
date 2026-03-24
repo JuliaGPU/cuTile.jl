@@ -20,10 +20,10 @@ end
 @overlay Base.fma(x::T, y::T, z::T) where {T <: ScalarFloat} = Intrinsics.fma(x, y, z)
 
 # max/min
-@overlay Base.max(x::T, y::T) where {T <: Signed} = Intrinsics.maxi(x, y, SignednessSigned)
-@overlay Base.max(x::T, y::T) where {T <: Unsigned} = Intrinsics.maxi(x, y, SignednessUnsigned)
-@overlay Base.min(x::T, y::T) where {T <: Signed} = Intrinsics.mini(x, y, SignednessSigned)
-@overlay Base.min(x::T, y::T) where {T <: Unsigned} = Intrinsics.mini(x, y, SignednessUnsigned)
+@overlay Base.max(x::T, y::T) where {T <: Signed} = Intrinsics.maxi(x, y, Signedness.Signed)
+@overlay Base.max(x::T, y::T) where {T <: Unsigned} = Intrinsics.maxi(x, y, Signedness.Unsigned)
+@overlay Base.min(x::T, y::T) where {T <: Signed} = Intrinsics.mini(x, y, Signedness.Signed)
+@overlay Base.min(x::T, y::T) where {T <: Unsigned} = Intrinsics.mini(x, y, Signedness.Unsigned)
 @overlay Base.max(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.maxf(x, y, false)
 @overlay Base.min(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.minf(x, y, false)
 

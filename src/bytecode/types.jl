@@ -51,17 +51,17 @@ end
 const DYNAMIC_SHAPE = typemin(Int64)
 
 # Padding values for loads
-@enum PaddingValue begin
-    PaddingMissing = 0
-    PaddingZero = 1
-    PaddingNegZero = 2
-    PaddingNan = 3
-    PaddingPosInf = 4
-    PaddingNegInf = 5
+@enumx PaddingValue begin
+    Missing = 0
+    Zero = 1
+    NegZero = 2
+    Nan = 3
+    PosInf = 4
+    NegInf = 5
 end
 
-function encode_padding_value!(buf::Vector{UInt8}, pv::PaddingValue)
-    if pv == PaddingMissing
+function encode_padding_value!(buf::Vector{UInt8}, pv::PaddingValue.T)
+    if pv == PaddingValue.Missing
         push!(buf, 0x00)
     else
         push!(buf, 0x01)
@@ -158,7 +158,7 @@ function partition_view_type!(table::TypeTable,
                               tile_shape::AbstractVector{<:Integer},
                               tensor_view::TypeId,
                               dim_map::AbstractVector{<:Integer},
-                              padding_value::PaddingValue)
+                              padding_value::PaddingValue.T)
     buf = UInt8[CompositeType.PartitionView]
     encode_int_list!(buf, tile_shape, 4)  # 4-byte integers
     encode_varint!(buf, tensor_view.id)

@@ -1,27 +1,6 @@
 # views
 
-"""
-Convert integer padding mode value to bytecode PaddingValue enum.
-"""
-function padding_mode_to_padding_value(mode::Int)
-    mode == 0 ? PaddingMissing :
-    mode == 1 ? PaddingZero :
-    mode == 2 ? PaddingNegZero :
-    mode == 3 ? PaddingNan :
-    mode == 4 ? PaddingPosInf : PaddingNegInf
-end
 
-"""
-Get padding value from args, with default.
-"""
-function get_padding_value(ctx::CGCtx, args)
-    mode = 0  # Default: Undetermined
-    if length(args) >= 3
-        gc = get_constant(ctx, args[3])
-        gc !== nothing && something(gc) isa Integer && (mode = Int(something(gc)))
-    end
-    padding_mode_to_padding_value(mode)
-end
 
 # cuda_tile.get_index_space_shape
 @intrinsic get_index_space_shape(pv, axis)
@@ -161,7 +140,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "load")
 
-    padding_value = get_padding_value(ctx, args)
+    padding_value = if length(args) >= 3
+        convert_enum(PaddingValue, @something get_constant(ctx, args[3]) throw(IRError("padding_mode must be a compile-time constant")))
+    else
+        PaddingValue.Missing
+    end
 
     tensor_view = tv.v
     tv_type = tv.type_id

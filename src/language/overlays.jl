@@ -30,7 +30,7 @@ const Floats = (Float16, BFloat16, Float32, TFloat32, Float64)
 for T in SignedInts, S in SignedInts
     T === S && continue
     if sizeof(T) > sizeof(S)
-        @eval @overlay $T(x::$S) = Intrinsics.exti(x, $T, SignednessSigned)
+        @eval @overlay $T(x::$S) = Intrinsics.exti(x, $T, Signedness.Signed)
     else
         @eval @overlay $T(x::$S) = Intrinsics.trunci(x, $T)
     end
@@ -39,7 +39,7 @@ end
 for T in UnsignedInts, S in UnsignedInts
     T === S && continue
     if sizeof(T) > sizeof(S)
-        @eval @overlay $T(x::$S) = Intrinsics.exti(x, $T, SignednessUnsigned)
+        @eval @overlay $T(x::$S) = Intrinsics.exti(x, $T, Signedness.Unsigned)
     else
         @eval @overlay $T(x::$S) = Intrinsics.trunci(x, $T)
     end
@@ -47,16 +47,16 @@ end
 
 # Bool to integer (zero-extend: false→0, true→1)
 for T in (SignedInts..., UnsignedInts...)
-    @eval @overlay $T(x::Bool) = Intrinsics.exti(x, $T, SignednessUnsigned)
+    @eval @overlay $T(x::Bool) = Intrinsics.exti(x, $T, Signedness.Unsigned)
 end
 
 # Integer extension/truncation (via rem) - T and S both used in body
 @overlay Base.rem(x::T, ::Type{S}) where {T <: Signed, S <: Signed} =
-    sizeof(S) > sizeof(T) ? Intrinsics.exti(x, S, SignednessSigned) :
+    sizeof(S) > sizeof(T) ? Intrinsics.exti(x, S, Signedness.Signed) :
     sizeof(S) < sizeof(T) ? Intrinsics.trunci(x, S) : x
 
 @overlay Base.rem(x::T, ::Type{S}) where {T <: Unsigned, S <: Unsigned} =
-    sizeof(S) > sizeof(T) ? Intrinsics.exti(x, S, SignednessUnsigned) :
+    sizeof(S) > sizeof(T) ? Intrinsics.exti(x, S, Signedness.Unsigned) :
     sizeof(S) < sizeof(T) ? Intrinsics.trunci(x, S) : x
 
 # Float to float
@@ -68,21 +68,21 @@ end
 # Integer to float
 for F in Floats
     for I in SignedInts
-        @eval @overlay $F(x::$I) = Intrinsics.itof(x, $F, SignednessSigned)
+        @eval @overlay $F(x::$I) = Intrinsics.itof(x, $F, Signedness.Signed)
     end
     for I in UnsignedInts
-        @eval @overlay $F(x::$I) = Intrinsics.itof(x, $F, SignednessUnsigned)
+        @eval @overlay $F(x::$I) = Intrinsics.itof(x, $F, Signedness.Unsigned)
     end
-    @eval @overlay $F(x::Bool) = Intrinsics.itof(x, $F, SignednessUnsigned)
+    @eval @overlay $F(x::Bool) = Intrinsics.itof(x, $F, Signedness.Unsigned)
 end
 
 # Float to integer (via unsafe_trunc)
 for F in Floats
     for I in SignedInts
-        @eval @overlay Base.unsafe_trunc(::Type{$I}, x::$F) = Intrinsics.ftoi(x, $I, SignednessSigned)
+        @eval @overlay Base.unsafe_trunc(::Type{$I}, x::$F) = Intrinsics.ftoi(x, $I, Signedness.Signed)
     end
     for I in UnsignedInts
-        @eval @overlay Base.unsafe_trunc(::Type{$I}, x::$F) = Intrinsics.ftoi(x, $I, SignednessUnsigned)
+        @eval @overlay Base.unsafe_trunc(::Type{$I}, x::$F) = Intrinsics.ftoi(x, $I, Signedness.Unsigned)
     end
 end
 

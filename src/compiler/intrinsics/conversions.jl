@@ -3,7 +3,7 @@
 # TODO: cuda_tile.bitcast
 
 # cuda_tile.exti (scalar integer extension)
-@intrinsic exti(x::I, ::Type{T}, s::Signedness) where {I<:Integer, T<:Integer}
+@intrinsic exti(x::I, ::Type{T}, s::Signedness.T) where {I<:Integer, T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.exti), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
@@ -52,7 +52,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
 end
 
 # cuda_tile.ftoi (scalar float to integer)
-@intrinsic ftoi(x::AbstractFloat, ::Type{I}, s::Signedness) where {I<:Integer}
+@intrinsic ftoi(x::AbstractFloat, ::Type{I}, s::Signedness.T) where {I<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.ftoi), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
@@ -77,7 +77,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
 end
 
 # cuda_tile.itof (scalar integer to float)
-@intrinsic itof(x::Integer, ::Type{F}, s::Signedness) where {F<:AbstractFloat}
+@intrinsic itof(x::Integer, ::Type{F}, s::Signedness.T) where {F<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.itof), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing

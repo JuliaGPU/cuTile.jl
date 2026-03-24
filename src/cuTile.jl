@@ -14,6 +14,7 @@ const CC = Core.Compiler
 using CUDA_Tile_jll
 
 using BFloat16s: BFloat16
+using EnumX
 public BFloat16
 
 # Bytecode infrastructure

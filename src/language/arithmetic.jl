@@ -12,23 +12,23 @@
 @overlay Base.:*(x::T, y::T) where {T <: ScalarInt} = Intrinsics.muli(x, y)
 @overlay Base.:-(x::ScalarInt) = Intrinsics.negi(x)
 # div with default rounding (toward zero)
-@overlay Base.div(x::T, y::T) where {T <: Signed} = Intrinsics.divi(x, y, SignednessSigned)
-@overlay Base.div(x::T, y::T) where {T <: Unsigned} = Intrinsics.divi(x, y, SignednessUnsigned)
+@overlay Base.div(x::T, y::T) where {T <: Signed} = Intrinsics.divi(x, y, Signedness.Signed)
+@overlay Base.div(x::T, y::T) where {T <: Unsigned} = Intrinsics.divi(x, y, Signedness.Unsigned)
 
 # div with explicit RoundToZero
-@overlay Base.div(x::T, y::T, ::typeof(RoundToZero)) where {T <: Signed} = Intrinsics.divi(x, y, SignednessSigned)
-@overlay Base.div(x::T, y::T, ::typeof(RoundToZero)) where {T <: Unsigned} = Intrinsics.divi(x, y, SignednessUnsigned)
+@overlay Base.div(x::T, y::T, ::typeof(RoundToZero)) where {T <: Signed} = Intrinsics.divi(x, y, Signedness.Signed)
+@overlay Base.div(x::T, y::T, ::typeof(RoundToZero)) where {T <: Unsigned} = Intrinsics.divi(x, y, Signedness.Unsigned)
 
 # fld uses div with RoundDown
 # Note: for unsigned, floor division equals truncating division (values are non-negative)
-@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: Signed} = Intrinsics.fldi(x, y, SignednessSigned)
-@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: Unsigned} = Intrinsics.divi(x, y, SignednessUnsigned)
+@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: Signed} = Intrinsics.fldi(x, y, Signedness.Signed)
+@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: Unsigned} = Intrinsics.divi(x, y, Signedness.Unsigned)
 
 # cld uses div with RoundUp
-@overlay Base.div(x::T, y::T, ::typeof(RoundUp)) where {T <: Signed} = Intrinsics.cldi(x, y, SignednessSigned)
-@overlay Base.div(x::T, y::T, ::typeof(RoundUp)) where {T <: Unsigned} = Intrinsics.cldi(x, y, SignednessUnsigned)
-@overlay Base.rem(x::T, y::T) where {T <: Signed} = Intrinsics.remi(x, y, SignednessSigned)
-@overlay Base.rem(x::T, y::T) where {T <: Unsigned} = Intrinsics.remi(x, y, SignednessUnsigned)
+@overlay Base.div(x::T, y::T, ::typeof(RoundUp)) where {T <: Signed} = Intrinsics.cldi(x, y, Signedness.Signed)
+@overlay Base.div(x::T, y::T, ::typeof(RoundUp)) where {T <: Unsigned} = Intrinsics.cldi(x, y, Signedness.Unsigned)
+@overlay Base.rem(x::T, y::T) where {T <: Signed} = Intrinsics.remi(x, y, Signedness.Signed)
+@overlay Base.rem(x::T, y::T) where {T <: Unsigned} = Intrinsics.remi(x, y, Signedness.Unsigned)
 
 # float
 @overlay Base.:+(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.addf(x, y)
@@ -39,24 +39,24 @@
 @overlay Base.:^(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.pow(x, y)
 
 # comparison (integer)
-@overlay Base.:(==)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, CmpEqual, SignednessSigned)
-@overlay Base.:(!=)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, CmpNotEqual, SignednessSigned)
-#@overlay Base.:<(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(x, y, CmpLessThan, SignednessSigned)
-#@overlay Base.:<(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(x, y, CmpLessThan, SignednessUnsigned)
-#@overlay Base.:<=(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(x, y, CmpLessThanOrEqual, SignednessSigned)
-#@overlay Base.:<=(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(x, y, CmpLessThanOrEqual, SignednessUnsigned)
-@overlay Base.:>(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(y, x, CmpLessThan, SignednessSigned)
-@overlay Base.:>(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(y, x, CmpLessThan, SignednessUnsigned)
-@overlay Base.:>=(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(y, x, CmpLessThanOrEqual, SignednessSigned)
-@overlay Base.:>=(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(y, x, CmpLessThanOrEqual, SignednessUnsigned)
+@overlay Base.:(==)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, ComparisonPredicate.Equal, Signedness.Signed)
+@overlay Base.:(!=)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, ComparisonPredicate.NotEqual, Signedness.Signed)
+#@overlay Base.:<(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(x, y, ComparisonPredicate.LessThan, Signedness.Signed)
+#@overlay Base.:<(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(x, y, ComparisonPredicate.LessThan, Signedness.Unsigned)
+#@overlay Base.:<=(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(x, y, ComparisonPredicate.LessThanOrEqual, Signedness.Signed)
+#@overlay Base.:<=(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(x, y, ComparisonPredicate.LessThanOrEqual, Signedness.Unsigned)
+@overlay Base.:>(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(y, x, ComparisonPredicate.LessThan, Signedness.Signed)
+@overlay Base.:>(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(y, x, ComparisonPredicate.LessThan, Signedness.Unsigned)
+@overlay Base.:>=(x::T, y::T) where {T <: Signed} = Intrinsics.cmpi(y, x, ComparisonPredicate.LessThanOrEqual, Signedness.Signed)
+@overlay Base.:>=(x::T, y::T) where {T <: Unsigned} = Intrinsics.cmpi(y, x, ComparisonPredicate.LessThanOrEqual, Signedness.Unsigned)
 
 # comparison (float)
-@overlay Base.:<(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, CmpLessThan)
-@overlay Base.:<=(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, CmpLessThanOrEqual)
-@overlay Base.:>(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, CmpGreaterThan)
-@overlay Base.:>=(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, CmpGreaterThanOrEqual)
-@overlay Base.:(==)(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, CmpEqual)
-@overlay Base.:(!=)(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, CmpNotEqual)
+@overlay Base.:<(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.LessThan)
+@overlay Base.:<=(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.LessThanOrEqual)
+@overlay Base.:>(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.GreaterThan)
+@overlay Base.:>=(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.GreaterThanOrEqual)
+@overlay Base.:(==)(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.Equal)
+@overlay Base.:(!=)(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.NotEqual)
 
 @overlay Base.ifelse(cond::Bool, x::T, y::T) where {T} = Intrinsics.select(cond, x, y)
 
@@ -70,9 +70,9 @@
 @overlay Base.:~(x::T) where {T <: Unsigned} = Intrinsics.xori(x, ~T(0))
 @overlay Base.:!(x::Bool) = Intrinsics.xori(x, true)
 @overlay Base.:<<(x::ScalarInt, y::Integer) = Intrinsics.shli(x, y)
-@overlay Base.:>>(x::Signed, y::Integer) = Intrinsics.shri(x, y, SignednessSigned)
-@overlay Base.:>>(x::Unsigned, y::Integer) = Intrinsics.shri(x, y, SignednessUnsigned)
-@overlay Base.:>>>(x::ScalarInt, y::Integer) = Intrinsics.shri(x, y, SignednessUnsigned)
+@overlay Base.:>>(x::Signed, y::Integer) = Intrinsics.shri(x, y, Signedness.Signed)
+@overlay Base.:>>(x::Unsigned, y::Integer) = Intrinsics.shri(x, y, Signedness.Unsigned)
+@overlay Base.:>>>(x::ScalarInt, y::Integer) = Intrinsics.shri(x, y, Signedness.Unsigned)
 
 
 ## tile arithmetic
@@ -92,11 +92,11 @@
 # Base.mul_hi added in Julia 1.13; before that, use ct.mul_hi
 # Scalar overlays let the generic copy→map path handle tile broadcasting.
 @static if VERSION >= v"1.13-"
-    @overlay Base.mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, SignednessSigned)
-    @overlay Base.mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, SignednessUnsigned)
+    @overlay Base.mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, Signedness.Signed)
+    @overlay Base.mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, Signedness.Unsigned)
 else
-    @inline mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, SignednessSigned)
-    @inline mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, SignednessUnsigned)
+    @inline mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, Signedness.Signed)
+    @inline mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, Signedness.Unsigned)
 end
 
 
