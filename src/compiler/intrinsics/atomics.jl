@@ -72,7 +72,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     end
     ctx.token = new_token
 
-    julia_shape = colmajor(shape)
+    julia_shape = ColMajorShape(shape)
     CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
 end
 
@@ -130,7 +130,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     end
     ctx.token = new_token
 
-    julia_shape = colmajor(shape)
+    julia_shape = ColMajorShape(shape)
     CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
 end
 

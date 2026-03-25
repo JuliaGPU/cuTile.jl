@@ -60,7 +60,7 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
                                result_shape, nothing, rhs_tv.constant, nothing)
             end
         else
-            result_shape = rowmajor()
+            result_shape = ScalarShape()
         end
         result_jltype = lhs_tv.jltype
     else

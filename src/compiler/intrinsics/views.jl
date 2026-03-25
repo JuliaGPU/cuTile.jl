@@ -26,7 +26,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     tileir_axis = ndim - 1 - axis
 
     # Create result types for all dimensions
-    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    scalar_i32 = tile_type!(tt, I32(tt), ScalarShape())
     result_types = fill(scalar_i32, ndim)
 
     # Emit GetIndexSpaceShapeOp
@@ -69,7 +69,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Reverse to Tile IR row-major order
     pv_type = CC.widenconst(pv_arg.jltype)
     elem_type = eltype(pv_type)
-    tile_shape = rowmajor(size(pv_type))
+    tile_shape = RowMajorShape(size(pv_type))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -113,7 +113,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
                                                  token=ctx.token, optimization_hints)
     ctx.token = new_token
 
-    julia_shape = colmajor(tile_shape)
+    julia_shape = ColMajorShape(tile_shape)
     CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
 end
 
@@ -145,7 +145,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
     validate_tile_shape(collect(Int, shape), "load")
-    tile_shape = rowmajor(shape)
+    tile_shape = RowMajorShape(shape)
 
     padding_value = if length(args) >= 3
         convert_enum(PaddingValue, @something get_constant(ctx, args[3]) throw(IRError("padding_mode must be a compile-time constant")))
@@ -169,10 +169,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
         dim_map = [ndim - 1 - julia_dim_map[ndim - i] for i in 0:ndim-1]
     end
 
-    pv_type = partition_view_type!(ctx.tt, collect(tile_shape), tv_type, dim_map, padding_value)
+    pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, rowmajor(), nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, ScalarShape(), nothing, Some(ndim), nothing)
 end
 
 """
@@ -247,7 +247,7 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
     stride_vals = reverse(julia_stride_vals)
 
     # TensorView type (strides also in Tile IR order: last dim = contiguous)
-    tv_shape = fill(DYNAMIC_SHAPE, ndim)
+    tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
     tv_strides = compute_tensor_view_strides(spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 

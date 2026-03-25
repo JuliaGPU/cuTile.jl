@@ -61,7 +61,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     end
     ctx.token = new_token
 
-    julia_shape = colmajor(tile_shape)
+    julia_shape = ColMajorShape(tile_shape)
     result_jltype = Tile{elem_type, TupleType(julia_shape)}
     CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
 end
