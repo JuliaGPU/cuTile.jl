@@ -19,7 +19,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("exti: requires compile-time signedness"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, collect(source.shape))
 
     result_v = encode_ExtIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
@@ -43,7 +43,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("ftof: requires compile-time target type"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, collect(source.shape))
 
     result_v = encode_FToFOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)
@@ -68,7 +68,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("ftoi: requires compile-time signedness"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, collect(source.shape))
 
     result_v = encode_FToIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
@@ -93,7 +93,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("itof: requires compile-time signedness"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, collect(source.shape))
 
     result_v = encode_IToFOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
@@ -117,7 +117,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("trunci: requires compile-time target type"))
 
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, collect(source.shape))
 
     result_v = encode_TruncIOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)

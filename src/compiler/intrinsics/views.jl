@@ -69,10 +69,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Reverse to Tile IR row-major order
     pv_type = CC.widenconst(pv_arg.jltype)
     elem_type = eltype(pv_type)
-    tile_shape = julia_to_tileir(collect(Int, size(pv_type)))
+    tile_shape = rowmajor(size(pv_type))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    tile_type = tile_type!(tt, dtype, tile_shape)
+    tile_type = tile_type!(tt, dtype, collect(tile_shape))
     token_type = Token(tt)
 
     latency = @something get_constant(ctx, args[2]) throw(IRError("load_partition_view(): latency must be a compile-time constant"))
@@ -113,8 +113,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
                                                  token=ctx.token, optimization_hints)
     ctx.token = new_token
 
-    julia_shape = tileir_to_julia(tile_shape)
-    CGVal(tile_val, tile_type, Tile{elem_type, Tuple{julia_shape...}}, tile_shape)
+    julia_shape = colmajor(tile_shape)
+    CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
 end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
@@ -144,9 +144,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     # Reverse to Tile IR row-major order
     shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
-    julia_shape = collect(Int, shape)
-    validate_tile_shape(julia_shape, "load")
-    tile_shape = julia_to_tileir(julia_shape)
+    julia_shape = colmajor(shape)
+    validate_tile_shape(collect(julia_shape), "load")
+    tile_shape = rowmajor(julia_shape)
 
     padding_value = if length(args) >= 3
         convert_enum(PaddingValue, @something get_constant(ctx, args[3]) throw(IRError("padding_mode must be a compile-time constant")))
@@ -170,10 +170,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
         dim_map = [ndim - 1 - julia_dim_map[ndim - i] for i in 0:ndim-1]
     end
 
-    pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
+    pv_type = partition_view_type!(ctx.tt, collect(tile_shape), tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, Int[], nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, rowmajor(Int[]), nothing, Some(ndim), nothing)
 end
 
 """

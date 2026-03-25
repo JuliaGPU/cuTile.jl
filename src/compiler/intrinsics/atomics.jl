@@ -72,8 +72,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     end
     ctx.token = new_token
 
-    julia_shape = Tuple{tileir_to_julia(collect(shape))...}
-    CGVal(old_val, result_tile_type, Tile{elem_type, julia_shape}, collect(shape))
+    julia_shape = colmajor(shape)
+    CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
 end
 
 # cuda_tile.atomic_rmw_tko (shared helper for atomic RMW operations)
@@ -130,8 +130,8 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     end
     ctx.token = new_token
 
-    julia_shape = Tuple{tileir_to_julia(collect(shape))...}
-    CGVal(old_val, result_tile_type, Tile{elem_type, julia_shape}, collect(shape))
+    julia_shape = colmajor(shape)
+    CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
 end
 
 # cuda_tile.atomic_rmw_tko variants
