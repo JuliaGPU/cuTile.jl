@@ -119,7 +119,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                 # Scalar: emit ConstantOp
                 bytes = constant_to_bytes(val, T)
                 v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, T, rowmajor(Int[]), nothing, Some(val), nothing)
+                tv = CGVal(v, type_id, T, rowmajor(), nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)

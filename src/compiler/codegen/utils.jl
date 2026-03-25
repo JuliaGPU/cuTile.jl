@@ -25,6 +25,7 @@ rowmajor(s::Shape{RowMajor}) = s
 rowmajor(s::Shape{ColMajor}) = Shape{RowMajor}(reverse(s.dims))
 rowmajor(t::Tuple) = rowmajor(Shape{ColMajor}(collect(Int, t)))
 rowmajor(v::Vector{Int}) = Shape{RowMajor}(v)
+rowmajor() = Shape{RowMajor}(Int[])
 
 colmajor(s::Shape{ColMajor}) = s
 colmajor(s::Shape{RowMajor}) = Shape{ColMajor}(reverse(s.dims))
@@ -41,6 +42,10 @@ Base.iterate(s::Shape, state...) = iterate(s.dims, state...)
 Base.eachindex(s::Shape) = eachindex(s.dims)
 Base.collect(s::Shape) = s.dims
 TupleType(s::Shape) = Tuple{s.dims...}
+
+
+# Convenience: pass Shape{RowMajor} directly to bytecode tile_type!
+tile_type!(tt::TypeTable, dtype::TypeId, shape::Shape{RowMajor}) = tile_type!(tt, dtype, shape.dims)
 
 #=============================================================================
  IRError: Exception type for IR compilation errors
@@ -119,18 +124,18 @@ end
 
 # Convenience constructors for concrete values
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    CGVal(v, type_id, jltype, rowmajor(Int[]), nothing, nothing, nothing)
+    CGVal(v, type_id, jltype, rowmajor(), nothing, nothing, nothing)
 
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Shape{RowMajor}) =
     CGVal(v, type_id, jltype, shape, nothing, nothing, nothing)
 
 # Constructor for multi-value results (from loops, ifs)
 CGVal(v::Vector{Value}, @nospecialize(jltype)) =
-    CGVal(v, nothing, jltype, rowmajor(Int[]), nothing, nothing, nothing)
+    CGVal(v, nothing, jltype, rowmajor(), nothing, nothing, nothing)
 
 # Constructor for lazy argument references
 function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
-    CGVal(nothing, nothing, jltype, rowmajor(Int[]), (arg_idx, chain), nothing, nothing)
+    CGVal(nothing, nothing, jltype, rowmajor(), (arg_idx, chain), nothing, nothing)
 end
 
 """
@@ -139,8 +144,8 @@ end
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, rowmajor(Int[]), nothing, nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, rowmajor(Int[]), nothing, Some(constant), nothing)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, rowmajor(), nothing, nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, rowmajor(), nothing, Some(constant), nothing)
 
 """
     tuple_value(jltype, component_refs, component_constants) -> CGVal
@@ -155,7 +160,7 @@ function tuple_value(@nospecialize(jltype), component_refs::Vector{Any}, compone
     else
         nothing
     end
-    CGVal(nothing, TypeId(-1), jltype, rowmajor(Int[]), nothing, constant, component_refs)
+    CGVal(nothing, TypeId(-1), jltype, rowmajor(), nothing, constant, component_refs)
 end
 
 """
@@ -423,7 +428,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         end
         elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
         shape = rowmajor(shape_param)
-        return tile_type!(tt, elem_dtype, collect(shape))
+        return tile_type!(tt, elem_dtype, shape)
     end
 
     return nothing
@@ -442,7 +447,7 @@ function tile_type_and_shape_for_julia!(ctx::CGCtx, @nospecialize(T))
     shape = if actual_type <: Tile
         rowmajor(size(actual_type))
     else
-        rowmajor(Int[])
+        rowmajor()
     end
 
     return (type_id, shape)
@@ -539,5 +544,5 @@ function extract_tile_shape(@nospecialize(T))
     if T <: Tile
         return rowmajor(size(T))
     end
-    rowmajor(Int[])
+    rowmajor()
 end

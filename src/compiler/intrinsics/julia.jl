@@ -56,7 +56,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(===), args)
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v;
                               predicate=ComparisonPredicate.Equal, signedness=Signedness.Signed)
 
-    CGVal(result_v, result_type_id, Bool, rowmajor(Int[]))
+    CGVal(result_v, result_type_id, Bool, rowmajor())
 end
 
 # built-in: tuple

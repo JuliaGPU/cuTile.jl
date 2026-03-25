@@ -29,7 +29,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     ptr_type = eltype(ptrs_type)  # Ptr{T} from Tile{Ptr{T}, S}
     elem_type = eltype(ptr_type)  # T from Ptr{T}
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_tile_type = tile_type!(tt, dtype, collect(tile_shape))
+    result_tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 
     # Extract latency hint (args[2])
