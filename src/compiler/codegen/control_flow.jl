@@ -178,7 +178,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
         # Map carried values (body.args)
         for i in 1:n_carries
             body_arg = body_blk.args[i]
-            shape = extract_tile_shape(body_arg.type)
+            shape = RowMajorShape(extract_tile_shape(body_arg.type))
             tv = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
             ctx[body_arg] = tv
         end
@@ -240,7 +240,7 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
         # Map carried values (body.args)
         for i in 1:n_carries
             body_arg = body_blk.args[i]
-            shape = extract_tile_shape(body_arg.type)
+            shape = RowMajorShape(extract_tile_shape(body_arg.type))
             ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
         end
 
@@ -315,7 +315,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         # Map carried values (before.args)
         for i in 1:n_carries
             before_arg = before_blk.args[i]
-            shape = extract_tile_shape(before_arg.type)
+            shape = RowMajorShape(extract_tile_shape(before_arg.type))
             ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
         end
 
@@ -368,7 +368,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
                 if tv !== nothing
                     ctx[after_arg] = tv
                 else
-                    shape = extract_tile_shape(after_arg.type)
+                    shape = RowMajorShape(extract_tile_shape(after_arg.type))
                     ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
                 end
             end
@@ -525,6 +525,6 @@ function emit_loop_getfield!(ctx::CGCtx, args::Vector{Any})
     v = ref_cgval.v[field_idx]
     elem_type = ref_cgval.jltype.parameters[field_idx]
     type_id = tile_type_for_julia!(ctx, elem_type)
-    shape = extract_tile_shape(elem_type)
+    shape = RowMajorShape(extract_tile_shape(elem_type))
     CGVal(v, type_id, elem_type, shape)
 end

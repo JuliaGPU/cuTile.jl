@@ -131,10 +131,10 @@ F8E4M3FN(table::TypeTable) = simple_type!(table, SimpleType.F8E4M3FN)
 F8E5M2(table::TypeTable) = simple_type!(table, SimpleType.F8E5M2)
 Token(table::TypeTable) = simple_type!(table, SimpleType.Token)
 
-function tile_type!(table::TypeTable, dtype::TypeId, shape::AbstractVector{<:Integer})
+function tile_type!(table::TypeTable, dtype::TypeId, shape::TileShape)
     buf = UInt8[CompositeType.Tile]
     encode_varint!(buf, dtype.id)
-    encode_int_list!(buf, shape, 8)  # 8-byte integers
+    encode_int_list!(buf, collect(shape), 8)  # 8-byte integers
     _get_or_create!(table, buf)
 end
 
@@ -145,22 +145,22 @@ function pointer_type!(table::TypeTable, pointee::TypeId)
 end
 
 function tensor_view_type!(table::TypeTable, dtype::TypeId,
-                           shape::AbstractVector{<:Integer},
+                           shape::TileShape,
                            strides::AbstractVector{<:Integer})
     buf = UInt8[CompositeType.TensorView]
     encode_varint!(buf, dtype.id)
-    encode_int_list!(buf, shape, 8)
+    encode_int_list!(buf, collect(shape), 8)
     encode_int_list!(buf, strides, 8)
     _get_or_create!(table, buf)
 end
 
 function partition_view_type!(table::TypeTable,
-                              tile_shape::AbstractVector{<:Integer},
+                              tile_shape::TileShape,
                               tensor_view::TypeId,
                               dim_map::AbstractVector{<:Integer},
                               padding_value::PaddingValue.T)
     buf = UInt8[CompositeType.PartitionView]
-    encode_int_list!(buf, tile_shape, 4)  # 4-byte integers
+    encode_int_list!(buf, collect(tile_shape), 4)  # 4-byte integers
     encode_varint!(buf, tensor_view.id)
     encode_int_list!(buf, dim_map, 4)
     encode_padding_value!(buf, padding_value)

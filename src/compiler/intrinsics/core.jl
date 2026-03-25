@@ -45,7 +45,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     target_shape_tuple = @something get_constant(ctx, args[2]) throw(IRError("broadcast() shape must be a compile-time constant"))
     target_shape_tuple isa Tuple || throw(IRError("broadcast() shape must be a tuple, got $(typeof(target_shape_tuple))"))
     validate_tile_shape(collect(Int, target_shape_tuple), "broadcast")
-    target_shape = RowMajorShape(target_shape_tuple)
+    julia_shape = ColMajorShape(target_shape_tuple)
+    target_shape = RowMajorShape(julia_shape)
 
     # If already the right shape, return unchanged
     if source.shape == target_shape
@@ -55,7 +56,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     # Use the existing broadcast helper
     dtype = julia_to_tile_dtype!(tt, source_elem)
     result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
-    result_type_id = tile_type!(tt, dtype, collect(target_shape))
+    result_type_id = tile_type!(tt, dtype, target_shape)
 
     CGVal(result_v, result_type_id, Tile{source_elem, Tuple{target_shape_tuple...}}, target_shape)
 end
@@ -83,13 +84,13 @@ function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
     if length(current_shape) < length(target_shape)
         n_extra = length(target_shape) - length(current_shape)
         current_shape = RowMajorShape(vcat(fill(1, n_extra), collect(current_shape)))
-        reshaped_type = tile_type!(tt, dtype, collect(current_shape))
+        reshaped_type = tile_type!(tt, dtype, current_shape)
         current_val = encode_ReshapeOp!(cb, reshaped_type, current_val)
     end
 
     # Step 2: Broadcast dimensions that are 1 to target size
     if current_shape != target_shape
-        broadcast_type = tile_type!(tt, dtype, collect(target_shape))
+        broadcast_type = tile_type!(tt, dtype, target_shape)
         current_val = encode_BroadcastOp!(cb, broadcast_type, current_val)
     end
 
@@ -154,7 +155,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    output_tile_type = tile_type!(tt, dtype, collect(output_shape))
+    output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Emit CatOp (Tile IR axis)
     result = encode_CatOp!(cb, output_tile_type, lhs.v, rhs.v, tileir_axis)
@@ -180,13 +181,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     shape = @something get_constant(ctx, args[1]) throw(IRError("fill() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("fill() shape must be a tuple, got $(typeof(shape))"))
     validate_tile_shape(collect(Int, shape), "fill")
-    tile_shape = RowMajorShape(shape)
+    tile_shape = RowMajorShape(ColMajorShape(shape))
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    tile_type = tile_type!(tt, dtype, collect(tile_shape))
+    tile_type = tile_type!(tt, dtype, tile_shape)
 
     tv = emit_value!(ctx, args[2])
     tv === nothing && throw(IRError("fill() value must be a constant or a runtime scalar"))
@@ -230,17 +231,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     shape_tuple = @something get_constant(ctx, args[3]) throw(IRError("extract() shape must be a compile-time constant"))
     shape_tuple isa Tuple || throw(IRError("extract() shape must be a tuple, got $(typeof(shape_tuple))"))
     validate_tile_shape(collect(Int, shape_tuple), "extract")
-    output_shape = RowMajorShape(shape_tuple)
+    output_shape = RowMajorShape(ColMajorShape(shape_tuple))
 
     # Get element type
     elem_type = eltype(CC.widenconst(source.jltype))
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    output_tile_type = tile_type!(tt, dtype, collect(output_shape))
+    output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Create constant index values (0D i32 tiles), reversed for Tile IR order
-    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+    scalar_i32 = tile_type!(tt, I32(tt), ScalarShape())
     index_vals = Value[]
     for idx in reverse(index_tuple)
         idx_bytes = collect(reinterpret(UInt8, [Int32(idx)]))
@@ -263,7 +264,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), a
     axis = @something get_constant(ctx, args[1]) throw(IRError("get_num_tile_blocks() axis must be a compile-time constant"))
     axis in (0, 1, 2) || throw(IRError("get_num_tile_blocks() axis must be 0, 1, or 2, got $axis"))
 
-    res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
+    res_type = tile_type!(ctx.tt, I32(ctx.tt), ScalarShape())
     nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(ctx.cb, res_type, res_type, res_type)
 
     CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Int32)
@@ -276,7 +277,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), arg
     axis = @something get_constant(ctx, args[1]) throw(IRError("get_tile_block_id() axis must be a compile-time constant"))
     axis in (0, 1, 2) || throw(IRError("get_tile_block_id() axis must be 0, 1, or 2, got $axis"))
 
-    res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
+    res_type = tile_type!(ctx.tt, I32(ctx.tt), ScalarShape())
     bid_x, bid_y, bid_z = encode_GetTileBlockIdOp!(ctx.cb, res_type, res_type, res_type)
     result = (bid_x, bid_y, bid_z)[axis + 1]
 
@@ -302,13 +303,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     shape = @something get_constant(ctx, args[1]) throw(IRError("iota() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("iota() shape must be a tuple, got $(typeof(shape))"))
     validate_tile_shape(collect(Int, shape), "arange")
-    tile_shape = RowMajorShape(shape)
+    tile_shape = RowMajorShape(ColMajorShape(shape))
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[2]) throw(IRError("iota() requires a compile-time element type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    tile_type = tile_type!(tt, dtype, collect(tile_shape))
+    tile_type = tile_type!(tt, dtype, tile_shape)
 
     # Emit IotaOp
     result = encode_IotaOp!(cb, tile_type)
@@ -366,13 +367,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     ptr_elem_type = eltype(base_ptr_type)  # T from Ptr{T}
     elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
-    ptr_tile_type = tile_type!(tt, ptr_dtype, collect(tile_shape))
+    ptr_tile_type = tile_type!(tt, ptr_dtype, tile_shape)
 
     # Broadcast base pointer to tile shape
     ndims = length(tile_shape)
     if ndims > 0
         ones_shape = RowMajorShape(fill(1, ndims))
-        reshaped_ptr_type = tile_type!(tt, ptr_dtype, collect(ones_shape))
+        reshaped_ptr_type = tile_type!(tt, ptr_dtype, ones_shape)
         base_ptr_reshaped = encode_ReshapeOp!(cb, reshaped_ptr_type, base_ptr)
         base_ptr_tile = encode_BroadcastOp!(cb, ptr_tile_type, base_ptr_reshaped)
     else
@@ -430,7 +431,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    output_tile_type = tile_type!(tt, dtype, collect(output_shape))
+    output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Emit PermuteOp with Tile IR permutation
     result = encode_PermuteOp!(cb, output_tile_type, source.v, tileir_perm)
@@ -509,8 +510,8 @@ function emit_reduce!(ctx::CGCtx, args)
         push!(elem_types, etype)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
-        push!(reduced_tile_types, tile_type!(tt, dtype, collect(reduced_shape)))
-        push!(scalar_tile_types, tile_type!(tt, dtype, Int[]))
+        push!(reduced_tile_types, tile_type!(tt, dtype, reduced_shape))
+        push!(scalar_tile_types, tile_type!(tt, dtype, ScalarShape()))
         push!(operand_values, tv.v::Value)
         push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end
@@ -539,7 +540,7 @@ function emit_reduce!(ctx::CGCtx, args)
     reshaped_values = Value[]
     component_types = Type[]
     for (k, res) in enumerate(results)
-        out_type = tile_type!(tt, dtypes[k], collect(output_shape))
+        out_type = tile_type!(tt, dtypes[k], output_shape)
         reshaped_val = encode_ReshapeOp!(cb, out_type, res)
         push!(reshaped_values, reshaped_val)
         push!(component_types, Tile{elem_types[k], TupleType(julia_output)})
@@ -592,7 +593,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     target_shape_tuple = @something get_constant(ctx, args[2]) throw(IRError("reshape() shape must be a compile-time constant"))
     target_shape_tuple isa Tuple || throw(IRError("reshape() shape must be a tuple, got $(typeof(target_shape_tuple))"))
     validate_tile_shape(collect(Int, target_shape_tuple), "reshape")
-    target_shape = RowMajorShape(target_shape_tuple)
+    target_shape = RowMajorShape(ColMajorShape(target_shape_tuple))
 
     # Get element type
     elem_type = eltype(CC.widenconst(source.jltype))
@@ -600,7 +601,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
 
     # Tile IR shapes are already in row-major order, so ReshapeOp's row-major element
     # ordering matches directly. No permutes needed!
-    result_type_id = tile_type!(tt, dtype, collect(target_shape))
+    result_type_id = tile_type!(tt, dtype, target_shape)
     result = encode_ReshapeOp!(cb, result_type_id, source.v)
 
     CGVal(result, result_type_id, Tile{elem_type, Tuple{target_shape_tuple...}}, target_shape)
@@ -672,8 +673,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         push!(elem_types, etype)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
-        push!(output_tile_types, tile_type!(tt, dtype, collect(output_shape)))
-        push!(scalar_tile_types, tile_type!(tt, dtype, Int[]))
+        push!(output_tile_types, tile_type!(tt, dtype, output_shape))
+        push!(scalar_tile_types, tile_type!(tt, dtype, ScalarShape()))
         push!(operand_values, tv.v::Value)
         push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end

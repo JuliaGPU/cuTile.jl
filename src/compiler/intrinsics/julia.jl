@@ -51,7 +51,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(===), args)
     lhs = @something emit_value!(ctx, args[1]) throw(IRError("===: cannot resolve lhs"))
     rhs = @something emit_value!(ctx, args[2]) throw(IRError("===: cannot resolve rhs"))
 
-    result_type_id = tile_type!(tt, I1(tt), Int[])
+    result_type_id = tile_type!(tt, I1(tt), ScalarShape())
 
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v;
                               predicate=ComparisonPredicate.Equal, signedness=Signedness.Signed)

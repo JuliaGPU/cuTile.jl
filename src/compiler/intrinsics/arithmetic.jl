@@ -52,11 +52,11 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
             dtype = julia_to_tile_dtype!(tt, elem_type)
             if isempty(lhs_tv.shape)
                 bv = broadcast_tile_to_shape!(cb, tt, lhs_tv, result_shape, dtype)
-                lhs_tv = CGVal(bv, tile_type!(tt, dtype, collect(result_shape)), elem_type,
+                lhs_tv = CGVal(bv, tile_type!(tt, dtype, result_shape), elem_type,
                                result_shape, nothing, lhs_tv.constant, nothing)
             elseif isempty(rhs_tv.shape)
                 bv = broadcast_tile_to_shape!(cb, tt, rhs_tv, result_shape, dtype)
-                rhs_tv = CGVal(bv, tile_type!(tt, dtype, collect(result_shape)), elem_type,
+                rhs_tv = CGVal(bv, tile_type!(tt, dtype, result_shape), elem_type,
                                result_shape, nothing, rhs_tv.constant, nothing)
             end
         else
@@ -68,7 +68,7 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     end
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_type_id = tile_type!(tt, dtype, collect(result_shape))
+    result_type_id = tile_type!(tt, dtype, result_shape)
 
     result_v = encoder(cb, result_type_id, lhs_tv.v, rhs_tv.v; kwargs...)
 
@@ -88,7 +88,7 @@ function emit_unop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     result_jltype = source.jltype
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_type_id = tile_type!(tt, dtype, collect(result_shape))
+    result_type_id = tile_type!(tt, dtype, result_shape)
 
     result_v = encoder(cb, result_type_id, source.v; kwargs...)
 
@@ -149,7 +149,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     result_shape = lhs.shape
 
     bool_dtype = I1(tt)
-    result_type_id = tile_type!(tt, bool_dtype, collect(result_shape))
+    result_type_id = tile_type!(tt, bool_dtype, result_shape)
 
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v; predicate, signedness)
     lhs_type = CC.widenconst(lhs.jltype)
@@ -295,7 +295,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     result_shape = lhs.shape
 
     bool_dtype = I1(tt)
-    result_type_id = tile_type!(tt, bool_dtype, collect(result_shape))
+    result_type_id = tile_type!(tt, bool_dtype, result_shape)
 
     result_v = encode_CmpFOp!(cb, result_type_id, lhs.v, rhs.v; predicate)
     lhs_type = CC.widenconst(lhs.jltype)
