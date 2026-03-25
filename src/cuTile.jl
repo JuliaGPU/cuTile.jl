@@ -17,9 +17,6 @@ using BFloat16s: BFloat16
 using EnumX
 public BFloat16
 
-# Shape types (needed by both bytecode and codegen)
-include("shapes.jl")
-
 # Bytecode infrastructure
 include("bytecode/basic.jl")
 include("bytecode/types.jl")
