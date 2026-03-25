@@ -40,18 +40,22 @@ function emit_assume_ops!(ctx::CGCtx, array_val::Value, size_vals::Vector{Value}
     end
 
     # Divisibility assumes for sizes
-    for (i, div_by) in enumerate(array_spec.shape_div_by)
-        if div_by > 0 && i <= length(size_vals)
-            size_vals[i] = encode_AssumeOp!(cb, scalar_type, size_vals[i], DivBy(div_by))
+    # ArraySpec fields are in Julia order; size_vals are in Tile IR order (reversed)
+    ndim = length(size_vals)
+    for (julia_i, div_by) in enumerate(array_spec.shape_div_by)
+        tileir_i = ndim + 1 - julia_i  # Reverse index mapping
+        if div_by > 0 && tileir_i <= length(size_vals)
+            size_vals[tileir_i] = encode_AssumeOp!(cb, scalar_type, size_vals[tileir_i], DivBy(div_by))
         end
     end
 
     # Divisibility assumes for strides - only for dynamic strides
-    for (i, div_by) in enumerate(array_spec.stride_div_by)
-        if div_by > 0 && i <= length(stride_vals)
+    for (julia_i, div_by) in enumerate(array_spec.stride_div_by)
+        tileir_i = ndim + 1 - julia_i  # Reverse index mapping
+        if div_by > 0 && tileir_i <= length(stride_vals)
             # Skip if this stride is static (not DYNAMIC_SHAPE)
-            if tv_strides === nothing || tv_strides[i] == DYNAMIC_SHAPE
-                stride_vals[i] = encode_AssumeOp!(cb, scalar_type, stride_vals[i], DivBy(div_by))
+            if tv_strides === nothing || tv_strides[tileir_i] == DYNAMIC_SHAPE
+                stride_vals[tileir_i] = encode_AssumeOp!(cb, scalar_type, stride_vals[tileir_i], DivBy(div_by))
             end
         end
     end

@@ -14,13 +14,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     pv_arg === nothing && throw(IRError("get_index_space_shape() requires a PartitionView argument"))
     pv_arg.v === nothing && throw(IRError("get_index_space_shape() requires a materialized PartitionView"))
 
-    # Get axis (0-indexed)
+    # Get axis (0-indexed Julia) and flip to Tile IR order
     axis = @something get_constant(ctx, args[2]) throw(IRError("get_index_space_shape() axis must be a compile-time constant"))
     axis = Int(axis)
 
     # Get ndim from the PartitionView constant field
     pv_arg.constant === nothing && throw(IRError("get_index_space_shape(): PartitionView missing ndim info"))
     ndim = something(pv_arg.constant)
+
+    # Flip axis for row-major Tile IR: Julia dim 0 → Tile IR dim ndim-1
+    tileir_axis = ndim - 1 - axis
 
     # Create result types for all dimensions
     scalar_i32 = tile_type!(tt, I32(tt), Int[])
@@ -29,9 +32,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     # Emit GetIndexSpaceShapeOp
     shape_vals = encode_GetIndexSpaceShapeOp!(cb, result_types, pv_arg.v)
 
-    # Return the value for the requested axis
+    # Return the value for the requested axis (in Tile IR order)
     # shape_vals is a single Value when ndim == 1, otherwise a Tuple
-    result_val = ndim == 1 ? shape_vals : shape_vals[axis + 1]
+    result_val = ndim == 1 ? shape_vals : shape_vals[tileir_axis + 1]
     CGVal(result_val, scalar_i32, Int32)
 end
 
@@ -63,9 +66,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     ndim = something(pv_arg.constant)
 
     # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
+    # Reverse to Tile IR row-major order
     pv_type = CC.widenconst(pv_arg.jltype)
     elem_type = eltype(pv_type)
-    tile_shape = collect(Int, size(pv_type))
+    tile_shape = julia_to_tileir(collect(Int, size(pv_type)))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -97,8 +101,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
     index_type = tile_type_for_julia!(ctx, index_jl_type)
 
-    # Pad indices if needed
+    # Pad indices if needed, then reverse for Tile IR row-major order
     index_vals = pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
+    reverse!(index_vals)
 
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
@@ -108,7 +113,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
                                                  token=ctx.token, optimization_hints)
     ctx.token = new_token
 
-    CGVal(tile_val, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
+    julia_shape = tileir_to_julia(tile_shape)
+    CGVal(tile_val, tile_type, Tile{elem_type, Tuple{julia_shape...}}, tile_shape)
 end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
@@ -135,10 +141,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
 
     # Shape from user call (e.g., load(arr, idx, (16,)))
+    # Reverse to Tile IR row-major order
     shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
-    tile_shape = collect(Int, shape)
-    validate_tile_shape(tile_shape, "load")
+    julia_shape = collect(Int, shape)
+    validate_tile_shape(julia_shape, "load")
+    tile_shape = julia_to_tileir(julia_shape)
 
     padding_value = if length(args) >= 3
         convert_enum(PaddingValue, @something get_constant(ctx, args[3]) throw(IRError("padding_mode must be a compile-time constant")))
@@ -151,19 +159,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     elem_type = eltype(tv.jltype)
     ndim = length(tile_shape)
 
-    # Extract order (arg 4)
+    # Extract order (arg 4) and reverse for Tile IR row-major order
     # nothing → identity dim_map, (2,1) → [1, 0] (1-indexed → 0-indexed)
     order_val = @something get_constant(ctx, args[4]) throw(IRError("make_partition_view() order must be a compile-time constant"))
     if order_val === nothing
         dim_map = collect(0:ndim-1)
     else
-        dim_map = collect(Int, map(p -> p - 1, order_val))
+        # Convert Julia dim_map to Tile IR: reverse and remap indices
+        julia_dim_map = collect(Int, map(p -> p - 1, order_val))
+        dim_map = [ndim - 1 - julia_dim_map[ndim - i] for i in 0:ndim-1]
     end
 
     pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{tile_shape...}}, Int[], nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, Int[], nothing, Some(ndim), nothing)
 end
 
 """
@@ -214,27 +224,30 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
     size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
     scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
 
-    # Sizes are passed through directly from parameters
-    size_vals = Value[sizes_from_arg[i] for i in 1:ndim]
+    # Sizes in Julia column-major order from parameters
+    julia_size_vals = Value[sizes_from_arg[i] for i in 1:ndim]
 
-    # Strides from parameters or compute for contiguous arrays
+    # Strides from parameters or compute for contiguous arrays (Julia column-major order)
     if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
-        stride_vals = Value[strides_from_arg[i] for i in 1:ndim]
+        julia_stride_vals = Value[strides_from_arg[i] for i in 1:ndim]
     else
         # Compute column-major strides: stride[1]=1, stride[i]=stride[i-1]*size[i-1]
-        # This matches Julia's memory layout where the first dimension is contiguous
-        stride_vals = Value[]
+        julia_stride_vals = Value[]
         for dim in 1:ndim
             if dim == 1
                 stride_bytes = reinterpret(UInt8, [size_elem_type(1)])
-                push!(stride_vals, encode_ConstantOp!(cb, scalar_size_type, collect(stride_bytes)))
+                push!(julia_stride_vals, encode_ConstantOp!(cb, scalar_size_type, collect(stride_bytes)))
             else
-                push!(stride_vals, encode_MulIOp!(cb, scalar_size_type, stride_vals[end], size_vals[dim-1]))
+                push!(julia_stride_vals, encode_MulIOp!(cb, scalar_size_type, julia_stride_vals[end], julia_size_vals[dim-1]))
             end
         end
     end
 
-    # TensorView type
+    # Reverse sizes and strides for Tile IR row-major order
+    size_vals = reverse(julia_size_vals)
+    stride_vals = reverse(julia_stride_vals)
+
+    # TensorView type (strides also in Tile IR order: last dim = contiguous)
     tv_shape = fill(DYNAMIC_SHAPE, ndim)
     tv_strides = compute_tensor_view_strides(spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
@@ -268,8 +281,8 @@ function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim
     strides = fill(DYNAMIC_SHAPE, ndim)
 
     if array_spec !== nothing && array_spec.contiguous && ndim >= 1
-        # Contiguous column-major array: first stride is statically known to be 1
-        strides[1] = 1
+        # Contiguous column-major array: Julia stride[1]=1 becomes Tile IR stride[ndim]=1
+        strides[ndim] = 1
     end
 
     return strides
@@ -395,8 +408,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
     index_type = tile_type_for_julia!(ctx, index_jl_type)
 
-    # Pad indices if needed
+    # Pad indices if needed, then reverse for Tile IR row-major order
     index_vals = pad_indices(ctx, index_vals, actual_ndim, index_type, index_jl_type)
+    reverse!(index_vals)
 
     # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)

@@ -3,6 +3,16 @@
 # Core types (CGVal, CGCtx) and helper functions for Tile IR code generation.
 
 #=============================================================================
+ Shape convention helpers: Julia (column-major) ↔ Tile IR (row-major)
+=============================================================================#
+
+# Tile IR is natively row-major: shapes are stored with the slowest-varying dimension first.
+# Julia is column-major: shapes are stored with the fastest-varying dimension first.
+# Converting between them is a simple reversal.
+julia_to_tileir(shape::Vector{Int}) = reverse(shape)
+tileir_to_julia(shape::Vector{Int}) = reverse(shape)
+
+#=============================================================================
  IRError: Exception type for IR compilation errors
 =============================================================================#
 
@@ -382,7 +392,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
             throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
         elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
-        shape = collect(Int, shape_param)
+        shape = julia_to_tileir(collect(Int, shape_param))
         return tile_type!(tt, elem_dtype, shape)
     end
 
@@ -398,9 +408,9 @@ function tile_type_and_shape_for_julia!(ctx::CGCtx, @nospecialize(T))
     actual_type = CC.widenconst(T)
     type_id = tile_type_for_julia!(ctx, actual_type)
 
-    # Extract shape from Tile types
+    # Extract shape from Tile types (in Tile IR row-major order)
     shape = if actual_type <: Tile
-        collect(Int, size(actual_type))
+        julia_to_tileir(collect(Int, size(actual_type)))
     else
         Int[]
     end
@@ -491,12 +501,13 @@ end
 """
     extract_tile_shape(T) -> Vector{Int}
 
-Extract shape from a Tile{T, Shape} type, returning Int[] if not a Tile type.
+Extract shape from a Tile{T, Shape} type in Tile IR (row-major) order.
+Returns Int[] if not a Tile type.
 """
 function extract_tile_shape(@nospecialize(T))
     T = CC.widenconst(T)
     if T <: Tile
-        return collect(Int, size(T))
+        return julia_to_tileir(collect(Int, size(T)))
     end
     Int[]
 end

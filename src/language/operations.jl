@@ -928,9 +928,10 @@ end
     _muladd(a, b, acc, Val(ndims(a)), Val(ndims(b)))
 end
 
-# 2D × 2D: direct MmaFOp with type promotion
+# 2D × 2D: MmaFOp with swapped operands for row-major Tile IR
+# Julia (M,K)*(K,N) → TileIR (K,M)*(N,K) → mmaf(b,a,acc) → TileIR (N,M) → Julia (M,N)
 @inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{2})
-    Intrinsics.mma(a, b, acc)
+    Intrinsics.mma(b, a, acc)
 end
 
 # Vec-mat (1D × 2D): reshape (M,) → (M, 1), MmaFOp, acc is already (M, N)
@@ -965,11 +966,11 @@ end
 
 # Batched matmul (≥3D × ≥3D): trailing batch dims with broadcast
 # Julia convention: first two dims are matrix (M,K)/(K,N), trailing dims are batch.
-# MmaFOp expects exactly 3D tiles (B, M, K), so we:
+# With row-major Tile IR shapes, Julia (M,K,B) → TileIR (B,K,M), so:
 #   1. Broadcast batch dims to a common shape
-#   2. Permute trailing batch → leading
-#   3. Flatten multiple batch dims into one for MmaFOp
-#   4. Unflatten + permute back after
+#   2. Flatten batch dims into one via reshape (no permute needed!)
+#   3. MmaFOp with swapped operands: mmaf(b, a, acc)
+#   4. Unflatten batch dims via reshape
 @generated function _muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC},
                             ::Val{NA}, ::Val{NB}) where {T1, T2, T3, SA, SB, SC, NA, NB}
     sa = Tuple(SA.parameters)
@@ -992,14 +993,15 @@ end
         a_bc = broadcast_to(reshape(a, $((M, K, a_batch_padded...))), $((M, K, batch_shape...)))
         b_bc = broadcast_to(reshape(b, $((K, N, b_batch_padded...))), $((K, N, batch_shape...)))
         acc_bc = broadcast_to(acc, $((M, N, batch_shape...)))
-        # Flatten batch dims to one (still trailing), then permute to leading
-        a_3d = permutedims(reshape(a_bc, $((M, K, B_flat))), (3, 1, 2))
-        b_3d = permutedims(reshape(b_bc, $((K, N, B_flat))), (3, 1, 2))
-        acc_3d = permutedims(reshape(acc_bc, $((M, N, B_flat))), (3, 1, 2))
-        # MmaFOp
-        result_3d = Intrinsics.mma(a_3d, b_3d, acc_3d)
-        # Permute back to trailing, unflatten batch dims
-        reshape(permutedims(result_3d, (2, 3, 1)), $((M, N, batch_shape...)))
+        # Flatten batch dims to one — no permute needed since row-major Tile IR
+        # already has batch as the leading (slowest) dimension
+        a_3d = reshape(a_bc, $((M, K, B_flat)))
+        b_3d = reshape(b_bc, $((K, N, B_flat)))
+        acc_3d = reshape(acc_bc, $((M, N, B_flat)))
+        # MmaFOp with swapped operands for row-major convention
+        result_3d = Intrinsics.mma(b_3d, a_3d, acc_3d)
+        # Unflatten batch dims
+        reshape(result_3d, $((M, N, batch_shape...)))
     end
 end
 

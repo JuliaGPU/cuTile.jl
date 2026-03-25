@@ -232,8 +232,9 @@ end
             @check "loop iter_values"
             # The store MUST use a column index derived from loopIdx, not the spinloop result
             # After 1→0 index conversion, the store uses (loopIdx - 1)
+            # With row-major Tile IR, indices are reversed: Julia (row, col) → TileIR [col, row]
             @check "[[IDX:%.+]] = subi %loopIdx"
-            @check "store_view_tko{{.*}}[%{{[^,]+}}, [[IDX]]]"
+            @check "store_view_tko{{.*}}[[[IDX]], %{{[^,]+}}]"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                            Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(1)

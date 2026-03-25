@@ -88,13 +88,13 @@ spec4d = ct.ArraySpec{4}(16, true)
     # TODO: unpack - unpack tiles
 
     @testset "reshape" begin
-        # 2D -> 1D reshape (emits pre-permute for column-major conversion)
+        # 2D -> 1D reshape (direct, no permutes with row-major Tile IR)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
-                @check "permute"   # pre-permute for 2D source
                 @check "reshape"
                 reshaped = reshape(tile, (32,))
                 ct.store(b, pid, reshaped)
@@ -102,29 +102,28 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # 1D -> 2D reshape (emits post-permute for column-major conversion)
+        # 1D -> 2D reshape (direct, no permutes)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (64,))
                 @check "reshape"
-                @check "permute"   # post-permute for 2D result
                 reshaped = reshape(tile, (8, 8))
                 ct.store(b, pid, reshaped)
                 return
             end
         end
 
-        # 3D -> 2D reshape (emits pre-permute and post-permute)
+        # 3D -> 2D reshape (direct, no permutes)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,2,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (2, 4, 8))
-                @check "permute"   # pre-permute for 3D source
                 @check "reshape"
-                @check "permute"   # post-permute for 2D result
                 reshaped = reshape(tile, (2, 32))
                 ct.store(b, pid, reshaped)
                 return
@@ -145,15 +144,14 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # 2D -> 2D reshape (different shape, emits both permutes)
+        # 2D -> 2D reshape (different shape, direct, no permutes)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
-                @check "permute"   # pre-permute
                 @check "reshape"
-                @check "permute"   # post-permute
                 reshaped = reshape(tile, (8, 4))
                 ct.store(a, pid, reshaped)
                 return
@@ -534,9 +532,8 @@ spec4d = ct.ArraySpec{4}(16, true)
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (32, 16, 1))
                 tile_b = ct.load(b, bidx, (16, 32, 4))
-                # batched: broadcast + permute + mma + permute
+                # batched: broadcast + reshape + mma (no permutes with row-major Tile IR)
                 @check "broadcast"
-                @check "permute"
                 @check "mma"
                 result = tile_a * tile_b
                 ct.store(c, bidx, result)
@@ -564,7 +561,6 @@ spec4d = ct.ArraySpec{4}(16, true)
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (16, 8, 2, 4))
                 tile_b = ct.load(b, bidx, (8, 16, 2, 4))
-                @check "permute"
                 @check "mma"
                 result = tile_a * tile_b
                 ct.store(c, bidx, result)
