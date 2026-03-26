@@ -310,12 +310,19 @@ function transform_terminator!(block::Block, token_map::Dict{TokenKey, IRToken},
                                  ifelse_effects::Union{MemoryEffects, Nothing})
     term = block.terminator
     term === nothing && return
+
+    # ConditionOp (WhileOp before-block): extend args with exit tokens so that
+    # the codegen-generated BreakOp carries them.
+    if term isa ConditionOp && loop_effects !== nothing
+        append!(term.args, get_cf_exit_tokens(loop_effects, token_map))
+        return
+    end
+
     effects = if (term isa ContinueOp || term isa BreakOp) && loop_effects !== nothing
         loop_effects
     elseif term isa YieldOp && ifelse_effects !== nothing
         ifelse_effects
     elseif term isa YieldOp && loop_effects !== nothing
-        # WhileOp after-block: YieldOp values become ContinueOp in codegen
         loop_effects
     else
         nothing
@@ -502,9 +509,17 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
         after_token_map[ACQUIRE_TOKEN_KEY] = op.after.args[after_arg_idx]
     end
 
-    # Transform before and after regions
+    # Transform before region (may update body_token_map, e.g., CAS in condition)
     transform_block!(sci, op.before, alias_result, body_token_map, effects_cache,
                       loop_effects, nothing)
+
+    # Propagate before's final token state to after_token_map.
+    # The after block receives values from before's ConditionOp, so it should
+    # see the token state AFTER the before block's transformations (e.g., CAS result).
+    for (key, val) in body_token_map
+        after_token_map[key] = val
+    end
+
     transform_block!(sci, op.after, alias_result, after_token_map, effects_cache,
                       loop_effects, nothing)
 
