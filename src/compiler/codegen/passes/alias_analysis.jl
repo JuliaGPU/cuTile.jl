@@ -1,3 +1,28 @@
+# Alias Analysis Pass
+#
+# Fixed-point alias analysis over StructuredIRCode. Determines which memory
+# operations may access the same underlying data (i.e., which SSA values
+# point into the same allocation).
+#
+# WHY: The token ordering pass needs alias information to decide which memory
+# operations require token dependencies between them. Without alias analysis,
+# all memory ops would be serialized through a single token chain — correct,
+# but overly conservative. With per-alias-set information, independent memory
+# regions (e.g., separate kernel arguments) get independent token chains,
+# enabling more parallelism in the generated Tile IR.
+#
+# HOW: Each pointer-containing kernel argument starts in its own alias set.
+# Alias sets propagate forward through:
+#   - getfield (for TileArray.ptr field access)
+#   - pointer arithmetic (+, -)
+#   - view constructors (make_tensor_view, make_partition_view)
+#   - pointer passthroughs (bitcast, assume_aligned, etc.)
+# Unknown operations conservatively produce ALIAS_UNIVERSE (may alias anything).
+# Fixed-point iteration handles back-edges from loops.
+#
+# OUTPUT: Dict{Any, AliasSet} mapping SSA values and Arguments to their alias
+# sets, consumed by token_order_pass!.
+
 """
     AliasTracker
 

@@ -1,3 +1,6 @@
+# Token map key types for the token ordering pass.
+# Each key identifies a token lane: per-alias-set (LAST_OP / LAST_STORE) or ACQUIRE.
+
 # Token role enum
 @enum TokenRole LAST_OP LAST_STORE
 

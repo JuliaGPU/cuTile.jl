@@ -1,10 +1,34 @@
-# Token ordering pass
+# Token Ordering Pass
 #
-# Transforms a StructuredIRCode by inserting token operations (MakeToken, JoinTokens,
-# TokenResult) and threading per-alias-set tokens through control flow.
-# After this pass, codegen emits what's in the IR — no manual token threading.
+# Transforms a StructuredIRCode by inserting explicit token operations
+# (MakeTokenNode, JoinTokensNode, TokenResultNode) and adding token carries
+# to loop/branch control flow. After this pass, codegen simply emits what
+# the IR says — no manual token threading in control_flow.jl or intrinsics.
 #
-# Mirrors cuTile Python's `token_order_pass` (res/cutile-python/src/cuda/tile/_passes/token_order.py).
+# WHY: Tile IR uses a token-based memory ordering model (similar to LLVM's
+# token type). Every memory operation (load, store, atomic) consumes an input
+# token and produces an output token. The chain of tokens defines the
+# happens-before ordering between memory accesses.
+#
+# HOW: The pass maintains a `token_map: Dict{TokenKey, Any}` mapping each
+# (alias_set, role) pair to its current token SSA value. Two roles exist per
+# alias set:
+#   - LAST_OP:    token from the most recent load or store (RAW/WAR tracking)
+#   - LAST_STORE: token from the most recent store only (WAW tracking)
+# Plus a global ACQUIRE token for acquire-ordered atomics.
+#
+# For loads, the input token comes from LAST_STORE of the same alias set
+# (read-after-write dependency). For stores, the input token joins all
+# LAST_OP tokens of overlapping alias sets (write-after-read + write-after-write).
+# Release-ordered atomics additionally join ALL LAST_OP tokens across all alias
+# sets (memory fence semantics). Acquire-ordered atomics update the global
+# ACQUIRE token.
+#
+# The pass adds token carries to loops (init_values + block args + terminator
+# operands) and token results to IfOp types, then inserts getfield extractions
+# after control flow ops to update the parent scope's token_map.
+#
+# Mirrors cuTile Python's `token_order_pass`.
 
 using Core: SSAValue, Argument, SlotNumber
 
