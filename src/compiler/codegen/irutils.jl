@@ -76,3 +76,29 @@ function update_type!(m::SSAMap, ssa_idx::Int, @nospecialize(new_type))
     m.types[pos] = new_type
     return nothing
 end
+
+"""
+    resolve_call(stmt) -> (resolved_func, operands) or nothing
+
+Extract the resolved function and operands from a `:call` or `:invoke` Expr.
+Shared by alias analysis and token ordering passes.
+"""
+function resolve_call(stmt)
+    stmt isa Expr || return nothing
+    if stmt.head === :call
+        func_ref = stmt.args[1]
+        operands = @view stmt.args[2:end]
+    elseif stmt.head === :invoke
+        func_ref = stmt.args[2]
+        operands = @view stmt.args[3:end]
+    else
+        return nothing
+    end
+    resolved = if func_ref isa GlobalRef
+        try; getfield(func_ref.mod, func_ref.name); catch; nothing; end
+    else
+        func_ref
+    end
+    resolved === nothing && return nothing
+    return (resolved, operands)
+end

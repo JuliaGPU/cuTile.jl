@@ -134,29 +134,12 @@ Analyze a single statement and propagate aliases.
 Handles both `:call` and `:invoke` expression forms.
 """
 function analyze_statement!(tracker::AliasTracker, ssa::SSAValue, stmt)
-    if stmt isa Expr && (stmt.head === :call || stmt.head === :invoke)
-        # Normalize :call and :invoke into (func, operands)
-        #   :call    -> args = [func, operands...]
-        #   :invoke  -> args = [MethodInstance, func, operands...]
-        if stmt.head === :call
-            func = stmt.args[1]
-            operands = @view stmt.args[2:end]
-        else # :invoke
-            func = stmt.args[2]
-            operands = @view stmt.args[3:end]
-        end
+    call = resolve_call(stmt)
+    if call !== nothing
+        resolved_func, operands = call
 
-        # Resolve func to its runtime value for intrinsic matching.
-        # In :invoke, func may already be the function object (not a GlobalRef).
-        resolved_func = if func isa GlobalRef
-            try
-                getfield(func.mod, func.name)
-            catch
-                nothing
-            end
-        else
-            func  # Direct function value (common in :invoke)
-        end
+        # Also need the raw func ref for GlobalRef comparisons
+        func = stmt.head === :call ? stmt.args[1] : stmt.args[2]
 
         # getfield: propagate from parent
         if func === GlobalRef(Core, :getfield) && length(operands) >= 1

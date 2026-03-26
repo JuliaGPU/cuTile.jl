@@ -41,26 +41,6 @@ const EMPTY_MEMORY_EFFECTS = MemoryEffects()
  Resolve and classify IR expressions
 =============================================================================#
 
-function resolve_call(stmt)
-    stmt isa Expr || return nothing
-    if stmt.head === :call
-        func_ref = stmt.args[1]
-        operands = @view stmt.args[2:end]
-    elseif stmt.head === :invoke
-        func_ref = stmt.args[2]
-        operands = @view stmt.args[3:end]
-    else
-        return nothing
-    end
-    resolved = if func_ref isa GlobalRef
-        try; getfield(func_ref.mod, func_ref.name); catch; nothing; end
-    else
-        func_ref
-    end
-    resolved === nothing && return nothing
-    return (resolved, operands)
-end
-
 function classify_memory_op(resolved_func)
     if resolved_func === Intrinsics.load_partition_view ||
        resolved_func === Intrinsics.load_ptr_tko
@@ -137,11 +117,9 @@ compute_cf_memory_effects!(::ControlFlowOp, _, _) = EMPTY_MEMORY_EFFECTS
  Token map (IR-level, SSAValue/BlockArg)
 =============================================================================#
 
-const IRToken = Any
-
-function collect_join_tokens_ir(token_key::TokenKey, token_map::Dict{TokenKey, IRToken},
+function collect_join_tokens_ir(token_key::TokenKey, token_map::Dict{TokenKey, Any},
                                 memory_order=nothing)
-    tokens_to_join = IRToken[token_map[token_key]]
+    tokens_to_join = Any[token_map[token_key]]
     for (other_key, other_tok) in token_map
         should_join = false
         if other_key isa AcquireTokenKey
@@ -165,7 +143,7 @@ function collect_join_tokens_ir(token_key::TokenKey, token_map::Dict{TokenKey, I
 end
 
 function get_input_token_ir!(sci::StructuredIRCode, block::Block, before_ssa::Int,
-                              token_key::TokenKey, token_map::Dict{TokenKey, IRToken},
+                              token_key::TokenKey, token_map::Dict{TokenKey, Any},
                               memory_order=nothing)
     haskey(token_map, token_key) || return token_map[ACQUIRE_TOKEN_KEY]
     tokens = collect_join_tokens_ir(token_key, token_map, memory_order)
@@ -207,13 +185,13 @@ end
 =============================================================================#
 
 """
-    get_cf_exit_tokens(effects, token_map) -> Vector{IRToken}
+    get_cf_exit_tokens(effects, token_map) -> Vector{Any}
 
 Collect current tokens for each alias set with memory effects.
 These are appended to ContinueOp/BreakOp/YieldOp when leaving a CF region.
 """
-function get_cf_exit_tokens(effects::MemoryEffects, token_map::Dict{TokenKey, IRToken})
-    tokens = IRToken[]
+function get_cf_exit_tokens(effects::MemoryEffects, token_map::Dict{TokenKey, Any})
+    tokens = Any[]
     for (alias_set, effect) in effects.effects
         effect == MEM_NONE && continue
         if effect == MEM_LOAD
@@ -243,7 +221,7 @@ function token_order_pass!(sci::StructuredIRCode, alias_result::Dict{Any, AliasS
     root_token = SSAValue(root_ssa)
 
     # Initialize: all alias sets start at root token
-    token_map = Dict{TokenKey, IRToken}()
+    token_map = Dict{TokenKey, Any}()
     for alias_set in Set(values(alias_result))
         token_map[last_op_key(alias_set)] = root_token
         token_map[last_store_key(alias_set)] = root_token
@@ -260,7 +238,7 @@ end
 
 function transform_block!(sci::StructuredIRCode, block::Block,
                            alias_result::Dict{Any, AliasSet},
-                           token_map::Dict{TokenKey, IRToken},
+                           token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            loop_effects::Union{MemoryEffects, Nothing},
                            ifelse_effects::Union{MemoryEffects, Nothing})
@@ -285,7 +263,7 @@ end
 
 function transform_statement!(sci::StructuredIRCode, block::Block, ssa_idx::Int, stmt,
                                 alias_result::Dict{Any, AliasSet},
-                                token_map::Dict{TokenKey, IRToken})
+                                token_map::Dict{TokenKey, Any})
     call = resolve_call(stmt)
     call === nothing && return
     resolved_func, operands = call
@@ -333,7 +311,7 @@ function transform_statement!(sci::StructuredIRCode, block::Block, ssa_idx::Int,
     end
 end
 
-function transform_terminator!(block::Block, token_map::Dict{TokenKey, IRToken},
+function transform_terminator!(block::Block, token_map::Dict{TokenKey, Any},
                                  loop_effects::Union{MemoryEffects, Nothing},
                                  ifelse_effects::Union{MemoryEffects, Nothing})
     term = block.terminator
@@ -381,17 +359,61 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
 end
 
 """
-    transform_loop!(sci, parent_block, ssa_idx, op, body, alias_result, token_map, effects_cache)
+    insert_token_result_getfields!(sci, parent_block, ssa_idx, n_user, effects, token_map)
 
-Add per-alias-set token carries to a loop. For each alias set with memory effects
-in the body, creates init_values, BlockArgs, and terminator exit tokens.
-Then recurses into the body with the body-scoped token_map.
-After the loop, inserts getfield extractions for the token results.
+Insert getfield extractions after a loop/if for each per-alias token result.
+Updates `token_map` with SSAValues pointing to the extracted tokens.
+Also updates the SSAMap type to include TokenType parameters.
+"""
+function insert_token_result_getfields!(sci::StructuredIRCode, parent_block::Block,
+                                         ssa_idx::Int, block_args, n_user::Int,
+                                         effects::MemoryEffects, token_map::Dict{TokenKey, Any})
+    n_total = length(block_args)
+    n_total > n_user || return
+
+    # Update result type to include all carries
+    all_types = Type[is_token_type(arg.type) ? TokenType : arg.type for arg in block_args]
+    update_type!(parent_block.body, ssa_idx, isempty(all_types) ? Nothing : Tuple{all_types...})
+
+    last_inserted = ssa_idx
+    carry_idx = n_user
+    for (alias_set, effect) in effects.effects
+        effect == MEM_NONE && continue
+        if effect >= MEM_LOAD
+            carry_idx += 1
+            gf_ssa = new_ssa_idx!(sci)
+            insert_after!(parent_block.body, last_inserted, gf_ssa,
+                           Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx), TOKEN_TYPE)
+            token_map[last_op_key(alias_set)] = SSAValue(gf_ssa)
+            last_inserted = gf_ssa
+        end
+        if effect == MEM_STORE
+            carry_idx += 1
+            gf_ssa = new_ssa_idx!(sci)
+            insert_after!(parent_block.body, last_inserted, gf_ssa,
+                           Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx), TOKEN_TYPE)
+            token_map[last_store_key(alias_set)] = SSAValue(gf_ssa)
+            last_inserted = gf_ssa
+        end
+    end
+    if effects.has_acquire
+        carry_idx += 1
+        gf_ssa = new_ssa_idx!(sci)
+        insert_after!(parent_block.body, last_inserted, gf_ssa,
+                       Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx), TOKEN_TYPE)
+        token_map[ACQUIRE_TOKEN_KEY] = SSAValue(gf_ssa)
+    end
+end
+
+"""
+    transform_loop!(...)
+
+Add per-alias-set token carries to a loop.
 """
 function transform_loop!(sci::StructuredIRCode, parent_block::Block,
                            ssa_idx::Int, op::Union{ForOp, LoopOp}, body::Block,
                            alias_result::Dict{Any, AliasSet},
-                           token_map::Dict{TokenKey, IRToken},
+                           token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects})
     body_effects = get(effects_cache, objectid(body), EMPTY_MEMORY_EFFECTS)
 
@@ -432,49 +454,8 @@ function transform_loop!(sci::StructuredIRCode, parent_block::Block,
     transform_block!(sci, body, alias_result, body_token_map, effects_cache,
                       body_effects, nothing)
 
-    # After the loop: insert getfield extractions for token results.
-    # Update the loop's type to include ALL carries (user + token) so that
-    # codegen's getfield extraction works correctly.
-    if n_total_carries > n_user_carries
-        # Build result type from block args (authoritative source of all carries)
-        all_types = Type[is_token_type(arg.type) ? TokenType : arg.type
-                         for arg in body.args]
-        new_type = isempty(all_types) ? Nothing : Tuple{all_types...}
-        update_type!(parent_block.body, ssa_idx, new_type)
-
-
-        # Insert getfield SSAs after the loop for each token result
-        last_inserted = ssa_idx
-        carry_idx = n_user_carries
-        for (alias_set, effect) in body_effects.effects
-            effect == MEM_NONE && continue
-            if effect >= MEM_LOAD
-                carry_idx += 1
-                gf_ssa = new_ssa_idx!(sci)
-                gf_expr = Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx)
-                insert_after!(parent_block.body, last_inserted, gf_ssa, gf_expr, TOKEN_TYPE)
-                result_token_map[last_op_key(alias_set)] = SSAValue(gf_ssa)
-                last_inserted = gf_ssa
-            end
-            if effect == MEM_STORE
-                carry_idx += 1
-                gf_ssa = new_ssa_idx!(sci)
-                gf_expr = Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx)
-                insert_after!(parent_block.body, last_inserted, gf_ssa, gf_expr, TOKEN_TYPE)
-                result_token_map[last_store_key(alias_set)] = SSAValue(gf_ssa)
-                last_inserted = gf_ssa
-            end
-        end
-        if body_effects.has_acquire
-            carry_idx += 1
-            gf_ssa = new_ssa_idx!(sci)
-            gf_expr = Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx)
-            insert_after!(parent_block.body, last_inserted, gf_ssa, gf_expr, TOKEN_TYPE)
-            result_token_map[ACQUIRE_TOKEN_KEY] = SSAValue(gf_ssa)
-        end
-    end
-
-    # Update parent's token_map with loop result tokens
+    insert_token_result_getfields!(sci, parent_block, ssa_idx, body.args,
+                                    n_user_carries, body_effects, result_token_map)
     merge!(token_map, result_token_map)
 end
 
@@ -499,13 +480,13 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
         if effect >= MEM_LOAD
             push!(op.init_values, token_map[last_op_key(alias_set)])
             before_arg = new_block_arg!(op.before, sci, TOKEN_TYPE)
-            after_arg = new_block_arg!(op.after, sci, TOKEN_TYPE)
+            new_block_arg!(op.after, sci, TOKEN_TYPE)
             body_token_map[last_op_key(alias_set)] = before_arg
         end
         if effect == MEM_STORE
             push!(op.init_values, token_map[last_store_key(alias_set)])
             before_arg = new_block_arg!(op.before, sci, TOKEN_TYPE)
-            after_arg = new_block_arg!(op.after, sci, TOKEN_TYPE)
+            new_block_arg!(op.after, sci, TOKEN_TYPE)
             body_token_map[last_store_key(alias_set)] = before_arg
         end
     end
@@ -551,45 +532,8 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
     transform_block!(sci, op.after, alias_result, after_token_map, effects_cache,
                       loop_effects, nothing)
 
-    # Insert getfield extractions for token results
-    if n_total_carries > n_user_carries
-        # Build result type from before block args (authoritative source of all carries)
-        all_types = Type[is_token_type(arg.type) ? TokenType : arg.type
-                         for arg in op.before.args]
-        new_type = isempty(all_types) ? Nothing : Tuple{all_types...}
-        update_type!(parent_block.body, ssa_idx, new_type)
-
-
-        last_inserted = ssa_idx
-        carry_idx = n_user_carries
-        for (alias_set, effect) in loop_effects.effects
-            effect == MEM_NONE && continue
-            if effect >= MEM_LOAD
-                carry_idx += 1
-                gf_ssa = new_ssa_idx!(sci)
-                gf_expr = Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx)
-                insert_after!(parent_block.body, last_inserted, gf_ssa, gf_expr, TOKEN_TYPE)
-                result_token_map[last_op_key(alias_set)] = SSAValue(gf_ssa)
-                last_inserted = gf_ssa
-            end
-            if effect == MEM_STORE
-                carry_idx += 1
-                gf_ssa = new_ssa_idx!(sci)
-                gf_expr = Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx)
-                insert_after!(parent_block.body, last_inserted, gf_ssa, gf_expr, TOKEN_TYPE)
-                result_token_map[last_store_key(alias_set)] = SSAValue(gf_ssa)
-                last_inserted = gf_ssa
-            end
-        end
-        if loop_effects.has_acquire
-            carry_idx += 1
-            gf_ssa = new_ssa_idx!(sci)
-            gf_expr = Expr(:call, GlobalRef(Core, :getfield), SSAValue(ssa_idx), carry_idx)
-            insert_after!(parent_block.body, last_inserted, gf_ssa, gf_expr, TOKEN_TYPE)
-            result_token_map[ACQUIRE_TOKEN_KEY] = SSAValue(gf_ssa)
-        end
-    end
-
+    insert_token_result_getfields!(sci, parent_block, ssa_idx, op.before.args,
+                                    n_user_carries, loop_effects, result_token_map)
     merge!(token_map, result_token_map)
 end
 
@@ -622,7 +566,6 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
 
     if n_token_results > 0
         # Update IfOp type to include token results
-        old_type = get(parent_block.body, ssa_idx, nothing)
         old_type = get(parent_block.body, ssa_idx, nothing)
         if old_type !== nothing
             user_types = if old_type.typ === Nothing
