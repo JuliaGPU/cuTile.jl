@@ -103,10 +103,6 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080:
 | Batch Matrix Multiply | 30.4 TFLOPS | 40.0 TFLOPS | -24% |
 | FFT (3-stage Cooley-Tukey) | 620 μs | 486 μs | -28% |
 
-Memory-bound kernels (vadd, transpose) match Python. Compute-intensive kernels
-(matmul, batch matmul, layernorm, FFT) are slower due to conservative token threading
-in the generated Tile IR, which serializes loads that could otherwise be pipelined.
-
 
 ## Supported Operations
 
