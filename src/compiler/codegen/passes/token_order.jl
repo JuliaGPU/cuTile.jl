@@ -175,7 +175,32 @@ function get_input_token_ir!(sci::StructuredIRCode, block::Block, before_ssa::In
     return SSAValue(join_ssa)
 end
 
-has_release_order(memory_order) = false
+function has_release_order(memory_order)
+    memory_order === nothing && return false
+    # MemoryOrder enum: Release=3, AcqRel=4
+    return memory_order === MemoryOrder.Release || memory_order === MemoryOrder.AcqRel
+end
+
+"""
+    extract_memory_order(resolved_func, operands) -> Union{MemoryOrder.T, Nothing}
+
+Extract the compile-time memory_order from an atomic intrinsic's operands.
+"""
+function extract_memory_order(resolved_func, operands)
+    is_atomic_intrinsic(resolved_func) || return nothing
+    # CAS: (ptr, expected, desired, mask, memory_order, memory_scope)
+    # RMW: (ptr, val, mask, memory_order, memory_scope)
+    mo_idx = resolved_func === Intrinsics.atomic_cas ? 5 : 4
+    mo_idx > length(operands) && return nothing
+    mo_arg = operands[mo_idx]
+    # The memory_order is typically a compile-time constant (QuoteNode or literal)
+    if mo_arg isa QuoteNode
+        return mo_arg.value
+    elseif mo_arg isa MemoryOrder.T
+        return mo_arg
+    end
+    return nothing
+end
 
 #=============================================================================
  Control flow exit tokens (matching Python's _get_cf_exit_tokens)
@@ -287,8 +312,11 @@ function transform_statement!(sci::StructuredIRCode, block::Block, ssa_idx::Int,
         token_map[lop_key] = SSAValue(join_ssa)
 
     elseif mem_effect == MEM_STORE
+        # For release-ordered atomics, join with ALL LAST_OP tokens (memory fence)
+        memory_order = extract_memory_order(resolved_func, operands)
         input_token = get_input_token_ir!(sci, block, ssa_idx,
-                                           last_op_key(alias_set), token_map)
+                                           last_op_key(alias_set), token_map,
+                                           memory_order)
         push!(stmt.args, input_token)
 
         result_ssa = new_ssa_idx!(sci)
