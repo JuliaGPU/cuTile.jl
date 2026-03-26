@@ -93,9 +93,12 @@ function compute_block_memory_effects!(block::Block, alias_result::Dict{Any, Ali
             mem_effect == MEM_NONE && continue
             alias_set = get_alias_set_for_operand(alias_result, first(operands))
             effects.effects[alias_set] = max(get(effects.effects, alias_set, MEM_NONE), mem_effect)
-            # Track acquire ordering for atomics
+            # Track acquire ordering for acquire/acq_rel atomics only
             if is_atomic_intrinsic(resolved_func)
-                effects = MemoryEffects(effects.effects, true)
+                mo = extract_memory_order(resolved_func, operands)
+                if has_acquire_order(mo)
+                    effects = MemoryEffects(effects.effects, true)
+                end
             end
         end
     end
@@ -129,8 +132,8 @@ function collect_join_tokens_ir(token_key::TokenKey, token_map::Dict{TokenKey, A
                 should_join = other_key.role == LAST_OP
             end
             if other_key.role == token_key.role
-                alias_overlap = !(other_key.alias_set isa AliasUniverse) &&
-                    !(token_key.alias_set isa AliasUniverse) &&
+                alias_overlap = (other_key.alias_set isa AliasUniverse) ||
+                    (token_key.alias_set isa AliasUniverse) ||
                     !isempty(intersect(other_key.alias_set, token_key.alias_set))
                 should_join = should_join || alias_overlap
             end
@@ -155,8 +158,12 @@ end
 
 function has_release_order(memory_order)
     memory_order === nothing && return false
-    # MemoryOrder enum: Release=3, AcqRel=4
     return memory_order === MemoryOrder.Release || memory_order === MemoryOrder.AcqRel
+end
+
+function has_acquire_order(memory_order)
+    memory_order === nothing && return false
+    return memory_order === MemoryOrder.Acquire || memory_order === MemoryOrder.AcqRel
 end
 
 """
@@ -304,8 +311,8 @@ function transform_statement!(sci::StructuredIRCode, block::Block, ssa_idx::Int,
         token_map[last_op_key(alias_set)] = result_token
         token_map[last_store_key(alias_set)] = result_token
 
-        # Atomics with acquire semantics update the ACQUIRE token
-        if is_atomic_intrinsic(resolved_func)
+        # Only acquire/acq_rel atomics update the ACQUIRE token
+        if is_atomic_intrinsic(resolved_func) && has_acquire_order(memory_order)
             token_map[ACQUIRE_TOKEN_KEY] = result_token
         end
     end
