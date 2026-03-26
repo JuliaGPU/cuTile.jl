@@ -141,17 +141,16 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         create_tensor_views!(ctx, arg_idx, argtype, Int[])
     end
 
+    # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
+    # ReturnNode terminators to YieldOp, which the token pass then extends.
+    hoist_returns!(ctx.sci.entry)
+
     # Run alias analysis and token ordering pass on the structured IR.
-    # This inserts MakeTokenNode, JoinTokensNode, TokenResultNode into the IR
-    # and threads tokens through control flow (loop carries, branch yields).
     alias_result = alias_analysis_pass!(sci)
     token_order_pass!(sci, alias_result)
 
     # Cache the token bytecode type for codegen
     ctx.token_type = Token(tt)
-
-    # Hoist early returns out of IfOp regions (tileiras rejects ReturnOp inside IfOp)
-    hoist_returns!(ctx.sci.entry)
 
     # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, ctx.sci.entry)
