@@ -35,6 +35,59 @@ const AliasSet = Union{Set{Any}, AliasUniverse}
 
 
 #=============================================================================
+ Token IR Node Types (inserted by token_order_pass!)
+=============================================================================#
+
+"""
+    TokenType
+
+Sentinel type used in StructuredIRCode to mark SSA values and BlockArgs
+that represent memory ordering tokens. Not a runtime type.
+"""
+struct TokenType end
+const TOKEN_TYPE = TokenType()
+
+"""
+    MakeTokenNode
+
+IR statement node: creates the root memory ordering token at kernel entry.
+Inserted by `token_order_pass!`. Emitted as `encode_MakeTokenOp!` during codegen.
+"""
+struct MakeTokenNode end
+
+"""
+    JoinTokensNode
+
+IR statement node: merges multiple token values into one.
+Inserted by `token_order_pass!`. Emitted as `encode_JoinTokensOp!` during codegen.
+"""
+struct JoinTokensNode
+    tokens::Vector{Any}  # SSAValue or BlockArg references to token values
+end
+
+"""
+    TokenResultNode
+
+IR statement node: represents the result token produced by a memory operation.
+The memory op at `mem_op_ssa` produces both a data value and a token; this node
+extracts the token. Codegen resolves this via `ctx.result_tokens[mem_op_ssa]`.
+"""
+struct TokenResultNode
+    mem_op_ssa::Int  # SSA index of the memory operation that produced this token
+end
+
+# Note: IfTokenResultNode was considered but removed in favor of conservative
+# IfOp handling (no token carries through branches). Can be added later for
+# more precise token tracking.
+
+"""
+    is_token_type(typ) -> Bool
+
+Check whether a type annotation in the structured IR represents a token.
+"""
+is_token_type(@nospecialize(typ)) = typ isa TokenType
+
+#=============================================================================
  IRError: Exception type for IR compilation errors
 =============================================================================#
 
@@ -197,11 +250,20 @@ mutable struct CGCtx
     tt::TypeTable
     sci::StructuredIRCode
 
-    # Memory ordering token (kept for backward compatibility)
-    tokens::Dict{UInt64, Value}
-    global_token::Union{Value, Nothing}
-    token::Union{Value, Nothing}
+    # Token bytecode type (cached for encoding token operations)
     token_type::Union{TypeId, Nothing}
+
+    # Current token for control flow threading (loops, branches).
+    # Set by MakeTokenNode emission, updated by control flow emitters.
+    token::Union{Value, Nothing}
+
+    # Result tokens from memory ops: mem_op SSA index → bytecode Value
+    # Populated during codegen when emitting memory ops with token args.
+    # Read by TokenResultNode emission.
+    result_tokens::Dict{Int, Value}
+
+    # Current SSA index being emitted (set by emit_statement!)
+    current_ssa_idx::Int
 
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
@@ -211,14 +273,9 @@ mutable struct CGCtx
 
     # Compilation cache (needed for combiner compilation)
     cache::CacheView
-
-    # Alias-aware token system
-    alias_result::Dict{Any, AliasSet}      # From alias analysis
-    token_map::Dict{Any, Value}       # TokenKey -> current token Value
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
-                 token::Union{Value, Nothing} = nothing,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
                  sm_arch::Union{VersionNumber, Nothing} = nothing,
@@ -234,15 +291,13 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         cb,
         tt,
         sci,
-        Dict{UInt64, Value}(),           # tokens (old system)
-        nothing,                         # global_token (old system)
-        token,                           # token (old system)
         token_type,
+        nothing,                         # token
+        Dict{Int, Value}(),              # result_tokens
+        0,                               # current_ssa_idx
         type_cache,
         sm_arch,
         cache,
-        Dict{Any, AliasSet}(),           # alias_result
-        Dict{Any, Value}(),         # token_map
     )
 end
 

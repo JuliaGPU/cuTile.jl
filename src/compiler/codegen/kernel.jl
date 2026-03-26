@@ -141,30 +141,14 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         create_tensor_views!(ctx, arg_idx, argtype, Int[])
     end
 
-    # Run alias analysis FIRST
+    # Run alias analysis and token ordering pass on the structured IR.
+    # This inserts MakeTokenNode, JoinTokensNode, TokenResultNode into the IR
+    # and threads tokens through control flow (loop carries, branch yields).
     alias_result = alias_analysis_pass!(sci)
-    ctx.alias_result = alias_result
+    token_order_pass!(sci, alias_result)
 
-    # Create memory ordering token
-    token_type = Token(tt)
-    ctx.token_type = token_type
-    root_token = encode_MakeTokenOp!(cb, token_type)
-
-    ctx.global_token = root_token
-    ctx.token = root_token
-
-    # Initialize token map with root token for all alias sets
-    # Default: all tokens start at root
-    ctx.token_map = Dict{TokenKey, Value}()
-
-    unique_alias_sets = Set(values(alias_result))
-    for alias_set in unique_alias_sets
-        ctx.token_map[last_op_key(alias_set)] = root_token
-        ctx.token_map[last_store_key(alias_set)] = root_token
-    end
-
-    # ACQUIRE token also starts at root
-    ctx.token_map[ACQUIRE_TOKEN_KEY] = root_token
+    # Cache the token bytecode type for codegen
+    ctx.token_type = Token(tt)
 
     # Hoist early returns out of IfOp regions (tileiras rejects ReturnOp inside IfOp)
     hoist_returns!(ctx.sci.entry)
@@ -334,7 +318,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
 
     # 3. Create sub-context
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
-                      ctx.token, ctx.token_type,
+                      ctx.token_type,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
 

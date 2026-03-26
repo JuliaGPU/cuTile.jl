@@ -4,11 +4,6 @@
     result_count(T) -> Int
 
 Compute the number of results from a Block.types entry.
-Block.types contains Julia types:
-- For Statement: Julia type → 1 result
-- For ControlFlowOp with 0 results: Nothing → 0 results
-- For ControlFlowOp with 1 result: Julia type → 1 result
-- For ControlFlowOp with N results: Tuple{T1, T2, ...} → N results
 """
 function result_count(@nospecialize(T))
     T === Nothing && return 0
@@ -20,12 +15,8 @@ end
     emit_block!(ctx, block::Block)
 
 Emit bytecode for a structured IR block.
-All SSA values use original Julia SSA indices (no local renumbering).
-Values are stored in ctx.values by their original index.
 """
 function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
-    # Emit body items (interleaved expressions and control flow ops)
-    # SSAVector iteration yields (ssa_idx, entry) where entry has .stmt and .typ
     for (ssa_idx, entry) in block.body
         if entry.stmt isa ControlFlowOp
             n_results = result_count(entry.typ)
@@ -35,20 +26,11 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
         end
     end
 
-    # Emit terminator (unless skipped)
     if !skip_terminator && block.terminator !== nothing
         emit_terminator!(ctx, block.terminator)
     end
 end
 
-"""
-    emit_control_flow_op!(ctx, op::ControlFlowOp, result_type, n_results, original_idx)
-
-Emit bytecode for a structured control flow operation.
-Uses multiple dispatch on the concrete ControlFlowOp type.
-Results are stored at indices assigned AFTER nested regions (DFS order).
-original_idx is the original Julia SSA index for cross-block references.
-"""
 emit_control_flow_op!(ctx::CGCtx, op::IfOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
     emit_if_op!(ctx, op, result_type, n_results, original_idx)
 emit_control_flow_op!(ctx::CGCtx, op::ForOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
@@ -58,44 +40,40 @@ emit_control_flow_op!(ctx::CGCtx, op::WhileOp, @nospecialize(result_type), n_res
 emit_control_flow_op!(ctx::CGCtx, op::LoopOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
     emit_loop_op!(ctx, op, result_type, n_results, original_idx)
 
+#=============================================================================
+ Control flow emitters
+ Token threading through control flow is still manual (conservative approach).
+ The token_order_pass handles straight-line code; control flow uses ctx.token.
+=============================================================================#
+
 function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
     then_blk = op.then_region
     else_blk = op.else_region
 
-    # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
 
-    # Determine result types from parent_result_type
+    # User result types
     result_types = TypeId[]
-    julia_result_types = Type[]
     if parent_result_type === Nothing
         # No results
     elseif parent_result_type <: Tuple
         for T in parent_result_type.parameters
             push!(result_types, tile_type_for_julia!(ctx, T))
-            push!(julia_result_types, T)
         end
     else
         push!(result_types, tile_type_for_julia!(ctx, parent_result_type))
-        push!(julia_result_types, parent_result_type)
     end
     n_user_results = length(result_types)
-    # Add token type as additional result (for memory ordering)
+    # Add token as additional result
     push!(result_types, ctx.token_type)
 
-    # Save token before branches
     token_before = ctx.token
 
-    # Save token_map before branches
-    token_map_before = copy(ctx.token_map)
-
-    # Emit IfOp with callback-based region building
     then_body = function(_)
         saved_block_args = copy(ctx.block_args)
-        ctx.token = token_before  # Reset to pre-branch token
-        ctx.token_map = copy(token_map_before)  # Reset token_map too
+        ctx.token = token_before
         emit_block!(ctx, then_blk)
         if then_blk.terminator === nothing
             encode_YieldOp!(ctx.cb, [ctx.token])
@@ -105,8 +83,7 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
     end
     else_body = function(_)
         saved_block_args = copy(ctx.block_args)
-        ctx.token = token_before  # Reset to pre-branch token
-        ctx.token_map = copy(token_map_before)  # Reset token_map too
+        ctx.token = token_before
         emit_block!(ctx, else_blk)
         if else_blk.terminator === nothing
             encode_YieldOp!(ctx.cb, [ctx.token])
@@ -116,25 +93,14 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
-    # Last result is the merged token from both branches
     ctx.token = results[end]
-
-    # Merge token_map from both branches
-    # Conservatively reset to token_before for all keys
-    for key in keys(ctx.token_map)
-        ctx.token_map[key] = results[end]
-    end
-
-    # Store results at IfOp's SSA index (may be empty for void-returning ifs)
     ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
 end
 
 function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
-    tt = ctx.tt
     body_blk = op.body
 
-    # Get bounds values
     lower_tv = emit_value!(ctx, op.lower)
     upper_tv = emit_value!(ctx, op.upper)
     step_tv = emit_value!(ctx, op.step)
@@ -142,62 +108,40 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
 
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         throw(IRError("Cannot resolve ForOp bounds"))
-
-    # Assert all bounds have the same type
     lower_tv.jltype === upper_tv.jltype === step_tv.jltype ||
-        throw(IRError("ForOp bounds must all have the same type: lower=$(lower_tv.jltype), upper=$(upper_tv.jltype), step=$(step_tv.jltype)"))
+        throw(IRError("ForOp bounds must all have the same type"))
         iv_jl_type = lower_tv.jltype
         iv_type = tile_type_for_julia!(ctx, iv_jl_type)
 
-    # Get init values (init_values are loop-carried values)
+    # Init values + token
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve ForOp init value"))
         push!(init_values, tv.v)
     end
-    # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Number of carries (init_values) - these are the loop results
     n_carries = length(op.init_values)
 
-    # Determine result types from carries (body.args)
     result_types = TypeId[]
     for i in 1:n_carries
         body_arg = body_blk.args[i]
-        type_id = tile_type_for_julia!(ctx, body_arg.type)
-        push!(result_types, type_id)
+        push!(result_types, tile_type_for_julia!(ctx, body_arg.type))
     end
-    # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
-    # Number of user result types (excluding token)
-    n_user_results = n_carries
-
-    # Save token_map before loop
-    token_map_before = copy(ctx.token_map)
-
-    # Emit ForOp with callback-based region building
     body_builder = function(block_args)
         saved_block_args = copy(ctx.block_args)
 
-        # Tile IR block args layout: [iv, carries..., token]
-        # Julia IR body.args layout: [carries...]
-
-        # Map the induction variable
         iv_tv = CGVal(block_args[1], iv_type, iv_jl_type)
         ctx[iv_arg] = iv_tv
 
-        # Map carried values (body.args)
         for i in 1:n_carries
             body_arg = body_blk.args[i]
             shape = RowMajorShape(extract_tile_shape(body_arg.type))
-            tv = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
-            ctx[body_arg] = tv
+            ctx[body_arg] = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
         end
-
-        # Set token from last block arg
         ctx.token = block_args[end]
 
         emit_block!(ctx, body_blk)
@@ -207,71 +151,43 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     end
     results = encode_ForOp!(body_builder, cb, result_types, iv_type, lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
-    ctx.token = ctx.global_token
-
-    for key in keys(token_map_before)
-        ctx.token_map[key] = ctx.global_token
-    end
-
-    # Store results at the loop's SSA index (may be empty for void-returning loops)
-    ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
+    ctx.token = results[end]
+    ctx.values[ssa_idx] = CGVal(results[1:n_carries], parent_result_type)
 end
 
 function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
     body_blk = op.body
 
-    # Get init values (init_values are loop-carried values)
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve LoopOp init value"))
         push!(init_values, tv.v)
     end
-    # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Number of carries (init_values) - these are the loop results
     n_carries = length(op.init_values)
 
-    # Determine result types from carries (body.args)
     result_types = TypeId[]
     for i in 1:n_carries
         body_arg = body_blk.args[i]
-        type_id = tile_type_for_julia!(ctx, body_arg.type)
-        push!(result_types, type_id)
+        push!(result_types, tile_type_for_julia!(ctx, body_arg.type))
     end
-    # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
-    # Number of user result types (excluding token)
-    n_user_results = n_carries
-
-    # Save token_map before loop
-    token_map_before = copy(ctx.token_map)
-
-    # Emit LoopOp with callback-based region building
     body_builder = function(block_args)
         saved_block_args = copy(ctx.block_args)
 
-        # Tile IR block args layout: [carries..., token]
-        # Julia IR body.args layout: [carries...]
-
-        # Map carried values (body.args)
         for i in 1:n_carries
             body_arg = body_blk.args[i]
             shape = RowMajorShape(extract_tile_shape(body_arg.type))
             ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
         end
-
-        # Set token from last block arg
         ctx.token = block_args[end]
 
         emit_block!(ctx, body_blk)
 
-        # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
-        # in all branches), the if is NOT a terminator. We need an explicit terminator
-        # after the if. Add an unreachable ContinueOp as fallback terminator.
         if body_blk.terminator === nothing
             fallback_operands = copy(block_args)
             fallback_operands[end] = ctx.token
@@ -283,14 +199,8 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
-    ctx.token = ctx.global_token
-
-    for key in keys(token_map_before)
-        ctx.token_map[key] = ctx.global_token
-    end
-
-    # Store results at the loop's SSA index (may be empty for void-returning loops)
-    ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
+    ctx.token = results[end]
+    ctx.values[ssa_idx] = CGVal(results[1:n_carries], parent_result_type)
 end
 
 function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
@@ -298,75 +208,46 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     before_blk = op.before
     after_blk = op.after
 
-    # Get init values (init_values are loop-carried values)
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve WhileOp init value: $init_val"))
         push!(init_values, tv.v)
     end
-    # Add token as additional init value (for memory ordering)
     push!(init_values, ctx.token)
 
-    # Number of carries (init_values) - these are the loop results
     n_carries = length(op.init_values)
 
-    # Determine result types from carries (before.args)
     result_types = TypeId[]
     for i in 1:n_carries
         before_arg = before_blk.args[i]
-        type_id = tile_type_for_julia!(ctx, before_arg.type)
-        push!(result_types, type_id)
+        push!(result_types, tile_type_for_julia!(ctx, before_arg.type))
     end
-    # Add token type as additional result (for memory ordering)
     push!(result_types, ctx.token_type)
 
-    # Number of user result types (excluding token)
-    n_user_results = n_carries
-
-    # Save token_map before loop
-    token_map_before = copy(ctx.token_map)
-
-    # Emit WhileOp as cuda_tile.loop with conditional break pattern
-    # MLIR structure: before { stmts; condition(cond) args } do { stmts; yield vals }
-    # Emitted as: loop { before_stmts; if(!cond) { break } else { yield }; after_stmts; continue }
-    # This structure keeps the "after" statements at LoopOp body level, avoiding
-    # nested region issues when "after" contains loops.
     body_builder = function(block_args)
         saved_block_args = copy(ctx.block_args)
 
-        # Tile IR block args layout: [carries..., token]
-        # Julia IR before.args layout: [carries...]
-
-        # Map carried values (before.args)
         for i in 1:n_carries
             before_arg = before_blk.args[i]
             shape = RowMajorShape(extract_tile_shape(before_arg.type))
             ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
         end
-
-        # Set token from last block arg
         ctx.token = block_args[end]
 
-        # Emit "before" region
         emit_block!(ctx, before_blk)
 
-        # Get condition from ConditionOp terminator
         cond_op = before_blk.terminator
         cond_op isa ConditionOp || throw(IRError("WhileOp before region must end with ConditionOp"))
 
         cond_tv = emit_value!(ctx, cond_op.condition)
-        (cond_tv === nothing || cond_tv.v === nothing) && throw(IRError("Cannot resolve WhileOp condition: $(cond_op.condition)"))
+        (cond_tv === nothing || cond_tv.v === nothing) && throw(IRError("Cannot resolve WhileOp condition"))
 
-        # Emit conditional break: if (cond) { yield } else { break }
-        # This keeps nested loops in "after" at LoopOp body level
         then_body = function(_)
-            # Just yield (empty) - control continues to after_stmts
             encode_YieldOp!(ctx.cb, Value[])
         end
 
         else_body = function(_)
-            # Break with ConditionOp args (become loop results)
             break_operands = Value[]
             for arg in cond_op.args
                 tv = emit_value!(ctx, arg)
@@ -381,13 +262,9 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
             encode_BreakOp!(ctx.cb, break_operands)
         end
 
-        # Emit IfOp with NO results: if (cond) continue flow, else break
-        if_result_types = TypeId[]
-        encode_IfOp!(then_body, else_body, cb, if_result_types, cond_tv.v)
+        encode_IfOp!(then_body, else_body, cb, TypeId[], cond_tv.v)
 
-        # Now emit "after" region at LoopOp body level (not inside IfOp!)
-        # Map "after" region block args - carries from ConditionOp.args
-        for i in 1:n_carries
+        for i in 1:length(after_blk.args)
             after_arg = after_blk.args[i]
             if i <= length(cond_op.args)
                 tv = emit_value!(ctx, cond_op.args[i])
@@ -400,10 +277,8 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
             end
         end
 
-        # Emit "after" region body (skip terminator - we emit ContinueOp instead)
         emit_block!(ctx, after_blk; skip_terminator=true)
 
-        # Emit ContinueOp with yield values from after region's YieldOp
         continue_operands = Value[]
         if after_blk.terminator isa YieldOp
             for val in after_blk.terminator.values
@@ -419,91 +294,57 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
-    ctx.token = ctx.global_token
-
-    for key in keys(token_map_before)
-        ctx.token_map[key] = ctx.global_token
-    end
-
-    # Store results at the loop's SSA index (may be empty for void-returning loops)
-    ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
+    ctx.token = results[end]
+    ctx.values[ssa_idx] = CGVal(results[1:n_carries], parent_result_type)
 end
 
-"""
-    emit_terminator!(ctx, terminator)
+#=============================================================================
+ Terminators
+ Token is appended manually for control flow threading (conservative approach).
+=============================================================================#
 
-Emit bytecode for a block terminator.
-"""
 function emit_terminator!(ctx::CGCtx, node::ReturnNode)
     emit_return!(ctx, node)
 end
 
 function emit_terminator!(ctx::CGCtx, op::YieldOp)
-    # Collect yield operands
     operands = Value[]
     for val in op.values
         tv = emit_value!(ctx, val)
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
-    # Append current token for memory ordering
     push!(operands, ctx.token)
     encode_YieldOp!(ctx.cb, operands)
 end
 
 function emit_terminator!(ctx::CGCtx, op::ContinueOp)
-    # Collect continue operands (updated carried values)
     operands = Value[]
     for val in op.values
         tv = emit_value!(ctx, val)
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
-    # Append current token for memory ordering
     push!(operands, ctx.token)
     encode_ContinueOp!(ctx.cb, operands)
 end
 
 function emit_terminator!(ctx::CGCtx, op::BreakOp)
-    # Collect break operands (final values)
     operands = Value[]
     for val in op.values
         tv = emit_value!(ctx, val)
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
-    # Append current token for memory ordering
     push!(operands, ctx.token)
     encode_BreakOp!(ctx.cb, operands)
 end
 
-function emit_terminator!(ctx::CGCtx, ::Nothing)
-    # No terminator, nothing to emit
-end
-
-function emit_terminator!(ctx::CGCtx, ::ConditionOp)
-    # ConditionOp is handled specially by emit_while_op!, not emitted as a terminator
-end
+function emit_terminator!(ctx::CGCtx, ::Nothing) end
+function emit_terminator!(ctx::CGCtx, ::ConditionOp) end
 
 #=============================================================================
  Early Return Hoisting
-
- tileiras rejects ReturnNode (cuda_tile.return) inside IfOp (cuda_tile.if)
- regions. This pre-pass rewrites the structured IR so that ReturnNode only
- appears at the top level, replacing nested returns with YieldOp.
 =============================================================================#
 
-"""
-    hoist_returns!(block::Block)
-
-Rewrite `ReturnNode` terminators inside `IfOp` regions into `YieldOp`,
-hoisting the return to the parent block. Operates recursively so that
-nested early returns (multiple successive `if ... return end` patterns)
-are handled automatically.
-
-Only handles the case where BOTH branches of an IfOp terminate with
-ReturnNode (REGION_TERMINATION with 3 children). The 2-child case
-(early return inside a loop) is not handled.
-"""
 function hoist_returns!(block::Block)
-    # First, recurse into all nested control flow ops
     for (_, entry) in block.body
         stmt = entry.stmt
         if stmt isa IfOp
@@ -519,29 +360,22 @@ function hoist_returns!(block::Block)
         end
     end
 
-    # Now check: does this block contain an IfOp where both branches return?
-    # If so, replace branch ReturnNodes with YieldOp and set block terminator.
     for (_, entry) in block.body
         entry.stmt isa IfOp || continue
         op = entry.stmt::IfOp
         op.then_region.terminator isa ReturnNode || continue
         op.else_region.terminator isa ReturnNode || continue
 
-        # Both branches return — hoist to parent block.
-        # Replace branch terminators with YieldOp (void — no values to yield).
         op.then_region.terminator = YieldOp()
         op.else_region.terminator = YieldOp()
         block.terminator = ReturnNode(nothing)
     end
 end
 
-"""
-    emit_getfield!(ctx, args) -> Union{CGVal, Nothing}
+#=============================================================================
+ Loop getfield extraction
+=============================================================================#
 
-Handle getfield on multi-value results (loops, ifs). Returns CGVal if handled,
-nothing if this is not a multi-value extraction and normal handling should proceed.
-This is a compile-time lookup - no Tile IR is emitted.
-"""
 function emit_loop_getfield!(ctx::CGCtx, args::Vector{Any})
     length(args) >= 2 || return nothing
     args[1] isa SSAValue || return nothing

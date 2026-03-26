@@ -28,6 +28,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     cb = ctx.cb
     tt = ctx.tt
 
+    # Extract input token from last arg (added by token_order_pass!)
+    input_token = extract_token_arg!(ctx, args)
+
     # args: (ptr_tile, expected, desired, mask, memory_order, memory_scope)
     ptr_tv = emit_value!(ctx, args[1])
     ptr_tv === nothing && throw(IRError("atomic CAS requires ptr_tile"))
@@ -60,16 +63,18 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
         encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
                                ptr_tv.v, expected_tv.v, desired_tv.v;
                                mask=mask_tv.v,
-                               token=ctx.token,
+                               token=input_token,
                                memory_ordering=mem_ordering,
                                memory_scope=mem_scope)
     else
         encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
                                ptr_tv.v, expected_tv.v, desired_tv.v;
-                               token=ctx.token,
+                               token=input_token,
                                memory_ordering=mem_ordering,
                                memory_scope=mem_scope)
     end
+    # Store result token for TokenResultNode and update ctx.token for control flow
+    ctx.result_tokens[ctx.current_ssa_idx] = new_token
     ctx.token = new_token
 
     julia_shape = ColMajorShape(shape)
@@ -80,6 +85,9 @@ end
 function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.T)
     cb = ctx.cb
     tt = ctx.tt
+
+    # Extract input token from last arg (added by token_order_pass!)
+    input_token = extract_token_arg!(ctx, args)
 
     # args: (ptr_tile, val, mask, memory_order, memory_scope)
     ptr_tv = emit_value!(ctx, args[1])
@@ -118,16 +126,18 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
         encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
                                 ptr_tv.v, val_tv.v, actual_mode;
                                 mask=mask_tv.v,
-                                token=ctx.token,
+                                token=input_token,
                                 memory_ordering=mem_ordering,
                                 memory_scope=mem_scope)
     else
         encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
                                 ptr_tv.v, val_tv.v, actual_mode;
-                                token=ctx.token,
+                                token=input_token,
                                 memory_ordering=mem_ordering,
                                 memory_scope=mem_scope)
     end
+    # Store result token for TokenResultNode and update ctx.token for control flow
+    ctx.result_tokens[ctx.current_ssa_idx] = new_token
     ctx.token = new_token
 
     julia_shape = ColMajorShape(shape)
