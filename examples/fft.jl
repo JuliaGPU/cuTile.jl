@@ -52,7 +52,7 @@ function fft_kernel(
 
     # --- Load Input Data ---
     # Input is (D, N2D, BS). Load and reshape to (2, N, BS).
-    X_ri = reshape(ct.load(x_packed_in; index=(1, 1, bid), shape=(D, N2D, BS)), (2, N, BS))
+    X_ri = reshape(ct.load(x_packed_in; index=(Int32(1), Int32(1), bid), shape=(D, N2D, BS)), (2, N, BS))
 
     # Split real and imaginary parts, reshape to 4D factored form
     X_r = reshape(ct.extract(X_ri, (1, 1, 1), (1, N, BS)), (F2, F1, F0, BS))
@@ -130,7 +130,7 @@ function fft_kernel(
     X_r_final = reshape(X_r10, (1, N, BS))
     X_i_final = reshape(X_i10, (1, N, BS))
     Y_ri = reshape(ct.cat((X_r_final, X_i_final), 1), (D, N2D, BS))
-    ct.store(y_packed_out; index=(1, 1, bid), tile=Y_ri)
+    ct.store(y_packed_out; index=(Int32(1), Int32(1), bid), tile=Y_ri)
 
     return
 end
@@ -192,15 +192,12 @@ end
 
 function prepare(; benchmark::Bool=false,
                   batch::Int=benchmark ? 64 : 2,
-                  n::Int=benchmark ? 512 : 8,
                   factors::NTuple{3,Int}=benchmark ? (8, 8, 8) : (2, 2, 2),
-                  atom_packing_dim::Int=2)
-    @assert factors[1] * factors[2] * factors[3] == n "Factors must multiply to N"
+                  atom_packing_dim::Int=min(64, 2 * prod(factors)))
+    n = prod(factors)
     @assert (n * 2) % atom_packing_dim == 0 "N*2 must be divisible by atom_packing_dim"
 
     CUDA.seed!(42)
-    # Store as (n, batch) so reinterpret gives (2, n, batch) = (D, N2D, batch)
-    # This matches Python's (batch, N2D, D) row-major in memory.
     input = CUDA.randn(ComplexF32, n, batch)
 
     W0, W1, W2, T0, T1 = make_twiddles(factors)
@@ -212,7 +209,10 @@ function prepare(; benchmark::Bool=false,
 
     D = atom_packing_dim
     N2D = n * 2 ÷ D
-    x_packed = reinterpret(reshape, Float32, input)  # (2, n, batch) = (D, N2D, batch)
+    # Pack complex input as (D, N2D, batch) Float32 — matches Python's (batch, N2D, D) row-major.
+    # When D=2, reinterpret gives (2, n, batch) directly. For D>2, reshape the flat layout.
+    x_ri = reinterpret(reshape, Float32, input)  # (2, n, batch)
+    x_packed = D == 2 ? x_ri : reshape(x_ri, D, N2D, batch)
     y_packed = CuArray{Float32}(undef, D, N2D, batch)
 
     return (;
@@ -252,8 +252,9 @@ function run(data; nruns::Int=1, warmup::Int=0)
         push!(times, t * 1000)  # ms
     end
 
-    # Unpack output: (2, n, batch) → ComplexF32(n, batch)
-    y_complex = reinterpret(reshape, ComplexF32, y_packed)
+    # Unpack output: (D, N2D, batch) → (2, n, batch) → ComplexF32(n, batch)
+    y_ri = D == 2 ? y_packed : reshape(y_packed, 2, n, batch)
+    y_complex = reinterpret(reshape, ComplexF32, y_ri)
     output = copy(y_complex)
 
     return (; output, times)
@@ -294,18 +295,12 @@ end
 function main()
     println("--- Running cuTile FFT Example ---")
 
-    BATCH_SIZE = 2
-    FFT_SIZE = 8
-    FFT_FACTORS = (2, 2, 2)
-    ATOM_PACKING_DIM = 2
-
+    data = prepare()
     println("  Configuration:")
-    println("    FFT Size (N): $FFT_SIZE")
-    println("    Batch Size: $BATCH_SIZE")
-    println("    FFT Factors: $FFT_FACTORS")
-    println("    Atom Packing Dim: $ATOM_PACKING_DIM")
-
-    data = prepare(; batch=BATCH_SIZE, n=FFT_SIZE, factors=FFT_FACTORS, atom_packing_dim=ATOM_PACKING_DIM)
+    println("    FFT Size (N): $(data.n)")
+    println("    Batch Size: $(data.batch)")
+    println("    FFT Factors: $(data.factors)")
+    println("    Atom Packing Dim: $(data.D)")
     println("\nInput data shape: $(size(data.input)), dtype: $(eltype(data.input))")
 
     result = run(data)

@@ -96,16 +96,16 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080:
 
 | Kernel | Julia | Python | Status |
 |--------|-------|--------|--------|
-| Vector Addition | 840 GB/s | 844 GB/s | OK (=) |
-| Matrix Transpose | 806 GB/s | 816 GB/s | OK (-1%) |
-| Layer Normalization | 1074 GB/s | 761 GB/s | OK (+41%) |
-| Matrix Multiplication | 36.8 TFLOPS | 50.7 TFLOPS | -27% |
-| Batch Matrix Multiply | 28.3 TFLOPS | 40.0 TFLOPS | -29% |
-| FFT (3-stage Cooley-Tukey) | 571 μs | 192 μs | -66% |
+| Vector Addition | 841 GB/s | 847 GB/s | OK (=) |
+| Matrix Transpose | 807 GB/s | 813 GB/s | OK (-1%) |
+| Layer Normalization | 653 GB/s | 758 GB/s | -14% |
+| Matrix Multiplication | 43.1 TFLOPS | 50.3 TFLOPS | -14% |
+| Batch Matrix Multiply | 30.4 TFLOPS | 40.0 TFLOPS | -24% |
+| FFT (3-stage Cooley-Tukey) | 620 μs | 486 μs | -28% |
 
-Memory-bound kernels (vadd, transpose, layernorm) match or beat Python. Compute-intensive
-kernels (matmul, batch matmul, FFT) are slower due to conservative token threading in the
-generated Tile IR, which serializes loads that could otherwise be pipelined.
+Memory-bound kernels (vadd, transpose) match Python. Compute-intensive kernels
+(matmul, batch matmul, layernorm, FFT) are slower due to conservative token threading
+in the generated Tile IR, which serializes loads that could otherwise be pipelined.
 
 
 ## Supported Operations
