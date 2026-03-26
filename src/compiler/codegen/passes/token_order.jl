@@ -247,7 +247,7 @@ function transform_block!(sci::StructuredIRCode, block::Block,
         entry === nothing && continue
         if entry.stmt isa ControlFlowOp
             transform_control_flow!(sci, block, ssa_idx, entry.stmt, entry.typ,
-                                     alias_result, token_map, effects_cache)
+                                     alias_result, token_map, effects_cache, loop_effects)
         else
             transform_statement!(sci, block, ssa_idx, entry.stmt,
                                   alias_result, token_map)
@@ -333,14 +333,14 @@ end
 
 function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
                                   ssa_idx::Int, op::ForOp, @nospecialize(result_type),
-                                  alias_result, token_map, effects_cache)
+                                  alias_result, token_map, effects_cache, parent_loop_effects=nothing)
     transform_loop!(sci, parent_block, ssa_idx, op, op.body, alias_result,
                      token_map, effects_cache)
 end
 
 function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
                                   ssa_idx::Int, op::LoopOp, @nospecialize(result_type),
-                                  alias_result, token_map, effects_cache)
+                                  alias_result, token_map, effects_cache, parent_loop_effects=nothing)
     transform_loop!(sci, parent_block, ssa_idx, op, op.body, alias_result,
                      token_map, effects_cache)
 end
@@ -398,23 +398,15 @@ function transform_loop!(sci::StructuredIRCode, parent_block::Block,
                       body_effects, nothing)
 
     # After the loop: insert getfield extractions for token results.
-    # These reference the loop's SSA result (which will be a tuple of all carries).
-    # Update the loop's type in the parent SSAMap to include token types.
+    # Update the loop's type to include ALL carries (user + token) so that
+    # codegen's getfield extraction works correctly.
     if n_total_carries > n_user_carries
-        # Build extended type: Tuple{user_types..., TokenType...}
-        old_type = get(parent_block.body, ssa_idx, nothing)
-        if old_type !== nothing
-            user_types = if old_type.typ === Nothing
-                Type[]
-            elseif old_type.typ <: Tuple
-                collect(Type, old_type.typ.parameters)
-            else
-                Type[old_type.typ]
-            end
-            token_types = fill(TokenType, n_total_carries - n_user_carries)
-            new_type = Tuple{user_types..., token_types...}
-            update_type!(parent_block.body, ssa_idx, new_type)
-        end
+        # Build result type from block args (authoritative source of all carries)
+        all_types = Type[is_token_type(arg.type) ? TokenType : arg.type
+                         for arg in body.args]
+        new_type = isempty(all_types) ? Nothing : Tuple{all_types...}
+        update_type!(parent_block.body, ssa_idx, new_type)
+
 
         # Insert getfield SSAs after the loop for each token result
         last_inserted = ssa_idx
@@ -457,7 +449,7 @@ end
 
 function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
                                   ssa_idx::Int, op::WhileOp, @nospecialize(result_type),
-                                  alias_result, token_map, effects_cache)
+                                  alias_result, token_map, effects_cache, parent_loop_effects=nothing)
     before_effects = get(effects_cache, objectid(op.before), EMPTY_MEMORY_EFFECTS)
     after_effects = get(effects_cache, objectid(op.after), EMPTY_MEMORY_EFFECTS)
     loop_effects = union(before_effects, after_effects)
@@ -516,21 +508,14 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
     transform_block!(sci, op.after, alias_result, after_token_map, effects_cache,
                       loop_effects, nothing)
 
-    # Insert getfield extractions for token results (same as transform_loop!)
+    # Insert getfield extractions for token results
     if n_total_carries > n_user_carries
-        old_type = get(parent_block.body, ssa_idx, nothing)
-        if old_type !== nothing
-            user_types = if old_type.typ === Nothing
-                Type[]
-            elseif old_type.typ <: Tuple
-                collect(Type, old_type.typ.parameters)
-            else
-                Type[old_type.typ]
-            end
-            token_types = fill(TokenType, n_total_carries - n_user_carries)
-            new_type = Tuple{user_types..., token_types...}
-            update_type!(parent_block.body, ssa_idx, new_type)
-        end
+        # Build result type from before block args (authoritative source of all carries)
+        all_types = Type[is_token_type(arg.type) ? TokenType : arg.type
+                         for arg in op.before.args]
+        new_type = isempty(all_types) ? Nothing : Tuple{all_types...}
+        update_type!(parent_block.body, ssa_idx, new_type)
+
 
         last_inserted = ssa_idx
         carry_idx = n_user_carries
@@ -570,18 +555,19 @@ end
 
 function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
                                   ssa_idx::Int, op::IfOp, @nospecialize(result_type),
-                                  alias_result, token_map, effects_cache)
+                                  alias_result, token_map, effects_cache, parent_loop_effects=nothing)
     then_effects = get(effects_cache, objectid(op.then_region), EMPTY_MEMORY_EFFECTS)
     else_effects = get(effects_cache, objectid(op.else_region), EMPTY_MEMORY_EFFECTS)
     merged_effects = union(then_effects, else_effects)
 
-    # Transform both branches (they extend their YieldOps with exit tokens)
+    # Transform both branches. Pass parent_loop_effects so that ContinueOp/BreakOp
+    # inside branches (common for LoopOp→IfOp patterns) get token exit values.
     then_map = copy(token_map)
     transform_block!(sci, op.then_region, alias_result, then_map, effects_cache,
-                      nothing, merged_effects)
+                      parent_loop_effects, merged_effects)
     else_map = copy(token_map)
     transform_block!(sci, op.else_region, alias_result, else_map, effects_cache,
-                      nothing, merged_effects)
+                      parent_loop_effects, merged_effects)
 
     # Count token results and insert getfield extractions
     n_token_results = 0
@@ -594,6 +580,7 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
     if n_token_results > 0
         # Update IfOp type to include token results
         old_type = get(parent_block.body, ssa_idx, nothing)
+        old_type = get(parent_block.body, ssa_idx, nothing)
         if old_type !== nothing
             user_types = if old_type.typ === Nothing
                 Type[]
@@ -605,6 +592,8 @@ function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
             token_types = fill(TokenType, n_token_results)
             new_type = Tuple{user_types..., token_types...}
             update_type!(parent_block.body, ssa_idx, new_type)
+        else
+            user_types = Type[]
         end
 
         # Insert getfield extractions for token results
@@ -642,5 +631,5 @@ end
 # Fallback
 function transform_control_flow!(sci::StructuredIRCode, parent_block::Block,
                                   ssa_idx::Int, op::ControlFlowOp, @nospecialize(result_type),
-                                  alias_result, token_map, effects_cache)
+                                  alias_result, token_map, effects_cache, parent_loop_effects=nothing)
 end

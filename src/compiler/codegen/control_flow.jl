@@ -106,6 +106,11 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
             ctx[arg] = CGVal(block_args[i + 1], result_types[i], arg.type, shape)
         end
         emit_block!(ctx, body_blk)
+        # If body has no terminator, emit a ContinueOp with all block args
+        if body_blk.terminator === nothing
+            # block_args[1] is iv, block_args[2:end] are carries
+            encode_ContinueOp!(ctx.cb, block_args[2:end])
+        end
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_ForOp!(body_builder, cb, result_types, iv_type,
@@ -233,7 +238,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
                 tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
             end
         end
-        # Ensure token carries are included even if YieldOp didn't resolve them
+        # Ensure all carries (including tokens from pass) are in the ContinueOp
         while length(continue_operands) < n_carries
             push!(continue_operands, block_args[length(continue_operands) + 1])
         end
