@@ -1,21 +1,11 @@
 # Structured IR Emission
 
-"""
-    result_count(T) -> Int
-
-Compute the number of results from a Block.types entry.
-"""
 function result_count(@nospecialize(T))
     T === Nothing && return 0
     T <: Tuple && return length(T.parameters)
     return 1
 end
 
-"""
-    emit_block!(ctx, block::Block)
-
-Emit bytecode for a structured IR block.
-"""
 function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
     for (ssa_idx, entry) in block.body
         if entry.stmt isa ControlFlowOp
@@ -25,77 +15,58 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
             emit_statement!(ctx, entry.stmt, ssa_idx, entry.typ)
         end
     end
-
     if !skip_terminator && block.terminator !== nothing
         emit_terminator!(ctx, block.terminator)
     end
 end
 
-emit_control_flow_op!(ctx::CGCtx, op::IfOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
-    emit_if_op!(ctx, op, result_type, n_results, original_idx)
-emit_control_flow_op!(ctx::CGCtx, op::ForOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
-    emit_for_op!(ctx, op, result_type, n_results, original_idx)
-emit_control_flow_op!(ctx::CGCtx, op::WhileOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
-    emit_while_op!(ctx, op, result_type, n_results, original_idx)
-emit_control_flow_op!(ctx::CGCtx, op::LoopOp, @nospecialize(result_type), n_results::Int, original_idx::Int) =
-    emit_loop_op!(ctx, op, result_type, n_results, original_idx)
+emit_control_flow_op!(ctx::CGCtx, op::IfOp, @nospecialize(rt), n::Int, idx::Int) = emit_if_op!(ctx, op, rt, n, idx)
+emit_control_flow_op!(ctx::CGCtx, op::ForOp, @nospecialize(rt), n::Int, idx::Int) = emit_for_op!(ctx, op, rt, n, idx)
+emit_control_flow_op!(ctx::CGCtx, op::WhileOp, @nospecialize(rt), n::Int, idx::Int) = emit_while_op!(ctx, op, rt, n, idx)
+emit_control_flow_op!(ctx::CGCtx, op::LoopOp, @nospecialize(rt), n::Int, idx::Int) = emit_loop_op!(ctx, op, rt, n, idx)
 
 #=============================================================================
- Control flow emitters
- Token threading through control flow is still manual (conservative approach).
- The token_order_pass handles straight-line code; control flow uses ctx.token.
+ IfOp
 =============================================================================#
 
 function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
-    then_blk = op.then_region
-    else_blk = op.else_region
 
     cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
 
-    # User result types
+    # Build result types uniformly from parent_result_type (pass set it correctly)
     result_types = TypeId[]
-    if parent_result_type === Nothing
-        # No results
-    elseif parent_result_type <: Tuple
-        for T in parent_result_type.parameters
-            push!(result_types, tile_type_for_julia!(ctx, T))
+    if parent_result_type !== Nothing
+        if parent_result_type <: Tuple
+            for T in parent_result_type.parameters
+                push!(result_types, tile_type_for_julia!(ctx, T))
+            end
+        else
+            push!(result_types, tile_type_for_julia!(ctx, parent_result_type))
         end
-    else
-        push!(result_types, tile_type_for_julia!(ctx, parent_result_type))
     end
-    n_user_results = length(result_types)
-    # Add token as additional result
-    push!(result_types, ctx.token_type)
-
-    token_before = ctx.token
 
     then_body = function(_)
-        saved_block_args = copy(ctx.block_args)
-        ctx.token = token_before
-        emit_block!(ctx, then_blk)
-        if then_blk.terminator === nothing
-            encode_YieldOp!(ctx.cb, [ctx.token])
-        end
-        empty!(ctx.block_args)
-        merge!(ctx.block_args, saved_block_args)
+        saved = copy(ctx.block_args)
+        emit_block!(ctx, op.then_region)
+        op.then_region.terminator === nothing && encode_YieldOp!(ctx.cb, Value[])
+        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     else_body = function(_)
-        saved_block_args = copy(ctx.block_args)
-        ctx.token = token_before
-        emit_block!(ctx, else_blk)
-        if else_blk.terminator === nothing
-            encode_YieldOp!(ctx.cb, [ctx.token])
-        end
-        empty!(ctx.block_args)
-        merge!(ctx.block_args, saved_block_args)
+        saved = copy(ctx.block_args)
+        emit_block!(ctx, op.else_region)
+        op.else_region.terminator === nothing && encode_YieldOp!(ctx.cb, Value[])
+        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
-    ctx.token = results[end]
-    ctx.values[ssa_idx] = CGVal(results[1:n_user_results], parent_result_type)
+    ctx.values[ssa_idx] = CGVal(results, parent_result_type)
 end
+
+#=============================================================================
+ ForOp
+=============================================================================#
 
 function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
@@ -110,50 +81,43 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
         throw(IRError("Cannot resolve ForOp bounds"))
     lower_tv.jltype === upper_tv.jltype === step_tv.jltype ||
         throw(IRError("ForOp bounds must all have the same type"))
-        iv_jl_type = lower_tv.jltype
-        iv_type = tile_type_for_julia!(ctx, iv_jl_type)
+    iv_jl_type = lower_tv.jltype
+    iv_type = tile_type_for_julia!(ctx, iv_jl_type)
 
-    # Init values + token
+    # Emit ALL init values (user + token carries from pass)
     init_values = Value[]
     for init_val in op.init_values
         tv = emit_value!(ctx, init_val)
         (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve ForOp init value"))
         push!(init_values, tv.v)
     end
-    push!(init_values, ctx.token)
 
-    n_carries = length(op.init_values)
-
-    result_types = TypeId[]
-    for i in 1:n_carries
-        body_arg = body_blk.args[i]
-        push!(result_types, tile_type_for_julia!(ctx, body_arg.type))
-    end
-    push!(result_types, ctx.token_type)
+    # Build result types uniformly from block args
+    n_carries = length(body_blk.args)
+    result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in body_blk.args]
 
     body_builder = function(block_args)
-        saved_block_args = copy(ctx.block_args)
-
-        iv_tv = CGVal(block_args[1], iv_type, iv_jl_type)
-        ctx[iv_arg] = iv_tv
-
+        saved = copy(ctx.block_args)
+        # Tile IR layout: [iv, carries...]
+        ctx[iv_arg] = CGVal(block_args[1], iv_type, iv_jl_type)
         for i in 1:n_carries
-            body_arg = body_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(body_arg.type))
-            ctx[body_arg] = CGVal(block_args[i + 1], result_types[i], body_arg.type, shape)
+            arg = body_blk.args[i]
+            shape = RowMajorShape(extract_tile_shape(arg.type))
+            ctx[arg] = CGVal(block_args[i + 1], result_types[i], arg.type, shape)
         end
-        ctx.token = block_args[end]
-
         emit_block!(ctx, body_blk)
-
-        empty!(ctx.block_args)
-        merge!(ctx.block_args, saved_block_args)
+        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
-    results = encode_ForOp!(body_builder, cb, result_types, iv_type, lower_tv.v, upper_tv.v, step_tv.v, init_values)
+    results = encode_ForOp!(body_builder, cb, result_types, iv_type,
+                             lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
-    ctx.token = results[end]
-    ctx.values[ssa_idx] = CGVal(results[1:n_carries], parent_result_type)
+    # Trust parent_result_type (pass set it via update_type!)
+    ctx.values[ssa_idx] = CGVal(results, parent_result_type)
 end
+
+#=============================================================================
+ LoopOp
+=============================================================================#
 
 function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
@@ -165,43 +129,31 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
         (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve LoopOp init value"))
         push!(init_values, tv.v)
     end
-    push!(init_values, ctx.token)
 
-    n_carries = length(op.init_values)
-
-    result_types = TypeId[]
-    for i in 1:n_carries
-        body_arg = body_blk.args[i]
-        push!(result_types, tile_type_for_julia!(ctx, body_arg.type))
-    end
-    push!(result_types, ctx.token_type)
+    n_carries = length(body_blk.args)
+    result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in body_blk.args]
 
     body_builder = function(block_args)
-        saved_block_args = copy(ctx.block_args)
-
+        saved = copy(ctx.block_args)
         for i in 1:n_carries
-            body_arg = body_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(body_arg.type))
-            ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
+            arg = body_blk.args[i]
+            shape = RowMajorShape(extract_tile_shape(arg.type))
+            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
         end
-        ctx.token = block_args[end]
-
         emit_block!(ctx, body_blk)
-
         if body_blk.terminator === nothing
-            fallback_operands = copy(block_args)
-            fallback_operands[end] = ctx.token
-            encode_ContinueOp!(ctx.cb, fallback_operands)
+            encode_ContinueOp!(ctx.cb, copy(block_args))
         end
-
-        empty!(ctx.block_args)
-        merge!(ctx.block_args, saved_block_args)
+        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
-    ctx.token = results[end]
-    ctx.values[ssa_idx] = CGVal(results[1:n_carries], parent_result_type)
+    ctx.values[ssa_idx] = CGVal(results, parent_result_type)
 end
+
+#=============================================================================
+ WhileOp — lowered to LoopOp pattern in codegen
+=============================================================================#
 
 function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
     cb = ctx.cb
@@ -214,26 +166,18 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         (tv === nothing || tv.v === nothing) && throw(IRError("Cannot resolve WhileOp init value: $init_val"))
         push!(init_values, tv.v)
     end
-    push!(init_values, ctx.token)
 
-    n_carries = length(op.init_values)
-
-    result_types = TypeId[]
-    for i in 1:n_carries
-        before_arg = before_blk.args[i]
-        push!(result_types, tile_type_for_julia!(ctx, before_arg.type))
-    end
-    push!(result_types, ctx.token_type)
+    n_carries = length(before_blk.args)
+    result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in before_blk.args]
 
     body_builder = function(block_args)
-        saved_block_args = copy(ctx.block_args)
+        saved = copy(ctx.block_args)
 
         for i in 1:n_carries
-            before_arg = before_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(before_arg.type))
-            ctx[before_arg] = CGVal(block_args[i], result_types[i], before_arg.type, shape)
+            arg = before_blk.args[i]
+            shape = RowMajorShape(extract_tile_shape(arg.type))
+            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
         end
-        ctx.token = block_args[end]
 
         emit_block!(ctx, before_blk)
 
@@ -243,10 +187,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && throw(IRError("Cannot resolve WhileOp condition"))
 
-        then_body = function(_)
-            encode_YieldOp!(ctx.cb, Value[])
-        end
-
+        then_body = (_) -> encode_YieldOp!(ctx.cb, Value[])
         else_body = function(_)
             break_operands = Value[]
             for arg in cond_op.args
@@ -254,26 +195,32 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
                 tv !== nothing && tv.v !== nothing && push!(break_operands, tv.v)
             end
             if isempty(break_operands)
-                for i in 1:n_carries
+                append!(break_operands, block_args[1:n_carries])
+            else
+                # Append token carries (block_args beyond user carries from ConditionOp)
+                n_user = length(break_operands)
+                for i in (n_user + 1):n_carries
                     push!(break_operands, block_args[i])
                 end
             end
-            push!(break_operands, ctx.token)
             encode_BreakOp!(ctx.cb, break_operands)
         end
-
         encode_IfOp!(then_body, else_body, cb, TypeId[], cond_tv.v)
 
         for i in 1:length(after_blk.args)
-            after_arg = after_blk.args[i]
+            arg = after_blk.args[i]
             if i <= length(cond_op.args)
                 tv = emit_value!(ctx, cond_op.args[i])
                 if tv !== nothing
-                    ctx[after_arg] = tv
+                    ctx[arg] = tv
                 else
-                    shape = RowMajorShape(extract_tile_shape(after_arg.type))
-                    ctx[after_arg] = CGVal(block_args[i], result_types[i], after_arg.type, shape)
+                    shape = RowMajorShape(extract_tile_shape(arg.type))
+                    ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
                 end
+            else
+                # Token carries beyond ConditionOp.args: use block_args directly
+                ctx[arg] = CGVal(block_args[i], result_types[i], arg.type,
+                                  RowMajorShape(extract_tile_shape(arg.type)))
             end
         end
 
@@ -286,26 +233,24 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
                 tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
             end
         end
-        push!(continue_operands, ctx.token)
+        # Ensure token carries are included even if YieldOp didn't resolve them
+        while length(continue_operands) < n_carries
+            push!(continue_operands, block_args[length(continue_operands) + 1])
+        end
         encode_ContinueOp!(ctx.cb, continue_operands)
 
-        empty!(ctx.block_args)
-        merge!(ctx.block_args, saved_block_args)
+        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
-    ctx.token = results[end]
-    ctx.values[ssa_idx] = CGVal(results[1:n_carries], parent_result_type)
+    ctx.values[ssa_idx] = CGVal(results, parent_result_type)
 end
 
 #=============================================================================
- Terminators
- Token is appended manually for control flow threading (conservative approach).
+ Terminators — tokens already in op.values from token_order_pass!
 =============================================================================#
 
-function emit_terminator!(ctx::CGCtx, node::ReturnNode)
-    emit_return!(ctx, node)
-end
+emit_terminator!(ctx::CGCtx, node::ReturnNode) = emit_return!(ctx, node)
 
 function emit_terminator!(ctx::CGCtx, op::YieldOp)
     operands = Value[]
@@ -313,7 +258,6 @@ function emit_terminator!(ctx::CGCtx, op::YieldOp)
         tv = emit_value!(ctx, val)
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
-    push!(operands, ctx.token)
     encode_YieldOp!(ctx.cb, operands)
 end
 
@@ -323,7 +267,6 @@ function emit_terminator!(ctx::CGCtx, op::ContinueOp)
         tv = emit_value!(ctx, val)
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
-    push!(operands, ctx.token)
     encode_ContinueOp!(ctx.cb, operands)
 end
 
@@ -333,12 +276,11 @@ function emit_terminator!(ctx::CGCtx, op::BreakOp)
         tv = emit_value!(ctx, val)
         tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
     end
-    push!(operands, ctx.token)
     encode_BreakOp!(ctx.cb, operands)
 end
 
-function emit_terminator!(ctx::CGCtx, ::Nothing) end
-function emit_terminator!(ctx::CGCtx, ::ConditionOp) end
+emit_terminator!(ctx::CGCtx, ::Nothing) = nothing
+emit_terminator!(ctx::CGCtx, ::ConditionOp) = nothing
 
 #=============================================================================
  Early Return Hoisting
@@ -359,13 +301,11 @@ function hoist_returns!(block::Block)
             hoist_returns!(stmt.body)
         end
     end
-
     for (_, entry) in block.body
         entry.stmt isa IfOp || continue
         op = entry.stmt::IfOp
         op.then_region.terminator isa ReturnNode || continue
         op.else_region.terminator isa ReturnNode || continue
-
         op.then_region.terminator = YieldOp()
         op.else_region.terminator = YieldOp()
         block.terminator = ReturnNode(nothing)
@@ -373,7 +313,7 @@ function hoist_returns!(block::Block)
 end
 
 #=============================================================================
- Loop getfield extraction
+ Loop getfield extraction — uniform, no token special cases
 =============================================================================#
 
 function emit_loop_getfield!(ctx::CGCtx, args::Vector{Any})

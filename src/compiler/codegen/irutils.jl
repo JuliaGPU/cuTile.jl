@@ -64,3 +64,15 @@ function insert_after!(m::SSAMap, after_idx::Int, new_idx::Int, stmt, typ)
     insert!(m.types, pos + 1, typ)
     return nothing
 end
+
+"""
+    update_type!(m::SSAMap, ssa_idx::Int, @nospecialize(new_type))
+
+Update the type annotation for an existing SSAMap entry.
+"""
+function update_type!(m::SSAMap, ssa_idx::Int, @nospecialize(new_type))
+    pos = findfirst(==(ssa_idx), m.ssa_idxes)
+    pos === nothing && throw(KeyError(ssa_idx))
+    m.types[pos] = new_type
+    return nothing
+end

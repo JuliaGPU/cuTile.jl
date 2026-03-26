@@ -84,8 +84,9 @@ end
     is_token_type(typ) -> Bool
 
 Check whether a type annotation in the structured IR represents a token.
+Handles both instances (`TOKEN_TYPE`) and the type itself (`TokenType`).
 """
-is_token_type(@nospecialize(typ)) = typ isa TokenType
+is_token_type(@nospecialize(typ)) = typ isa TokenType || typ === TokenType
 
 #=============================================================================
  IRError: Exception type for IR compilation errors
@@ -253,10 +254,6 @@ mutable struct CGCtx
     # Token bytecode type (cached for encoding token operations)
     token_type::Union{TypeId, Nothing}
 
-    # Current token for control flow threading (loops, branches).
-    # Set by MakeTokenNode emission, updated by control flow emitters.
-    token::Union{Value, Nothing}
-
     # Result tokens from memory ops: mem_op SSA index → bytecode Value
     # Populated during codegen when emitting memory ops with token args.
     # Read by TokenResultNode emission.
@@ -292,7 +289,6 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         tt,
         sci,
         token_type,
-        nothing,                         # token
         Dict{Int, Value}(),              # result_tokens
         0,                               # current_ssa_idx
         type_cache,
@@ -434,6 +430,7 @@ Get or create a Tile IR type for a Julia type. With `throw_error=false`, returns
 `nothing` instead of throwing if the type has no Tile IR representation.
 """
 function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T); throw_error::Bool=true)
+    is_token_type(T) && return Token(ctx.tt)
     actual_type = CC.widenconst(T)
     cached = get(ctx.type_cache, actual_type, nothing)
     cached !== nothing && return cached
@@ -591,6 +588,7 @@ Extract shape from a Tile{T, Shape} type in Julia's column-major convention.
 Returns ScalarShape for non-Tile types.
 """
 function extract_tile_shape(@nospecialize(T))
+    is_token_type(T) && return ScalarShape()
     T = CC.widenconst(T)
     if T <: Tile
         return ColMajorShape(size(T))

@@ -116,9 +116,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
         token = input_token, optimization_hints
     )
 
-    # Store result token for TokenResultNode and update ctx.token for control flow
+    # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = result_token
-    ctx.token = result_token
 
     julia_shape = ColMajorShape(tile_shape)
     return CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
@@ -431,9 +430,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
         token = input_token, optimization_hints
     )
 
-    # Store result token for TokenResultNode and update ctx.token for control flow
+    # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = result_token
-    ctx.token = result_token
 
     return nothing
 end

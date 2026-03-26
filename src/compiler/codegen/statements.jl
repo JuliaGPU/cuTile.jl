@@ -84,7 +84,6 @@ function emit_make_token!(ctx::CGCtx)
         ctx.token_type = token_type
     end
     v = encode_MakeTokenOp!(ctx.cb, token_type)
-    ctx.token = v  # Set as current token for control flow threading
     return CGVal(v, token_type, TokenType)
 end
 

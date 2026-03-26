@@ -73,9 +73,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
                                memory_ordering=mem_ordering,
                                memory_scope=mem_scope)
     end
-    # Store result token for TokenResultNode and update ctx.token for control flow
+    # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
-    ctx.token = new_token
 
     julia_shape = ColMajorShape(shape)
     CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
@@ -136,9 +135,8 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
                                 memory_ordering=mem_ordering,
                                 memory_scope=mem_scope)
     end
-    # Store result token for TokenResultNode and update ctx.token for control flow
+    # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
-    ctx.token = new_token
 
     julia_shape = ColMajorShape(shape)
     CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)

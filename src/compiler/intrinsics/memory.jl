@@ -52,9 +52,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
         )
     end
 
-    # Store result token for TokenResultNode and update ctx.token for control flow
+    # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
-    ctx.token = new_token
 
     julia_shape = ColMajorShape(tile_shape)
     result_jltype = Tile{elem_type, TupleType(julia_shape)}
@@ -102,9 +101,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
         )
     end
 
-    # Store result token for TokenResultNode and update ctx.token for control flow
+    # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
-    ctx.token = new_token
 
     nothing
 end
@@ -112,21 +110,16 @@ end
 """
     extract_token_arg!(ctx, args) -> Value
 
-Check if the last argument is a token SSAValue (added by token_order_pass!).
-If so, pop it from args and return the resolved bytecode Value.
-If no token arg is present (memory op inside a control flow region not yet
-transformed by the pass), fall back to `ctx.token`.
+Extract the token argument (last arg, added by token_order_pass!) from a memory op call.
+Pops the token from args and returns the resolved bytecode Value.
 """
 function extract_token_arg!(ctx::CGCtx, args)
-    if !isempty(args)
-        last_arg = args[end]
-        tv = emit_value!(ctx, last_arg)
-        if tv !== nothing && tv.jltype === TokenType
-            pop!(args)
-            return tv.v
-        end
+    isempty(args) && throw(IRError("Memory op has no arguments"))
+    last_arg = args[end]
+    tv = emit_value!(ctx, last_arg)
+    if tv !== nothing && tv.jltype === TokenType
+        pop!(args)
+        return tv.v
     end
-    # Fallback: use ctx.token (for memory ops inside loops/branches)
-    ctx.token !== nothing && return ctx.token
-    throw(IRError("Memory op has no token argument and ctx.token is not set"))
+    throw(IRError("Memory op missing token argument (token_order_pass! not run?)"))
 end
