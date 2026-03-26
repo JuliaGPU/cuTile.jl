@@ -148,6 +148,13 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Normalize Julia Core intrinsics to cuTile Intrinsics equivalents.
     normalize_ir!(sci)
 
+    # Eliminate redundant to_scalar/from_scalar chains from broadcast wrapping.
+    scalar_view_elim_pass!(sci)
+
+    # Fuse mul+add/sub into fma to reduce register pressure.
+    fma_fusion_pass!(sci)
+
+
     # Run alias analysis and token ordering pass on the structured IR.
     alias_result = alias_analysis_pass!(sci)
     token_order_pass!(sci, alias_result)

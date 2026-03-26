@@ -1234,7 +1234,7 @@ end
     end
 
     @testset "nested broadcast" begin
-        # a .+ b .* c → mulf then addf (no explicit broadcasted needed)
+        # a .+ b .* c → fma (fused by fma_fusion_pass!)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -1242,8 +1242,7 @@ end
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(a, pid, (16,))
                 tc = ct.load(a, pid, (16,))
-                @check "mulf"
-                @check "addf"
+                @check "fma"
                 result = ta .+ tb .* tc
                 ct.store(a, pid, result)
                 return

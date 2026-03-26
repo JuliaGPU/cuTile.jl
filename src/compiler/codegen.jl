@@ -3,6 +3,8 @@
 include("codegen/utils.jl")
 include("codegen/passes/normalize.jl")           # normalize_ir!
 include("codegen/passes/token_keys.jl")        # TokenKey, TokenRole, ACQUIRE_TOKEN_KEY
+include("codegen/passes/rewrite.jl")            # @rewrite, rewrite_patterns! framework
+include("codegen/passes/rewrite_patterns.jl")   # scalar_view_elim_pass!, fma_fusion_pass!
 include("codegen/passes/alias_analysis.jl")    # alias_analysis_pass!
 include("codegen/passes/token_order.jl")       # token_order_pass!
 include("codegen/passes/dce.jl")              # dce_pass!
