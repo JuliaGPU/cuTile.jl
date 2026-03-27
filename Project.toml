@@ -23,6 +23,9 @@ DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 CUDAExt = "CUDA"
 DLFP8TypesExt = "DLFP8Types"
 
+[sources]
+IRStructurizer = {url = "https://github.com/maleadt/IRStructurizer.jl", rev = "main"}
+
 [compat]
 BFloat16s = "0.6"
 CUDA_Compiler_jll = "0.4"

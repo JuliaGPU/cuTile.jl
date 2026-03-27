@@ -1,22 +1,6 @@
 # Structured IR Emission
 
 """
-    result_count(T) -> Int
-
-Compute the number of results from a Block.types entry.
-Block.types contains Julia types:
-- For Statement: Julia type → 1 result
-- For ControlFlowOp with 0 results: Nothing → 0 results
-- For ControlFlowOp with 1 result: Julia type → 1 result
-- For ControlFlowOp with N results: Tuple{T1, T2, ...} → N results
-"""
-function result_count(@nospecialize(T))
-    T === Nothing && return 0
-    T <: Tuple && return length(T.parameters)
-    return 1
-end
-
-"""
     emit_block!(ctx, block::Block)
 
 Emit bytecode for a structured IR block.
@@ -24,38 +8,37 @@ All SSA values use original Julia SSA indices (no local renumbering).
 Values are stored in ctx.values by their original index.
 """
 function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
-    # SSAVector iteration yields (ssa_idx, entry) where entry has .stmt and .typ
-    for (ssa_idx, entry) in block.body
-        if entry.stmt isa ControlFlowOp
-            n_results = result_count(entry.typ)
-            emit_control_flow_op!(ctx, entry.stmt, entry.typ, n_results, ssa_idx)
+    for inst in instructions(block)
+        s = stmt(inst)
+        if s isa ControlFlowOp
+            emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)
         else
-            emit_statement!(ctx, entry.stmt, ssa_idx, entry.typ)
+            emit_statement!(ctx, s, inst.ssa_idx, value_type(inst))
         end
     end
-    if !skip_terminator && block.terminator !== nothing
-        emit_terminator!(ctx, block.terminator)
+    if !skip_terminator && terminator(block) !== nothing
+        emit_terminator!(ctx, terminator(block))
     end
 end
 
 """
-    emit_control_flow_op!(ctx, op::ControlFlowOp, result_type, n_results, original_idx)
+    emit_control_flow_op!(ctx, op::ControlFlowOp, result_type, original_idx)
 
 Emit bytecode for a structured control flow operation.
 Uses multiple dispatch on the concrete ControlFlowOp type.
 Results are stored at indices assigned AFTER nested regions (DFS order).
 original_idx is the original Julia SSA index for cross-block references.
 """
-emit_control_flow_op!(ctx::CGCtx, op::IfOp, @nospecialize(rt), n::Int, idx::Int) = emit_if_op!(ctx, op, rt, n, idx)
-emit_control_flow_op!(ctx::CGCtx, op::ForOp, @nospecialize(rt), n::Int, idx::Int) = emit_for_op!(ctx, op, rt, n, idx)
-emit_control_flow_op!(ctx::CGCtx, op::WhileOp, @nospecialize(rt), n::Int, idx::Int) = emit_while_op!(ctx, op, rt, n, idx)
-emit_control_flow_op!(ctx::CGCtx, op::LoopOp, @nospecialize(rt), n::Int, idx::Int) = emit_loop_op!(ctx, op, rt, n, idx)
+emit_control_flow_op!(ctx::CGCtx, op::IfOp, @nospecialize(rt), idx::Int) = emit_if_op!(ctx, op, rt, idx)
+emit_control_flow_op!(ctx::CGCtx, op::ForOp, @nospecialize(rt), idx::Int) = emit_for_op!(ctx, op, rt, idx)
+emit_control_flow_op!(ctx::CGCtx, op::WhileOp, @nospecialize(rt), idx::Int) = emit_while_op!(ctx, op, rt, idx)
+emit_control_flow_op!(ctx::CGCtx, op::LoopOp, @nospecialize(rt), idx::Int) = emit_loop_op!(ctx, op, rt, idx)
 
 #=============================================================================
  IfOp
 =============================================================================#
 
-function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
+function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ssa_idx::Int)
     cb = ctx.cb
 
     # Get condition value
@@ -78,13 +61,13 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), n_
     then_body = function(_)
         saved = copy(ctx.block_args)
         emit_block!(ctx, op.then_region)
-        op.then_region.terminator === nothing && encode_YieldOp!(ctx.cb, Value[])
+        terminator(op.then_region) === nothing && encode_YieldOp!(ctx.cb, Value[])
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     else_body = function(_)
         saved = copy(ctx.block_args)
         emit_block!(ctx, op.else_region)
-        op.else_region.terminator === nothing && encode_YieldOp!(ctx.cb, Value[])
+        terminator(op.else_region) === nothing && encode_YieldOp!(ctx.cb, Value[])
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
@@ -96,7 +79,7 @@ end
  ForOp
 =============================================================================#
 
-function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
+function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), ssa_idx::Int)
     cb = ctx.cb
     body_blk = op.body
 
@@ -138,7 +121,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
         end
         emit_block!(ctx, body_blk)
         # If body has no terminator, emit a ContinueOp with all carried values
-        if body_blk.terminator === nothing
+        if terminator(body_blk) === nothing
             encode_ContinueOp!(ctx.cb, block_args[2:end])
         end
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
@@ -153,7 +136,7 @@ end
  LoopOp
 =============================================================================#
 
-function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
+function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type), ssa_idx::Int)
     cb = ctx.cb
     body_blk = op.body
 
@@ -181,7 +164,7 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
         # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
         # in all branches), the if is NOT a terminator. We need an explicit terminator
         # after the if. Add an unreachable ContinueOp as fallback terminator.
-        if body_blk.terminator === nothing
+        if terminator(body_blk) === nothing
             encode_ContinueOp!(ctx.cb, copy(block_args))
         end
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
@@ -200,7 +183,7 @@ end
  nested region issues when "after" contains loops.
 =============================================================================#
 
-function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_type), n_results::Int, ssa_idx::Int)
+function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_type), ssa_idx::Int)
     cb = ctx.cb
     before_blk = op.before
     after_blk = op.after
@@ -230,7 +213,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         emit_block!(ctx, before_blk)
 
         # Get condition from ConditionOp terminator
-        cond_op = before_blk.terminator
+        cond_op = terminator(before_blk)
         cond_op isa ConditionOp || throw(IRError("WhileOp before region must end with ConditionOp"))
 
         cond_tv = emit_value!(ctx, cond_op.condition)
@@ -242,7 +225,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         else_body = function(_)
             # Break with ConditionOp args (become loop results)
             break_operands = Value[]
-            for arg in cond_op.args
+            for arg in operands(cond_op)
                 tv = emit_value!(ctx, arg)
                 tv !== nothing && tv.v !== nothing && push!(break_operands, tv.v)
             end
@@ -261,10 +244,11 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
 
         # Map "after" region block args from ConditionOp.args (user carries)
         # and block_args (token carries beyond ConditionOp.args)
+        cond_operands = operands(cond_op)
         for i in 1:length(after_blk.args)
             arg = after_blk.args[i]
-            if i <= length(cond_op.args)
-                tv = emit_value!(ctx, cond_op.args[i])
+            if i <= length(cond_operands)
+                tv = emit_value!(ctx, cond_operands[i])
                 if tv !== nothing
                     ctx[arg] = tv
                 else
@@ -283,8 +267,9 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
 
         # Emit ContinueOp with yield values from after region's YieldOp
         continue_operands = Value[]
-        if after_blk.terminator isa YieldOp
-            for val in after_blk.terminator.values
+        after_term = terminator(after_blk)
+        if after_term isa YieldOp
+            for val in operands(after_term)
                 tv = emit_value!(ctx, val)
                 tv !== nothing && tv.v !== nothing && push!(continue_operands, tv.v)
             end
@@ -304,7 +289,6 @@ end
 
 #=============================================================================
  Terminators
- Token values are already in op.values (appended by token_order_pass!).
 =============================================================================#
 
 """
@@ -314,31 +298,17 @@ Emit bytecode for a block terminator.
 """
 emit_terminator!(ctx::CGCtx, node::ReturnNode) = emit_return!(ctx, node)
 
-function emit_terminator!(ctx::CGCtx, op::YieldOp)
-    operands = Value[]
-    for val in op.values
-        tv = emit_value!(ctx, val)
-        tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
-    end
-    encode_YieldOp!(ctx.cb, operands)
-end
+_encode_term!(cb, ::YieldOp, v) = encode_YieldOp!(cb, v)
+_encode_term!(cb, ::ContinueOp, v) = encode_ContinueOp!(cb, v)
+_encode_term!(cb, ::BreakOp, v) = encode_BreakOp!(cb, v)
 
-function emit_terminator!(ctx::CGCtx, op::ContinueOp)
-    operands = Value[]
-    for val in op.values
+function emit_terminator!(ctx::CGCtx, op::Union{YieldOp, ContinueOp, BreakOp})
+    vals = Value[]
+    for val in operands(op)
         tv = emit_value!(ctx, val)
-        tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
+        tv !== nothing && tv.v !== nothing && push!(vals, tv.v)
     end
-    encode_ContinueOp!(ctx.cb, operands)
-end
-
-function emit_terminator!(ctx::CGCtx, op::BreakOp)
-    operands = Value[]
-    for val in op.values
-        tv = emit_value!(ctx, val)
-        tv !== nothing && tv.v !== nothing && push!(operands, tv.v)
-    end
-    encode_BreakOp!(ctx.cb, operands)
+    _encode_term!(ctx.cb, op, vals)
 end
 
 emit_terminator!(ctx::CGCtx, ::Nothing) = nothing
@@ -366,28 +336,14 @@ ReturnNode (REGION_TERMINATION with 3 children). The 2-child case
 (early return inside a loop) is not handled.
 """
 function hoist_returns!(block::Block)
-    for (_, entry) in block.body
-        stmt = entry.stmt
-        if stmt isa IfOp
-            hoist_returns!(stmt.then_region)
-            hoist_returns!(stmt.else_region)
-        elseif stmt isa ForOp
-            hoist_returns!(stmt.body)
-        elseif stmt isa WhileOp
-            hoist_returns!(stmt.before)
-            hoist_returns!(stmt.after)
-        elseif stmt isa LoopOp
-            hoist_returns!(stmt.body)
-        end
-    end
-    for (_, entry) in block.body
-        entry.stmt isa IfOp || continue
-        op = entry.stmt::IfOp
-        op.then_region.terminator isa ReturnNode || continue
-        op.else_region.terminator isa ReturnNode || continue
-        op.then_region.terminator = YieldOp()
-        op.else_region.terminator = YieldOp()
-        block.terminator = ReturnNode(nothing)
+    walk(block; order=:postorder) do inst, blk
+        s = stmt(inst)
+        s isa IfOp || return
+        terminator(s.then_region) isa ReturnNode || return
+        terminator(s.else_region) isa ReturnNode || return
+        terminator!(s.then_region, YieldOp())
+        terminator!(s.else_region, YieldOp())
+        terminator!(blk, ReturnNode(nothing))
     end
 end
 

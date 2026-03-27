@@ -1,7 +1,6 @@
 # Codegen: Julia IR -> Tile IR bytecode
 
 include("codegen/utils.jl")
-include("codegen/irutils.jl")                  # SSAMap/Block mutation helpers
 include("codegen/passes/token_keys.jl")        # TokenKey, TokenRole, ACQUIRE_TOKEN_KEY
 include("codegen/passes/alias_analysis.jl")    # alias_analysis_pass!
 include("codegen/passes/token_order.jl")       # token_order_pass!

@@ -1,7 +1,7 @@
 module cuTile
 
 using IRStructurizer
-using IRStructurizer: Block, ControlFlowOp, BlockArg, SSAMap,
+using IRStructurizer: Block, ControlFlowOp, BlockArg,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
                       IfOp, ForOp, WhileOp, LoopOp, Undef
 

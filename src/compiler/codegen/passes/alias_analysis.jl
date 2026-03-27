@@ -66,7 +66,8 @@ function alias_analysis_pass!(sci::StructuredIRCode)
         end
     end
 
-    # Fixed-point iteration
+    # Fixed-point iteration over all blocks (pre-order traversal)
+    all_blocks = eachblock(sci)
     iteration = 0
     max_iterations = 100
 
@@ -75,7 +76,12 @@ function alias_analysis_pass!(sci::StructuredIRCode)
         tracker.dirty = false
         iteration += 1
 
-        analyze_block!(tracker, sci.entry)
+        for block in all_blocks
+            for inst in instructions(block)
+                stmt(inst) isa ControlFlowOp && continue
+                analyze_statement!(tracker, inst)
+            end
+        end
     end
 
     @debug "Alias analysis converged in $iteration iterations"
@@ -113,58 +119,18 @@ function propagate!(tracker::AliasTracker, from, to)
 end
 
 """
-    analyze_block!(tracker::AliasTracker, block)
-
-Analyze all statements in a block, recursing into nested control flow.
-"""
-function analyze_block!(tracker::AliasTracker, block)
-    for (ssa_idx, entry) in block.body
-        if entry.stmt isa ControlFlowOp
-            analyze_control_flow!(tracker, entry.stmt)
-        else
-            analyze_statement!(tracker, SSAValue(ssa_idx), entry.stmt)
-        end
-    end
-    return
-end
-
-# Recurse into nested control flow regions
-function analyze_control_flow!(tracker::AliasTracker, op::IfOp)
-    analyze_block!(tracker, op.then_region)
-    return analyze_block!(tracker, op.else_region)
-end
-
-function analyze_control_flow!(tracker::AliasTracker, op::ForOp)
-    return analyze_block!(tracker, op.body)
-end
-
-function analyze_control_flow!(tracker::AliasTracker, op::WhileOp)
-    analyze_block!(tracker, op.before)
-    return analyze_block!(tracker, op.after)
-end
-
-function analyze_control_flow!(tracker::AliasTracker, op::LoopOp)
-    return analyze_block!(tracker, op.body)
-end
-
-# Fallback for unknown control flow ops
-function analyze_control_flow!(::AliasTracker, ::ControlFlowOp)
-    return
-end
-
-"""
-    analyze_statement!(tracker::AliasTracker, ssa::SSAValue, stmt)
+    analyze_statement!(tracker::AliasTracker, inst::Inst)
 
 Analyze a single statement and propagate aliases.
 Handles both `:call` and `:invoke` expression forms.
 """
-function analyze_statement!(tracker::AliasTracker, ssa::SSAValue, stmt)
-    call = resolve_call(stmt)
+function analyze_statement!(tracker::AliasTracker, inst::Inst)
+    ssa = SSAValue(inst)
+    s = stmt(inst)
+    call = resolve_call(s)
     if call !== nothing
         resolved_func, operands = call
-
-        # Also need the raw func ref for GlobalRef comparisons
-        func = stmt.head === :call ? stmt.args[1] : stmt.args[2]
+        func = callee(s)
 
         # getfield: propagate from parent
         if func === GlobalRef(Core, :getfield) && length(operands) >= 1
@@ -200,7 +166,7 @@ function analyze_statement!(tracker::AliasTracker, ssa::SSAValue, stmt)
             tracker[ssa] = ALIAS_UNIVERSE
         end
 
-    elseif stmt isa ReturnNode
+    elseif s isa ReturnNode
         # No alias propagation needed
 
     else

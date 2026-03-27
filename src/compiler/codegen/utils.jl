@@ -76,9 +76,13 @@ struct TokenResultNode
     mem_op_ssa::Int  # SSA index of the memory operation that produced this token
 end
 
-# Note: IfTokenResultNode was considered but removed in favor of conservative
-# IfOp handling (no token carries through branches). Can be added later for
-# more precise token tracking.
+# walk_uses! extensions so that IRStructurizer's uses()/replace_uses! see
+# operands inside cuTile-specific IR nodes.
+IRStructurizer.walk_uses!(f, node::JoinTokensNode) =
+    for i in 1:length(node.tokens); f(IndexedUseRef(node.tokens, i)); end
+IRStructurizer.walk_uses!(f, ::TokenResultNode) = nothing
+IRStructurizer.walk_uses!(f, ::MakeTokenNode) = nothing
+
 
 """
     is_token_type(typ) -> Bool

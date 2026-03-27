@@ -364,7 +364,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     emit_block!(sub_ctx, sci.entry; skip_terminator=true)
 
     # 6. Extract return value and yield
-    ret = sci.entry.terminator::ReturnNode
+    ret = terminator(sci.entry)::ReturnNode
     tv = emit_value!(sub_ctx, ret.val)
     if tv.tuple !== nothing
         # Tuple return: resolve each component to a concrete Value
