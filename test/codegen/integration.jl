@@ -891,8 +891,10 @@ end
     end
 
     @testset "no hints" begin
+        # sm_arch without hints still emits optimization_hints with an empty dict
+        # (matching Python cuTile, which always emits the target architecture).
         @test @filecheck begin
-            @check_not "optimization_hints"
+            @check "optimization_hints=<sm_100 = {}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))

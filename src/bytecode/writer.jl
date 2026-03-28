@@ -698,9 +698,11 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     items = Tuple{String, Int}[]
     isnothing(hints.num_ctas) || push!(items, ("num_cta_in_cga", hints.num_ctas))
     isnothing(hints.occupancy) || push!(items, ("occupancy", hints.occupancy))
-    isempty(items) && return nothing
 
-    # Use default architecture if not specified and hints are present
+    # Always emit optimization hints when sm_arch is specified, even with an empty
+    # dict. Python cuTile emits `optimization_hints=<sm_NNN = {}>` unconditionally
+    # so the CUBIN compiler knows the target architecture.
+    sm_arch === nothing && isempty(items) && return nothing
     arch_ver = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
     arch = format_sm_arch(arch_ver)
 
