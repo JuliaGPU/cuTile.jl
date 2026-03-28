@@ -29,35 +29,35 @@ end
 Base.hash(n::CFNode, h::UInt) = hash(n.id, hash(:CFNode, h))
 Base.:(==)(a::CFNode, b::CFNode) = a.id == b.id
 
-_cf_node(op) = CFNode(objectid(op))
+cf_node(op) = CFNode(objectid(op))
 
 #=============================================================================
  Build dependency graph
 =============================================================================#
 
 """
-    _dce_is_value(x) -> Bool
+    is_trackable_value(x) -> Bool
 
 Check if `x` is a trackable value in the dependency graph.
 """
-_dce_is_value(@nospecialize(x)) = x isa SSAValue || x isa BlockArg || x isa Argument
+is_trackable_value(@nospecialize(x)) = x isa SSAValue || x isa BlockArgument || x isa Argument
 
 """
-    _get_stmt_operands(s) -> Vector{Any}
+    get_stmt_operands(s) -> Vector{Any}
 
 Extract operand values from a statement (Expr, JoinTokensNode, TokenResultNode, etc.).
 Only returns values that are trackable in the dependency graph.
 """
-function _get_stmt_operands(@nospecialize(s))
+function get_stmt_operands(@nospecialize(s))
     result = Any[]
     if s isa Expr
         start = s.head === :invoke ? 3 : 2
         for i in start:length(s.args)
-            _dce_is_value(s.args[i]) && push!(result, s.args[i])
+            is_trackable_value(s.args[i]) && push!(result, s.args[i])
         end
     elseif s isa JoinTokensNode
         for t in s.tokens
-            _dce_is_value(t) && push!(result, t)
+            is_trackable_value(t) && push!(result, t)
         end
     elseif s isa TokenResultNode
         push!(result, SSAValue(s.mem_op_ssa))
@@ -67,7 +67,7 @@ function _get_stmt_operands(@nospecialize(s))
 end
 
 """
-    _dce_must_keep(s) -> Bool
+    must_keep(s) -> Bool
 
 Check if a statement is side-effectful and must be kept as a root.
 
@@ -79,7 +79,7 @@ Unknown calls are conservatively kept.
 Mirrors Python cuTile's `_must_keep` (dce.py:205-206) and Julia's compiler
 `stmt_effect_free` — both classify by per-instruction effect annotations.
 """
-function _dce_must_keep(@nospecialize(s))
+function must_keep(@nospecialize(s))
     # Token bookkeeping: no side effects
     s isa JoinTokensNode && return false
     s isa TokenResultNode && return false
@@ -143,14 +143,14 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
         val = SSAValue(inst.ssa_idx)
 
         if s isa ForOp
-            cf = _cf_node(s)
+            cf = cf_node(s)
             op_to_cf[objectid(s)] = cf
             graph[cf] = Any[]
 
             # CF_COND: ForOp depends on its bounds
-            _dce_is_value(s.lower) && _add_dep!(graph, cf, s.lower)
-            _dce_is_value(s.upper) && _add_dep!(graph, cf, s.upper)
-            _dce_is_value(s.step) && _add_dep!(graph, cf, s.step)
+            is_trackable_value(s.lower) && _add_dep!(graph, cf, s.lower)
+            is_trackable_value(s.upper) && _add_dep!(graph, cf, s.upper)
+            is_trackable_value(s.step) && _add_dep!(graph, cf, s.step)
 
             # CF_NESTED
             innermost_cf !== nothing && _add_dep!(graph, cf, innermost_cf)
@@ -170,7 +170,7 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
             _build_loop_result_deps!(graph, block, inst, s, cf)
 
         elseif s isa LoopOp
-            cf = _cf_node(s)
+            cf = cf_node(s)
             op_to_cf[objectid(s)] = cf
             graph[cf] = Any[]
 
@@ -189,7 +189,7 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
             _build_loop_result_deps!(graph, block, inst, s, cf)
 
         elseif s isa WhileOp
-            cf = _cf_node(s)
+            cf = cf_node(s)
             op_to_cf[objectid(s)] = cf
             graph[cf] = Any[]
 
@@ -214,12 +214,12 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
             _build_loop_result_deps!(graph, block, inst, s, cf)
 
         elseif s isa IfOp
-            cf = _cf_node(s)
+            cf = cf_node(s)
             op_to_cf[objectid(s)] = cf
 
             # CF_COND
             deps = Any[]
-            _dce_is_value(s.condition) && push!(deps, s.condition)
+            is_trackable_value(s.condition) && push!(deps, s.condition)
             innermost_cf !== nothing && push!(deps, innermost_cf)
             graph[cf] = deps
 
@@ -234,14 +234,14 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
         else
             # Regular instruction — skip if already handled by a CF result dep builder
             if !haskey(graph, val)
-                operands = _get_stmt_operands(s)
+                operands = get_stmt_operands(s)
                 deps = copy(operands)
                 innermost_cf !== nothing && push!(deps, innermost_cf)
                 graph[val] = deps
             end
 
-            if _dce_must_keep(s)
-                operands = _get_stmt_operands(s)
+            if must_keep(s)
+                operands = get_stmt_operands(s)
                 push!(roots, val)
                 for op in operands
                     push!(roots, op)
@@ -296,7 +296,7 @@ function _build_terminator_deps!(graph, roots, term, block,
 
     elseif term isa ConditionOp && innermost_loop_op !== nothing
         # ConditionOp's condition is an operand of the WhileOp's CF node
-        if innermost_loop_cf !== nothing && _dce_is_value(term.condition)
+        if innermost_loop_cf !== nothing && is_trackable_value(term.condition)
             _add_dep!(graph, innermost_loop_cf, term.condition)
         end
         # ConditionOp args carry values back to the loop (like ContinueOp)
@@ -315,12 +315,12 @@ function _build_terminator_deps!(graph, roots, term, block,
             n_carries = length(innermost_loop_op.init_values)
             for i in 1:min(n_carries, length(operands(term)))
                 v = operands(term)[i]
-                _dce_is_value(v) && _add_dep!(graph, body.args[i], v)
+                is_trackable_value(v) && _add_dep!(graph, body.args[i], v)
             end
         end
 
     elseif term isa ReturnNode
-        if isdefined(term, :val) && _dce_is_value(term.val)
+        if isdefined(term, :val) && is_trackable_value(term.val)
             push!(roots, term.val)
         end
     end
@@ -331,13 +331,13 @@ end
 
 Add dependency edges for a loop's result extractions (getfield calls in parent).
 """
-function _build_loop_result_deps!(graph, parent_block::Block, loop_inst::Inst,
+function _build_loop_result_deps!(graph, parent_block::Block, loop_inst::Instruction,
                                     op, cf::CFNode)
     loop_ssa = SSAValue(loop_inst.ssa_idx)
     n_carries = length(op.init_values)
 
     for inst in instructions(parent_block)
-        _is_getfield_of(stmt(inst), loop_ssa) || continue
+        is_getfield_of(stmt(inst), loop_ssa) || continue
         field_idx = stmt(inst).args[3]
         field_idx isa Int || continue
         gf_val = SSAValue(inst.ssa_idx)
@@ -351,7 +351,7 @@ function _build_loop_result_deps!(graph, parent_block::Block, loop_inst::Inst,
         body = op isa WhileOp ? op.before : op.body
         for term in reachable_terminators(body)
             ops = operands(term)
-            if field_idx <= length(ops) && _dce_is_value(ops[field_idx])
+            if field_idx <= length(ops) && is_trackable_value(ops[field_idx])
                 push!(deps, ops[field_idx])
             end
         end
@@ -359,7 +359,7 @@ function _build_loop_result_deps!(graph, parent_block::Block, loop_inst::Inst,
         if op isa WhileOp
             for term in reachable_terminators(op.after)
                 ops = operands(term)
-                if field_idx <= length(ops) && _dce_is_value(ops[field_idx])
+                if field_idx <= length(ops) && is_trackable_value(ops[field_idx])
                     push!(deps, ops[field_idx])
                 end
             end
@@ -384,12 +384,12 @@ end
 
 Add dependency edges for IfOp result extractions.
 """
-function _build_if_result_deps!(graph, parent_block::Block, if_inst::Inst,
+function _build_if_result_deps!(graph, parent_block::Block, if_inst::Instruction,
                                   op::IfOp, cf::CFNode)
     if_ssa = SSAValue(if_inst.ssa_idx)
 
     for inst in instructions(parent_block)
-        _is_getfield_of(stmt(inst), if_ssa) || continue
+        is_getfield_of(stmt(inst), if_ssa) || continue
         field_idx = stmt(inst).args[3]
         field_idx isa Int || continue
         gf_val = SSAValue(inst.ssa_idx)
@@ -399,24 +399,24 @@ function _build_if_result_deps!(graph, parent_block::Block, if_inst::Inst,
         then_term = terminator(op.then_region)
         if then_term isa YieldOp && field_idx <= length(operands(then_term))
             v = operands(then_term)[field_idx]
-            _dce_is_value(v) && push!(deps, v)
+            is_trackable_value(v) && push!(deps, v)
         end
         else_term = terminator(op.else_region)
         if else_term isa YieldOp && field_idx <= length(operands(else_term))
             v = operands(else_term)[field_idx]
-            _dce_is_value(v) && push!(deps, v)
+            is_trackable_value(v) && push!(deps, v)
         end
         graph[gf_val] = deps
     end
 end
 
 """
-    _is_getfield_of(s, ref::SSAValue) -> Bool
+    is_getfield_of(s, ref::SSAValue) -> Bool
 
 Check if `s` is a `getfield(ref, idx::Int)` expression.
 Handles both `Core.getfield` (GlobalRef) and bare `getfield` (resolved function).
 """
-function _is_getfield_of(@nospecialize(s), ref::SSAValue)
+function is_getfield_of(@nospecialize(s), ref::SSAValue)
     s isa Expr || return false
     s.head === :call || return false
     length(s.args) >= 3 || return false
@@ -463,7 +463,7 @@ Loop carry pruning is handled by `filter!(carries(op))` in `_prune_loop!`.
 function _prune_block!(block::Block, live::Set{Any}, op_to_cf::Dict{UInt64, CFNode},
                          yield_mask)
     changed = false
-    to_delete = Inst[]
+    to_delete = Instruction[]
 
     for inst in instructions(block)
         s = stmt(inst)
@@ -491,7 +491,7 @@ function _prune_block!(block::Block, live::Set{Any}, op_to_cf::Dict{UInt64, CFNo
 
         else
             # Regular instruction: dead if not live and not must-keep
-            if val ∉ live && !_dce_must_keep(s)
+            if val ∉ live && !must_keep(s)
                 push!(to_delete, inst)
                 changed = true
             end
@@ -513,7 +513,7 @@ end
 
 Filter dead carries from a loop and recurse into its body.
 """
-function _prune_loop!(parent_block::Block, inst::Inst,
+function _prune_loop!(parent_block::Block, inst::Instruction,
                         op::Union{ForOp, LoopOp, WhileOp},
                         live::Set{Any}, op_to_cf::Dict{UInt64, CFNode})
     changed = false
@@ -528,7 +528,7 @@ function _prune_loop!(parent_block::Block, inst::Inst,
     # Also check result getfield liveness
     loop_ssa = SSAValue(inst.ssa_idx)
     for pinst in instructions(parent_block)
-        _is_getfield_of(stmt(pinst), loop_ssa) || continue
+        is_getfield_of(stmt(pinst), loop_ssa) || continue
         field_idx = stmt(pinst).args[3]
         field_idx isa Int || continue
         if field_idx <= n_carries && SSAValue(pinst.ssa_idx) ∈ live
@@ -567,7 +567,7 @@ end
 
 Filter dead results from an IfOp and recurse into its branches.
 """
-function _prune_if!(parent_block::Block, inst::Inst, op::IfOp,
+function _prune_if!(parent_block::Block, inst::Instruction, op::IfOp,
                       live::Set{Any}, op_to_cf::Dict{UInt64, CFNode})
     changed = false
 
@@ -585,7 +585,7 @@ function _prune_if!(parent_block::Block, inst::Inst, op::IfOp,
     if n_results > 0
         result_live = BitVector(false for _ in 1:n_results)
         for pinst in instructions(parent_block)
-            _is_getfield_of(stmt(pinst), if_ssa) || continue
+            is_getfield_of(stmt(pinst), if_ssa) || continue
             field_idx = stmt(pinst).args[3]
             field_idx isa Int || continue
             if field_idx <= n_results && SSAValue(pinst.ssa_idx) ∈ live
@@ -671,9 +671,9 @@ end
 Update or remove getfield extractions for a CF op after carry/result removal.
 """
 function _renumber_getfields!(block::Block, cf_ssa::SSAValue, old_to_new::Dict{Int, Int})
-    to_delete = Inst[]
+    to_delete = Instruction[]
     for inst in instructions(block)
-        _is_getfield_of(stmt(inst), cf_ssa) || continue
+        is_getfield_of(stmt(inst), cf_ssa) || continue
         field_idx = stmt(inst).args[3]::Int
         if haskey(old_to_new, field_idx)
             stmt(inst).args[3] = old_to_new[field_idx]
@@ -691,7 +691,7 @@ end
 
 Recompute a CF op's result type from its remaining body block args.
 """
-function _update_cf_result_type!(block::Block, inst::Inst, body_block::Block)
+function _update_cf_result_type!(block::Block, inst::Instruction, body_block::Block)
     types = Type[is_token_type(arg.type) ? TokenType : arg.type for arg in body_block.args]
     new_type = isempty(types) ? Nothing : Tuple{types...}
     update_type!(block, inst, new_type)

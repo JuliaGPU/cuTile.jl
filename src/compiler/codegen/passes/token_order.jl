@@ -132,7 +132,7 @@ function compute_block_memory_effects!(block::Block, alias_result::Dict{Any, Ali
 end
 
 #=============================================================================
- Token map (IR-level, SSAValue/BlockArg)
+ Token map (IR-level, SSAValue/BlockArgument)
 =============================================================================#
 
 function collect_join_tokens_ir(token_key::TokenKey, token_map::Dict{TokenKey, Any},
@@ -297,7 +297,7 @@ function get_parallel_stores(op::ForOp, alias_result::Dict{Any, AliasSet},
     # Check if a value is the induction variable or derived from it through
     # simple arithmetic (e.g., iv - 1 for 1-based indexing) or a tuple
     # containing such a derivation.
-    function is_iv_derived(val, iv::BlockArg, depth::Int=0)
+    function is_iv_derived(val, iv::BlockArgument, depth::Int=0)
         depth > 10 && return false
         val === iv && return true
         val isa SSAValue || return false
@@ -382,7 +382,7 @@ function transform_block!(block::Block,
     transform_terminator!(block, token_map, loop_effects, ifelse_effects, token_carries)
 end
 
-function transform_statement!(block::Block, inst::Inst,
+function transform_statement!(block::Block, inst::Instruction,
                                 alias_result::Dict{Any, AliasSet},
                                 token_map::Dict{TokenKey, Any},
                                 parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
@@ -515,7 +515,7 @@ end
 # --- Loops (ForOp, LoopOp) ---
 # Matching Python's Loop handling (token_order.py:228-280)
 
-function transform_control_flow!(parent_block::Block, inst::Inst,
+function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::ForOp,
                                   alias_result, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
@@ -527,7 +527,7 @@ function transform_control_flow!(parent_block::Block, inst::Inst,
                      token_map, effects_cache, parallel_info)
 end
 
-function transform_control_flow!(parent_block::Block, inst::Inst,
+function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::LoopOp,
                                   alias_result, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
@@ -542,7 +542,7 @@ Insert getfield extractions after a control flow op for each per-alias token res
 Updates `token_map` with SSAValues pointing to the extracted tokens.
 `start_idx` is the 0-based index of the first token result (i.e., number of user results).
 """
-function extract_token_getfields!(parent_block::Block, inst::Inst, start_idx::Int,
+function extract_token_getfields!(parent_block::Block, inst::Instruction, start_idx::Int,
                                     effects::MemoryEffects, token_map::Dict{TokenKey, Any})
     last_ref = SSAValue(inst)
     idx = start_idx
@@ -578,7 +578,7 @@ Insert getfield extractions after a loop for each per-alias token result.
 Updates the result type to include TokenType parameters and calls
 `extract_token_getfields!` for the actual extraction.
 """
-function insert_token_result_getfields!(parent_block::Block, inst::Inst,
+function insert_token_result_getfields!(parent_block::Block, inst::Instruction,
                                          block_args, n_user::Int,
                                          effects::MemoryEffects, token_map::Dict{TokenKey, Any})
     length(block_args) > n_user || return
@@ -625,7 +625,7 @@ end
 
 Add per-alias-set token carries to a ForOp/LoopOp.
 """
-function transform_loop!(parent_block::Block, inst::Inst,
+function transform_loop!(parent_block::Block, inst::Instruction,
                            op::Union{ForOp, LoopOp},
                            alias_result::Dict{Any, AliasSet},
                            token_map::Dict{TokenKey, Any},
@@ -655,7 +655,7 @@ end
 # WhileOp has before/after regions. We treat it similarly to a loop but need to
 # handle both regions.
 
-function transform_control_flow!(parent_block::Block, inst::Inst,
+function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::WhileOp,
                                   alias_result, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
@@ -699,7 +699,7 @@ end
 # --- IfOp ---
 # Matching Python's IfElse handling (token_order.py:294-334)
 
-function transform_control_flow!(parent_block::Block, inst::Inst,
+function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::IfOp,
                                   alias_result, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
@@ -741,7 +741,7 @@ function transform_control_flow!(parent_block::Block, inst::Inst,
 end
 
 # Fallback
-function transform_control_flow!(parent_block::Block, inst::Inst,
+function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::ControlFlowOp,
                                   alias_result, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)

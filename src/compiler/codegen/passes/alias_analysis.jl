@@ -119,12 +119,12 @@ function propagate!(tracker::AliasTracker, from, to)
 end
 
 """
-    analyze_statement!(tracker::AliasTracker, inst::Inst)
+    analyze_statement!(tracker::AliasTracker, inst::Instruction)
 
 Analyze a single statement and propagate aliases.
 Handles both `:call` and `:invoke` expression forms.
 """
-function analyze_statement!(tracker::AliasTracker, inst::Inst)
+function analyze_statement!(tracker::AliasTracker, inst::Instruction)
     ssa = SSAValue(inst)
     s = stmt(inst)
     call = resolve_call(s)
@@ -193,8 +193,8 @@ end
 function is_pointer_passthrough(func)
     func === GlobalRef(Core.Intrinsics, :bitcast) && return true
 
-    # Safely check by name to avoid UndefVarError if intrinsics aren't exposed
-    if func isa Core.IntrinsicFunction || func isa Function
+    # Check by name for cuTile intrinsics that pass pointers through
+    if func isa Function
         n = nameof(func)
         return n === :bitcast || n === :assume_div_by || n === :assume_bounded || n === :assume_aligned
     end

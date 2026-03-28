@@ -41,7 +41,7 @@ const AliasSet = Union{Set{Any}, AliasUniverse}
 """
     TokenType
 
-Sentinel type used in StructuredIRCode to mark SSA values and BlockArgs
+Sentinel type used in StructuredIRCode to mark SSA values and BlockArguments
 that represent memory ordering tokens. Not a runtime type.
 """
 struct TokenType end
@@ -62,7 +62,7 @@ IR statement node: merges multiple token values into one.
 Inserted by `token_order_pass!`. Emitted as `encode_JoinTokensOp!` during codegen.
 """
 struct JoinTokensNode
-    tokens::Vector{Any}  # SSAValue or BlockArg references to token values
+    tokens::Vector{Any}  # SSAValue or BlockArgument references to token values
 end
 
 """
@@ -239,7 +239,7 @@ mutable struct CGCtx
     values::Dict{Int, CGVal}
     args::Dict{Int, CGVal}        # Argument index -> CGVal
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
-    block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
+    block_args::Dict{Int, CGVal}  # BlockArgument id -> CGVal (for control flow)
 
     # Destructured argument handling: path-keyed flat values
     # Key: (arg_idx, path) where path is e.g. [1] or [1, 2] (field indices)
@@ -331,11 +331,11 @@ function Base.setindex!(ctx::CGCtx, tv::CGVal, slot::SlotNumber)
     ctx.slots[slot.id] = tv
 end
 
-function Base.getindex(ctx::CGCtx, block_arg::BlockArg)
+function Base.getindex(ctx::CGCtx, block_arg::BlockArgument)
     get(ctx.block_args, block_arg.id, nothing)
 end
 
-function Base.setindex!(ctx::CGCtx, tv::CGVal, block_arg::BlockArg)
+function Base.setindex!(ctx::CGCtx, tv::CGVal, block_arg::BlockArgument)
     ctx.block_args[block_arg.id] = tv
 end
 

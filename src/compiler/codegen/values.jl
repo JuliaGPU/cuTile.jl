@@ -12,7 +12,7 @@ function emit_value!(ctx::CGCtx, ssa::SSAValue)
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
-emit_value!(ctx::CGCtx, block_arg::BlockArg) = ctx[block_arg]
+emit_value!(ctx::CGCtx, block_arg::BlockArgument) = ctx[block_arg]
 
 function emit_value!(ctx::CGCtx, val::Integer)
     jltype = typeof(val)

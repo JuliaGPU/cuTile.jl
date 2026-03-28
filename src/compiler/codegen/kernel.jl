@@ -145,6 +145,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # ReturnNode terminators to YieldOp, which the token pass then extends.
     hoist_returns!(ctx.sci.entry)
 
+    # Normalize Julia Core intrinsics to cuTile Intrinsics equivalents.
+    normalize_ir!(sci)
+
     # Run alias analysis and token ordering pass on the structured IR.
     alias_result = alias_analysis_pass!(sci)
     token_order_pass!(sci, alias_result)
@@ -315,6 +318,9 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     finally
         compile_hook[] = old_hook
     end
+
+    # 2b. Normalize Julia intrinsics in subprogram IR
+    normalize_ir!(sci)
 
     # 3. Create sub-context
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
