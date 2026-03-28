@@ -229,6 +229,106 @@ function get_cf_exit_tokens(effects::MemoryEffects, token_map::Dict{TokenKey, An
 end
 
 #=============================================================================
+ Loop parallel store optimization
+=============================================================================#
+
+"""
+    LoopParallelInfo
+
+Carries parallel store information into the loop body during transformation.
+Matches Python's `InnermostLoopInfo` dataclass.
+"""
+struct LoopParallelInfo
+    parallel_stores::Set{Int}              # SSA indices of eligible stores
+    parent_token_map::Dict{TokenKey, Any}  # token state before the loop
+end
+
+"""
+    get_parallel_stores(op::ForOp, alias_result, effects_cache) -> Set{Int}
+
+Identify stores in a ForOp body that can use the parent's token instead of a
+loop-carried token. A store is eligible when:
+
+1. No ALIAS_UNIVERSE or multi-element alias set in loop body
+2. Exactly one memory op on its alias set in the loop body (direct stmts only)
+3. That op is `store_partition_view`
+4. No nested CF ops have effects on that alias set
+5. Store's index tuple derives from the loop's induction variable
+
+Matches Python's `_get_parallel_stores` (token_order.py:428-473) and
+`_filter_by_store_index` (token_order.py:487-496).
+"""
+function get_parallel_stores(op::ForOp, alias_result::Dict{Any, AliasSet},
+                              effects_cache::Dict{UInt64, MemoryEffects})
+    body = op.body
+    body_effects = get(effects_cache, objectid(body), EMPTY_MEMORY_EFFECTS)
+
+    # Bail if any alias set is ALIAS_UNIVERSE or ambiguous
+    for (alias_set, _) in body_effects.effects
+        (alias_set isa AliasUniverse || length(alias_set) > 1) && return Set{Int}()
+    end
+
+    # Compute nested memory effects (from ControlFlowOps inside the loop body only)
+    nested_effects = EMPTY_MEMORY_EFFECTS
+    for inst in instructions(body)
+        s = stmt(inst)
+        s isa ControlFlowOp || continue
+        for b in blocks(s)
+            nested_effects = union(nested_effects,
+                compute_block_memory_effects!(b, alias_result, effects_cache))
+        end
+    end
+
+    # Collect memory ops per alias set (direct statements only, not nested CFs)
+    alias_set_to_ops = Dict{AliasSet, Vector{Tuple{Int, Any, Any}}}()
+    for inst in instructions(body)
+        s = stmt(inst)
+        s isa ControlFlowOp && continue
+        call = resolve_call(s)
+        call === nothing && continue
+        resolved_func, operands = call
+        mem_effect = classify_memory_op(resolved_func)
+        mem_effect == MEM_NONE && continue
+        alias_set = get_alias_set_for_operand(alias_result, first(operands))
+        ops = get!(Vector{Tuple{Int, Any, Any}}, alias_set_to_ops, alias_set)
+        push!(ops, (inst.ssa_idx, resolved_func, operands))
+    end
+
+    # Check if a value is the induction variable or derived from it through
+    # simple arithmetic (e.g., iv - 1 for 1-based indexing) or a tuple
+    # containing such a derivation.
+    function is_iv_derived(val, iv::BlockArg, depth::Int=0)
+        depth > 10 && return false
+        val === iv && return true
+        val isa SSAValue || return false
+        entry = get(body.body, val.id, nothing)
+        entry === nothing && return false
+        s = entry.stmt
+        s isa Expr || return false
+        (s.head === :call || s.head === :invoke) || return false
+        call_args = s.head === :call ? @view(s.args[2:end]) : @view(s.args[3:end])
+        return any(a -> is_iv_derived(a, iv, depth + 1), call_args)
+    end
+
+    parallel = Set{Int}()
+    iv = op.iv_arg
+    for (alias_set, ops) in alias_set_to_ops
+        length(ops) != 1 && continue
+        ssa_idx, resolved_func, operands = ops[1]
+        # Must be store_partition_view
+        resolved_func === Intrinsics.store_partition_view || continue
+        # No nested effects on this alias set
+        get(nested_effects.effects, alias_set, MEM_NONE) != MEM_NONE && continue
+        # Injective index: the indices tuple contains the induction variable
+        # store_partition_view(pv, tile, latency, allow_tma, indices_tuple)
+        indices_tuple = length(operands) >= 5 ? operands[5] : nothing
+        indices_tuple !== nothing && is_iv_derived(indices_tuple, iv) || continue
+        push!(parallel, ssa_idx)
+    end
+    return parallel
+end
+
+#=============================================================================
  The main pass
 =============================================================================#
 
@@ -248,7 +348,8 @@ function token_order_pass!(sci::StructuredIRCode, alias_result::Dict{Any, AliasS
     end
     token_map[ACQUIRE_TOKEN_KEY] = root_token
 
-    transform_block!(sci.entry, alias_result, token_map, effects_cache, nothing, nothing, nothing)
+    transform_block!(sci.entry, alias_result, token_map, effects_cache,
+                      nothing, nothing, nothing, nothing)
     return nothing
 end
 
@@ -262,7 +363,8 @@ function transform_block!(block::Block,
                            effects_cache::Dict{UInt64, MemoryEffects},
                            loop_effects::Union{MemoryEffects, Nothing},
                            ifelse_effects::Union{MemoryEffects, Nothing},
-                           token_carries)
+                           token_carries,
+                           parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
     # Snapshot to avoid invalidation from insertions
     snapshot = collect(instructions(block))
 
@@ -272,7 +374,7 @@ function transform_block!(block::Block,
             transform_control_flow!(block, inst, s,
                                      alias_result, token_map, effects_cache, loop_effects, token_carries)
         else
-            transform_statement!(block, inst, alias_result, token_map)
+            transform_statement!(block, inst, alias_result, token_map, parallel_info)
         end
     end
 
@@ -282,7 +384,8 @@ end
 
 function transform_statement!(block::Block, inst::Inst,
                                 alias_result::Dict{Any, AliasSet},
-                                token_map::Dict{TokenKey, Any})
+                                token_map::Dict{TokenKey, Any},
+                                parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
     s = stmt(inst)
     call = resolve_call(s)
     call === nothing && return
@@ -308,6 +411,37 @@ function transform_statement!(block::Block, inst::Inst,
         token_map[lop_key] = SSAValue(join_inst)
 
     elseif mem_effect == MEM_STORE
+        # Loop parallel store optimization (Python _try_loop_parallel_store, lines 499-541)
+        if parallel_info !== nothing && inst.ssa_idx in parallel_info.parallel_stores
+            lop_key = last_op_key(alias_set)
+            lst_key = last_store_key(alias_set)
+            parent_tok = parallel_info.parent_token_map[lop_key]
+
+            # Handle ACQUIRE_TOKEN_KEY if needed
+            input_token = if haskey(token_map, ACQUIRE_TOKEN_KEY) &&
+                             parent_tok !== token_map[ACQUIRE_TOKEN_KEY]
+                join_inst = insert_before!(block, SSAValue(inst),
+                                JoinTokensNode([parent_tok, token_map[ACQUIRE_TOKEN_KEY]]),
+                                TOKEN_TYPE)
+                SSAValue(join_inst)
+            else
+                parent_tok
+            end
+            push!(s.args, input_token)
+
+            result_inst = insert_after!(block, SSAValue(inst),
+                             TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
+            result_token = SSAValue(result_inst)
+
+            # Eagerly join with loop's LAST_OP (maintains token_map invariant)
+            loop_last_op = token_map[lop_key]
+            join_inst = insert_after!(block, SSAValue(result_inst),
+                           JoinTokensNode([loop_last_op, result_token]), TOKEN_TYPE)
+            token_map[lop_key] = SSAValue(join_inst)
+            token_map[lst_key] = SSAValue(join_inst)
+            return
+        end
+
         # For release-ordered atomics, join with ALL LAST_OP tokens (memory fence)
         memory_order = extract_memory_order(resolved_func, operands)
         input_token = get_input_token_ir!(block, SSAValue(inst),
@@ -382,11 +516,23 @@ end
 # Matching Python's Loop handling (token_order.py:228-280)
 
 function transform_control_flow!(parent_block::Block, inst::Inst,
-                                  op::Union{ForOp, LoopOp},
+                                  op::ForOp,
+                                  alias_result, token_map, effects_cache,
+                                  parent_loop_effects=nothing, parent_token_carries=nothing)
+    # Compute parallel stores for ForOps (only ForOps have induction variables)
+    pstores = get_parallel_stores(op, alias_result, effects_cache)
+    parallel_info = isempty(pstores) ? nothing :
+        LoopParallelInfo(pstores, copy(token_map))
+    transform_loop!(parent_block, inst, op, alias_result,
+                     token_map, effects_cache, parallel_info)
+end
+
+function transform_control_flow!(parent_block::Block, inst::Inst,
+                                  op::LoopOp,
                                   alias_result, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     transform_loop!(parent_block, inst, op, alias_result,
-                     token_map, effects_cache)
+                     token_map, effects_cache, nothing)
 end
 
 """
@@ -483,7 +629,8 @@ function transform_loop!(parent_block::Block, inst::Inst,
                            op::Union{ForOp, LoopOp},
                            alias_result::Dict{Any, AliasSet},
                            token_map::Dict{TokenKey, Any},
-                           effects_cache::Dict{UInt64, MemoryEffects})
+                           effects_cache::Dict{UInt64, MemoryEffects},
+                           parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
     body = op.body
     body_effects = get(effects_cache, objectid(body), EMPTY_MEMORY_EFFECTS)
 
@@ -495,9 +642,9 @@ function transform_loop!(parent_block::Block, inst::Inst,
     token_carry_refs = last.(token_carry_pairs)
 
     # Recurse — pass token_carry_refs so transform_terminator! can overwrite
-    # per-terminator carry values
+    # per-terminator carry values; pass parallel_info for ForOp parallel stores
     transform_block!(body, alias_result, body_token_map, effects_cache,
-                      body_effects, nothing, token_carry_refs)
+                      body_effects, nothing, token_carry_refs, parallel_info)
 
     insert_token_result_getfields!(parent_block, inst, body.args,
                                     n_user_carries, body_effects, result_token_map)

@@ -542,12 +542,14 @@ end
         spec = ct.ArraySpec{1}(16, true)
 
         @testset "binary op type mismatch errors in Julia" begin
-            # This should fail with an IRError, since the intrinsic
-            # is invoked with mismatched types (Int32 + Int64)
+            # addi with mismatched types (Int32 + Int64) should fail if the
+            # result is used. Dead code is removed by DCE before codegen.
             @test_throws ct.IRError code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                 pid = ct.bid(1)  # Int32
                 # Force type mismatch by calling addi with different types
                 result = ct.Intrinsics.addi(pid, Int64(1))
+                # Use the result so DCE doesn't remove it
+                Base.donotdelete(result)
                 return
             end
         end

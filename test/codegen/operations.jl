@@ -1104,7 +1104,8 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
-                @check "make_token"
+                # DCE removes unused make_token in empty kernels
+                @check_not "make_token"
                 return
             end
         end

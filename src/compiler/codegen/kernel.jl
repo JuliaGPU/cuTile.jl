@@ -148,6 +148,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Run alias analysis and token ordering pass on the structured IR.
     alias_result = alias_analysis_pass!(sci)
     token_order_pass!(sci, alias_result)
+    dce_pass!(sci)
 
     # Cache the token bytecode type for codegen
     ctx.token_type = Token(tt)
