@@ -116,6 +116,15 @@ def verify(data, result):
     assert np.allclose(cp.asnumpy(result["c"]), expected), "vadd incorrect!"
 
 
+def metric(data):
+    """Return (total_bytes, unit) for throughput calculation."""
+    n = 1
+    for s in data["shape"]:
+        n *= s
+    # 2 reads + 1 write
+    return 3 * n * data["a"].dtype.itemsize, "GB/s"
+
+
 #=============================================================================
 # Reference implementations for benchmarking
 #=============================================================================

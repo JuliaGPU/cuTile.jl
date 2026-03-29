@@ -68,6 +68,12 @@ def verify(data, result):
     assert np.allclose(cp.asnumpy(result["output"]), expected), "transpose incorrect!"
 
 
+def metric(data):
+    """Return (total_bytes, unit) for throughput calculation."""
+    # 1 read + 1 write
+    return 2 * data["M"] * data["N"] * data["input"].dtype.itemsize, "GB/s"
+
+
 #=============================================================================
 # Reference implementations for benchmarking
 #=============================================================================

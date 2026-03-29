@@ -266,6 +266,11 @@ function verify(data, result)
     @assert isapprox(Array(result.output), reference, rtol=1e-4)
 end
 
+function metric(data)
+    # FFT is a latency benchmark; report time directly
+    return 0, "μs"
+end
+
 #=============================================================================
  Reference implementations for benchmarking
 =============================================================================#

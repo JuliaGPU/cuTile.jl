@@ -106,6 +106,13 @@ function verify(data, result)
     @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
 end
 
+function metric(data)
+    n = prod(data.shape)
+    T = eltype(data.a)
+    # 2 reads + 1 write
+    return 3 * n * sizeof(T), "GB/s"
+end
+
 
 #=============================================================================
 # Reference implementations for benchmarking

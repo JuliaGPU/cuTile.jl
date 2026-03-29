@@ -56,6 +56,12 @@ function verify(data, result)
     @assert Array(result.y) ≈ transpose(Array(data.x))
 end
 
+function metric(data)
+    T = eltype(data.x)
+    # 1 read + 1 write
+    return 2 * data.m * data.n * sizeof(T), "GB/s"
+end
+
 #=============================================================================
  Reference implementations for benchmarking
 =============================================================================#

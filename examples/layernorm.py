@@ -254,6 +254,12 @@ def verify(data, result):
     assert np.allclose(cp.asnumpy(result["DB"]), expected_DB, rtol=rtol, atol=atol), \
         f"DB mismatch! max diff: {np.max(np.abs(cp.asnumpy(result['DB']) - expected_DB))}"
 
+def metric(data):
+    """Return (total_bytes, unit) for throughput calculation."""
+    # Forward: 3 reads of X + W + B reads + Y write + Mean/Rstd writes ≈ 4*M*N floats
+    return 4 * data["M"] * data["N"] * 4, "GB/s"
+
+
 # No run_others for layernorm - no simple reference implementation to compare against
 
 

@@ -105,6 +105,11 @@ function verify(data, result)
     @assert isapprox(Array(result.C), expected; rtol=1e-2) "max diff: $(maximum(abs.(Array(result.C) - expected)))"
 end
 
+function metric(data)
+    # 2*M*N*K FLOPs (multiply-add = 2 ops)
+    return 2 * data.M * data.N * data.K, "TFLOPS"
+end
+
 #=============================================================================
  Reference implementations for benchmarking
 =============================================================================#

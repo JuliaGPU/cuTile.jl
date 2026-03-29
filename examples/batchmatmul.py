@@ -93,6 +93,12 @@ def run(data, *, tm: int = 128, tn: int = 128, tk: int = 64, nruns: int = 1, war
     return {"C": C, "times": times}
 
 
+def metric(data):
+    """Return (total_flops, unit) for throughput calculation."""
+    # 2*M*K*N*Batch FLOPs (multiply-add = 2 ops)
+    return 2 * data["M"] * data["K"] * data["N"] * data["Batch"], "TFLOPS"
+
+
 def verify(data, result):
     """Verify batch matmul results."""
     A_np = cp.asnumpy(data["A"]).astype(np.float32)

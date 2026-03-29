@@ -35,9 +35,10 @@ def matmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int], tk
     # Convert fp32 to tf32 for tensor cores
     dtype = ct.tfloat32 if A.dtype == ct.float32 else A.dtype
 
+    zero_pad = ct.PaddingMode.ZERO
     for k in range(num_tiles_k):
-        a = ct.load(A, index=(bidx, k), shape=(tm, tk)).astype(dtype)
-        b = ct.load(B, index=(k, bidy), shape=(tk, tn)).astype(dtype)
+        a = ct.load(A, index=(bidx, k), shape=(tm, tk), padding_mode=zero_pad).astype(dtype)
+        b = ct.load(B, index=(k, bidy), shape=(tk, tn), padding_mode=zero_pad).astype(dtype)
         accumulator = ct.mma(a, b, accumulator)
 
     accumulator = ct.astype(accumulator, C.dtype)
@@ -101,6 +102,12 @@ def verify(data, result):
     # TF32 has reduced precision
     assert np.allclose(cp.asnumpy(result["C"]), expected, rtol=1e-1, atol=1e-1), \
         f"matmul incorrect! max diff: {np.max(np.abs(cp.asnumpy(result['C']) - expected))}"
+
+
+def metric(data):
+    """Return (total_flops, unit) for throughput calculation."""
+    # 2*M*N*K FLOPs (multiply-add = 2 ops)
+    return 2 * data["M"] * data["N"] * data["K"], "TFLOPS"
 
 
 #=============================================================================

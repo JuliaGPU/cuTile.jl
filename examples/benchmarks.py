@@ -12,31 +12,52 @@ import cupy as cp
 # Configuration
 #=============================================================================
 
-NRUNS = 10
-WARMUP = 3
+NRUNS = 20
+WARMUP = 5
 
 #=============================================================================
 # Benchmark Utilities
 #=============================================================================
 
 class BenchmarkResult:
-    def __init__(self, name: str, min_ms: float, mean_ms: float):
+    def __init__(self, name: str, min_ms: float, mean_ms: float, throughput: str = ""):
         self.name = name
         self.min_ms = min_ms
         self.mean_ms = mean_ms
+        self.throughput = throughput
+
+
+def format_throughput(total, unit: str, time_ms: float) -> str:
+    if unit == "GB/s":
+        gbps = total / (time_ms / 1000) / 1e9
+        return f"{gbps:.0f} GB/s"
+    elif unit == "TFLOPS":
+        tflops = total / (time_ms / 1000) / 1e12
+        return f"{tflops:.1f} TFLOPS"
+    elif unit == "μs":
+        return f"{time_ms * 1000:.0f} μs"
+    else:
+        return ""
 
 
 def print_table(title: str, results: list):
     """Print formatted benchmark results table."""
     print()
-    print("=" * 60)
+    print("=" * 72)
     print(f"  {title}")
-    print("=" * 60)
-    print(f"{'Implementation':<20}{'Min (ms)':<12}Mean (ms)")
-    print("-" * 60)
+    print("=" * 72)
+    has_throughput = any(r.throughput for r in results)
+    if has_throughput:
+        print(f"{'Implementation':<20}{'Min (ms)':<12}{'Mean (ms)':<12}Throughput")
+    else:
+        print(f"{'Implementation':<20}{'Min (ms)':<12}Mean (ms)")
+    print("-" * 72)
     for r in results:
-        print(f"{r.name:<20}{r.min_ms:<12.3f}{r.mean_ms:.3f}")
-    print("-" * 60)
+        if has_throughput:
+            print(f"{r.name:<20}{r.min_ms:<12.3f}{r.mean_ms:<12.3f}{r.throughput}")
+        else:
+            print(f"{r.name:<20}{r.min_ms:<12.3f}{r.mean_ms:.3f}")
+    print("-" * 72)
 
 
 #=============================================================================
@@ -76,6 +97,10 @@ def run_benchmark(name: str):
     # Prepare data with benchmark=True for larger sizes
     data = prepare_fn(benchmark=True)
 
+    # Get metric info if available
+    metric_fn = getattr(mod, "metric", None)
+    metric_total, metric_unit = (0, "") if not metric_fn else metric_fn(data)
+
     # Run cuTile
     result = run_fn(data, nruns=NRUNS, warmup=WARMUP)
 
@@ -96,7 +121,7 @@ def run_benchmark(name: str):
         others = run_others_fn(data, nruns=NRUNS, warmup=WARMUP)
         results.update(others)
 
-    return results
+    return results, metric_total, metric_unit
 
 
 #=============================================================================
@@ -106,9 +131,9 @@ def run_benchmark(name: str):
 def main():
     import torch  # For GPU name
 
-    print("=" * 60)
+    print("=" * 72)
     print("  cuTile Python Benchmarks")
-    print("=" * 60)
+    print("=" * 72)
     print()
     print("Configuration:")
     print(f"  Runs: {NRUNS} (+ {WARMUP} warmup)")
@@ -117,17 +142,20 @@ def main():
     for name in discover_benchmarks():
         print(f"\nBenchmarking {name}...")
 
-        results = run_benchmark(name)
-        if results is None:
+        ret = run_benchmark(name)
+        if ret is None:
             print("  (skipped - no prepare/run functions)")
             continue
+
+        results, metric_total, metric_unit = ret
 
         # Convert to BenchmarkResult for printing
         benchmark_results = []
         for impl_name, times in results.items():
             min_t = min(times)
             mean_t = sum(times) / len(times)
-            benchmark_results.append(BenchmarkResult(impl_name, min_t, mean_t))
+            tp = format_throughput(metric_total, metric_unit, min_t) if metric_unit else ""
+            benchmark_results.append(BenchmarkResult(impl_name, min_t, mean_t, tp))
 
         # Sort by min time
         benchmark_results.sort(key=lambda r: r.min_ms)
@@ -135,9 +163,9 @@ def main():
         print_table(name, benchmark_results)
 
     print()
-    print("=" * 60)
+    print("=" * 72)
     print("  Benchmark Complete")
-    print("=" * 60)
+    print("=" * 72)
 
 
 if __name__ == "__main__":

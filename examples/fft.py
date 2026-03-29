@@ -176,6 +176,11 @@ def run(data, *, nruns: int = 1, warmup: int = 0):
     return {"output": output, "times": times}
 
 
+def metric(data):
+    """Return (0, unit) for FFT - latency benchmark, report time directly."""
+    return 0, "μs"
+
+
 def verify(data, result):
     """Verify FFT results."""
     reference = torch.fft.fft(data["input"], dim=-1)
