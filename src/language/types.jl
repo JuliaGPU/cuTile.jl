@@ -79,7 +79,7 @@ Returns 0 if value is 0 or not divisible by any power of 2.
 function compute_divisibility(value::Integer, max_divisor::Int=16)
     value == 0 && return 0
     divisor = 1
-    while divisor <= max_divisor && value % (divisor * 2) == 0
+    while divisor < max_divisor && value % (divisor * 2) == 0
         divisor *= 2
     end
     return divisor >= 2 ? divisor : 0  # Only return if at least divisible by 2
