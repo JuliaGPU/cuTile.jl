@@ -134,7 +134,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
-    tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
+    tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...))
     reshape(tile, shape)
 end
 
@@ -148,7 +148,7 @@ end
     tv = Intrinsics.make_tensor_view(arr)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
-    tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
+    tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...))
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -203,7 +203,7 @@ Returns the stored tile (enables chaining and helps constant folding).
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
-    _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...) .- One())
+    _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 

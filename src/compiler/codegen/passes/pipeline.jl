@@ -124,6 +124,7 @@ and subprogram compilation.
 function run_passes!(sci::StructuredIRCode)
     # Rewrite passes (order matters: normalize before optimize, SVE before FMA)
     normalize_pass!(sci)
+    index_lower_pass!(sci)
     scalar_view_elim_pass!(sci)
     fma_fusion_pass!(sci)
 
