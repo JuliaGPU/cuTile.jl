@@ -17,6 +17,22 @@ function _extract_rounding_kwargs(ctx::CGCtx, args)
     kwargs
 end
 
+# Constant-fold scalar integer operations at codegen time.
+# Returns a CGVal if both operands are compile-time constants, nothing otherwise.
+function try_const_fold(ctx::CGCtx, args, op)
+    length(args) >= 2 || return nothing
+    lhs = emit_value!(ctx, args[1])
+    rhs = emit_value!(ctx, args[2])
+    (lhs === nothing || rhs === nothing) && return nothing
+    lhs.constant === nothing && return nothing
+    rhs.constant === nothing && return nothing
+    lhs_val = something(lhs.constant)
+    rhs_val = something(rhs.constant)
+    (lhs_val isa Integer && rhs_val isa Integer) || return nothing
+    result_val = op(lhs_val, rhs_val)
+    emit_value!(ctx, result_val)
+end
+
 function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     cb = ctx.cb
     tt = ctx.tt
@@ -111,7 +127,7 @@ end
 @intrinsic addi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.addi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args)
-    emit_binop!(ctx, args, encode_AddIOp!)
+    @something try_const_fold(ctx, args, +) emit_binop!(ctx, args, encode_AddIOp!)
 end
 
 # cuda_tile.cldi (ceiling division, toward positive infinity)
@@ -248,7 +264,7 @@ end
 @intrinsic subi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.subi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subi), args)
-    emit_binop!(ctx, args, encode_SubIOp!)
+    @something try_const_fold(ctx, args, -) emit_binop!(ctx, args, encode_SubIOp!)
 end
 
 
