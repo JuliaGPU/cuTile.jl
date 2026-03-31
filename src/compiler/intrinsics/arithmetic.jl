@@ -2,6 +2,24 @@
 
 ## Helpers
 
+# Broadcast the smaller-shaped operand to match the larger when shapes differ.
+# This handles 0D constants meeting shaped tiles after constant folding.
+function _broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
+    lhs.shape == rhs.shape && return (lhs, rhs)
+    elem_type = eltype(CC.widenconst(lhs.jltype))
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    if length(lhs.shape) < length(rhs.shape)
+        bv = broadcast_tile_to_shape!(cb, tt, lhs, rhs.shape, dtype)
+        lhs = CGVal(bv, tile_type!(tt, dtype, rhs.shape), rhs.jltype, rhs.shape,
+                    nothing, lhs.constant, nothing)
+    else
+        bv = broadcast_tile_to_shape!(cb, tt, rhs, lhs.shape, dtype)
+        rhs = CGVal(bv, tile_type!(tt, dtype, lhs.shape), lhs.jltype, lhs.shape,
+                    nothing, rhs.constant, nothing)
+    end
+    return (lhs, rhs)
+end
+
 # Extract optional rounding_mode (arg 3) and flush_to_zero (arg 4) from intrinsic args.
 # User-facing RoundingMode module constants match the bytecode @enum RoundingMode values.
 function _extract_rounding_kwargs(ctx::CGCtx, args)
@@ -42,46 +60,17 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
 
     (lhs_tv === nothing || rhs_tv === nothing) && return missing
 
-    # Determine what kind of operands we have
+    # After scalar_elim_pass!, all values are tile-typed.
     lhs_type = CC.widenconst(lhs_tv.jltype)
     rhs_type = CC.widenconst(rhs_tv.jltype)
-    lhs_is_tile = lhs_type <: Tile
-    rhs_is_tile = rhs_type <: Tile
+    elem_type = eltype(lhs_type)
+    eltype(rhs_type) === elem_type || throw(IRError("Binary op type mismatch: lhs element type $elem_type != rhs element type $(eltype(rhs_type))"))
 
-    if lhs_is_tile && rhs_is_tile
-        # Tile + Tile: shapes should be identical
-        lhs_elem = eltype(lhs_type)
-        rhs_elem = eltype(rhs_type)
-        lhs_elem === rhs_elem || throw(IRError("Binary op type mismatch: lhs element type $lhs_elem != rhs element type $rhs_elem"))
-        elem_type = lhs_elem
-        result_shape = lhs_tv.shape
-        result_jltype = lhs_tv.jltype
-    elseif !lhs_is_tile && !rhs_is_tile
-        # Scalar + Scalar: for integer intrinsics on index calculations
-        lhs_type === rhs_type || throw(IRError("Binary op type mismatch: lhs type $lhs_type != rhs type $rhs_type"))
-        elem_type = lhs_type
-
-        # Shape propagation: scalar Julia values may carry an IR-side shape
-        # (via to_scalar). Broadcast shapeless operands (constants) to match.
-        if !isempty(lhs_tv.shape) || !isempty(rhs_tv.shape)
-            result_shape = !isempty(lhs_tv.shape) ? lhs_tv.shape : rhs_tv.shape
-            dtype = julia_to_tile_dtype!(tt, elem_type)
-            if isempty(lhs_tv.shape)
-                bv = broadcast_tile_to_shape!(cb, tt, lhs_tv, result_shape, dtype)
-                lhs_tv = CGVal(bv, tile_type!(tt, dtype, result_shape), elem_type,
-                               result_shape, nothing, lhs_tv.constant, nothing)
-            elseif isempty(rhs_tv.shape)
-                bv = broadcast_tile_to_shape!(cb, tt, rhs_tv, result_shape, dtype)
-                rhs_tv = CGVal(bv, tile_type!(tt, dtype, result_shape), elem_type,
-                               result_shape, nothing, rhs_tv.constant, nothing)
-            end
-        else
-            result_shape = ScalarShape()
-        end
-        result_jltype = lhs_tv.jltype
-    else
-        throw(IRError("Mixed tile/scalar operations should be handled at intrinsic level via Tile() and broadcast_to()"))
-    end
+    # Broadcast smaller-shaped operand to match the larger (e.g., 0D constant
+    # meeting a shaped tile after constant folding removes reshape/broadcast)
+    lhs_tv, rhs_tv = _broadcast_match_shapes!(cb, tt, lhs_tv, rhs_tv)
+    result_shape = lhs_tv.shape
+    result_jltype = lhs_tv.jltype
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     result_type_id = tile_type!(tt, dtype, result_shape)
@@ -159,8 +148,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     predicate = @something get_constant(ctx, args[3]) throw(IRError("cmpi: requires compile-time predicate"))
     signedness = @something get_constant(ctx, args[4]) throw(IRError("cmpi: requires compile-time signedness"))
 
-    # Validate type match
-    lhs.type_id == rhs.type_id || throw(IRError("cmpi type mismatch: lhs type $(lhs.jltype) != rhs type $(rhs.jltype)"))
+    # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
+    lhs, rhs = _broadcast_match_shapes!(cb, tt, lhs, rhs)
 
     result_shape = lhs.shape
 
@@ -305,8 +294,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     rhs = @something emit_value!(ctx, args[2]) throw(IRError("cmpf: cannot resolve rhs"))
     predicate = @something get_constant(ctx, args[3]) throw(IRError("cmpf: requires compile-time predicate"))
 
-    # Validate type match
-    lhs.type_id == rhs.type_id || throw(IRError("cmpf type mismatch: lhs type $(lhs.jltype) != rhs type $(rhs.jltype)"))
+    # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
+    lhs, rhs = _broadcast_match_shapes!(cb, tt, lhs, rhs)
 
     result_shape = lhs.shape
 

@@ -267,7 +267,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), a
     res_type = tile_type!(ctx.tt, I32(ctx.tt), ScalarShape())
     nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(ctx.cb, res_type, res_type, res_type)
 
-    CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Int32)
+    CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Tile{Int32, Tuple{}})
 end
 
 # cuda_tile.get_tile_block_id
@@ -281,7 +281,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), arg
     bid_x, bid_y, bid_z = encode_GetTileBlockIdOp!(ctx.cb, res_type, res_type, res_type)
     result = (bid_x, bid_y, bid_z)[axis + 1]
 
-    CGVal(result, res_type, Int32)
+    CGVal(result, res_type, Tile{Int32, Tuple{}})
 end
 
 # TODO: cuda_tile.global
@@ -736,9 +736,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
 end
 
 # cuda_tile.to_scalar / cuda_tile.from_scalar
-# These are codegen-only reinterpret intrinsics for map(f, tile).
-# to_scalar: jltype becomes scalar T (for overlay dispatch), but IR value stays shaped.
-# from_scalar: restores jltype to Tile{T, S}.
+# Interpretation-only intrinsics for Julia's broadcast overlay dispatch.
+# to_scalar changes jltype from Tile{T,S} to T; from_scalar restores it.
+# Both are eliminated by scalar_elim_pass! before codegen — no emit needed.
 @intrinsic to_scalar(tile)
 @intrinsic from_scalar(x, S)
 function tfunc(𝕃, ::typeof(Intrinsics.from_scalar), @nospecialize(x), @nospecialize(S_lat))
@@ -751,22 +751,6 @@ function tfunc(𝕃, ::typeof(Intrinsics.to_scalar), @nospecialize(tile_lat))
     tile_type = CC.widenconst(tile_lat)
     tile_type <: Tile || return nothing
     return eltype(tile_type)
-end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.to_scalar), args)
-    tv = emit_value!(ctx, args[1])
-    tv === nothing && throw(IRError("Cannot resolve tile for to_scalar"))
-    T = eltype(CC.widenconst(tv.jltype))
-    # Reinterpret: jltype becomes scalar T for overlay dispatch.
-    # The IR-side shape/type_id/Value stay shaped.
-    CGVal(tv.v, tv.type_id, T, tv.shape, nothing, nothing, nothing)
-end
-
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.from_scalar), args)
-    tv = emit_value!(ctx, args[1])
-    tv === nothing && throw(IRError("Cannot resolve scalar for from_scalar"))
-    shape_type = @something get_constant(ctx, args[2]) throw(IRError("from_ScalarShape() shape must be a compile-time constant"))
-    T = CC.widenconst(tv.jltype)
-    CGVal(tv.v, tv.type_id, Tile{T, shape_type}, tv.shape, nothing, nothing, nothing)
 end
 
 # TODO: cuda_tile.unpack

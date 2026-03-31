@@ -35,7 +35,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     # Return the value for the requested axis (in Tile IR order)
     # shape_vals is a single Value when ndim == 1, otherwise a Tuple
     result_val = ndim == 1 ? shape_vals : shape_vals[tileir_axis + 1]
-    CGVal(result_val, scalar_i32, Int32)
+    CGVal(result_val, scalar_i32, Tile{Int32, Tuple{}})
 end
 
 # TODO: cuda_tile.get_tensor_shape
@@ -125,7 +125,7 @@ end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
     while length(index_vals) < ndim
-        idx_bytes = reinterpret(UInt8, [idx_jl_type(0)])
+        idx_bytes = reinterpret(UInt8, [eltype(idx_jl_type)(0)])
         push!(index_vals, encode_ConstantOp!(ctx.cb, idx_type, collect(idx_bytes)))
     end
     return index_vals

@@ -19,7 +19,7 @@ function emit_value!(ctx::CGCtx, val::Integer)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, jltype, ScalarShape(), nothing, Some(val), nothing)
+    CGVal(v, type_id, Tile{jltype, Tuple{}}, ScalarShape(), nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, val::AbstractFloat)
@@ -27,7 +27,7 @@ function emit_value!(ctx::CGCtx, val::AbstractFloat)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, jltype, ScalarShape(), nothing, Some(val), nothing)
+    CGVal(v, type_id, Tile{jltype, Tuple{}}, ScalarShape(), nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, node::QuoteNode)
@@ -67,7 +67,8 @@ function emit_value!(ctx::CGCtx, ref::GlobalRef)
         if type_id !== nothing
             bytes = constant_to_bytes(val, T)
             v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-            return CGVal(v, type_id, T, ScalarShape(), nothing, Some(val), nothing)
+            tile_jltype = T <: Number ? Tile{T, Tuple{}} : T
+            return CGVal(v, type_id, tile_jltype, ScalarShape(), nothing, Some(val), nothing)
         end
     end
     ghost_value(T, val)
@@ -158,13 +159,15 @@ function emit_constant!(ctx::CGCtx, @nospecialize(value), @nospecialize(result_t
         return ghost_value(result_type_unwrapped)
     end
 
+    # Extract element type: after scalar_elim, result_type may be Tile{T, Tuple{}}
+    elem_type = result_type_unwrapped <: Tile ? eltype(result_type_unwrapped) :
+                                                result_type_unwrapped
+
     # Skip non-primitive types
-    if !(result_type_unwrapped <: Number || result_type_unwrapped === Bool)
-        return nothing
-    end
+    elem_type <: Number || return nothing
 
     type_id = tile_type_for_julia!(ctx, result_type_unwrapped)
-    bytes = constant_to_bytes(value, result_type_unwrapped)
+    bytes = constant_to_bytes(value, elem_type)
     v = encode_ConstantOp!(ctx.cb, type_id, bytes)
 
     CGVal(v, type_id, result_type_unwrapped)

@@ -246,9 +246,11 @@ This is used internally to convert scalars to tiles for broadcasting.
 
 In kernel code, this is compiled to a ConstantOp.
 """
-@noinline function Tile(val::T) where {T <: Number}
-    Base.donotdelete(val)
-    Tile{T, Tuple{}}()
+@inline function Tile(val::T) where {T <: Number}
+    # Wrap scalar as 0D tile via from_scalar — this is eliminated by
+    # scalar_elim_pass! along with all other from_scalar calls, so no
+    # special-casing of Tile constructors is needed in the pass.
+    cuTile.Intrinsics.from_scalar(val, Tuple{})
 end
 
 # No-op: pass-through for values already wrapped as Tile
