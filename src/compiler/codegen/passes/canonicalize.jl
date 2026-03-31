@@ -3,22 +3,18 @@
 # Imperative passes that canonicalize the SCI before optimization.
 
 function canonicalize!(sci::StructuredIRCode)
-    normalize_pass!(sci)
     scalar_elim_pass!(sci)
+    lower_intr_pass!(sci)
 end
 
 
 #=============================================================================
- IR Normalization (rewrite)
+ Intrinsics lowering
 =============================================================================#
 
 # Lowers Julia Core intrinsics and builtins to cuTile Intrinsics.
-# Core intrinsics appear in the SCI either because:
-# - IRStructurizer introduces them for control flow (loop bounds, increments)
-# - Julia's type inference inlined Base functions down to Core intrinsics
-#   (e.g., Base.:-(x::Int32, y::Int32) → Core.Intrinsics.sub_int(x, y))
 
-const NORMALIZE_RULES = RewriteRule[
+const INTRINSIC_RULES = RewriteRule[
     # Integer arithmetic
     @rewrite Core.Intrinsics.add_int(~x, ~y) => Intrinsics.addi(~x, ~y)
     @rewrite Core.Intrinsics.sub_int(~x, ~y) => Intrinsics.subi(~x, ~y)
@@ -39,11 +35,11 @@ const NORMALIZE_RULES = RewriteRule[
     @rewrite Core.Intrinsics.xor_int(~x, ~y) => Intrinsics.xori(~x, ~y)
 
     # not_int: xori with all-ones constant (type-dependent)
-    @rewrite Core.Intrinsics.not_int(~x::Bool)   => Intrinsics.xori(~x, $(true))
-    @rewrite Core.Intrinsics.not_int(~x::Int32)  => Intrinsics.xori(~x, $(Int32(-1)))
-    @rewrite Core.Intrinsics.not_int(~x::Int64)  => Intrinsics.xori(~x, $(Int64(-1)))
-    @rewrite Core.Intrinsics.not_int(~x::UInt32) => Intrinsics.xori(~x, $(~UInt32(0)))
-    @rewrite Core.Intrinsics.not_int(~x::UInt64) => Intrinsics.xori(~x, $(~UInt64(0)))
+    @rewrite Core.Intrinsics.not_int(~x::Tile{Bool})   => Intrinsics.xori(~x, $(true))
+    @rewrite Core.Intrinsics.not_int(~x::Tile{Int32})  => Intrinsics.xori(~x, $(Int32(-1)))
+    @rewrite Core.Intrinsics.not_int(~x::Tile{Int64})  => Intrinsics.xori(~x, $(Int64(-1)))
+    @rewrite Core.Intrinsics.not_int(~x::Tile{UInt32}) => Intrinsics.xori(~x, $(~UInt32(0)))
+    @rewrite Core.Intrinsics.not_int(~x::Tile{UInt64}) => Intrinsics.xori(~x, $(~UInt64(0)))
 
     # Float arithmetic
     @rewrite Core.Intrinsics.add_float(~x, ~y) => Intrinsics.addf(~x, ~y)
@@ -68,38 +64,27 @@ const NORMALIZE_RULES = RewriteRule[
     @rewrite Core.ifelse(~c, ~x, ~y) => Intrinsics.select(~c, ~x, ~y)
 ]
 
-normalize_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, NORMALIZE_RULES)
+lower_intr_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, INTRINSIC_RULES)
 
 
 #=============================================================================
  Scalar Elimination
 =============================================================================#
 
-# Removes to_scalar and from_scalar from the SCI, making the IR uniformly
-# tile-typed. These ops exist solely for Julia's overlay dispatch during
-# interpretation — by the time the SCI exists, dispatch is resolved.
+# Replaces scalar SSA values from the SCI, making the IR uniformly tile-typed.
+# This also removes `to_scalar` and `from_scalar` intrinsics from the IR.
 #
 # For to_scalar(x): replaces all uses with x, updates types to x's tile type.
-# For from_scalar(x, S): replaces all uses with x, updates types.
-# Then deletes the instruction.
+# For from_scalar(x, S): replaces all uses with x, updates types. Then deletes
+# the instruction.
 #
 # This eliminates the scalar/tile duality that complicates codegen and pattern
-# matching. After this pass, all broadcast-generated values are tile-typed.
+# matching. Scalars now only can exist as literal values embedded in the IR.
 
 function scalar_elim_pass!(sci::StructuredIRCode)
     scalar_elim_block!(sci.entry)
 end
 
-"""Make the IR uniformly tile-typed by eliminating scalar types.
-
-Three stages:
-1. Eliminate `to_scalar`/`from_scalar` (broadcast system artifacts)
-2. Propagate tile types through instructions that consumed scalar results
-3. Promote ALL remaining scalar-typed instructions to 0D tiles
-
-After this pass, every SSA value with a Number type becomes `Tile{T, Tuple{}}`.
-This matches Python cuTile where everything (block IDs, loop bounds, constants)
-is a 0D tile. The Tile IR bytecode makes no distinction."""
 function scalar_elim_block!(block::Block)
     # Recurse into nested control flow first
     for inst in instructions(block)
