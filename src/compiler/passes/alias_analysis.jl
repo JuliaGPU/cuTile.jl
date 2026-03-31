@@ -79,7 +79,7 @@ function alias_analysis_pass!(sci::StructuredIRCode)
         for block in all_blocks
             for inst in instructions(block)
                 stmt(inst) isa ControlFlowOp && continue
-                analyze_statement!(tracker, inst)
+                analyze_statement!(tracker, block, inst)
             end
         end
     end
@@ -124,10 +124,10 @@ end
 Analyze a single statement and propagate aliases.
 Handles both `:call` and `:invoke` expression forms.
 """
-function analyze_statement!(tracker::AliasTracker, inst::Instruction)
+function analyze_statement!(tracker::AliasTracker, block::Block, inst::Instruction)
     ssa = SSAValue(inst)
     s = stmt(inst)
-    call = resolve_call(s)
+    call = resolve_call(block, s)
     if call !== nothing
         resolved_func, operands = call
         func = callee(s)

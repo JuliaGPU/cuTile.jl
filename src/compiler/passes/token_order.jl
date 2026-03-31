@@ -112,7 +112,7 @@ function compute_block_memory_effects!(block::Block, alias_result::Dict{Any, Ali
                 effects = union(effects, compute_block_memory_effects!(b, alias_result, cache))
             end
         else
-            call = resolve_call(s)
+            call = resolve_call(block, s)
             call === nothing && continue
             resolved_func, operands = call
             mem_effect = classify_memory_op(resolved_func)
@@ -284,7 +284,7 @@ function get_parallel_stores(op::ForOp, alias_result::Dict{Any, AliasSet},
     for inst in instructions(body)
         s = stmt(inst)
         s isa ControlFlowOp && continue
-        call = resolve_call(s)
+        call = resolve_call(body, s)
         call === nothing && continue
         resolved_func, operands = call
         mem_effect = classify_memory_op(resolved_func)
@@ -387,7 +387,7 @@ function transform_statement!(block::Block, inst::Instruction,
                                 token_map::Dict{TokenKey, Any},
                                 parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
     s = stmt(inst)
-    call = resolve_call(s)
+    call = resolve_call(block, s)
     call === nothing && return
     resolved_func, operands = call
     mem_effect = classify_memory_op(resolved_func)

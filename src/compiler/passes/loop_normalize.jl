@@ -87,7 +87,7 @@ function _try_normalize_for!(sci::StructuredIRCode, parent_block::Block,
     subi_insts = Instruction[]
     for user_inst in iv_users
         s = stmt(user_inst)
-        call = resolve_call(s)
+        call = resolve_call(body, s)
         call === nothing && return false
         func, ops = call
         func === Intrinsics.subi || return false

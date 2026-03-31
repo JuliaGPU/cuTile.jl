@@ -105,7 +105,7 @@ function scalar_elim_block!(block::Block)
     # Phase 1: Eliminate to_scalar (forward tile-typed operand)
     to_delete = Instruction[]
     for inst in instructions(block)
-        call = resolve_call(stmt(inst))
+        call = resolve_call(block, stmt(inst))
         call === nothing && continue
         func, ops = call
         func === Intrinsics.to_scalar || continue
@@ -117,7 +117,7 @@ function scalar_elim_block!(block::Block)
     # Instructions that consumed to_scalar results still have scalar type
     # annotations but now receive tile-typed operands — inherit their shape.
     for inst in instructions(block)
-        call = resolve_call(stmt(inst))
+        call = resolve_call(block, stmt(inst))
         call === nothing && continue
         _, ops = call
 
@@ -140,7 +140,7 @@ function scalar_elim_block!(block::Block)
 
     # Phase 3: Eliminate from_scalar (operand now has correct tile type)
     for inst in instructions(block)
-        call = resolve_call(stmt(inst))
+        call = resolve_call(block, stmt(inst))
         call === nothing && continue
         func, ops = call
         func === Intrinsics.from_scalar || continue

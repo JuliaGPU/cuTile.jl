@@ -79,7 +79,7 @@ Unknown calls are conservatively kept.
 Mirrors Python cuTile's `_must_keep` (dce.py:205-206) and Julia's compiler
 `stmt_effect_free` — both classify by per-instruction effect annotations.
 """
-function must_keep(@nospecialize(s))
+function must_keep(block::Block, @nospecialize(s))
     # Token bookkeeping: no side effects
     s isa JoinTokensNode && return false
     s isa TokenResultNode && return false
@@ -88,7 +88,7 @@ function must_keep(@nospecialize(s))
     # ReturnNode: always keep
     s isa ReturnNode && return true
 
-    call = resolve_call(s)
+    call = resolve_call(block, s)
     if call !== nothing
         resolved_func, _ = call
         # cuTile intrinsics: use the efunc effects system
@@ -240,7 +240,7 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
                 graph[val] = deps
             end
 
-            if must_keep(s)
+            if must_keep(block, s)
                 operands = get_stmt_operands(s)
                 push!(roots, val)
                 for op in operands
@@ -491,7 +491,7 @@ function _prune_block!(block::Block, live::Set{Any}, op_to_cf::Dict{UInt64, CFNo
 
         else
             # Regular instruction: dead if not live and not must-keep
-            if val ∉ live && !must_keep(s)
+            if val ∉ live && !must_keep(block, s)
                 push!(to_delete, inst)
                 changed = true
             end
