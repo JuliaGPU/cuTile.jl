@@ -77,6 +77,30 @@ const IDENTITY_RULES = RewriteRule[
 ]
 
 #=============================================================================
+ Comparison Strength Reduction (rewrite)
+=============================================================================#
+
+# (x + 1) <= y  →  x < y  for signed integers.
+# Canonicalizes Julia's 1-based `arange(N) .+ 1 .<= limit` mask pattern
+# into 0-based `arange(N) .< limit`, eliminating the tile-wide addi(iota, 1).
+
+const COMPARISON_RULES = RewriteRule[
+    # Direct: cmpi(addi(x, 1), y, <=, signed) → cmpi(x, y, <, signed)
+    @rewrite Intrinsics.cmpi(Intrinsics.addi(~x, $(1)), ~y,
+                              $(ComparisonPredicate.LessThanOrEqual), $(Signedness.Signed)) =>
+             Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.LessThan), $(Signedness.Signed))
+
+    # Nested: cmpi(addi(a, addi(b, 1)), y, <=, signed) → cmpi(addi(a, b), y, <, signed)
+    # Uses inplace=true to modify the existing addi and cmpi ops' operands rather
+    # than creating new ones (which would cascade the worklist).
+    @rewrite(inplace=true,
+             Intrinsics.cmpi(Intrinsics.addi(~a, Intrinsics.addi(~b, $(1))), ~y,
+                              $(ComparisonPredicate.LessThanOrEqual), $(Signedness.Signed)) =>
+             Intrinsics.cmpi(Intrinsics.addi(~a, ~b), ~y,
+                              $(ComparisonPredicate.LessThan), $(Signedness.Signed)))
+]
+
+#=============================================================================
  Combined Rule Set
 =============================================================================#
 
@@ -84,6 +108,7 @@ const OPTIMIZATION_RULES = RewriteRule[
     IDENTITY_RULES...,
     ALGEBRA_RULES...,
     FMA_RULES...,
+    COMPARISON_RULES...,
 ]
 
 #=============================================================================

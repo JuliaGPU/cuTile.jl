@@ -46,8 +46,10 @@ struct RewriteRule
     lhs::PCall
     rhs::RewriteNode
     guard::Union{Function, Nothing}  # (match, driver) -> Bool, or nothing
+    inplace::Bool                    # true = modify matched ops in-place (no new instructions)
 end
-RewriteRule(lhs::PCall, rhs::RewriteNode) = RewriteRule(lhs, rhs, nothing)
+RewriteRule(lhs::PCall, rhs::RewriteNode) = RewriteRule(lhs, rhs, nothing, false)
+RewriteRule(lhs::PCall, rhs::RewriteNode, guard) = RewriteRule(lhs, rhs, guard, false)
 
 root_func(rule::RewriteRule) = rule.lhs.func
 
@@ -58,18 +60,43 @@ root_func(rule::RewriteRule) = rule.lhs.func
 """
     @rewrite lhs => rhs
     @rewrite(lhs => rhs, guard)
+    @rewrite(inplace=true, lhs => rhs)
+    @rewrite(inplace=true, lhs => rhs, guard)
 
 Compile a declarative rewrite rule. LHS: `func(args...)` matches calls,
 `~x` binds (repeated names require equality), `~x::T` binds with type constraint,
-`one_use(pat)` requires single use. RHS: `func(args...)` emits calls,
-`~x` references bindings, `\$(expr)` injects a literal constant.
+`one_use(pat)` requires single use, `\$(expr)` matches literal values.
+RHS: `func(args...)` emits calls, `~x` references bindings,
+`\$(expr)` injects a literal constant.
+
 Optional `guard` is a function `(match, driver) -> Bool` checked after pattern match.
+
+With `inplace=true`, the RHS describes modifications to the matched ops' operands
+rather than creating new ops. The LHS and RHS trees are walked in parallel: where
+they share the same function, the existing op is modified in-place; where the RHS
+has a different binding or constant, the operand is replaced. This avoids the
+worklist cascade that occurs when the standard mode creates new instructions.
 """
-macro rewrite(ex, guard=nothing)
+macro rewrite(args...)
+    # Parse keyword arguments
+    inplace = false
+    positional = Any[]
+    for arg in args
+        if arg isa Expr && arg.head === :(=) && arg.args[1] === :inplace
+            inplace = arg.args[2]::Bool
+        else
+            push!(positional, arg)
+        end
+    end
+    length(positional) >= 1 || error("@rewrite expects: lhs => rhs")
+    ex = positional[1]
+    guard = length(positional) >= 2 ? positional[2] : nothing
+
     ex isa Expr && ex.head === :call && ex.args[1] === :(=>) ||
         error("@rewrite expects: lhs => rhs")
     g = guard === nothing ? :nothing : guard
-    esc(:(RewriteRule($(_compile_lhs(ex.args[2])), $(_compile_rhs(ex.args[3])), $g)))
+    ip = inplace
+    esc(:(RewriteRule($(_compile_lhs(ex.args[2])), $(_compile_rhs(ex.args[3])), $g, $ip)))
 end
 
 """
@@ -319,7 +346,96 @@ function _resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, ty
     SSAValue(inst)
 end
 
+"""
+In-place rewrite: walk LHS/RHS trees in parallel, modifying matched ops' operands.
+No new instructions are created — existing ops are modified in-place.
+"""
+function _apply_inplace_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
+    pos = findfirst(==(val.id), block.body.ssa_idxes)
+    pos === nothing && return false
+    typ = block.body.types[pos]
+
+    # Build new operands for the root op from the RHS
+    new_operands = Any[_resolve_inplace_rhs(driver, match.bindings, op, lhs_op)
+                       for (op, lhs_op) in zip(rule.rhs.operands, rule.lhs.operands)]
+    block.body.stmts[pos] = Expr(:call, rule.rhs.func, new_operands...)
+    driver.defs[val] = DefEntry(block, val, rule.rhs.func)
+    push!(driver.worklist, val)
+    _add_users_to_worklist!(driver, val)
+    return true
+end
+
+"""Resolve an RHS operand for in-place mode. If the RHS sub-tree is an RCall
+matching a PCall at the same position, modify the existing op in-place and
+return its SSAValue. Otherwise fall back to bindings/constants."""
+_resolve_inplace_rhs(driver, bindings, op::RBind, @nospecialize(lhs_op)) = bindings[op.name]
+_resolve_inplace_rhs(driver, bindings, op::RConst, @nospecialize(lhs_op)) = op.val
+
+function _resolve_inplace_rhs(driver, bindings, op::RCall, lhs_op::PCall)
+    # The LHS matched an op with this function. Find it via the match bindings
+    # or the defs index and modify it in-place.
+    if op.func === lhs_op.func && length(op.operands) == length(lhs_op.operands)
+        # Same structure — modify the matched op's operands in-place
+        matched_ssa = _find_matched_ssa(driver, lhs_op, bindings)
+        if matched_ssa !== nothing
+            entry = get(driver.defs, matched_ssa, nothing)
+            if entry !== nothing
+                epos = findfirst(==(matched_ssa.id), entry.block.body.ssa_idxes)
+                if epos !== nothing
+                    new_ops = Any[_resolve_inplace_rhs(driver, bindings, sub_rhs, sub_lhs)
+                                  for (sub_rhs, sub_lhs) in zip(op.operands, lhs_op.operands)]
+                    entry.block.body.stmts[epos] = Expr(:call, op.func, new_ops...)
+                    push!(driver.worklist, matched_ssa)
+                    return matched_ssa
+                end
+            end
+        end
+    end
+    error("inplace rewrite: RHS sub-call $(op.func) doesn't match LHS structure — cannot modify in-place")
+end
+
+# Fallback for mismatched LHS/RHS structure
+function _resolve_inplace_rhs(driver, bindings, op::RCall, @nospecialize(lhs_op))
+    error("inplace rewrite: RHS has RCall but LHS has $(typeof(lhs_op)) at same position")
+end
+
+"""Find the SSA value that was matched by a PCall pattern node during matching.
+The matched_ssas in MatchResult are ordered root-first, but we need to find
+the specific SSA for a sub-pattern. We do this by looking up the first operand's
+binding and finding the op that defines it."""
+function _find_matched_ssa(driver, pat::PCall, bindings)
+    entry = driver.sci.entry
+    for sub in pat.operands
+        if sub isa PBind
+            bound = get(bindings, sub.name, nothing)
+            bound isa SSAValue || continue
+            for inst in users(entry, bound)
+                call = resolve_call(entry, inst)
+                call === nothing && continue
+                func, _ = call
+                func === pat.func && return SSAValue(inst)
+            end
+        elseif sub isa PCall
+            inner_ssa = _find_matched_ssa(driver, sub, bindings)
+            if inner_ssa !== nothing
+                for inst in users(entry, inner_ssa)
+                    call = resolve_call(entry, inst)
+                    call === nothing && continue
+                    func, _ = call
+                    func === pat.func && return SSAValue(inst)
+                end
+            end
+        end
+    end
+    return nothing
+end
+
 function _apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
+    # In-place mode: modify matched ops' operands without creating new instructions
+    if rule.inplace
+        return _apply_inplace_rewrite!(driver, block, val, rule, match)
+    end
+
     entry = driver.defs[val]
     if rule.rhs isa RFunc
         # Look up live instruction for RFunc interface
