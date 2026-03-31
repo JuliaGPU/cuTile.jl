@@ -180,7 +180,8 @@ _use_count(driver::RewriteDriver, val::SSAValue) =
     length(uses(driver.sci.entry, val))
 
 # Codegen no-ops that pattern matching traces through transparently.
-_is_transparent(func) = func === Intrinsics.broadcast
+_is_transparent(func) = func === Intrinsics.broadcast ||
+                         func === Intrinsics.reshape
 
 #=============================================================================
  Notifications
