@@ -17,6 +17,9 @@ using BFloat16s: BFloat16
 using EnumX
 public BFloat16
 
+import CompilerCaching
+using CompilerCaching: CacheView, @setup_caching, method_instance, match_method_instance, typeinf!, results, get_source
+
 # Shared definitions
 include("shapes.jl")
 
@@ -30,6 +33,7 @@ include("bytecode/encodings.jl")
 include("language/types.jl")
 
 # Compiler implementation
+include("compiler/interpreter.jl")
 include("compiler/driver.jl")
 include("compiler/reflection.jl")
 include("compiler/utils.jl")

@@ -15,22 +15,6 @@ function disassemble_tileir(bytecode::Vector{UInt8})::String
 end
 
 """
-    lookup_method_instance(f, argtypes; world) -> MethodInstance
-
-Look up a MethodInstance for a cuTile function, checking the overlay method table first.
-"""
-function lookup_method_instance(@nospecialize(f), @nospecialize(argtypes);
-                                world::UInt=Base.get_world_counter())
-    tt = Base.signature_type(f, argtypes)
-    if !Base.isdispatchtuple(tt)
-        throw(ArgumentError("requires a dispatch tuple, got non-concrete signature"))
-    end
-    @something(match_method_instance(f, argtypes; world, method_table=cuTileMethodTable),
-               match_method_instance(f, argtypes; world),
-               throw(MethodError(f, argtypes)))
-end
-
-"""
     code_typed(f, argtypes; world, kwargs...) -> Vector{Any}
 
 Return typed code for a cuTile function. Analogous to `Base.code_typed`.
@@ -75,7 +59,8 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
     mi = lookup_method_instance(f, stripped; world)
     cache = CacheView{CuTileResults}(:cuTile, world)
-    sci, rettype, _ = emit_ir(cache, mi; const_argtypes)
+    ir, rettype = emit_julia(cache, mi; const_argtypes)
+    sci, rettype, _ = emit_structured(ir, rettype)
     if optimize
         sci = deepcopy(sci)
         run_passes!(sci)
@@ -118,8 +103,8 @@ constant_value(::Type{Constant{T,V}}) where {T,V} = V
     code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy)
 
 Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
-Analogous to `code_llvm`/`code_native`. Uses the compilation cache for
-consistency with `launch`.
+Analogous to `code_llvm`/`code_native`. Calls the driver directly without
+caching in CuTileResults, so reflection never pollutes the compilation cache.
 """
 function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     sm_arch::Union{VersionNumber, Nothing}=nothing,
@@ -128,14 +113,17 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     occupancy::Union{Int, Nothing}=nothing,
                     bytecode_version::VersionNumber=DEFAULT_BYTECODE_VERSION,
                     world::UInt=Base.get_world_counter())
-    # Strip Constant types from argtypes for MI lookup, build const_argtypes
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
     mi = lookup_method_instance(f, stripped; world)
 
-    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
-            bytecode_version=bytecode_version)
-    cache = CacheView{CuTileResults}((:cuTile, opts), world)
-    bytecode = emit_code(cache, mi; const_argtypes)
+    opts = CGOpts((sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
+                    bytecode_version=bytecode_version))
+    cache = CacheView{CuTileResults}(:cuTile, world)
+    ir, rettype = emit_julia(cache, mi; const_argtypes)
+    sci, rettype, kernel_meta = emit_structured(ir, rettype)
+    bytecode = emit_tile(sci, rettype, kernel_meta;
+                         name=sanitize_name(string(mi.def.name)),
+                         opts, cache, const_argtypes)
     print(io, disassemble_tileir(bytecode))
 end
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =

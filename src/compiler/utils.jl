@@ -1,6 +1,4 @@
 # Codegen types and utilities
-#
-# Core types (CGVal, CGCtx) and helper functions for Tile IR code generation.
 
 
 #=============================================================================
@@ -222,6 +220,7 @@ Check if a CGVal is a lazy argument reference.
 """
 is_arg_ref(tv::CGVal) = tv.arg_ref !== nothing
 
+
 #=============================================================================
  CGCtx: Compilation context
 =============================================================================#
@@ -339,6 +338,7 @@ function Base.setindex!(ctx::CGCtx, tv::CGVal, block_arg::BlockArgument)
     ctx.block_args[block_arg.id] = tv
 end
 
+
 #=============================================================================
  Destructured argument helpers
 =============================================================================#
@@ -409,6 +409,7 @@ is_destructured_arg(ctx::CGCtx, arg_idx::Int) = haskey(ctx.arg_types, arg_idx)
 Get the original Julia type for a destructured argument.
 """
 get_arg_type(ctx::CGCtx, arg_idx::Int) = get(ctx.arg_types, arg_idx, nothing)
+
 
 #=============================================================================
  Type conversion utilities
@@ -598,4 +599,27 @@ function extract_tile_shape(@nospecialize(T))
         return ColMajorShape(size(T))
     end
     ScalarShape()
+end
+
+#-----------------------------------------------------------------------------
+# Other helpers
+#-----------------------------------------------------------------------------
+
+# Encode characters outside [a-zA-Z0-9_] as _XX hex escapes for PTX/MLIR compatibility.
+sanitize_name(name::String) = replace(name, r"[^a-zA-Z0-9_]" => c -> "_$(string(UInt8(only(c)); base=16, pad=2))")
+
+"""
+    lookup_method_instance(f, argtypes; world) -> MethodInstance
+
+Look up a MethodInstance for a cuTile function, checking the overlay method table first.
+"""
+function lookup_method_instance(@nospecialize(f), @nospecialize(argtypes);
+                                world::UInt=Base.get_world_counter())
+    tt = Base.signature_type(f, argtypes)
+    if !Base.isdispatchtuple(tt)
+        throw(ArgumentError("requires a dispatch tuple, got non-concrete signature"))
+    end
+    @something(match_method_instance(f, argtypes; world, method_table=cuTileMethodTable),
+               match_method_instance(f, argtypes; world),
+               throw(MethodError(f, argtypes)))
 end

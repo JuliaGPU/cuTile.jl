@@ -298,12 +298,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     # 1. Resolve method instance
     argtuple = Tuple{arg_types...}
     world = ctx.cache.world
-    mi = @something(
-        match_method_instance(func, argtuple;
-                              world, method_table=cuTileMethodTable),
-        match_method_instance(func, argtuple; world),
-        error("No method found for $func($(join(arg_types, ", ")))")
-    )
+    mi = lookup_method_instance(func, argtuple; world)
 
     # 2. Compile through cuTile pipeline (cached)
     if !haskey(ctx.cache, mi)
@@ -314,7 +309,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     old_hook = compile_hook[]
     compile_hook[] = nothing
     sci, _, _ = try
-        emit_ir(ctx.cache, mi)
+        emit_structured!(ctx.cache, mi)
     finally
         compile_hook[] = old_hook
     end
