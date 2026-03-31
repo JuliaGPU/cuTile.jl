@@ -91,10 +91,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
 
     (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
         throw(IRError("Cannot resolve ForOp bounds"))
-    # Compare element types: scalars and 0D tiles of the same element type
-    # are equivalent in Tile IR (both encode as tile<dtype>).
-    _bound_elem(tv) = let T = CC.widenconst(tv.jltype); T <: Tile ? eltype(T) : T end
-    _bound_elem(lower_tv) === _bound_elem(upper_tv) === _bound_elem(step_tv) ||
+    eltype(CC.widenconst(lower_tv.jltype)) === eltype(CC.widenconst(upper_tv.jltype)) === eltype(CC.widenconst(step_tv.jltype)) ||
         throw(IRError("ForOp bounds must all have the same element type"))
     iv_jl_type = lower_tv.jltype
     iv_type = tile_type_for_julia!(ctx, iv_jl_type)

@@ -121,11 +121,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             T = typeof(val)
             type_id = tile_type_for_julia!(ctx, T; throw_error=false)
             if type_id !== nothing
-                # Scalar: emit ConstantOp (jltype promoted to 0D tile)
+                # Primitive: emit ConstantOp (jltype promoted to 0D tile)
                 bytes = constant_to_bytes(val, T)
                 v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tile_jltype = T <: Number ? Tile{T, Tuple{}} : T
-                tv = CGVal(v, type_id, tile_jltype, ScalarShape(), nothing, Some(val), nothing)
+                tv = CGVal(v, type_id, Tile{T, Tuple{}}, ScalarShape(), nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)
