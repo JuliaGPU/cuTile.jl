@@ -365,13 +365,70 @@ function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
 end
 
 """
+    get_ci(cache, mi; const_argtypes=nothing) -> CodeInstance
+
+Ensure inference is done and return the CodeInstance. Runs `typeinf!` which is
+a no-op when already cached. When `const_argtypes` is provided, also ensures
+the const-specialized entry exists.
+"""
+function get_ci(cache::CacheView, mi::Core.MethodInstance;
+                const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+    # Ensure CI exists
+    ci = get(cache, mi, nothing)
+    if ci === nothing
+        interp = cuTileInterpreter(cache)
+        typeinf!(cache, interp, mi)
+        ci = get(cache, mi)
+    end
+
+    # Run const-prop inference, if needed
+    if const_argtypes !== nothing
+        interp = cuTileInterpreter(cache)
+        typeinf!(cache, interp, mi, const_argtypes)
+    end
+
+    return ci
+end
+
+# Get the inferred source and return type from a CodeInstance.
+function get_inferred(cache::CacheView{K,V}, ci::Core.CodeInstance,
+                      mi::Core.MethodInstance; const_argtypes::Union{Vector{Any},
+                      Nothing}=nothing) where {K,V}
+    rettype = CC.widenconst(ci.rettype)
+    if const_argtypes === nothing
+        src = @something get_source(ci)
+    else
+        src = @something get_source(ci, const_argtypes)
+
+        # Extract the return type from a const-specialized entry.
+        cached = CC.traverse_analysis_results(ci) do @nospecialize(result)
+            result isa CompilerCaching.CachedResult{V} ? result : nothing
+        end
+        for entry in cached.const_entries
+            if entry.argtypes == const_argtypes
+                rettype = CC.widenconst(entry.rettype)
+            end
+        end
+    end
+    ir = CC.inflate_ir(src, mi)
+    return ir, rettype
+end
+
+"""
+    emit_julia(cache, mi; const_argtypes=nothing) -> (IRCode, rettype)
+
+Julia phase: run inference and return IRCode.
+"""
+function emit_julia(cache::CacheView, mi::Core.MethodInstance;
+                    const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+    ci = get_ci(cache, mi; const_argtypes)
+    get_inferred(cache, ci, mi; const_argtypes)
+end
+
+"""
     emit_ir(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype, kernel_meta)
 
-IR phase: run inference if needed and return structured IR plus extracted kernel meta.
-
-When `const_argtypes` is provided (a `Vector{Any}` with `CC.Const` entries for
-compile-time constants), const-seeded inference is used, producing specialized
-IR where constant values are folded in.
+IR phase: structurize and optimize IRCode. Caches the result.
 """
 function emit_ir(cache::CacheView, mi::Core.MethodInstance;
                  const_argtypes::Union{Vector{Any}, Nothing}=nothing)
@@ -397,57 +454,19 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance;
         compile_hook[](f, tt)
     end
 
-    # Ensure generic CI exists
-    ci = get(cache, mi, nothing)
-    if ci === nothing
-        interp = cuTileInterpreter(cache)
-        typeinf!(cache, interp, mi)
-        ci = get(cache, mi)
-    end
+    ci = get_ci(cache, mi; const_argtypes)
 
-    if const_argtypes !== nothing
-        # Const-seeded path: run const-prop inference and use specialized source
-        interp = cuTileInterpreter(cache)
-        typeinf!(cache, interp, mi, const_argtypes)
-        res = results(cache, ci, const_argtypes)
-        res.julia_ir !== nothing && return res.julia_ir
-        src = @something get_source(ci, const_argtypes)
-        ir = CC.inflate_ir(src, mi)
-        process_meta!(ir)
-        kernel_meta = extract_meta(ir)
-        sci = StructuredIRCode(ir)
-        rettype = _specialized_rettype(cache, ci, const_argtypes)
-        res.julia_ir = (sci, rettype, kernel_meta)
-        return res.julia_ir
-    else
-        # Generic path
-        res = results(cache, ci)
-        res.julia_ir !== nothing && return res.julia_ir
-        src = @something get_source(ci)
-        ir = CC.inflate_ir(src, mi)
-        process_meta!(ir)
-        kernel_meta = extract_meta(ir)
-        sci = StructuredIRCode(ir)
-        res.julia_ir = (sci, ci.rettype, kernel_meta)
-        return res.julia_ir
-    end
-end
+    # Check result cache
+    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
+    res.julia_ir !== nothing && return res.julia_ir
 
-"""
-    _specialized_rettype(cache, ci, argtypes) -> Type
-
-Extract the return type from a const-specialized entry.
-"""
-function _specialized_rettype(cache::CacheView{K,V}, ci, argtypes) where {K,V}
-    cached = CC.traverse_analysis_results(ci) do @nospecialize(result)
-        result isa CompilerCaching.CachedResult{V} ? result : nothing
-    end
-    for entry in cached.const_entries
-        if entry.argtypes == argtypes
-            return CC.widenconst(entry.rettype)
-        end
-    end
-    return CC.widenconst(ci.rettype)
+    # Inflate and structurize
+    ir, rettype = get_inferred(cache, ci, mi; const_argtypes)
+    process_meta!(ir)
+    kernel_meta = extract_meta(ir)
+    sci = StructuredIRCode(ir)
+    res.julia_ir = (sci, rettype, kernel_meta)
+    return res.julia_ir
 end
 
 # Encode characters outside [a-zA-Z0-9_] as _XX hex escapes for PTX/MLIR compatibility.
@@ -521,15 +540,33 @@ function disassemble_tileir(bytecode::Vector{UInt8})::String
 end
 
 """
+    lookup_method_instance(f, argtypes; world) -> MethodInstance
+
+Look up a MethodInstance for a cuTile function, checking the overlay method table first.
+"""
+function lookup_method_instance(@nospecialize(f), @nospecialize(argtypes);
+                                world::UInt=Base.get_world_counter())
+    tt = Base.signature_type(f, argtypes)
+    if !Base.isdispatchtuple(tt)
+        throw(ArgumentError("requires a dispatch tuple, got non-concrete signature"))
+    end
+    @something(match_method_instance(f, argtypes; world, method_table=cuTileMethodTable),
+               match_method_instance(f, argtypes; world),
+               throw(MethodError(f, argtypes)))
+end
+
+"""
     code_typed(f, argtypes; world, kwargs...) -> Vector{Any}
 
 Return typed code for a cuTile function. Analogous to `Base.code_typed`.
 """
 function code_typed(@nospecialize(f), @nospecialize(argtypes);
                     world::UInt=Base.get_world_counter(), kwargs...)
+    stripped, const_argtypes = process_const_argtypes(f, argtypes)
+    mi = lookup_method_instance(f, stripped; world)
     cache = CacheView{CuTileResults}(:cuTile, world)
-    interp = cuTileInterpreter(cache)
-    Base.code_typed(f, argtypes; world, interp, kwargs...)
+    ir, rettype = emit_julia(cache, mi; const_argtypes)
+    [ir => rettype]
 end
 
 """
@@ -539,12 +576,16 @@ Return the structured IR for a cuTile function.
 """
 function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          world::UInt=Base.get_world_counter(),
-                         validate::Bool=true)
+                         optimize::Bool=true)
+    stripped, const_argtypes = process_const_argtypes(f, argtypes)
+    mi = lookup_method_instance(f, stripped; world)
     cache = CacheView{CuTileResults}(:cuTile, world)
-    interp = cuTileInterpreter(cache)
-    map(Base.code_ircode(f, argtypes; world, interp)) do (ir, ret_type)
-        StructuredIRCode(ir; validate) => ret_type
+    sci, rettype, _ = emit_ir(cache, mi; const_argtypes)
+    if optimize
+        sci = deepcopy(sci)
+        run_passes!(sci)
     end
+    [sci => rettype]
 end
 
 """
@@ -594,13 +635,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     world::UInt=Base.get_world_counter())
     # Strip Constant types from argtypes for MI lookup, build const_argtypes
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
-    tt = Base.signature_type(f, stripped)
-    if !Base.isdispatchtuple(tt)
-        throw(ArgumentError("code_tiled requires a dispatch tuple, got non-concrete signature"))
-    end
-    mi = @something(match_method_instance(f, stripped; world, method_table=cuTileMethodTable),
-                    match_method_instance(f, stripped; world),
-                    throw(MethodError(f, stripped)))
+    mi = lookup_method_instance(f, stripped; world)
 
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
