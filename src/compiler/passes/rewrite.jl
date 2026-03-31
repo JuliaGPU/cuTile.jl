@@ -26,6 +26,7 @@ struct PCall <: PatternNode; func::Any; operands::Vector{PatternNode}; end
 struct PBind <: PatternNode; name::Symbol; end
 struct PTypedBind <: PatternNode; name::Symbol; type::Type; end
 struct POneUse <: PatternNode; inner::PatternNode; end
+struct PLiteral <: PatternNode; val::Any; end
 
 abstract type RewriteNode end
 struct RCall <: RewriteNode; func::Any; operands::Vector{RewriteNode}; end
@@ -86,6 +87,10 @@ macro rewriter(ex)
 end
 
 function _compile_lhs(ex)
+    # $(expr) on the LHS: match a literal value
+    if ex isa Expr && ex.head === :$
+        return :(PLiteral($(ex.args[1])))
+    end
     ex isa Expr && ex.head === :call || error("@rewrite LHS: expected call, got $ex")
     f = ex.args[1]
     if f === :~
@@ -172,16 +177,13 @@ mutable struct RewriteDriver
     defs::Dict{SSAValue, DefEntry}
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
+    constants::Dict{SSAValue, Any}   # SSA → constant value (from propagate_constants)
     max_rewrites::Int
 end
 
 """Compute fresh use count for an SSA value."""
 _use_count(driver::RewriteDriver, val::SSAValue) =
     length(uses(driver.sci.entry, val))
-
-# Codegen no-ops that pattern matching traces through transparently.
-_is_transparent(func) = func === Intrinsics.broadcast ||
-                         func === Intrinsics.reshape
 
 #=============================================================================
  Notifications
@@ -266,29 +268,6 @@ function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::PCall,
         end
     end
 
-    # Trace through single-use transparent ops to find the underlying operation
-    if _is_transparent(entry.func)
-        _use_count(driver, val) == 1 || return nothing
-        ops = _def_operands(entry)
-        isempty(ops) && return nothing
-        if entry.func === Intrinsics.broadcast
-            inner = ops[1]
-            if inner isa SSAValue
-                inner_entry = get(driver.defs, inner, nothing)
-                if inner_entry !== nothing
-                    it = value_type(entry.block, inner)
-                    ot = value_type(entry.block, val)
-                    it !== nothing && ot !== nothing || return nothing
-                    CC.widenconst(it) <: Tile && CC.widenconst(ot) <: Tile || return nothing
-                    size(CC.widenconst(it)) == size(CC.widenconst(ot)) || return nothing
-                end
-            end
-        end
-        result = pattern_match(driver, ops[1], pat, entry.block)
-        result === nothing && return nothing
-        push!(result.matched_ssas, val)
-        return result
-    end
     return nothing
 end
 
@@ -307,6 +286,23 @@ function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::POneUse,
                        block::Block=driver.sci.entry)
     val isa SSAValue && _use_count(driver, val) == 1 || return nothing
     pattern_match(driver, val, pat.inner, block)
+end
+
+# PLiteral: match if the operand equals the given value.
+# For non-SSA operands (enum constants, predicates): checks ===.
+# For SSA operands: O(1) lookup in the constants map built by propagate_constants.
+function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::PLiteral,
+                       block::Block=driver.sci.entry)
+    val === pat.val && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
+    if val isa SSAValue
+        c = get(driver.constants, val, nothing)
+        if c isa AbstractArray
+            all(==(pat.val), c) && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
+        elseif c !== nothing
+            c == pat.val && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
+        end
+    end
+    return nothing
 end
 
 #=============================================================================
@@ -373,7 +369,8 @@ Rules are tried until no more matches fire or `max_rewrites` is reached.
 Dead code left behind is cleaned up by the pipeline's `dce_pass!`.
 """
 function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
-                           max_rewrites::Int=10_000)
+                           max_rewrites::Int=10_000,
+                           constants::Dict{SSAValue, Any}=Dict{SSAValue, Any}())
     # Build dispatch table
     dispatch = Dict{Any, Vector{RewriteRule}}()
     for rule in rules
@@ -401,7 +398,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         end
     end
 
-    driver = RewriteDriver(sci, defs, dispatch, wl, max_rewrites)
+    driver = RewriteDriver(sci, defs, dispatch, wl, constants, max_rewrites)
 
     num_rewrites = 0
     while !isempty(driver.worklist) && num_rewrites < driver.max_rewrites
