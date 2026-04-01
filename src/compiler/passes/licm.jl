@@ -6,8 +6,8 @@
 # The algorithm walks the IR recursively while tracking the definition depth
 # of each value. An operation whose data dependencies all resolve to depths
 # *less than* its containing loop can be hoisted above that loop. A stack of
-# SSAMaps collects operations at their target depth; at the end of each block,
-# the original body is replaced with the (filtered) rebuilt map.
+# instruction lists collects operations at their target depth; at the end of
+# each block, the original body is rebuilt from the filtered list.
 
 # Whether a block can be moved, based on the operations it contains.
 @enum BlockMobility begin
@@ -35,7 +35,7 @@ function update!(di::DependencyInfo, dep_depth::Int, cur_depth::Int)
 end
 
 struct StackItem
-    new_body::SSAMap
+    entries::Vector{Tuple{Int,Any,Any}}  # (ssa_idx, stmt, typ) triples
     is_loop_body::Bool
 end
 
@@ -57,8 +57,7 @@ end
 function _hoist!(block::Block, stack::Vector{StackItem}, def_depth::Dict{Any,Int},
                  is_loop_body::Bool)
     depth = length(stack)
-    new_body = SSAMap()
-    push!(stack, StackItem(new_body, is_loop_body))
+    push!(stack, StackItem(Tuple{Int,Any,Any}[], is_loop_body))
 
     mobility = CAN_MOVE
     min_depth = 0
@@ -148,20 +147,25 @@ function _hoist!(block::Block, stack::Vector{StackItem}, def_depth::Dict{Any,Int
         end
 
         # Place at target depth
-        push!(stack[target_depth + 1].new_body, (inst.ssa_idx, s, inst.typ))
+        push!(stack[target_depth + 1].entries, (inst.ssa_idx, s, inst.typ))
 
         # Record definition depth AFTER hoisting (enables cascading hoists)
         def_depth[SSAValue(inst.ssa_idx)] = target_depth
     end
 
-    # Handle terminator operands for min_depth computation
+    # Handle terminator for mobility
     term = block.terminator
     if term isa ContinueOp || term isa BreakOp
         mobility = min(mobility, CAN_MOVE_WITH_LOOP)
     end
 
-    pop!(stack)
-    block.body = new_body
+    # Rebuild block body from collected entries
+    entries = pop!(stack).entries
+    empty!(block)
+    for (idx, s, typ) in entries
+        push!(block, idx, s, typ)
+    end
+
     return BlockResult(mobility, min_depth)
 end
 
