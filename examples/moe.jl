@@ -77,14 +77,16 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
         a = ct.gather(A, (reshape(a_k_indices, (TILE_K, 1)),
                           reshape(a_tok_indices, (1, TILE_M))))  # (TILE_K, TILE_M)
 
-        # B is (K, N, num_experts): load (TILE_K, TILE_N) slice for this expert
-        b = ct.load(B; index=(k, bid_n + Int32(1), expert_id),
-                    shape=(TILE_K, TILE_N, 1),
+        # B is (K, N, num_experts): load (TILE_N, TILE_K) slice for this expert
+        # order=(2,1,3) folds the transpose into the load via dim_map, matching
+        # Python cuTile's order=(0,2,1) and avoiding an explicit permute in Tile IR.
+        b = ct.load(B; index=(bid_n + Int32(1), k, expert_id),
+                    shape=(TILE_N, TILE_K, 1), order=(2, 1, 3),
                     padding_mode=ct.PaddingMode.Zero)
-        b = reshape(b, (TILE_K, TILE_N))
+        b = reshape(b, (TILE_N, TILE_K))
 
-        # acc(N,M) += b^T(N,K) @ a(K,M)
-        acc = muladd(transpose(b), a, acc)
+        # acc(N,M) += b(N,K) @ a(K,M)
+        acc = muladd(b, a, acc)
         k += Int32(1)
     end
 
