@@ -193,7 +193,7 @@ function invoke_fused_moe_kernel(A, B, C, topk_weights, sorted_token_ids, sorted
     ct.launch(fused_moe_kernel, grid,
               A, B, C_flat, topk_weights_flat,
               sorted_token_ids, sorted_expert_ids,
-              ct.Constant(num_token_replicas), ct.Constant(mul_routed_weight),
+              num_token_replicas, ct.Constant(mul_routed_weight),
               ct.Constant(tile_m), ct.Constant(tile_n), ct.Constant(tile_k))
 end
 
