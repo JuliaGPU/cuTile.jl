@@ -200,10 +200,29 @@ end
 
 function invoke_silu_and_mul_kernel(AB, C)
     inter = size(C, 1)  # C is (intermediate, total_tokens)
-    A_half = AB[1:inter, :]
-    B_half = AB[inter+1:2*inter, :]
+    total = size(AB, 2)
+
+    # Split AB(inter*2, total) into gate and up halves along dim 1.
+    #A_half = AB[1:inter, :]
+    #B_half = AB[inter+1:2*inter, :]
+    # FIXME: CUDA.jl's CuArray indexing (AB[1:inter, :]) uses a slow generic kernel.
+    # Use unsafe_copy2d! (cuMemcpy2D) for hardware-accelerated pitched 2D copy instead.
+    T = eltype(AB)
+    A_half = similar(AB, inter, total)
+    B_half = similar(AB, inter, total)
+    src_pitch = size(AB, 1) * sizeof(T)
+    dst_pitch = inter * sizeof(T)
+    CUDA.unsafe_copy2d!(pointer(A_half), CUDA.DeviceMemory,
+                        pointer(AB), CUDA.DeviceMemory,
+                        inter, total; srcPitch=src_pitch, dstPitch=dst_pitch,
+                        async=true)
+    CUDA.unsafe_copy2d!(pointer(B_half), CUDA.DeviceMemory,
+                        pointer(AB) + inter * sizeof(T), CUDA.DeviceMemory,
+                        inter, total; srcPitch=src_pitch, dstPitch=dst_pitch,
+                        async=true)
+
     tile_n = nextpow(2, inter)
-    ct.launch(silu_and_mul_kernel, size(AB, 2),
+    ct.launch(silu_and_mul_kernel, total,
               A_half, B_half, C, ct.Constant(tile_n))
 end
 
