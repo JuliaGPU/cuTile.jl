@@ -133,7 +133,7 @@ function analyze_statement!(tracker::AliasTracker, block::Block, inst::Instructi
         func = callee(s)
 
         # getfield: propagate from parent
-        if func === GlobalRef(Core, :getfield) && length(operands) >= 1
+        if resolved_func === getfield && length(operands) >= 1
             field = length(operands) >= 2 ? operands[2] : nothing
 
             # For TileArray.ptr field access, propagate pointer alias
@@ -145,7 +145,7 @@ function analyze_statement!(tracker::AliasTracker, block::Block, inst::Instructi
             end
 
         # Pointer arithmetic: propagate from pointer operand
-        elseif func === GlobalRef(Base, :+) || func === GlobalRef(Base, :-)
+        elseif resolved_func === Base.:+ || resolved_func === Base.:-
             for arg in operands
                 # Find the pointer argument and propagate
                 arg_aliases = tracker[arg]
@@ -191,12 +191,6 @@ function is_view_constructor(func)
 end
 
 function is_pointer_passthrough(func)
-    func === GlobalRef(Core.Intrinsics, :bitcast) && return true
-
-    # Check by name for cuTile intrinsics that pass pointers through
-    if func isa Function
-        n = nameof(func)
-        return n === :bitcast || n === :assume_div_by || n === :assume_bounded || n === :assume_aligned
-    end
-    return false
+    return func === Intrinsics.offset ||
+        func === Core.Intrinsics.bitcast
 end

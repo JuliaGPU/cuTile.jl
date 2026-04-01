@@ -102,10 +102,10 @@ function must_keep(block::Block, @nospecialize(s))
             # No efunc override → pure intrinsic, safe to remove
             return false
         end
-        # getfield is pure (both Core.getfield GlobalRef and bare getfield)
+        # getfield is pure
         if s isa Expr
             func = s.args[1]
-            if func === getfield || (func isa GlobalRef && func.mod === Core && func.name === :getfield)
+            if func === getfield || (func isa GlobalRef && getfield(func.mod, func.name) === getfield)
                 return false
             end
         end
@@ -414,7 +414,6 @@ end
     is_getfield_of(s, ref::SSAValue) -> Bool
 
 Check if `s` is a `getfield(ref, idx::Int)` expression.
-Handles both `Core.getfield` (GlobalRef) and bare `getfield` (resolved function).
 """
 function is_getfield_of(@nospecialize(s), ref::SSAValue)
     s isa Expr || return false
@@ -422,7 +421,7 @@ function is_getfield_of(@nospecialize(s), ref::SSAValue)
     length(s.args) >= 3 || return false
     func = s.args[1]
     is_gf = if func isa GlobalRef
-        func.mod === Core && func.name === :getfield
+        getfield(func.mod, func.name) === getfield
     else
         func === getfield
     end
