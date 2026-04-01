@@ -95,8 +95,7 @@ macro rewrite(args...)
     ex isa Expr && ex.head === :call && ex.args[1] === :(=>) ||
         error("@rewrite expects: lhs => rhs")
     g = guard === nothing ? :nothing : guard
-    ip = inplace
-    esc(:(RewriteRule($(compile_lhs(ex.args[2])), $(compile_rhs(ex.args[3])), $g, $ip)))
+    esc(:(RewriteRule($(compile_lhs(ex.args[2])), $(compile_rhs(ex.args[3])), $g, $inplace)))
 end
 
 """
@@ -353,7 +352,6 @@ No new instructions are created — existing ops are modified in-place.
 function apply_inplace_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
     pos = findfirst(==(val.id), block.body.ssa_idxes)
     pos === nothing && return false
-    typ = block.body.types[pos]
 
     # Build new operands for the root op from the RHS
     new_operands = Any[resolve_inplace_rhs(driver, match.bindings, op, lhs_op)
@@ -374,24 +372,19 @@ resolve_inplace_rhs(driver, bindings, op::RConst, @nospecialize(lhs_op)) = op.va
 function resolve_inplace_rhs(driver, bindings, op::RCall, lhs_op::PCall)
     # The LHS matched an op with this function. Find it via the match bindings
     # or the defs index and modify it in-place.
-    if op.func === lhs_op.func && length(op.operands) == length(lhs_op.operands)
-        # Same structure — modify the matched op's operands in-place
-        matched_ssa = find_matched_ssa(driver, lhs_op, bindings)
-        if matched_ssa !== nothing
-            entry = get(driver.defs, matched_ssa, nothing)
-            if entry !== nothing
-                epos = findfirst(==(matched_ssa.id), entry.block.body.ssa_idxes)
-                if epos !== nothing
-                    new_ops = Any[resolve_inplace_rhs(driver, bindings, sub_rhs, sub_lhs)
-                                  for (sub_rhs, sub_lhs) in zip(op.operands, lhs_op.operands)]
-                    entry.block.body.stmts[epos] = Expr(:call, op.func, new_ops...)
-                    push!(driver.worklist, matched_ssa)
-                    return matched_ssa
-                end
-            end
-        end
-    end
-    error("inplace rewrite: RHS sub-call $(op.func) doesn't match LHS structure — cannot modify in-place")
+    op.func === lhs_op.func && length(op.operands) == length(lhs_op.operands) ||
+        error("inplace rewrite: RHS sub-call $(op.func) doesn't match LHS structure")
+    matched_ssa = @something find_matched_ssa(driver, lhs_op, bindings) error(
+        "inplace rewrite: could not find matched SSA for $(lhs_op.func)")
+    entry = @something get(driver.defs, matched_ssa, nothing) error(
+        "inplace rewrite: no def entry for $matched_ssa")
+    epos = @something findfirst(==(matched_ssa.id), entry.block.body.ssa_idxes) error(
+        "inplace rewrite: $matched_ssa not found in block")
+    new_ops = Any[resolve_inplace_rhs(driver, bindings, sub_rhs, sub_lhs)
+                  for (sub_rhs, sub_lhs) in zip(op.operands, lhs_op.operands)]
+    entry.block.body.stmts[epos] = Expr(:call, op.func, new_ops...)
+    push!(driver.worklist, matched_ssa)
+    return matched_ssa
 end
 
 # Fallback for mismatched LHS/RHS structure
