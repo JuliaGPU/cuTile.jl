@@ -1,7 +1,7 @@
 module cuTile
 
 using IRStructurizer
-using IRStructurizer: Block, ControlFlowOp, BlockArgument,
+using IRStructurizer: Block, ControlFlowOp, BlockArgument, SSAMap,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
                       IfOp, ForOp, WhileOp, LoopOp, Undef,
                       SourceLocation, source_location
@@ -44,6 +44,7 @@ include("compiler/passes/canonicalize.jl")
 include("compiler/passes/alias_analysis.jl")
 include("compiler/passes/token_keys.jl")
 include("compiler/passes/token_order.jl")
+include("compiler/passes/licm.jl")
 include("compiler/passes/dce.jl")
 include("compiler/passes/pipeline.jl")
 include("compiler/codegen/debug.jl")
