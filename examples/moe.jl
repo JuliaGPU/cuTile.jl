@@ -1,8 +1,10 @@
 # Mixture of Experts example - Julia port of cuTile Python's MoE.py sample
 #
-# Expert weights use (K, N, num_experts) layout with K contiguous for efficient loads.
-# Intermediate caches use (topk, num_tokens, dim) so that Python-style flattening
-# (slot varies fastest) matches Julia's column-major vec().
+# Data layout: Julia column-major shapes are reversed from Python's row-major so
+# that both produce identical Tile IR. The fast-varying dimension is listed first:
+#   Python A(num_tokens, K)    → Julia A(K, num_tokens)
+#   Python B(experts, N, K)    → Julia B(K, N, experts)
+#   Python C(total_tokens, N)  → Julia C(N, total_tokens)
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -32,9 +34,9 @@ end
 
 # Fused MoE kernel: multiplies routed tokens by their assigned expert weights.
 #
-# A: (num_tokens, K) - input tokens/activations
-# B: (K, N, num_experts) - expert weight matrices (K contiguous in Julia)
-# C: (total_tokens, N) - output (flattened token-topk dimension)
+# A: (K, num_tokens) - input tokens/activations (K contiguous)
+# B: (K, N, num_experts) - expert weight matrices (K contiguous)
+# C: (N, total_tokens) - output (N contiguous)
 # topk_weights: (total_tokens,) - flattened routing weights
 # sorted_token_ids: (M_padded,) - 1-indexed token replica IDs, sorted by expert
 # sorted_expert_ids: (num_blocks,) - 1-indexed expert ID per TILE_M block
@@ -45,7 +47,6 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
                           sorted_expert_ids::ct.TileArray{Int32, 1},
                           num_token_replicas::Int, mul_routed_weight::Bool,
                           TILE_M::Int, TILE_N::Int, TILE_K::Int) where {T}
-    ct.@compiler_options opt_level=0
     M = size(sorted_token_ids, 1)
     K = size(B, 1)
     N = size(B, 2)
@@ -54,27 +55,27 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
     bid_m, bid_n = swizzle_2d(M, N, TILE_M, TILE_N, Int32(8), bid)
 
     # Gather 1-indexed token IDs for this block
-    # arange returns [1, ..., TILE_M], bid_m is 0-indexed → indices are 1-indexed
     token_id_indices = bid_m * Int32(TILE_M) .+ ct.arange(TILE_M)
     token_ids = ct.gather(sorted_token_ids, token_id_indices)
 
-    # Map 1-indexed flat token_id to 1-indexed row in A
+    # Map 1-indexed flat token_id to 1-indexed column in A
     # token_id k → original token = (k-1) ÷ num_token_replicas + 1
-    a_row_indices = (token_ids .- Int32(1)) .÷ Int32(num_token_replicas) .+ Int32(1)
+    a_tok_indices = (token_ids .- Int32(1)) .÷ Int32(num_token_replicas) .+ Int32(1)
 
     # Expert for this block (scalar, 1-indexed tile index for load)
     expert_id = sorted_expert_ids[bid_m + Int32(1)]
 
-    acc = zeros(Float32, TILE_M, TILE_N)
+    acc = zeros(Float32, TILE_N, TILE_M)
     num_k = cld(K, Int32(TILE_K))
 
     k = Int32(1)
     while k <= num_k
-        # 1-indexed column indices into A's K dimension
-        a_col_indices = (k - Int32(1)) * Int32(TILE_K) .+ ct.arange(TILE_K)
+        # 1-indexed row indices into A's K dimension
+        a_k_indices = (k - Int32(1)) * Int32(TILE_K) .+ ct.arange(TILE_K)
 
-        a = ct.gather(A, (reshape(a_row_indices, (TILE_M, 1)),
-                          reshape(a_col_indices, (1, TILE_K))))  # (TILE_M, TILE_K)
+        # A is (K, num_tokens): dim 1 = K, dim 2 = tokens
+        a = ct.gather(A, (reshape(a_k_indices, (TILE_K, 1)),
+                          reshape(a_tok_indices, (1, TILE_M))))  # (TILE_K, TILE_M)
 
         # B is (K, N, num_experts): load (TILE_K, TILE_N) slice for this expert
         b = ct.load(B; index=(k, bid_n + Int32(1), expert_id),
@@ -82,32 +83,34 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
                     padding_mode=ct.PaddingMode.Zero)
         b = reshape(b, (TILE_K, TILE_N))
 
-        acc = muladd(a, b, acc)
+        # acc(N,M) += b^T(N,K) @ a(K,M)
+        acc = muladd(transpose(b), a, acc)
         k += Int32(1)
     end
 
     if mul_routed_weight
         moe_weight = convert(ct.Tile{Float32}, ct.gather(topk_weights, token_ids))
-        acc = acc .* reshape(moe_weight, (TILE_M, 1))
+        acc = acc .* reshape(moe_weight, (1, TILE_M))
     end
 
     # Scatter result to C at token_id positions
-    c_col_indices = bid_n * Int32(TILE_N) .+ ct.arange(TILE_N)  # 1-indexed
+    # C is (N, total_tokens): dim 1 = N, dim 2 = tokens
+    c_n_indices = bid_n * Int32(TILE_N) .+ ct.arange(TILE_N)  # 1-indexed
     output = convert(ct.Tile{T}, acc)
-    ct.scatter(C, (reshape(token_ids, (TILE_M, 1)),
-                   reshape(c_col_indices, (1, TILE_N))), output)
+    ct.scatter(C, (reshape(c_n_indices, (TILE_N, 1)),
+                   reshape(token_ids, (1, TILE_M))), output)
 
     return nothing
 end
 
 
 # Element-wise SiLU activation: computes SiLU(A) * B
-# Each block processes one row.
+# Arrays are (dim, total_tokens): each block processes one column (= one token).
 function silu_and_mul_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 2},
                              C::ct.TileArray{T, 2}, TILE_N::Int) where {T}
     bid_m = ct.bid(1)
-    ta = convert(ct.Tile{Float32}, ct.load(A; index=(bid_m, Int32(1)), shape=(1, TILE_N)))
-    tb = convert(ct.Tile{Float32}, ct.load(B; index=(bid_m, Int32(1)), shape=(1, TILE_N)))
+    ta = convert(ct.Tile{Float32}, ct.load(A; index=(Int32(1), bid_m), shape=(TILE_N, 1)))
+    tb = convert(ct.Tile{Float32}, ct.load(B; index=(Int32(1), bid_m), shape=(TILE_N, 1)))
 
     # SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
     denom = 1.0f0 .+ exp.(.-ta)
@@ -115,7 +118,7 @@ function silu_and_mul_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 2},
     silu_ta = ta .* sigmoid_ta
     tc = silu_ta .* tb
 
-    ct.store(C; index=(bid_m, Int32(1)), tile=convert(ct.Tile{T}, tc))
+    ct.store(C; index=(Int32(1), bid_m), tile=convert(ct.Tile{T}, tc))
     return nothing
 end
 
@@ -137,7 +140,6 @@ function moe_align_tile_size(topk_ids::Matrix{Int}, tile_m::Int, num_experts::In
 
     # Flatten in Python-style order (slot varies fastest within each token).
     # permutedims gives (topk, num_tokens); vec in column-major = slot-first ordering.
-    # This matches the intermediate cache layout: (topk, num_tokens, dim).
     flat_expert_ids = vec(permutedims(topk_ids))
 
     sorted_perm = sortperm(flat_expert_ids; stable=true)  # 1-indexed
@@ -184,7 +186,9 @@ function invoke_fused_moe_kernel(A, B, C, topk_weights, sorted_token_ids, sorted
 
     # Flatten in Python-style order (slot varies fastest) to match token_id ordering
     topk_weights_flat = vec(permutedims(topk_weights))
-    C_flat = reshape(C, size(C, 1) * size(C, 2), size(C, 3))
+
+    # C is 3D (dim, topk, num_tokens) → flatten last two dims to (dim, total_tokens)
+    C_flat = reshape(C, size(C, 1), size(C, 2) * size(C, 3))
 
     ct.launch(fused_moe_kernel, grid,
               A, B, C_flat, topk_weights_flat,
@@ -195,28 +199,28 @@ end
 
 
 function invoke_silu_and_mul_kernel(AB, C)
-    inter = size(C, 2)
-    A_half = AB[:, 1:inter]
-    B_half = AB[:, inter+1:2*inter]
+    inter = size(C, 1)  # C is (intermediate, total_tokens)
+    A_half = AB[1:inter, :]
+    B_half = AB[inter+1:2*inter, :]
     tile_n = nextpow(2, inter)
-    ct.launch(silu_and_mul_kernel, size(AB, 1),
+    ct.launch(silu_and_mul_kernel, size(AB, 2),
               A_half, B_half, C, ct.Constant(tile_n))
 end
 
 
 function cutile_moe(hidden_states::CuArray{T}, w1, w2, topk_weights, topk_ids,
                     tile_m, tile_n, tile_k) where {T}
-    num_tokens, hidden_size = size(hidden_states)
-    intermediate_size = size(w2, 1)
+    hidden_size, num_tokens = size(hidden_states)  # (hidden, num_tokens)
+    intermediate_size = size(w2, 1)                # w2 is (inter, hidden, experts)
     num_experts = size(w1, 3)
     _, topk = size(topk_ids)
     total_tokens = num_tokens * topk
 
-    # Intermediate caches: (topk, num_tokens, dim) so column-major vec() matches
-    # the Python-style flat token_id ordering used by the kernels.
-    cache1 = CUDA.zeros(T, topk, num_tokens, intermediate_size * 2)
-    cache2 = CUDA.zeros(T, total_tokens, intermediate_size)
-    cache3 = CUDA.zeros(T, topk, num_tokens, hidden_size)
+    # Intermediate caches: reversed from Python for column-major
+    # Python (num_tokens, topk, dim) → Julia (dim, topk, num_tokens)
+    cache1 = CUDA.zeros(T, intermediate_size * 2, topk, num_tokens)
+    cache2 = CUDA.zeros(T, intermediate_size, total_tokens)
+    cache3 = CUDA.zeros(T, hidden_size, topk, num_tokens)
 
     sorted_token_ids, sorted_expert_ids = moe_align_tile_size(
         Array(topk_ids), tile_m, num_experts)
@@ -229,7 +233,8 @@ function cutile_moe(hidden_states::CuArray{T}, w1, w2, topk_weights, topk_ids,
         tile_m, tile_n, tile_k)
 
     # SiLU activation: SiLU(gate) * up
-    cache1_flat = reshape(cache1, total_tokens, intermediate_size * 2)
+    # cache1 is (inter*2, topk, num_tokens) → flatten to (inter*2, total_tokens)
+    cache1_flat = reshape(cache1, intermediate_size * 2, total_tokens)
     invoke_silu_and_mul_kernel(cache1_flat, cache2)
 
     # Second matmul: activated @ w2^T → down projection, with routing weights
@@ -239,8 +244,9 @@ function cutile_moe(hidden_states::CuArray{T}, w1, w2, topk_weights, topk_ids,
         mul_routed_weight=true, num_token_replicas=1,
         tile_m, tile_n, tile_k)
 
-    # Sum over topk slots (first dimension) for each token
-    return dropdims(sum(cache3; dims=1); dims=1)
+    # Sum over topk slots (second dimension) for each token
+    # cache3 is (hidden, topk, num_tokens) → sum over topk
+    return dropdims(sum(cache3; dims=2); dims=2)
 end
 
 
@@ -249,17 +255,17 @@ end
 =============================================================================#
 
 function ref_moe(hidden_states, w1, w2, topk_weights, topk_ids)
-    hs = Float32.(Array(hidden_states))     # (num_tokens, hidden_size)
+    hs = Float32.(Array(hidden_states))     # (hidden_size, num_tokens)
     w1_cpu = Float32.(Array(w1))            # (hidden_size, intermediate_size*2, num_experts)
     w2_cpu = Float32.(Array(w2))            # (intermediate_size, hidden_size, num_experts)
     tw_cpu = Float32.(Array(topk_weights))  # (num_tokens, topk)
     ti_cpu = Array(topk_ids)                # (num_tokens, topk)
 
-    num_tokens, hidden_size = size(hs)
+    hidden_size, num_tokens = size(hs)
     intermediate_size = size(w2_cpu, 1)
     num_experts = size(w1_cpu, 3)
 
-    result = zeros(Float32, num_tokens, hidden_size)
+    result = zeros(Float32, hidden_size, num_tokens)
 
     for eid in 1:num_experts
         positions = findall(==(eid), ti_cpu)
@@ -268,21 +274,22 @@ function ref_moe(hidden_states, w1, w2, topk_weights, topk_ids)
         token_indices = [p[1] for p in positions]
         slot_indices = [p[2] for p in positions]
 
-        tokens = hs[token_indices, :]  # (count, hidden_size)
+        # hs is (hidden, num_tokens) → tokens are columns
+        tokens = hs[:, token_indices]  # (hidden, count)
 
-        w1e = w1_cpu[:, :, eid]  # (hidden_size, intermediate_size*2)
-        gate_proj = w1e[:, 1:intermediate_size]
-        up_proj = w1e[:, intermediate_size+1:end]
+        w1e = w1_cpu[:, :, eid]  # (hidden, intermediate*2)
+        gate_proj = w1e[:, 1:intermediate_size]           # (hidden, intermediate)
+        up_proj = w1e[:, intermediate_size+1:end]         # (hidden, intermediate)
 
-        gate_out = tokens * gate_proj   # (count, intermediate_size)
-        up_out = tokens * up_proj
+        gate_out = gate_proj' * tokens   # (intermediate, count)
+        up_out = up_proj' * tokens       # (intermediate, count)
         silu_out = gate_out ./ (1.0f0 .+ exp.(.-gate_out)) .* up_out
 
-        down_proj = w2_cpu[:, :, eid]   # (intermediate_size, hidden_size)
-        expert_out = silu_out * down_proj  # (count, hidden_size)
+        down_proj = w2_cpu[:, :, eid]   # (intermediate, hidden)
+        expert_out = down_proj' * silu_out  # (hidden, count)
 
         for (i, (tok, slot)) in enumerate(zip(token_indices, slot_indices))
-            result[tok, :] .+= expert_out[i, :] .* tw_cpu[tok, slot]
+            result[:, tok] .+= expert_out[:, i] .* tw_cpu[tok, slot]
         end
     end
 
@@ -302,7 +309,8 @@ function prepare(; benchmark::Bool=false,
                   topk::Int = 8,
                   T::DataType = Float16)
     # Generate on GPU (Float32) then convert to avoid OOM from large Float64 intermediates
-    hidden_states = T.(CUDA.rand(num_tokens, hidden_size) .- 0.5f0)
+    # hidden_states is (hidden, num_tokens): hidden contiguous
+    hidden_states = T.(CUDA.rand(hidden_size, num_tokens) .- 0.5f0)
     w1 = T.((CUDA.rand(hidden_size, intermediate_size * 2, num_experts) .- 0.5f0) .* 0.2f0)
     w2 = T.((CUDA.rand(intermediate_size, hidden_size, num_experts) .- 0.5f0) .* 0.2f0)
 
@@ -357,10 +365,6 @@ end
 
 
 function metric(data)
-    # Two matmuls per token: gate+up (2*intermediate) and down (hidden)
-    # matmul1: tokens*topk * hidden * intermediate*2 * 2 (multiply-add)
-    # matmul2: tokens*topk * intermediate * hidden * 2
-    # Total: 2 * tokens * topk * hidden * intermediate * 3
     nt = data.num_tokens
     topk = data.topk
     hs = data.hidden_size
