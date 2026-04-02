@@ -97,12 +97,13 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 
 | Kernel | Size | Julia | Python | Status |
 |--------|------|-------|--------|--------|
-| Vector Addition | 2^27 f32 | 841 GB/s | 845 GB/s | OK (=) |
-| Matrix Transpose | 8192² f32 | 805 GB/s | 811 GB/s | OK (-1%) |
-| Layer Normalization | 4096² f32 fwd | 652 GB/s | 720 GB/s | -9% |
-| Matrix Multiplication | 4096³ f32 | 43.4 TFLOPS | 43.5 TFLOPS | OK (=) |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 30.5 TFLOPS | 30.9 TFLOPS | OK (-1%) |
-| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3280 μs | 3131 μs | -5% |
+| Vector Addition | 2^27 f32 | 840 GB/s | 844 GB/s | OK (=) |
+| Matrix Transpose | 8192² f32 | 804 GB/s | 814 GB/s | OK (-1%) |
+| Layer Normalization | 4096² f32 fwd | 685 GB/s | 720 GB/s | -5% |
+| Matrix Multiplication | 4096³ f32 | 43.2 TFLOPS | 43.3 TFLOPS | OK (=) |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 30.3 TFLOPS | 30.8 TFLOPS | OK (-2%) |
+| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3270 μs | 3130 μs | -4% |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 18.6 TFLOPS | 20.2 TFLOPS | -8% |
 
 
 ## Supported Operations
