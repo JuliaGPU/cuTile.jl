@@ -640,6 +640,33 @@ end
     end
 end
 
+@testset "scalar arithmetic on reduction result" begin
+    # Regression test: sum(tile) produces a 0D tile via reshape(tile, ()),
+    # and dividing that by a scalar kernel arg must not fail due to shape
+    # kind mismatch between the two 0D values (both must be RowMajorShape).
+    function scalar_reduce_div(X::ct.TileArray{Float32,2}, Y::ct.TileArray{Float32,2},
+                               M::Int, TILE_M::Int)
+        bid_n = ct.bid(1)
+        x = ct.load(X, (1, bid_n), (TILE_M,))
+        rstd = 1 / sqrt(sum(x .* x) / M .+ 1.0f-6)
+        ct.store(Y, (1, bid_n), x .* rstd)
+        return
+    end
+
+    M, N = 128, 4
+    X = CUDA.randn(Float32, M, N)
+    Y = similar(X)
+    ct.launch(scalar_reduce_div, N, X, Y, ct.Constant(M), ct.Constant(M))
+
+    X_cpu = Array(X)
+    Y_cpu = Array(Y)
+    for j in 1:N
+        col = X_cpu[:, j]
+        rstd = 1 / sqrt(sum(col .^ 2) / M + 1f-6)
+        @test Y_cpu[:, j] ≈ col .* rstd rtol=1e-3
+    end
+end
+
 @testset "sum without dims (3D)" begin
     function sum_no_dims_3d(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)

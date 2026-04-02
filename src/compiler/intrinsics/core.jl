@@ -241,7 +241,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Create constant index values (0D i32 tiles), reversed for Tile IR order
-    scalar_i32 = tile_type!(tt, I32(tt), ScalarShape())
+    scalar_i32 = tile_type!(tt, I32(tt), RowMajorShape(()))
     index_vals = Value[]
     for idx in reverse(index_tuple)
         idx_bytes = collect(reinterpret(UInt8, [Int32(idx)]))
@@ -264,7 +264,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), a
     axis = @something get_constant(ctx, args[1]) throw(IRError("get_num_tile_blocks() axis must be a compile-time constant"))
     axis in (0, 1, 2) || throw(IRError("get_num_tile_blocks() axis must be 0, 1, or 2, got $axis"))
 
-    res_type = tile_type!(ctx.tt, I32(ctx.tt), ScalarShape())
+    res_type = tile_type!(ctx.tt, I32(ctx.tt), RowMajorShape(()))
     nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(ctx.cb, res_type, res_type, res_type)
 
     CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Tile{Int32, Tuple{}})
@@ -277,7 +277,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), arg
     axis = @something get_constant(ctx, args[1]) throw(IRError("get_tile_block_id() axis must be a compile-time constant"))
     axis in (0, 1, 2) || throw(IRError("get_tile_block_id() axis must be 0, 1, or 2, got $axis"))
 
-    res_type = tile_type!(ctx.tt, I32(ctx.tt), ScalarShape())
+    res_type = tile_type!(ctx.tt, I32(ctx.tt), RowMajorShape(()))
     bid_x, bid_y, bid_z = encode_GetTileBlockIdOp!(ctx.cb, res_type, res_type, res_type)
     result = (bid_x, bid_y, bid_z)[axis + 1]
 
@@ -511,7 +511,7 @@ function emit_reduce!(ctx::CGCtx, args)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
         push!(reduced_tile_types, tile_type!(tt, dtype, reduced_shape))
-        push!(scalar_tile_types, tile_type!(tt, dtype, ScalarShape()))
+        push!(scalar_tile_types, tile_type!(tt, dtype, RowMajorShape(())))
         push!(operand_values, tv.v::Value)
         push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end
@@ -674,7 +674,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
         push!(output_tile_types, tile_type!(tt, dtype, output_shape))
-        push!(scalar_tile_types, tile_type!(tt, dtype, ScalarShape()))
+        push!(scalar_tile_types, tile_type!(tt, dtype, RowMajorShape(())))
         push!(operand_values, tv.v::Value)
         push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end

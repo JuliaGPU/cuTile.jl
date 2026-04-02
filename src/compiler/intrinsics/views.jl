@@ -26,7 +26,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     tileir_axis = ndim - 1 - axis
 
     # Create result types for all dimensions
-    scalar_i32 = tile_type!(tt, I32(tt), ScalarShape())
+    scalar_i32 = tile_type!(tt, I32(tt), RowMajorShape(()))
     result_types = fill(scalar_i32, ndim)
 
     # Emit GetIndexSpaceShapeOp
@@ -178,7 +178,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, ScalarShape(), nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, RowMajorShape(()), nothing, Some(ndim), nothing)
 end
 
 """

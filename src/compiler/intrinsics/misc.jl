@@ -23,7 +23,7 @@ function emit_assume_ops!(ctx::CGCtx, array_val::Value, size_vals::Vector{Value}
     # Pointer alignment
     if array_spec.alignment > 0
         ptr_dtype = pointer_type!(tt, dtype)
-        ptr_tile_type = tile_type!(tt, ptr_dtype, ScalarShape())
+        ptr_tile_type = tile_type!(tt, ptr_dtype, RowMajorShape(()))
         array_val = encode_AssumeOp!(cb, ptr_tile_type, array_val, DivBy(array_spec.alignment))
     end
 

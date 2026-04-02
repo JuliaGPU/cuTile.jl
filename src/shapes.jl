@@ -5,30 +5,27 @@
 # Converting between them is a simple reversal. The Shape{O} wrapper ensures we don't
 # accidentally mix up conventions — IR operations accept only RowMajorShape, while
 # user-facing shapes from Julia are ColMajorShape.
+# Scalar (0D) shapes are represented as RowMajorShape(Int[]) — no separate type needed.
 
 abstract type ShapeKind end
 struct RowMajor <: ShapeKind end
 struct ColMajor <: ShapeKind end
-struct Scalar <: ShapeKind end
 
 struct Shape{O<:ShapeKind}
     dims::Vector{Int}
 end
 
-const ScalarShape = Shape{Scalar}
 const RowMajorShape = Shape{RowMajor}
 const ColMajorShape = Shape{ColMajor}
-const TileShape = Shape{<:Union{RowMajor, Scalar}}
-
-ScalarShape() = Shape{Scalar}(Int[])
+# All shapes in codegen/bytecode are row-major. Scalars are 0D: RowMajorShape(()).
+# ColMajorShape is only used at the Julia-facing boundary and converted before storage in CGVal.
+const TileShape = RowMajorShape
 
 RowMajorShape(t::Tuple) = RowMajorShape(collect(Int, t))
-RowMajorShape(s::ScalarShape) = RowMajorShape(s.dims)
 RowMajorShape(s::RowMajorShape) = s
 RowMajorShape(s::ColMajorShape) = RowMajorShape(reverse(s.dims))
 
 ColMajorShape(t::Tuple) = ColMajorShape(collect(Int, t))
-ColMajorShape(s::ScalarShape) = ColMajorShape(s.dims)
 ColMajorShape(s::ColMajorShape) = s
 ColMajorShape(s::RowMajorShape) = ColMajorShape(reverse(s.dims))
 
