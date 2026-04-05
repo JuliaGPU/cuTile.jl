@@ -511,30 +511,6 @@ standard Julia silently produce truncated or wrapped results instead:
 Assertions may be added in the future for testing purposes.
 
 
-## Limitations
-
-### `for` loops
-
-The compiler recognizes simple while-loop patterns but not Julia's iterator-based `for` loops. Write such loops as:
-
-```julia
-# Do this:
-i = 1
-while i <= n
-    # ...
-    i += 1
-end
-
-# Not this:
-for i in 1:n
-    # ...
-end
-```
-
-Also make sure `i`, `n`, and the increment all have the same type.
-
-
-
 ## Host-level operations
 
 cuTile.jl also provides a limited set of host-level APIs to use cuTile without
