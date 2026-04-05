@@ -151,6 +151,52 @@ end
     @test Array(out) ≈ expected
 end
 
+@testset "for loop with step (StepRange)" begin
+    function for_loop_step_kernel(data::ct.TileArray{Float32,1},
+                                   out::ct.TileArray{Float32,1},
+                                   n_iters::Int32)
+        pid = ct.bid(1)
+        acc = zeros(Float32, (16,))
+        for i in Int32(1):Int32(2):n_iters
+            acc = acc .+ ct.load(data, i, (16,))
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    # 5 tiles of 16; step=2 selects tiles 1, 3, 5
+    data = CUDA.rand(Float32, 80)
+    out = CUDA.zeros(Float32, 16)
+    ct.launch(for_loop_step_kernel, 1, data, out, Int32(5))
+
+    data_cpu = Array(data)
+    expected = data_cpu[1:16] .+ data_cpu[33:48] .+ data_cpu[65:80]
+    @test Array(out) ≈ expected
+end
+
+@testset "for loop with decrement (StepRange)" begin
+    function for_loop_decr_kernel(data::ct.TileArray{Float32,1},
+                                   out::ct.TileArray{Float32,1},
+                                   n_iters::Int32)
+        pid = ct.bid(1)
+        acc = zeros(Float32, (16,))
+        for i in n_iters:Int32(-1):Int32(1)
+            acc = acc .+ ct.load(data, i, (16,))
+        end
+        ct.store(out, pid, acc)
+        return
+    end
+
+    # 3 tiles; decrement from 3 to 1 should sum all tiles
+    data = CUDA.rand(Float32, 48)
+    out = CUDA.zeros(Float32, 16)
+    ct.launch(for_loop_decr_kernel, 1, data, out, Int32(3))
+
+    data_cpu = Array(data)
+    expected = sum(reshape(data_cpu, 16, 3); dims=2)[:, 1]
+    @test Array(out) ≈ expected
+end
+
 @testset "for loop store each iteration" begin
     function for_loop_store_kernel(inp::ct.TileArray{Float32,1},
                                    out::ct.TileArray{Float32,1},

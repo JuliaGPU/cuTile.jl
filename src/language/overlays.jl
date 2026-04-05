@@ -9,6 +9,29 @@ end
 
 
 #=============================================================================
+ StepRange Construction
+=============================================================================#
+
+# GPU-safe replacement for Base.steprange_last to enable `for i in start:step:stop`.
+# The original pulls in ArgumentError, @noinline overflow_case, and checked_srem_int.
+# This overlay uses unsigned arithmetic (bitcast → unsigned rem → bitcast) which
+# produces identical results and maps cleanly to Tile IR (signless integers make
+# signed↔unsigned bitcasts no-ops).
+@overlay function Base.steprange_last(start::T, step::T, stop::T) where {T<:Base.BitInteger}
+    stop == start && return stop
+    if step > zero(step)
+        stop < start && return start - oneunit(step)  # empty range
+        remain = signed(unsigned(stop - start) % unsigned(step))
+        return stop - remain
+    else
+        stop > start && return start + oneunit(step)  # empty range
+        remain = signed(unsigned(start - stop) % unsigned(-step))
+        return stop + remain
+    end
+end
+
+
+#=============================================================================
  Broadcasting
 =============================================================================#
 
