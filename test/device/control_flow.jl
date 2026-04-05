@@ -77,11 +77,9 @@ end
         bid = ct.bid(1)
         len = lengths[bid]
         acc = zeros(Float32, (16,))
-        j = Int32(1)
-        while j <= len
+        for j in Int32(1):len
             tile = ct.load(data, j, (16,))
             acc = acc .+ tile
-            j += Int32(1)
         end
         ct.store(out, bid, acc)
         return

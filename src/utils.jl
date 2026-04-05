@@ -79,8 +79,10 @@ end
     @nwhileloops N condexpr [preexpr [postexpr]] body
 
 Generate N nested `while` loops, analogous to `Base.Cartesian.@nloops` but
-using `while` instead of `for`.  This is needed because the cuTile compiler
-only recognizes while-loop patterns for structured control flow.
+using `while` instead of `for`.  This is needed for loops with non-unit strides,
+where Julia's `for i in start:step:stop` generates `StepRange` construction IR
+that is too complex for cuTile's codegen (ArgumentError handling, overflow_case,
+checked_srem_int).  Unit-step loops should use native `for i in start:stop`.
 
 `condexpr` and the optional `preexpr`/`postexpr` are `d->` anonymous functions
 specialized per dimension with Cartesian `_d` suffix naming.  If you want just

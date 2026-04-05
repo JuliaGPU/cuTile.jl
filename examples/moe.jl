@@ -68,8 +68,7 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
     acc = zeros(Float32, TILE_N, TILE_M)
     num_k = cld(K, Int32(TILE_K))
 
-    k = Int32(1)
-    while k <= num_k
+    for k in Int32(1):num_k
         # 1-indexed row indices into A's K dimension
         a_k_indices = (k - Int32(1)) * Int32(TILE_K) .+ ct.arange(TILE_K)
 
@@ -87,7 +86,6 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
 
         # acc(N,M) += b(N,K) @ a(K,M)
         acc = muladd(b, a, acc)
-        k += Int32(1)
     end
 
     if mul_routed_weight

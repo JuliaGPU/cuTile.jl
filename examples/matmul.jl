@@ -42,10 +42,7 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     acc = zeros(Float32, tm, tn)
 
     # K reduction loop - accumulate partial products
-    # NOTE: Uses while-loop pattern. Native `for k in 0:n` syntax generates complex
-    # iterator protocol IR that doesn't map cleanly to ForOp. Use while-loops for now.
-    k = Int32(1)
-    while k <= num_k
+    for k in Int32(1):num_k
         # Load and convert to TF32 for tensor cores (Float32 only)
         # padding_mode=Zero ensures out-of-bounds reads return zero (for non-aligned dimensions)
         a = ct.load(A; index=(bid_m, k), shape=(tm, tk), padding_mode=ct.PaddingMode.Zero)
@@ -55,7 +52,6 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
             b = convert(ct.Tile{ct.TFloat32}, b)
         end
         acc = muladd(a, b, acc)
-        k += Int32(1)
     end
 
     # Convert accumulator to output type and store

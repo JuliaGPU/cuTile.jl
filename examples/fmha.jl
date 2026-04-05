@@ -73,8 +73,7 @@ function fmha_kernel(Q::ct.TileArray{T, 4}, K::ct.TileArray{T, 4},
     end
 
     # Loop over K, V blocks
-    j = Int32(0)
-    while j < Tc
+    for j in Int32(0):Tc-Int32(1)
         # QK product
         # K is (D_k, SeqLen_KV, KVH, Batch)
         # Load (TILE_N, TILE_D, 1, 1) with order=(2,1,3,4) to transpose D and N
@@ -123,8 +122,6 @@ function fmha_kernel(Q::ct.TileArray{T, 4}, K::ct.TileArray{T, 4},
         # (TILE_D, TILE_N) @ (TILE_N, TILE_M) = (TILE_D, TILE_M)
         acc = muladd(v, p, acc)
         m_i = m_ij
-
-        j += Int32(1)
     end
 
     # Final normalization and store

@@ -26,8 +26,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
     acc = zeros(Float32, tm, tn)
 
     # K reduction loop
-    k = Int32(1)
-    while k <= num_k
+    for k in Int32(1):num_k
         # Load 3D tiles: (tm, tk, 1) and (tk, tn, 1)
         a = ct.load(A; index=(bid_m, k, pid_batch), shape=(tm, tk, 1),
                     padding_mode=ct.PaddingMode.Zero)
@@ -45,7 +44,6 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
         end
 
         acc = muladd(a_2d, b_2d, acc)
-        k += Int32(1)
     end
 
     # Convert to output type, reshape to 3D, and store

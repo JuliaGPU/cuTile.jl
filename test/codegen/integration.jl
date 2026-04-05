@@ -115,19 +115,14 @@ end
                 bid = ct.bid(1)
                 num_k = ct.num_tiles(A, 2, (tm, tk))
                 acc = zeros(Float32, (tm, tn))
-                # NOTE: Uses while-loop pattern because Julia's for-loop generates
-                # complex iterator IR with PhiNodes that isn't fully supported.
-                # The structurizer upgrades this counting while-loop to a ForOp.
                 @check "for"
-                k = Int32(1)
-                while k <= num_k
+                for k in Int32(1):num_k
                     @check "load_view_tko"
                     a = ct.load(A, (bid, k), (tm, tk); padding_mode=ct.PaddingMode.Zero)
                     @check "load_view_tko"
                     b = ct.load(B, (k, bid), (tk, tn); padding_mode=ct.PaddingMode.Zero)
                     @check "mma"
                     acc = muladd(a, b, acc)
-                    k += Int32(1)
                 end
                 @check "store_view_tko"
                 ct.store(C, (bid, bid), acc)
@@ -151,11 +146,9 @@ end
                 # First for loop: compute sum
                 @check "for"
                 acc = zeros(Float32, (1, TILE_N))
-                j = Int32(1)
-                while j <= num_tiles
+                for j in Int32(1):num_tiles
                     tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
                     acc = acc .+ tx
-                    j += Int32(1)
                 end
                 @check "reduce"
                 sum_val = sum(acc; dims=2)
@@ -163,12 +156,10 @@ end
 
                 # Second for loop: scale output by sum
                 @check "for"
-                j = Int32(1)
-                while j <= num_tiles
+                for j in Int32(1):num_tiles
                     tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
                     ty = tx .* sum_val
                     ct.store(Y, (bid_m, j), ty)
-                    j += Int32(1)
                 end
                 return
             end
@@ -188,8 +179,7 @@ end
                 num_tiles = ct.num_tiles(DW, 2, (1, TILE_N))
 
                 @check "for"
-                j = Int32(1)
-                while j <= num_tiles
+                for j in Int32(1):num_tiles
                     # Load and compute partial result
                     partial = ct.load(Partial, (bid, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
 
@@ -212,8 +202,6 @@ end
                     @check "atomic_rmw_tko"
                     ct.atomic_xchg(Locks, group_bid, Int32(0);
                                   memory_order=ct.MemoryOrder.Release)
-
-                    j += Int32(1)
                 end
                 return
             end
@@ -241,8 +229,7 @@ end
                 # group_bid_m: 1-indexed group ID
                 group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M)) + Int32(1)
 
-                j = Int32(1)
-                while j <= num_iters
+                for j in Int32(1):num_iters
                     # Nested spinloop - this must not shadow loopIdx
                     while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
@@ -253,8 +240,6 @@ end
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
                                   memory_order=ct.MemoryOrder.Release)
-
-                    j += Int32(1)
                 end
                 return
             end
@@ -265,10 +250,6 @@ end
         # Regression test: nested while loops inside for loops must use the correct
         # outer variable (group_bid_m) for atomic_cas, not the for loop's induction
         # variable (%loopIdx).
-        #
-        # IRStructurizer threads %loopIdx through the inner loop as an invariant carry,
-        # so it appears in iter_values — but the atomic address must still be derived
-        # from group_bid_m (an SSA value defined before the for loop), not from %loopIdx.
         spec = ct.ArraySpec{2}(16, true)
         spec1d = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
@@ -285,8 +266,7 @@ end
                 # group_bid_m: 1-indexed group ID
                 group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M)) + Int32(1)
 
-                j = Int32(1)
-                while j <= num_iters
+                for j in Int32(1):num_iters
                     # Spinloop should use group_bid_m for the lock, not j
                     while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
@@ -297,8 +277,6 @@ end
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
                                   memory_order=ct.MemoryOrder.Release)
-
-                    j += Int32(1)
                 end
                 return
             end
@@ -331,11 +309,9 @@ end
         end
     end
 
-    @testset "counting while loop with nested control flow upgrades to for (regression test)" begin
-        # Regression test: A counting while loop (j = 0; while j < n; j += 1) should be
-        # upgraded to ForOp even when it contains nested control flow (like inner loops).
-        # Previously, the for-loop pattern detection only searched for the step expression
-        # in the immediate body block, missing it when nested control flow was present.
+    @testset "for loop with nested control flow (regression test)" begin
+        # Regression test: A for loop should produce ForOp even when it
+        # contains nested control flow (like inner spinloops).
         spec1d = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
@@ -344,14 +320,11 @@ end
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, Int32}) do Locks, num_iters
                 idx = ct.bid(1)
 
-                j = Int32(1)
-                while j <= num_iters
-                    # Inner spinloop - the presence of this nested loop shouldn't prevent
-                    # the outer loop from being detected as a for-loop pattern
+                for j in Int32(1):num_iters
+                    # Inner spinloop
                     while ct.atomic_cas(Locks, idx, Int32(0), Int32(1);
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
-                    j += Int32(1)
                 end
 
                 return
@@ -360,9 +333,9 @@ end
     end
 
     @testset "Multiple loop results (regression test)" begin
-        # Regression test: A while loop with multiple iter_args must generate
-        # different result indices (%for#0, %for#1, etc.) for each result.
-        # Previously, all loop results resolved to %for#0, causing incorrect code.
+        # Regression test: A for loop with multiple iter_args must generate
+        # different result indices for each result.
+        # Previously, all loop results resolved to the same index, causing incorrect code.
         TILE_M = 32
         TILE_N = 1024
 
@@ -374,9 +347,9 @@ end
             @check_label "entry"
             # The for loop should have multiple results
             @check "for %loopIdx in"
-            # We should see both %for#0 and %for#1 used (not the same one twice)
-            @check "reduce %for#1"
-            @check "reduce %for#0"
+            # The two reduces must use different result indices (not the same one twice)
+            @check "reduce [[R1:%.+]]#1"
+            @check "reduce [[R2:%.+]]#0"
             code_tiled(Tuple{ct.TileArray{Float32, 2, spec2d}, ct.TileArray{Float32, 2, spec2d},
                            ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
                            ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
@@ -385,11 +358,9 @@ end
 
                 dw = zeros(Float32, (_TILE_N, _TILE_M))
                 db = zeros(Float32, (_TILE_N, _TILE_M))
-                i = Int32(1)
-                while i <= num_tiles
+                for i in Int32(1):num_tiles
                     dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N, _TILE_M); padding_mode=ct.PaddingMode.Zero)
                     db = db .+ ct.load(DB, (bid_n, i), (_TILE_N, _TILE_M); padding_mode=ct.PaddingMode.Zero)
-                    i += Int32(1)
                 end
 
                 sum_dw = sum(dw; dims=2)
@@ -425,11 +396,9 @@ end
                 # First loop: accumulate and reduce
                 @check "for"
                 acc = zeros(Float32, (TILE_N,))
-                i = Int32(1)
-                while i <= num_tiles
+                for i in Int32(1):num_tiles
                     tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
                     acc = acc .+ tile
-                    i += Int32(1)
                 end
                 @check "reduce"
                 sum_val = sum(acc; dims=1)
@@ -437,12 +406,10 @@ end
                 # Second loop: use sum_val AND accumulate
                 @check "for"
                 acc2 = zeros(Float32, (TILE_N,))
-                i = Int32(1)
-                while i <= num_tiles
+                for i in Int32(1):num_tiles
                     tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
                     @check "subf"
                     acc2 = acc2 .+ (tile .- sum_val)  # Uses sum_val from first loop
-                    i += Int32(1)
                 end
                 @check "reduce"
                 @check "store_view_tko"

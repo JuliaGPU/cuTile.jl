@@ -1058,11 +1058,9 @@ end
                 pid = ct.bid(1)
                 acc = zeros(Float32, (16,))
                 @check "for"
-                k = Int32(1)
-                while k <= n
+                for k in Int32(1):n
                     tile = ct.load(a, (pid - Int32(1)) * n + k, (16,))
                     acc = acc + tile
-                    k += Int32(1)
                 end
                 ct.store(b, pid, acc)
                 return
