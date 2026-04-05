@@ -65,7 +65,17 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
     ir, rettype = emit_julia(cache, mi; const_argtypes)
     sci, rettype, _ = emit_structured(ir, rettype)
     if optimize
-        sci = deepcopy(sci)
+        # deepcopy(sci) fails on Julia 1.11 because debuginfo_table contains
+        # Core.LineInfoNode with Module fields. Sever the parent backref before
+        # deepcopy to avoid pulling in the SCI, then reassemble.
+        sci.entry.parent = nothing
+        entry_copy = deepcopy(sci.entry)
+        sci.entry.parent = sci  # restore original
+        sci = StructuredIRCode(sci.argtypes, sci.sptypes, entry_copy,
+                               sci.max_ssa_idx, sci.max_arg_idx,
+                               sci.debuginfo_table, sci.line_map)
+        sci.entry.parent = sci
+        IRStructurizer.fix_parents!(sci.entry)
         run_passes!(sci)
     end
     [sci => rettype]
