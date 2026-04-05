@@ -83,6 +83,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                        is_entry, entry_hints, func_debug_attr)
     ctx.cb = cb
 
+    # Set function-level debug attr as default so setup operations
+    # (tensor views, constants, etc.) get the kernel's source location
+    cb.cur_debug_attr = func_debug_attr
+
     # Set up argument values
     arg_values = make_block_args!(cb, length(param_types))
 
