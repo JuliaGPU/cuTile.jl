@@ -198,6 +198,24 @@ end # invalidations
         String(take!(buf))
     end
 
+    # @device_code_tiled with debug info
+    @test @filecheck begin
+        @check_dag "di_file"
+        @check_dag "di_subprogram"
+        @check_dag "di_loc"
+        @check_dag "callsite"
+        @check_dag "name = \"reflect_vadd\""
+        buf = IOBuffer()
+        ct.@device_code_tiled io=buf debuginfo=true ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        String(take!(buf))
+    end
+
+    # @device_code_sass has source location annotations
+    @test @filecheck begin
+        @check "; Location"
+        CUDA.@device_code_sass ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+    end
+
     # @device_code_tiled with Constant arguments
     function reflect_const_vadd(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                                 c::ct.TileArray{Float32,1}, tile_size::Int)

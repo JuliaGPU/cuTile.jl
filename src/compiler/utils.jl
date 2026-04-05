@@ -291,13 +291,21 @@ mutable struct CGCtx
 
     # Active floating-point mode stack (pushed/popped by @fpmode via fpmode_begin/end)
     fpmode_stack::Vector{FPMode}
+
+    # Debug info emitter (DebugInfoEmitter or nothing)
+    debug_emitter::Any
+
+    # Kernel linkage name (for debug info subprogram)
+    linkage_name::String
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
                  sm_arch::Union{VersionNumber, Nothing} = nothing,
-                 cache::CacheView)
+                 cache::CacheView,
+                 debug_emitter = nothing,
+                 linkage_name::String = "")
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -316,6 +324,8 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         sm_arch,
         cache,
         FPMode[],                        # fpmode_stack
+        debug_emitter,
+        linkage_name,
     )
 end
 

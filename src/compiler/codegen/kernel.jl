@@ -21,7 +21,11 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       const_argtypes::Union{Vector{Any}, Nothing} = nothing)
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
-    ctx = CGCtx(; cb, tt, sci, sm_arch, cache)
+
+    # Create debug info emitter
+    debug_emitter = DebugInfoEmitter(writer.debug_attr_table)
+
+    ctx = CGCtx(; cb, tt, sci, sm_arch, cache, debug_emitter, linkage_name=name)
 
     # Determine which argument positions are const-seeded
     # const_argtypes is 1-indexed: [Const(f), arg2, arg3, ...]
@@ -71,9 +75,12 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Create entry hints if provided
     entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy))
 
+    # Create function-level debug attribute
+    func_debug_attr = make_func_debug_attr(debug_emitter, sci; linkage_name=name)
+
     # Create function
     cb = add_function!(writer, func_buf, name, param_types, result_types;
-                       is_entry, entry_hints)
+                       is_entry, entry_hints, func_debug_attr)
     ctx.cb = cb
 
     # Set up argument values

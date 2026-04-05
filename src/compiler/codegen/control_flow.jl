@@ -9,6 +9,12 @@ Values are stored in ctx.values by their original index.
 """
 function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
     for inst in instructions(block)
+        # Set debug location for this instruction
+        if ctx.debug_emitter !== nothing
+            ln = isempty(ctx.linkage_name) ? nothing : ctx.linkage_name
+            ctx.cb.cur_debug_attr = resolve_debug_attr!(
+                ctx.debug_emitter, ctx.sci, inst.ssa_idx; linkage_name=ln)
+        end
         s = stmt(inst)
         if s isa ControlFlowOp
             emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)

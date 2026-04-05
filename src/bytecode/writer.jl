@@ -55,6 +55,69 @@ function items(table::DebugAttrTable)
     return pairs
 end
 
+# Debug attribute tag bytes (matching NVIDIA's bytecode format)
+module DebugTag
+    const DICompileUnit  = 0x01
+    const DIFile         = 0x02
+    const DILexicalBlock = 0x03
+    const DILoc          = 0x04
+    const DISubprogram   = 0x05
+    const CallSite       = 0x06
+end
+
+function file!(table::DebugAttrTable, name::String, directory::String)
+    buf = UInt8[DebugTag.DIFile]
+    encode_varint!(buf, table.string_table[name].id)
+    encode_varint!(buf, table.string_table[directory].id)
+    return table[buf]
+end
+
+function compile_unit!(table::DebugAttrTable, file::DebugAttrId)
+    buf = UInt8[DebugTag.DICompileUnit]
+    encode_varint!(buf, file.id)
+    return table[buf]
+end
+
+function subprogram!(table::DebugAttrTable, file::DebugAttrId, line::Int,
+                     name::String, linkage_name::String,
+                     compile_unit::DebugAttrId, scope_line::Int)
+    buf = UInt8[DebugTag.DISubprogram]
+    encode_varint!(buf, file.id)
+    encode_varint!(buf, line)
+    encode_varint!(buf, table.string_table[name].id)
+    encode_varint!(buf, table.string_table[linkage_name].id)
+    encode_varint!(buf, compile_unit.id)
+    encode_varint!(buf, scope_line)
+    return table[buf]
+end
+
+function lexical_block!(table::DebugAttrTable, parent_scope::DebugAttrId,
+                        file::DebugAttrId, line::Int, column::Int)
+    buf = UInt8[DebugTag.DILexicalBlock]
+    encode_varint!(buf, parent_scope.id)
+    encode_varint!(buf, file.id)
+    encode_varint!(buf, line)
+    encode_varint!(buf, column)
+    return table[buf]
+end
+
+function loc!(table::DebugAttrTable, scope::DebugAttrId,
+              filename::String, line::Int, column::Int)
+    buf = UInt8[DebugTag.DILoc]
+    encode_varint!(buf, scope.id)
+    encode_varint!(buf, table.string_table[filename].id)
+    encode_varint!(buf, line)
+    encode_varint!(buf, column)
+    return table[buf]
+end
+
+function call_site!(table::DebugAttrTable, callee::DebugAttrId, caller::DebugAttrId)
+    buf = UInt8[DebugTag.CallSite]
+    encode_varint!(buf, callee.id)
+    encode_varint!(buf, caller.id)
+    return table[buf]
+end
+
 # SSA Value wrapper
 struct Value
     id::Int

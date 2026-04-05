@@ -45,6 +45,33 @@ end
     end
 end
 
+@testset "Debug info" begin
+    @testset "code_tiled debuginfo=true" begin
+        @test @filecheck begin
+            # Debug info entries can appear in any order
+            @check_dag "di_file"
+            @check_dag "di_compile_unit"
+            @check_dag "name = \"reflect_vadd\""
+            @check_dag "di_loc"
+            @check_dag "callsite"
+            @check_dag "name = \"bid\""
+            @check_dag "name = \"load\""
+            @check_dag "name = \"store\""
+
+            ct.code_tiled(reflect_vadd, TT3; debuginfo=true)
+        end
+    end
+
+    @testset "code_tiled default has no debug info" begin
+        @test @filecheck begin
+            @check_not "di_loc"
+            @check_not "di_subprogram"
+            @check_not "callsite"
+            ct.code_tiled(reflect_vadd, TT3)
+        end
+    end
+end
+
 @testset "Constant args" begin
     const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
     ConstTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
