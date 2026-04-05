@@ -99,14 +99,17 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 |--------|------|-------|--------|--------|
 | Vector Addition | 2^27 f32 | 842 GB/s | 844 GB/s | OK (=) |
 | Matrix Transpose | 8192² f32 | 801 GB/s | 810 GB/s | OK (-1%) |
-| Layer Normalization | 4096² f32 fwd | 691 GB/s | 720 GB/s | -4% |
-| Matrix Multiplication | 4096³ f32 | 43.3 TFLOPS | 43.3 TFLOPS | OK (=) |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 30.4 TFLOPS | 30.8 TFLOPS | OK (-1%) |
-| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3283 μs | 3133 μs | -5% |
-| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 18.3 TFLOPS | 20.1 TFLOPS | -9% |
-| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 88.1 TFLOPS | 61.3 TFLOPS | +44%* |
+| Layer Normalization | 4096² f32 fwd | 687 GB/s | 720 GB/s | -5% |
+| Matrix Multiplication | 4096³ f32 | 47.2 TFLOPS | 43.3 TFLOPS | +9%* |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.5 TFLOPS | 30.8 TFLOPS | +9%* |
+| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3264 μs | 3133 μs | -4% |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 19.5 TFLOPS | 20.1 TFLOPS | -3% |
+| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 87.8 TFLOPS | 61.3 TFLOPS | +43%** |
 
-\* Likely due to Python's compiler splitting the causal masking loop into two
+\* Likely because Julia's `for` loop guards give `tileiras` a guarantee that the
+loop body executes at least once, enabling more aggressive warp scheduling.
+
+\*\* Likely due to Python's compiler splitting the causal masking loop into two
 loops, duplicating the loop body. Julia emits a single loop with a conditional.
 
 
