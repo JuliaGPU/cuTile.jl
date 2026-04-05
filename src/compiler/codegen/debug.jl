@@ -39,13 +39,15 @@ function get_compile_unit!(emitter::DebugInfoEmitter, file_attr::DebugAttrId)
 end
 
 """
-    get_subprogram!(emitter, method; linkage_name) -> DebugAttrId
+    get_subprogram!(emitter, loc; linkage_name) -> DebugAttrId
 
-Get or create a DISubprogram for a method. Uses a custom `linkage_name` if provided
-(for the kernel entry point), otherwise derives it from the method name.
+Get or create a DISubprogram for a source location. On Julia 1.12+, `loc.method` is a
+`Method`/`MethodInstance` with full metadata. On Julia 1.11, it's a `Symbol` and we
+use `loc.file`/`loc.line` instead.
 """
-function get_subprogram!(emitter::DebugInfoEmitter, method;
+function get_subprogram!(emitter::DebugInfoEmitter, loc::SourceLocation;
                          linkage_name::Union{String, Nothing}=nothing)
+    method = loc.method
     # Use (method, linkage_name) as cache key to distinguish kernel entry from inlined copies
     cache_key = linkage_name !== nothing ? (method, linkage_name) : method
     get!(emitter.subprogram_cache, cache_key) do
@@ -56,14 +58,16 @@ function get_subprogram!(emitter::DebugInfoEmitter, method;
             subprogram!(emitter.debug_attrs, file_attr, Int(method.line),
                         string(method.name), ln, cu_attr, Int(method.line))
         elseif method isa MethodInstance
-            get_subprogram!(emitter, method.def; linkage_name)
+            get_subprogram!(emitter, SourceLocation(method.def, loc.file, loc.line);
+                            linkage_name)
         else
-            # Symbol or unknown -- create a minimal subprogram
+            # Symbol (Julia 1.11) or unknown — use file/line from SourceLocation
             name = string(method)
-            file_attr = get_file!(emitter, :var"<unknown>")
+            file_attr = get_file!(emitter, loc.file)
             cu_attr = get_compile_unit!(emitter, file_attr)
             ln = @something linkage_name sanitize_name(name)
-            subprogram!(emitter.debug_attrs, file_attr, 0, name, ln, cu_attr, 0)
+            subprogram!(emitter.debug_attrs, file_attr, Int(loc.line),
+                        name, ln, cu_attr, Int(loc.line))
         end
     end
 end
@@ -75,7 +79,7 @@ Create a DILoc for a single source location entry, scoped to its method's subpro
 """
 function make_diloc(emitter::DebugInfoEmitter, loc::SourceLocation;
                     linkage_name::Union{String, Nothing}=nothing)
-    sp = get_subprogram!(emitter, loc.method; linkage_name)
+    sp = get_subprogram!(emitter, loc; linkage_name)
     loc!(emitter.debug_attrs, sp, string(loc.file), Int(loc.line), 0)
 end
 
@@ -118,17 +122,17 @@ Create a function-level debug attribute (DILoc scoped to DISubprogram) for a ker
 """
 function make_func_debug_attr(emitter::DebugInfoEmitter, sci::StructuredIRCode;
                               linkage_name::String)
-    # Find the kernel Method from the first instruction with debug info
+    # Find the kernel function from the first instruction with debug info
     for inst in instructions(sci.entry)
         stack = source_location(sci, inst)
         isempty(stack) && continue
         outer = stack[1]
+        sp = get_subprogram!(emitter, outer; linkage_name)
         m = outer.method
         m isa MethodInstance && (m = m.def)
-        if m isa Method
-            sp = get_subprogram!(emitter, m; linkage_name)
-            return loc!(emitter.debug_attrs, sp, string(m.file), Int(m.line), 0)
-        end
+        file = m isa Method ? m.file : outer.file
+        line = m isa Method ? Int(m.line) : Int(outer.line)
+        return loc!(emitter.debug_attrs, sp, string(file), line, 0)
     end
     return DebugAttrId(0)
 end
