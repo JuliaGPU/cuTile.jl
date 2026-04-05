@@ -65,7 +65,7 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
     ir, rettype = emit_julia(cache, mi; const_argtypes)
     sci, rettype, _ = emit_structured(ir, rettype)
     if optimize
-        sci = deepcopy(sci)
+        sci = copy(sci)
         run_passes!(sci)
     end
     [sci => rettype]
