@@ -190,6 +190,20 @@ const COMPARISON_RULES = RewriteRule[
 ]
 
 #=============================================================================
+ Power Strength Reduction (rewrite)
+=============================================================================#
+
+# pow(x, 2) → mulf(x, x): replaces an expensive transcendental with a multiply.
+# The MLIR Tile IR backend has no canonicalization for pow, so this is purely
+# a Julia-level optimization. Applies to the variance computation in layernorm
+# (centered_tx .^ 2.0f0).
+
+const POWER_RULES = RewriteRule[
+    @rewrite(Intrinsics.pow(~x, $(2.0f0)) => Intrinsics.mulf(~x, ~x))
+    @rewrite(Intrinsics.pow(~x, $(2.0)) => Intrinsics.mulf(~x, ~x))
+]
+
+#=============================================================================
  Combined Rule Set
 =============================================================================#
 
@@ -198,6 +212,7 @@ const OPTIMIZATION_RULES = RewriteRule[
     ALGEBRA_RULES...,
     FMA_RULES...,
     COMPARISON_RULES...,
+    POWER_RULES...,
 ]
 
 #=============================================================================
