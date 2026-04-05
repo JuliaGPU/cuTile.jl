@@ -327,9 +327,10 @@ function run_passes!(sci::StructuredIRCode)
     constants = propagate_constants(sci)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
 
-    licm_pass!(sci)
-
     alias_result = alias_analysis_pass!(sci)
+
+    licm_pass!(sci, alias_result)
+
     token_order_pass!(sci, alias_result)
 
     dce_pass!(sci)
