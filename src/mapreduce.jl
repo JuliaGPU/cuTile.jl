@@ -27,10 +27,7 @@ _atomic_op(_, ::Type) = nothing
             start_d = idx_d
         end
 
-        @nwhileloops($N,
-            d -> (idx_d <= n_d),
-            d -> (idx_d = start_d),
-            d -> (idx_d = idx_d + reduce_stride[d]),
+        @nloops($N, idx, d -> (start_d:reduce_stride[d]:n_d),
             begin
                 tile = load(src, (@ntuple $N d -> idx_d), tile_size; padding_mode=pad_mode)
                 acc = op.(acc, f.(tile))

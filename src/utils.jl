@@ -1,4 +1,4 @@
-using Base.Cartesian: @nexprs, @ntuple, inlineanonymous
+using Base.Cartesian: @nexprs, @ntuple, @nloops
 
 #=============================================================================
  Grid and tile sizing helpers (used by broadcast and mapreduce)
@@ -71,62 +71,3 @@ function _compute_tile_sizes(input_size::NTuple{N,Int}, dim_order; budget::Int=4
     return NTuple{N,Int}(ts)
 end
 
-#=============================================================================
- @nwhileloops — while-loop variant of Base.Cartesian.@nloops
-=============================================================================#
-
-"""
-    @nwhileloops N condexpr [preexpr [postexpr]] body
-
-Generate N nested `while` loops, analogous to `Base.Cartesian.@nloops` but
-using `while` instead of `for`.  This is needed in mapreduce where StepRange
-for loops with non-unit strides interact poorly with IRStructurizer's ForOp
-carry indexing.
-
-`condexpr` and the optional `preexpr`/`postexpr` are `d->` anonymous functions
-specialized per dimension with Cartesian `_d` suffix naming.  If you want just
-a post-expression, supply `nothing` for the pre-expression.
-
-# Example
-```julia
-@nwhileloops 2 d->(idx_d <= n_d) d->(idx_d = start_d) d->(idx_d += stride[d]) begin
-    # innermost body
-end
-```
-generates:
-```julia
-idx_2 = start_2
-while idx_2 <= n_2
-    idx_1 = start_1
-    while idx_1 <= n_1
-        # innermost body
-        idx_1 += stride[1]
-    end
-    idx_2 += stride[2]
-end
-```
-"""
-macro nwhileloops(N, condexpr, args...)
-    _nwhileloops(N, condexpr, args...)
-end
-
-function _nwhileloops(N::Int, condexpr::Expr, args::Expr...)
-    if !(1 <= length(args) <= 3)
-        throw(ArgumentError("expected 1 to 3 trailing arguments (body, or pre+body, or pre+post+body), got $(length(args))"))
-    end
-    body = args[end]
-    ex = Expr(:escape, body)
-    for d in 1:N
-        cond = esc(inlineanonymous(condexpr, d))
-        preexpr = length(args) > 1 ? esc(inlineanonymous(args[1], d)) : nothing
-        postexpr = length(args) > 2 ? esc(inlineanonymous(args[2], d)) : nothing
-        ex = quote
-            $preexpr
-            while $cond
-                $ex
-                $postexpr
-            end
-        end
-    end
-    ex
-end
