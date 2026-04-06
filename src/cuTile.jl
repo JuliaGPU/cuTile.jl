@@ -4,7 +4,8 @@ using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, BlockArgument,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
                       IfOp, ForOp, WhileOp, LoopOp, Undef,
-                      SourceLocation, source_location
+                      SourceLocation
+import IRStructurizer: operands
 
 using Base: compilerbarrier, donotdelete
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,

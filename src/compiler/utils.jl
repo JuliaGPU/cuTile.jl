@@ -81,6 +81,11 @@ IRStructurizer.walk_uses!(f, node::JoinTokensNode) =
 IRStructurizer.walk_uses!(f, ::TokenResultNode) = nothing
 IRStructurizer.walk_uses!(f, ::MakeTokenNode) = nothing
 
+# operands extensions for cuTile-specific IR nodes.
+operands(::Block, s::JoinTokensNode) = s.tokens
+operands(::Block, s::TokenResultNode) = Any[SSAValue(s.mem_op_ssa)]
+operands(::Block, ::MakeTokenNode) = Any[]
+
 
 """
     is_token_type(typ) -> Bool
