@@ -91,9 +91,10 @@ function run_benchmark(name::String)
     data = @invokelatest mod.prepare(; benchmark=true)
 
     # Get metric info if available
-    metric_total, metric_unit = 0, ""
+    # metric() returns either (total, unit) or Dict("impl" => (total, unit))
+    metric_result = nothing
     if isdefined(mod, :metric)
-        metric_total, metric_unit = @invokelatest mod.metric(data)
+        metric_result = @invokelatest mod.metric(data)
     end
 
     # Run cuTile
@@ -117,7 +118,7 @@ function run_benchmark(name::String)
         merge!(results, others)
     end
 
-    return results, metric_total, metric_unit
+    return results, metric_result
 end
 
 #=============================================================================
@@ -142,14 +143,23 @@ function main()
             continue
         end
 
-        results, metric_total, metric_unit = ret
+        results, metric_result = ret
 
         # Convert to BenchmarkResult for printing
         benchmark_results = BenchmarkResult[]
         for (impl_name, times) in results
             min_t = minimum(times)
             mean_t = sum(times) / length(times)
-            tp = !isempty(metric_unit) ? format_throughput(metric_total, metric_unit, min_t) : ""
+            tp = ""
+            if metric_result isa Dict
+                if haskey(metric_result, impl_name)
+                    mt, mu = metric_result[impl_name]
+                    tp = format_throughput(mt, mu, min_t)
+                end
+            elseif metric_result isa Tuple
+                mt, mu = metric_result
+                tp = format_throughput(mt, mu, min_t)
+            end
             push!(benchmark_results, BenchmarkResult(impl_name, min_t, mean_t, tp))
         end
 

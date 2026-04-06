@@ -97,19 +97,23 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 
 | Kernel | Size | Julia | Python | Status |
 |--------|------|-------|--------|--------|
-| Vector Addition | 2^27 f32 | 842 GB/s | 844 GB/s | OK (=) |
-| Matrix Transpose | 8192² f32 | 801 GB/s | 810 GB/s | OK (-1%) |
-| Layer Normalization | 4096² f32 fwd | 687 GB/s | 720 GB/s | -5% |
-| Matrix Multiplication | 4096³ f32 | 47.2 TFLOPS | 43.3 TFLOPS | +9%* |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.5 TFLOPS | 30.8 TFLOPS | +9%* |
-| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3264 μs | 3133 μs | -4% |
-| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 19.5 TFLOPS | 20.1 TFLOPS | -3% |
-| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 87.8 TFLOPS | 61.3 TFLOPS | +43%** |
+| Vector Addition | 2^27 f32 | 841 GB/s | 845 GB/s | OK (=) |
+| Matrix Transpose | 8192² f32 | 805 GB/s | 811 GB/s | OK (-1%) |
+| Layer Norm fwd | 4096² f32 | 925 GB/s | 722 GB/s | +28%* |
+| Layer Norm bwd | 4096² f32 | 243 GB/s | 251 GB/s | -3% |
+| Matrix Multiplication | 4096³ f32 | 46.9 TFLOPS | 43.4 TFLOPS | +8%** |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.6 TFLOPS | 30.9 TFLOPS | +9%** |
+| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3263 μs | 3127 μs | -4% |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 19.3 TFLOPS | 20.3 TFLOPS | -5% |
+| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 88.5 TFLOPS | 61.6 TFLOPS | +44%*** |
 
-\* Likely because Julia's `for` loop guards give `tileiras` a guarantee that the
+\* The pow(x, 2) → mulf(x, x) strength reduction eliminates the expensive
+transcendental in the variance computation. Python still emits `pow`.
+
+\*\* Likely because Julia's `for` loop guards give `tileiras` a guarantee that the
 loop body executes at least once, enabling more aggressive warp scheduling.
 
-\*\* Likely due to Python's compiler splitting the causal masking loop into two
+\*\*\* Likely due to Python's compiler splitting the causal masking loop into two
 loops, duplicating the loop body. Julia emits a single loop with a conditional.
 
 

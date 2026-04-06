@@ -369,8 +369,13 @@ function test_layernorm(M, N, TILE_N; TILE_M::Int=32, eps::Float32=1f-5, name=no
 end
 
 function metric(data)
-    # Forward: 3 reads of X + W + B reads + Y write + Mean/Rstd writes ≈ 4*M*N floats
-    return 4 * data.M * data.N * sizeof(Float32), "GB/s"
+    MN = data.M * data.N * sizeof(Float32)
+    return Dict(
+        # Forward: X read (3 passes: mean, var, normalize) + Y write ≈ 4*M*N floats
+        "cuTile Fwd" => (4 * MN, "GB/s"),
+        # Backward: X read (2 passes) + DY read (2 passes) + DX write ≈ 5*M*N floats
+        "cuTile Bwd" => (5 * MN, "GB/s"),
+    )
 end
 
 # No run_others for layernorm - no simple reference implementation to compare against
