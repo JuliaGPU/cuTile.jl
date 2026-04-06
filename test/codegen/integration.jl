@@ -420,6 +420,38 @@ end
         end
     end
 
+    @testset "loop-invariant load (manually hoisted)" begin
+        # Test that a manually-hoisted loop-invariant load appears before the loop.
+        # Pattern: Y[n, m] = X[n, m] * W[m], iterating over N-tiles.
+        # W[bid_m] doesn't depend on the loop variable, so the user hoists it.
+        spec2d = ct.ArraySpec{2}(16, true)
+        spec1d = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            @check_label "entry"
+            # W load must appear BEFORE the for loop
+            @check "load_view_tko"
+            @check "for %loopIdx in"
+            # Inside the loop: only the X load
+            @check "load_view_tko"
+            @check "mulf"
+            @check "store_view_tko"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d},
+                           ct.TileArray{Float32,2,spec2d}, ct.Constant{Int,1024}}) do X, W, Y, TILE_N
+                bid_m = ct.bid(1)
+                num_tiles = ct.num_tiles(X, 1, (TILE_N, 1))
+                # Hoisted: W load before loop
+                w = ct.load(W; index=bid_m, shape=(1,))
+                for j in Int32(1):num_tiles
+                    x = ct.load(X; index=(j, bid_m), shape=(TILE_N, 1),
+                                padding_mode=ct.PaddingMode.Zero)
+                    y = x .* w
+                    ct.store(Y; index=(j, bid_m), tile=y)
+                end
+                return
+            end
+        end
+    end
+
     #=========================================================================
      Gather/Scatter Operations
     =========================================================================#

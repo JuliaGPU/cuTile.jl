@@ -1,100 +1,134 @@
 # Loop-Invariant Code Motion (LICM)
 #
-# Hoists loop-invariant loads (and their dependency chains) out of loops.
+# Hoists loop-invariant operations out of loops. Runs AFTER token_order_pass!
+# so that token dependencies correctly prevent unsafe hoisting of aliasing loads.
 #
-# Pure operations (arithmetic, broadcasts, view constructors) are NOT hoisted
-# here — MLIR's built-in LICM handles those at optLevel >= 2.
+# Operations classified as stores (store_partition_view, store_ptr_tko, atomics,
+# print_tko) and control flow exits (return) are never hoisted. All other
+# operations — including loads, arithmetic, partition views, token nodes — are
+# hoisted when all their data dependencies are defined outside the loop.
 #
-# This pass targets what MLIR cannot hoist: memory loads. After token ordering,
-# loads have token dependencies that anchor them inside loops. By hoisting
-# before token insertion, we avoid creating unnecessary token carries.
-#
-# Safety: a load is hoistable only when (1) all its operands are loop-invariant,
-# and (2) no store in the loop body aliases with the load's memory region.
-# Alias information comes from alias_analysis_pass!, which must run first.
+# This mirrors cuTile Python's code_motion.py:hoist_loop_invariants.
+
+# Indicates whether a block could in theory be moved, based on the operations
+# it contains (side effects, jumps). Does not consider data dependencies.
+@enum _BlockMobility::Int8 begin
+    # The block (or any ancestor) cannot be moved due to side effects.
+    _IMMOVABLE = 0
+    # The block itself can't be hoisted alone, but its containing loop can.
+    # Happens when the block contains Continue or Break.
+    _CAN_MOVE_WITH_LOOP = 1
+    # The block can move (subject to data dependencies).
+    _CAN_MOVE = 2
+end
+
+struct _BlockResult
+    mobility::_BlockMobility
+    min_depth::Int  # deepest outside dependency of any hoisted-out op
+end
+
+# Helper for accumulating data dependency information per operation.
+mutable struct _DepInfo
+    must_stay::Bool
+    max_outside_depth::Int
+end
+
+function _update_dep!(di::_DepInfo, dep_depth::Int, cur_depth::Int)
+    if dep_depth >= cur_depth
+        di.must_stay = true
+    else
+        di.max_outside_depth = max(di.max_outside_depth, dep_depth)
+    end
+end
+
+# Update dependency info from an SSA value or literal.
+function _check_val!(di::_DepInfo, val, def_depth::Dict{Any,Int}, cur_depth::Int)
+    d = get(def_depth, val, nothing)
+    d === nothing && return  # constants/literals always available
+    _update_dep!(di, d, cur_depth)
+end
+
+# Extract all SSA dependencies from a statement.
+function _check_stmt_deps!(di::_DepInfo, @nospecialize(s), def_depth::Dict{Any,Int},
+                           cur_depth::Int)
+    if s isa Expr
+        start = s.head === :invoke ? 3 : 2
+        for i in start:length(s.args)
+            _check_val!(di, s.args[i], def_depth, cur_depth)
+        end
+    elseif s isa JoinTokensNode
+        for tok in s.tokens
+            _check_val!(di, tok, def_depth, cur_depth)
+        end
+    elseif s isa TokenResultNode
+        _check_val!(di, SSAValue(s.mem_op_ssa), def_depth, cur_depth)
+    end
+    # MakeTokenNode, PiNode, GlobalRef, literals: no SSA deps
+end
+
+struct _StackItem
+    entries::Vector{Tuple{Int,Any,Any}}  # (ssa_idx, stmt, type)
+    is_loop_body::Bool
+end
 
 """
-    licm_pass!(sci::StructuredIRCode, alias_result::Dict{Any, AliasSet})
+    licm_pass!(sci::StructuredIRCode)
 
-Hoist loop-invariant loads out of loops. Must run after alias_analysis_pass!
-and before token_order_pass!.
-
-A load is hoistable when:
-- All operands are defined outside the loop
-- No store in the loop body writes to an aliasing memory region
+Hoist loop-invariant operations out of loops. Must run after token_order_pass!.
 """
-function licm_pass!(sci::StructuredIRCode, alias_result::Dict{Any, AliasSet})
-    def_depth = Dict{Any, Int}()
+function licm_pass!(sci::StructuredIRCode)
+    def_depth = Dict{Any,Int}()
     for i in 1:length(sci.argtypes)
         def_depth[Argument(i)] = 0
     end
-    _hoist_loads!(sci.entry, Vector{Vector{Tuple{Int,Any,Any}}}(), def_depth,
-                  alias_result, false)
+    _hoist!(sci.entry, _StackItem[], def_depth, false)
     return
 end
 
-# Collect alias sets of all stores in a block (recursively through nested CFs).
-function _collect_store_aliases(block::Block, alias_result::Dict{Any, AliasSet})
-    store_aliases = AliasSet[]
-    for inst in instructions(block)
-        s = stmt(inst)
-        if s isa ControlFlowOp
-            for b in blocks(s)
-                append!(store_aliases, _collect_store_aliases(b, alias_result))
-            end
-        else
-            call = resolve_call(block, s)
-            call === nothing && continue
-            resolved_func, operands = call
-            if classify_memory_op(resolved_func) == MEM_STORE
-                aset = get_alias_set_for_operand(alias_result, first(operands))
-                push!(store_aliases, aset)
-            end
-        end
-    end
-    return store_aliases
-end
-
-# Check if a load's alias set conflicts with any store alias set in the loop.
-function _aliases_with_store(load_alias::AliasSet, store_aliases::Vector{AliasSet})
-    for sa in store_aliases
-        if load_alias isa AliasUniverse || sa isa AliasUniverse
-            return true
-        end
-        if !isempty(intersect(load_alias, sa))
-            return true
-        end
-    end
-    return false
-end
-
-function _hoist_loads!(block::Block, stack::Vector{Vector{Tuple{Int,Any,Any}}},
-                       def_depth::Dict{Any,Int}, alias_result::Dict{Any, AliasSet},
-                       is_loop_body::Bool)
+function _hoist!(block::Block, stack::Vector{_StackItem}, def_depth::Dict{Any,Int},
+                 is_loop_body::Bool)
     depth = length(stack)
-    push!(stack, Tuple{Int,Any,Any}[])
+    push!(stack, _StackItem(Tuple{Int,Any,Any}[], is_loop_body))
 
-    # Register block args at current depth
     for ba in block.args
         def_depth[ba] = depth
     end
 
-    # If this is a loop body, collect store alias sets for the load safety check
-    store_aliases = is_loop_body ? _collect_store_aliases(block, alias_result) : AliasSet[]
+    mobility = _CAN_MOVE
+    min_depth = 0
 
     for inst in instructions(block)
         s = stmt(inst)
-        hoisted = false
+        di = _DepInfo(!is_loop_body, 0)
 
-        if s isa ForOp || s isa LoopOp
-            body = s.body
-            if s isa ForOp
-                def_depth[s.iv_arg] = depth + 1
-            end
-            for ba in body.args
+        if s isa ForOp
+            def_depth[s.iv_arg] = depth + 1
+            for ba in s.body.args
                 def_depth[ba] = depth + 1
             end
-            _hoist_loads!(body, stack, def_depth, alias_result, true)
+            body_res = _hoist!(s.body, stack, def_depth, true)
+            if body_res.mobility == _IMMOVABLE
+                mobility = _IMMOVABLE
+                di.must_stay = true
+            end
+            for v in s.init_values
+                _check_val!(di, v, def_depth, depth)
+            end
+            _update_dep!(di, body_res.min_depth, depth)
+
+        elseif s isa LoopOp
+            for ba in s.body.args
+                def_depth[ba] = depth + 1
+            end
+            body_res = _hoist!(s.body, stack, def_depth, true)
+            if body_res.mobility == _IMMOVABLE
+                mobility = _IMMOVABLE
+                di.must_stay = true
+            end
+            for v in s.init_values
+                _check_val!(di, v, def_depth, depth)
+            end
+            _update_dep!(di, body_res.min_depth, depth)
 
         elseif s isa WhileOp
             for ba in s.before.args
@@ -103,75 +137,86 @@ function _hoist_loads!(block::Block, stack::Vector{Vector{Tuple{Int,Any,Any}}},
             for ba in s.after.args
                 def_depth[ba] = depth + 1
             end
-            _hoist_loads!(s.before, stack, def_depth, alias_result, true)
-            _hoist_loads!(s.after, stack, def_depth, alias_result, true)
+            before_res = _hoist!(s.before, stack, def_depth, true)
+            after_res = _hoist!(s.after, stack, def_depth, true)
+            if min(before_res.mobility, after_res.mobility) == _IMMOVABLE
+                mobility = _IMMOVABLE
+                di.must_stay = true
+            end
+            for v in s.init_values
+                _check_val!(di, v, def_depth, depth)
+            end
+            _update_dep!(di, before_res.min_depth, depth)
+            _update_dep!(di, after_res.min_depth, depth)
 
         elseif s isa IfOp
-            _hoist_loads!(s.then_region, stack, def_depth, alias_result, false)
-            _hoist_loads!(s.else_region, stack, def_depth, alias_result, false)
+            _check_val!(di, s.condition, def_depth, depth)
+            for region in (s.then_region, s.else_region)
+                branch_res = _hoist!(region, stack, def_depth, false)
+                _update_dep!(di, branch_res.min_depth, depth)
+                if branch_res.mobility != _CAN_MOVE
+                    mobility = min(mobility, branch_res.mobility)
+                    di.must_stay = true
+                end
+            end
 
-        elseif is_loop_body && _is_hoistable_load(block, s, def_depth, depth,
-                                                   alias_result, store_aliases)
-            # Hoist this load to the enclosing scope
-            target_depth = depth - 1
-            while target_depth > 0 && _can_hoist_to(stack, target_depth)
+        elseif _is_store(block, s)
+            mobility = _IMMOVABLE
+            di.must_stay = true
+
+        elseif s isa ContinueOp || s isa BreakOp
+            mobility = min(mobility, _CAN_MOVE_WITH_LOOP)
+            di.must_stay = true
+
+        elseif s isa YieldOp || s isa ConditionOp || s isa ReturnNode
+            di.must_stay = true
+            # Track deps for YieldOp/ConditionOp so min_depth is correct
+            if s isa YieldOp
+                for v in s.values
+                    _check_val!(di, v, def_depth, depth)
+                end
+            elseif s isa ConditionOp
+                _check_val!(di, s.condition, def_depth, depth)
+                for v in s.args
+                    _check_val!(di, v, def_depth, depth)
+                end
+            end
+
+        else
+            # Movable operation: loads, arithmetic, make_partition_view, etc.
+            _check_stmt_deps!(di, s, def_depth, depth)
+        end
+
+        # Determine target depth
+        target_depth = depth
+        if di.must_stay
+            min_depth = max(min_depth, di.max_outside_depth)
+        else
+            while target_depth > di.max_outside_depth && stack[target_depth].is_loop_body
                 target_depth -= 1
             end
-            push!(stack[target_depth + 1], (inst.ssa_idx, s, inst.typ))
-            def_depth[SSAValue(inst.ssa_idx)] = target_depth
-            hoisted = true
         end
 
-        if !hoisted
-            # Keep at current depth
-            push!(stack[depth + 1], (inst.ssa_idx, s, inst.typ))
-            def_depth[SSAValue(inst.ssa_idx)] = depth
-        end
+        push!(stack[target_depth + 1].entries, (inst.ssa_idx, s, inst.typ))
+
+        # Record definition depth AFTER hoisting so subsequent ops see the new depth
+        def_depth[SSAValue(inst.ssa_idx)] = target_depth
     end
 
     # Rebuild block body from collected entries
-    entries = pop!(stack)
+    entries = pop!(stack).entries
     empty!(block)
     for (idx, s, typ) in entries
         push!(block, idx, s, typ)
     end
+
+    return _BlockResult(mobility, min_depth)
 end
 
-# Check if a stack entry is a loop body (for multi-level hoisting)
-function _can_hoist_to(stack::Vector{Vector{Tuple{Int,Any,Any}}}, target_depth::Int)
-    # We'd need to track is_loop_body per stack entry to do multi-level hoisting.
-    # For now, only hoist one level out.
-    return false
-end
-
-# Check if a statement is a load that can be safely hoisted.
-function _is_hoistable_load(block::Block, @nospecialize(s), def_depth::Dict{Any,Int},
-                            cur_depth::Int, alias_result::Dict{Any, AliasSet},
-                            store_aliases::Vector{AliasSet})
-    s isa Expr || return false
+# Check if a statement is a store/atomic (side-effecting memory write).
+function _is_store(block::Block, @nospecialize(s))
     call = resolve_call(block, s)
     call === nothing && return false
-    resolved_func, operands = call
-
-    # Must be a load operation
-    classify_memory_op(resolved_func) == MEM_LOAD || return false
-
-    # All operands must be defined outside this loop
-    _all_operands_outside(s, def_depth, cur_depth) || return false
-
-    # Load must not alias with any store in the loop
-    load_alias = get_alias_set_for_operand(alias_result, first(operands))
-    return !_aliases_with_store(load_alias, store_aliases)
-end
-
-# Check that all operands of a statement are defined at depth < cur_depth.
-function _all_operands_outside(@nospecialize(s), def_depth::Dict{Any,Int}, cur_depth::Int)
-    s isa Expr || return true
-    start = s.head === :invoke ? 3 : 2
-    for i in start:length(s.args)
-        d = get(def_depth, s.args[i], nothing)
-        d === nothing && continue  # constants/literals are always available
-        d >= cur_depth && return false
-    end
-    return true
+    resolved_func, _ = call
+    return classify_memory_op(resolved_func) == MEM_STORE
 end

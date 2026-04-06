@@ -329,9 +329,9 @@ function run_passes!(sci::StructuredIRCode)
 
     alias_result = alias_analysis_pass!(sci)
 
-    licm_pass!(sci, alias_result)
-
     token_order_pass!(sci, alias_result)
+
+    licm_pass!(sci)
 
     dce_pass!(sci)
 end
