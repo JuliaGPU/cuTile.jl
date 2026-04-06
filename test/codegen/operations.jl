@@ -1402,6 +1402,19 @@ end
                 return
             end
         end
+
+        # pow2 strength reduction works for Float64 too
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "mulf"
+                @check_not "pow"
+                Base.donotdelete(tile .^ 2.0)
+                return
+            end
+        end
     end
 
     @testset "scalar math functions" begin
