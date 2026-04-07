@@ -366,7 +366,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, pid, (16,))
                 @check "cmpf"
                 mask = tile_a .< tile_b
-                result = ct.where(mask, tile_a, tile_b)
+                result = ifelse.(mask, tile_a, tile_b)
                 ct.store(c, pid, result)
                 return
             end
@@ -382,7 +382,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, pid, (16,))
                 @check "cmpi"
                 mask = tile_a .< tile_b
-                result = ct.where(mask, tile_a, tile_b)
+                result = ifelse.(mask, tile_a, tile_b)
                 ct.store(c, pid, result)
                 return
             end
@@ -402,7 +402,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 result = a .< b
                 # Use same-typed operands for where to avoid Union type
                 b_promoted = convert(ct.Tile{Int64}, b)
-                selected = ct.where(result, a, b_promoted)
+                selected = ifelse.(result, a, b_promoted)
                 ct.store(out, Int32(0), selected)
                 return
             end
@@ -820,7 +820,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, pid, (16,))
                 mask = tile_a .> tile_b
                 @check "select"
-                result = ct.where(mask, tile_a, tile_b)
+                result = ifelse.(mask, tile_a, tile_b)
                 ct.store(c, pid, result)
                 return
             end

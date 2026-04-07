@@ -169,7 +169,7 @@ end
     idx = Intrinsics.iota((flat_len,), Int32)
     mask = idx .== Int32(linear)
     val_tile = broadcast_to(Tile(T(val)), (flat_len,))
-    new_flat = where(mask, val_tile, flat)
+    new_flat = ifelse.(mask, val_tile, flat)
     reshape(new_flat, S)
 end
 
@@ -1038,22 +1038,7 @@ end
  Selection
 =============================================================================#
 
-public where, extract
-
-"""
-    where(cond::Tile{Bool}, x, y) -> Tile
-
-Element-wise conditional selection: returns x where cond is true, y otherwise.
-Similar to numpy.where() or torch.where(). Supports broadcasting and scalar arguments.
-
-# Example
-```julia
-mask = tile_a .> tile_b  # Boolean tile
-result = ct.where(mask, tile_a, tile_b)  # Element-wise max
-result = ct.where(mask, tile_a, 0.0f0)  # Zero out where mask is false
-```
-"""
-where(cond, x, y) = ifelse.(cond, x, y)
+public extract
 
 """
     extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}

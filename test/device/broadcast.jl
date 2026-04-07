@@ -227,8 +227,8 @@ for (name, op1, op2) in [
             pid = ct.bid(1)
             ta = ct.load(a, pid, (16,))
             tb = ct.load(b, pid, (16,))
-            ct.store(out1, pid, ct.where(broadcast($op1, ta, tb), 1.0f0, 0.0f0))
-            ct.store(out2, pid, ct.where(broadcast($op2, ta, tb), 1.0f0, 0.0f0))
+            ct.store(out1, pid, ifelse.(broadcast($op1, ta, tb), 1.0f0, 0.0f0))
+            ct.store(out2, pid, ifelse.(broadcast($op2, ta, tb), 1.0f0, 0.0f0))
             return
         end
         n = 1024
@@ -248,8 +248,8 @@ end
         pid = ct.bid(1)
         ta = ct.load(a, pid, (16,))
         tb = ct.load(b, pid, (16,))
-        ct.store(out_eq, pid, ct.where(ta .== tb, 1.0f0, 0.0f0))
-        ct.store(out_ne, pid, ct.where(ta .!= tb, 1.0f0, 0.0f0))
+        ct.store(out_eq, pid, ifelse.(ta .== tb, 1.0f0, 0.0f0))
+        ct.store(out_ne, pid, ifelse.(ta .!= tb, 1.0f0, 0.0f0))
         return
     end
 
@@ -281,7 +281,7 @@ end
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
-                ct.store(out, pid, ct.where(broadcast($op, ta, tb), 1.0f0, 0.0f0))
+                ct.store(out, pid, ifelse.(broadcast($op, ta, tb), 1.0f0, 0.0f0))
                 return
             end
             n = 1024
@@ -302,7 +302,7 @@ end
                                out::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         ta = ct.load(a, pid, (16,))
-        ct.store(out, pid, ct.where(ta .> 0.5f0, 1.0f0, 0.0f0))
+        ct.store(out, pid, ifelse.(ta .> 0.5f0, 1.0f0, 0.0f0))
         return
     end
 
@@ -358,16 +358,16 @@ end
 
 end
 
-@testset "where / ifelse broadcasting" begin
+@testset "ifelse broadcasting" begin
 
-@testset "where same-shape" begin
+@testset "ifelse same-shape" begin
     function where_same_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                                c::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         ta = ct.load(a, pid, (16,))
         tb = ct.load(b, pid, (16,))
         mask = ta .> tb
-        result = ct.where(mask, ta, tb)
+        result = ifelse.(mask, ta, tb)
         ct.store(c, pid, result)
         return
     end
@@ -382,12 +382,12 @@ end
     @test Array(c) ≈ ifelse.(Array(a) .> Array(b), Array(a), Array(b)) rtol=1e-5
 end
 
-@testset "where with scalar y" begin
+@testset "ifelse with scalar y" begin
     function where_scalar_y_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         ta = ct.load(a, pid, (16,))
         mask = ta .> 0.5f0
-        result = ct.where(mask, ta, 0.0f0)
+        result = ifelse.(mask, ta, 0.0f0)
         ct.store(b, pid, result)
         return
     end
@@ -401,12 +401,12 @@ end
     @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, Array(a), 0.0f0) rtol=1e-5
 end
 
-@testset "where with scalar x" begin
+@testset "ifelse with scalar x" begin
     function where_scalar_x_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         ta = ct.load(a, pid, (16,))
         mask = ta .> 0.5f0
-        result = ct.where(mask, 1.0f0, ta)
+        result = ifelse.(mask, 1.0f0, ta)
         ct.store(b, pid, result)
         return
     end
@@ -420,11 +420,11 @@ end
     @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, 1.0f0, Array(a)) rtol=1e-5
 end
 
-@testset "where with broadcasting" begin
+@testset "ifelse with broadcasting" begin
     function where_broadcast_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
         mask = ct.load(a, (1, 1), (1, 128))  # (1, 128) mask
         tile = ct.load(a, (1, 1), (64, 128))  # (64, 128) tile
-        result = ct.where(mask .> 0.5f0, tile, 0.0f0)
+        result = ifelse.(mask .> 0.5f0, tile, 0.0f0)
         ct.store(b, (1, 1), result)
         return
     end

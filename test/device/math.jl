@@ -151,7 +151,7 @@ end
     function isnan_kernel(a::ct.TileArray{Float32,1}, out::ct.TileArray{Float32,1})
         pid = ct.bid(1)
         ta = ct.load(a, pid, (16,))
-        ct.store(out, pid, ct.where(isnan.(ta), 1.0f0, 0.0f0))
+        ct.store(out, pid, ifelse.(isnan.(ta), 1.0f0, 0.0f0))
         return
     end
 
