@@ -9,11 +9,11 @@ using CompilerCaching: CacheView, method_instance, results
 
 import Core.Compiler as CC
 
-using CUDA: CuArray, CuModule, CuFunction, cudacall, device, capability
+using CUDACore: CuArray, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
 import Base.Broadcast: BroadcastStyle
-import CUDA: CuArrayStyle
+import CUDACore: CuArrayStyle
 
 public launch
 

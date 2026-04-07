@@ -16,17 +16,18 @@ GPUArrays = "0c68f7d7-f131-5f86-a1c3-88cf8149b2d7"
 IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 
 [weakdeps]
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
 DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 
 [extensions]
-CUDAExt = "CUDA"
+CUDAExt = "CUDACore"
 DLFP8TypesExt = "DLFP8Types"
 
 [compat]
 BFloat16s = "0.6"
 CUDA_Compiler_jll = "0.4"
 CUDA_Tile_jll = "13.1"
+CUDACore = "6"
 CompilerCaching = "0.2"
 EnumX = "1.0"
 GPUArrays = "11"

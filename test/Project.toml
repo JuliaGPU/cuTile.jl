@@ -10,5 +10,6 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"
 
 [compat]
+CUDA = "6"
 FileCheck = "1.0"
 ParallelTestRunner = "2.0"
