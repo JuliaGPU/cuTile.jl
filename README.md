@@ -2,9 +2,9 @@
 
 A Julia package for writing GPU kernels using NVIDIA's tile-based programming model.
 
-**This package is under active development.** Not all Tile IR features are implemented, and
-support for the Julia language is limited and only verified on the examples provided here.
-Interfaces and APIs may change without notice.
+**This package is in beta.** Most Tile IR features are implemented and the package has been
+verified on the benchmarks and tests included in the repository. Interfaces and APIs may
+still change without notice.
 
 
 ## Installation
@@ -19,7 +19,8 @@ julia> Pkg.add("cuTile")
 Execution of cuTile kernels requires CUDA.jl to be installed and imported.
 cuTile generates kernels based on [Tile IR](https://docs.nvidia.com/cuda/tile-ir/), which requires an NVIDIA Driver that supports CUDA 13 (580 or later).
 CUDA.jl automatically downloads the appropriate CUDA toolkit artifacts, so no manual CUDA installation is needed.
-Only Ampere, Ada, and Blackwell GPUs are supported at this time, with Hopper support coming in a later release of CUDA 13.
+Only Ampere, Ada, and Blackwell GPUs are supported at this time, with Hopper support expected
+in a future release of CUDA.
 
 ## Quick Start
 
@@ -124,6 +125,15 @@ cuTile.jl aims to expose as much functionality as possible through Julia-native 
 prefixed with `ct.` are cuTile intrinsics with no direct Julia equivalent; everything else
 uses standard Julia syntax and is overlaid on `Base`.
 
+### Supported Types
+
+**Integers:** `Int8`, `UInt8`, `Int16`, `UInt16`, `Int32`, `UInt32`, `Int64`, `UInt64`
+**Floats:** `Float16`, `BFloat16`, `Float32`, `Float64`, `TFloat32`
+**Boolean:** `Bool`
+
+`TFloat32` is a 32-bit floating-point type with reduced mantissa precision (10 bits),
+optimized for tensor core operations.
+
 ### Memory
 | Operation | Description |
 |-----------|-------------|
@@ -150,6 +160,18 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 | `ct.bid(axis)` | Block ID (1=x, 2=y, 3=z) |
 | `ct.num_blocks(axis)` | Grid size along axis |
 | `ct.num_tiles(arr, axis, shape)` | Number of tiles along axis |
+
+### Control Flow
+| Construct | Description |
+|-----------|-------------|
+| `if`/`elseif`/`else` | Conditional branching |
+| `for i in start:stop` | Counted loops (compiled to Tile IR ForOp) |
+| `for i in start:step:stop` | Stepped loops |
+| `while cond ... end` | While loops |
+| `ifelse.(cond, x, y)` | Element-wise conditional selection |
+
+Standard Julia control flow works inside kernels and is compiled to structured
+Tile IR operations.
 
 ### Arithmetic
 | Operation | Description |
@@ -189,6 +211,7 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 | `map(f, tiles...)` | Apply function element-wise (same shape) |
 | `f.(tiles...)`, `broadcast(f, tiles...)` | Apply function with shape broadcasting |
 | `reduce(f, tile; dims, init)` | Reduction with arbitrary function |
+| `mapreduce(f, op, tile; dims, init)` | Map then reduce |
 | `accumulate(f, tile; dims, init, rev)` | Scan/prefix-sum with arbitrary function |
 
 ### Reductions
@@ -215,10 +238,13 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 | `exp2.(tile)` | Base-2 exponential |
 | `log.(tile)` | Natural logarithm |
 | `log2.(tile)` | Base-2 logarithm |
-| `sin.(tile)`, `cos.(tile)`, etc. | Trigonometric functions |
+| `sin.(tile)`, `cos.(tile)`, `tan.(tile)` | Trigonometric functions |
+| `sinh.(tile)`, `cosh.(tile)`, `tanh.(tile)` | Hyperbolic functions |
 | `fma.(a, b, c)` | Fused multiply-add |
 | `abs.(tile)` | Absolute value |
+| `isnan.(tile)` | NaN test |
 | `max(a, b)`, `min(a, b)` | Maximum/minimum (scalars) |
+| `ceil.(tile)`, `floor.(tile)` | Rounding |
 | `ct.@fpmode rounding_mode=ct.Rounding.Approx flush_to_zero=true begin ... end` | Scoped FP rounding mode and flush-to-zero |
 
 ### Comparison
@@ -242,6 +268,14 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 | `div(a, b)` | Truncating division |
 | `mul_hi.(tile_a, tile_b)`, `mul_hi(x, y)` | High bits of integer multiply (use `Base.mul_hi` on Julia 1.13+) |
 
+### Indexing
+| Operation | Description |
+|-----------|-------------|
+| `arr[i, j, ...]` | Load scalar element from `TileArray` |
+| `arr[i, j, ...] = val` | Store scalar element to `TileArray` |
+| `tile[i, j, ...]` | Extract scalar from `Tile` |
+| `setindex(tile, val, i, j, ...)` | Return new `Tile` with element replaced |
+
 ### Atomics
 | Operation | Description |
 |-----------|-------------|
@@ -257,11 +291,52 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 All atomics accept `memory_order` (default: `ct.MemoryOrder.AcqRel`) and
 `memory_scope` (default: `ct.MemScope.Device`) keyword arguments.
 
+### Performance Tuning
+
+#### Kernel configuration
+
+`ct.@compiler_options` sets optimization hints inside a kernel function body:
+
+```julia
+function matmul(A, B, C, ...)
+    ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 2) occupancy=8
+    ...
+end
+```
+
+| Option | Description | Valid values |
+|--------|-------------|--------------|
+| `num_ctas` | Number of CTAs in a CGA | Powers of 2 |
+| `occupancy` | Target concurrent CTAs per SM | 1–32 |
+| `opt_level` | Optimization level | 0–3 |
+
+Values can be plain scalars or `ct.ByTarget(...)` for per-architecture dispatch.
+`ByTarget` maps compute capabilities to values, with an optional default:
+
+```julia
+ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 4, v"12.0" => 2; default=1)
+```
+
+Hints can also be passed as keyword arguments to `ct.launch` or `ct.code_tiled`,
+which take precedence over `@compiler_options`.
+
+#### Load/store hints
+
+`ct.load` and `ct.store` accept optional keyword arguments that influence memory
+traffic scheduling:
+
+| Hint | Description |
+|------|-------------|
+| `latency` | DRAM traffic weight hint, integer 1 (low) to 10 (high). Default: compiler-inferred. |
+| `allow_tma` | Whether to allow Tensor Memory Accelerator lowering. Default: allowed. |
+
 ### Debugging
+
 | Operation | Description |
 |-----------|-------------|
 | `print(args...)` | Print values (Base overlay) |
 | `println(args...)` | Print values with newline (Base overlay) |
+| `ct.@assert cond [msg]` | Abort kernel if condition is false |
 
 Standard Julia `print`/`println` work inside kernels. String constants and tiles
 can be mixed freely; format specifiers are inferred from element types at compile
@@ -270,9 +345,27 @@ time. String interpolation is supported.
 ```julia
 println("Block ", ct.bid(1), ": tile=", tile)
 println("result=$result")  # string interpolation
+ct.@assert idx <= n "index out of bounds"
 ```
 
-This is a debugging aid and is not optimized for performance.
+These are debugging aids and are not optimized for performance.
+
+### Code Inspection
+
+Beyond `ct.code_tiled` and `ct.@code_tiled` shown above, cuTile.jl provides
+`@device_code_*` macros that intercept compilation during `ct.launch`:
+
+```julia
+ct.@device_code_tiled ct.launch(vadd, grid, a, b, c, ct.Constant(16))
+ct.@device_code_typed ct.launch(vadd, grid, a, b, c, ct.Constant(16))
+ct.@device_code_structured ct.launch(vadd, grid, a, b, c, ct.Constant(16))
+```
+
+| Macro | Output |
+|-------|--------|
+| `ct.@device_code_tiled` | Final Tile IR (MLIR textual format) |
+| `ct.@device_code_typed` | Typed Julia IR after overlay resolution |
+| `ct.@device_code_structured` | Structured IR (after control-flow structurization) |
 
 
 ## Differences from cuTile Python
@@ -312,7 +405,8 @@ end
 ### Optimization hints
 
 Python passes optimization hints as `@ct.kernel` decorator arguments. Julia uses
-`ct.@compiler_options` inside the function body (like `@inline`):
+`ct.@compiler_options` inside the function body (like `@inline`). See
+[Performance Tuning](#performance-tuning) for full details.
 
 ```python
 # Python
@@ -328,24 +422,6 @@ function matmul(A, B, C, ...)
     ...
 end
 ```
-
-Supported options:
-
-| Option | Description | Valid values |
-|--------|-------------|--------------|
-| `num_ctas` | Number of CTAs in a CGA (cooperative group array) | Powers of 2 |
-| `occupancy` | Target occupancy (number of concurrent CTAs per SM) | 1–32 |
-| `opt_level` | Optimization level | 0–3 |
-
-Values can be plain scalars or `ct.ByTarget(...)` for per-architecture dispatch.
-`ByTarget` maps compute capabilities to values, with an optional default:
-
-```julia
-ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 4, v"12.0" => 2; default=1)
-```
-
-Hints can also be passed as keyword arguments to `ct.launch` or `ct.code_tiled`,
-which take precedence over `@compiler_options`.
 
 ### Launch Syntax
 
@@ -515,7 +591,7 @@ standard Julia silently produce truncated or wrapped results instead:
   throwing `InexactError` for non-integer or out-of-range values. Use
   `unsafe_trunc` for the explicit non-throwing primitive.
 
-Assertions may be added in the future for testing purposes.
+Use `ct.@assert` to add runtime checks in kernels (see Debugging above).
 
 
 ## Host-level operations
