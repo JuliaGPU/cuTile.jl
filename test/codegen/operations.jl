@@ -1222,6 +1222,8 @@ end
                 Base.donotdelete(log.(tile))
                 @check "log2"
                 Base.donotdelete(log2.(tile))
+                @check "cmpf"
+                Base.donotdelete(isnan.(tile))
                 return
             end
         end

@@ -272,7 +272,17 @@ end
 # cuda_tile.cmpf
 @intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate.T) where {T<:AbstractFloat}
 @intrinsic cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T) where {T<:AbstractFloat}
+@intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate.T, ord::ComparisonOrdering.T) where {T<:AbstractFloat}
+@intrinsic cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, ord::ComparisonOrdering.T) where {T<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpf), @nospecialize(x), @nospecialize(y), @nospecialize(pred))
+    t = CC.widenconst(x)
+    if t isa DataType && t <: Tile
+        S = t.parameters[2]
+        return Tile{Bool, S}
+    end
+    return Bool
+end
+function tfunc(𝕃, ::typeof(Intrinsics.cmpf), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(ord))
     t = CC.widenconst(x)
     if t isa DataType && t <: Tile
         S = t.parameters[2]
@@ -287,6 +297,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     lhs = @something emit_value!(ctx, args[1]) throw(IRError("cmpf: cannot resolve lhs"))
     rhs = @something emit_value!(ctx, args[2]) throw(IRError("cmpf: cannot resolve rhs"))
     predicate = @something get_constant(ctx, args[3]) throw(IRError("cmpf: requires compile-time predicate"))
+    ordering = if length(args) >= 4
+        @something get_constant(ctx, args[4]) throw(IRError("cmpf: requires compile-time ordering"))
+    else
+        ComparisonOrdering.Ordered
+    end
 
     # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
     lhs, rhs = _broadcast_match_shapes!(cb, tt, lhs, rhs)
@@ -296,7 +311,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     bool_dtype = I1(tt)
     result_type_id = tile_type!(tt, bool_dtype, result_shape)
 
-    result_v = encode_CmpFOp!(cb, result_type_id, lhs.v, rhs.v; predicate)
+    result_v = encode_CmpFOp!(cb, result_type_id, lhs.v, rhs.v; predicate, ordering)
     lhs_type = CC.widenconst(lhs.jltype)
     result_jltype = similar_type(lhs_type, Bool)
     CGVal(result_v, result_type_id, result_jltype, result_shape)

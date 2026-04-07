@@ -56,7 +56,7 @@ const INTRINSIC_RULES = RewriteRule[
     @rewrite Core.Intrinsics.eq_float(~x, ~y) =>
             Intrinsics.cmpf(~x, ~y, $(ComparisonPredicate.Equal))
     @rewrite Core.Intrinsics.ne_float(~x, ~y) =>
-            Intrinsics.cmpf(~x, ~y, $(ComparisonPredicate.NotEqual))
+            Intrinsics.cmpf(~x, ~y, $(ComparisonPredicate.NotEqual), $(ComparisonOrdering.Unordered))
 
     # Bitcast (reinterpret): Core.Intrinsics.bitcast(T, x) → Intrinsics.bitcast(x, T)
     @rewrite Core.Intrinsics.bitcast(~T, ~x) => Intrinsics.bitcast(~x, ~T)
