@@ -268,6 +268,35 @@ end
     @test Array(out_ne) ≈ Float32.(Array(a) .!= Array(b))
 end
 
+@testset "NaN comparison semantics" begin
+    # Test that all comparison ops follow IEEE 754 NaN semantics:
+    # NaN != x → true; all other comparisons with NaN → false
+    for (name, op) in [("==", :(==)), ("!=", :(!=)),
+                        ("<", :(<)), ("<=", :(<=)),
+                        (">", :(>)), (">=", :(>=))]
+        sym = Symbol("cmp_nan_", replace(name, r"[^a-zA-Z0-9]" => "_"))
+        @eval @testset $name begin
+            function $sym(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                          out::ct.TileArray{Float32,1})
+                pid = ct.bid(1)
+                ta = ct.load(a, pid, (16,))
+                tb = ct.load(b, pid, (16,))
+                ct.store(out, pid, ct.where(broadcast($op, ta, tb), 1.0f0, 0.0f0))
+                return
+            end
+            n = 1024
+            a = CUDA.rand(Float32, n)
+            b = CUDA.rand(Float32, n)
+            # Sprinkle NaN in both arrays at different positions
+            CUDA.@allowscalar a[1:16:end] .= NaN32
+            CUDA.@allowscalar b[2:16:end] .= NaN32
+            out = CUDA.zeros(Float32, n)
+            ct.launch($sym, cld(n, 16), a, b, out)
+            @test Array(out) == Float32.(broadcast($op, Array(a), Array(b)))
+        end
+    end
+end
+
 @testset "tile vs scalar comparison" begin
     function cmp_scalar_kernel(a::ct.TileArray{Float32,1},
                                out::ct.TileArray{Float32,1})
