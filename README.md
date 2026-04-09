@@ -107,6 +107,8 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 | FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 592 μs | 562 μs | OK (+5%) |
 | Mixture of Experts | 256tok 1024h 32e 2048i f16 | 18.8 TFLOPS | 20.3 TFLOPS | -7% |
 | Attention (FMHA) | 8×16×1024² ×64 f16 causal | 89.3 TFLOPS | 63.9 TFLOPS | +40%*** |
+| Softmax (TMA) | 4096² f32 | 806 GB/s | 838 GB/s | OK (-4%) |
+| Softmax (Chunked) | 4096² f32 | 1587 GB/s | 1676 GB/s | OK (-5%) |
 
 \* The `pow(x, 2)` → `mulf(x, x)` strength reduction eliminates the expensive
 transcendental in the variance computation. Python still emits `pow`.
