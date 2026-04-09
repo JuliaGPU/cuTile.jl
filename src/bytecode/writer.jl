@@ -339,9 +339,10 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityVal)
     push!(cb.buf, 0x02)
     # Type ID
     encode_typeid!(cb.buf, identity.type_id)
-    # Value as bits (using signed varint encoding for values <= 64 bits)
+    # Value as ap_int: zigzag-encode the bit pattern, then varint.
+    # Widen to Int128 so the shift-left never overflows.
     bits = float_to_bits(identity.value, identity.dtype)
-    encode_varint!(cb.buf, bits)
+    encode_signed_varint!(cb.buf, Int128(bits))
 end
 
 """
@@ -372,11 +373,9 @@ function mask_to_width(value::UInt128, ::Type{T}) where T <: Integer
     masked = value & mask
     U = unsigned(T)
     unsigned_masked = U(masked)
-    if T <: Signed # do zig-zag encoding
-        U((unsigned_masked << 1) ⊻ (unsigned_masked >>> (bits - 1)))
-    else
-        unsigned_masked
-    end
+    # Integer identities are stored as raw values (no zigzag encoding).
+    # Widen to UInt128 so the varint encoder handles any bit width.
+    UInt128(unsigned_masked)
 end
 
 """

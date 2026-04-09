@@ -726,6 +726,75 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        # reduce identity values (zigzag-encoded in bytecode)
+        @testset "identities" begin
+            # Float32: sum → 0.0, maximum → -Inf (0xFF800000), minimum → +Inf (0x7F800000)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "identities=[0.000000e+00 : f32]"
+                    Base.donotdelete(sum(tile; dims=2))
+                    return
+                end
+            end
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "identities=[0xFF800000 : f32]"
+                    Base.donotdelete(maximum(tile; dims=2))
+                    return
+                end
+            end
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "identities=[0x7F800000 : f32]"
+                    Base.donotdelete(minimum(tile; dims=2))
+                    return
+                end
+            end
+
+            # Float16: maximum → -Inf (0xFC00), minimum → +Inf (0x7C00)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float16,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "identities=[0xFC00 : f16]"
+                    Base.donotdelete(maximum(tile; dims=2))
+                    return
+                end
+            end
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float16,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "identities=[0x7C00 : f16]"
+                    Base.donotdelete(minimum(tile; dims=2))
+                    return
+                end
+            end
+
+            # Int32: maximum → typemin (zigzag of -2147483648)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "identities=[-2147483648"
+                    Base.donotdelete(maximum(tile; dims=2))
+                    return
+                end
+            end
+        end
+
         # argmax
         @test @filecheck begin
             @check_label "entry"
