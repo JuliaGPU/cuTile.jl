@@ -105,9 +105,13 @@ def run_benchmark(name: str):
     # Run cuTile
     result = run_fn(data, nruns=NRUNS, warmup=WARMUP)
 
-    # Extract times (handle times_fwd/times_bwd for layernorm)
+    # Extract times from result
     if "times" in result:
-        results = {"cuTile": result["times"]}
+        t = result["times"]
+        if isinstance(t, dict):
+            results = t
+        else:
+            results = {"cuTile": t}
     elif "times_fwd" in result:
         results = {
             "cuTile Fwd": result["times_fwd"],

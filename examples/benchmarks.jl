@@ -100,9 +100,14 @@ function run_benchmark(name::String)
     # Run cuTile
     result = @invokelatest mod.run(data; nruns=NRUNS, warmup=WARMUP)
 
-    # Extract times (handle times_fwd/times_bwd for layernorm)
+    # Extract times from result
     if hasproperty(result, :times)
-        results = Dict{String, Vector{Float64}}("cuTile" => result.times)
+        t = result.times
+        if t isa Dict
+            results = t
+        else
+            results = Dict{String, Vector{Float64}}("cuTile" => t)
+        end
     elseif hasproperty(result, :times_fwd)
         results = Dict{String, Vector{Float64}}(
             "cuTile Fwd" => result.times_fwd,
