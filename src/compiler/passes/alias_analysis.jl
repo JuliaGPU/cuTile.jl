@@ -24,6 +24,12 @@ merges — this file only supplies the per-op transfer rules.
 """
 struct AliasAnalysis <: ForwardAnalysis{AliasSet} end
 
+# Lattice flattening: bottom and top are both `ALIAS_UNIVERSE`. A proper
+# three-level lattice (⊥ / concrete Set / ⊤=UNIVERSE) would distinguish
+# "unvisited" from "may alias anything"; here we collapse them because
+# every consumer (token_order_pass!) treats absent keys as UNIVERSE
+# anyway. The `record!` "skip bottom on insert" optimisation then elides
+# the universe-on-unknown-op dict writes, without affecting semantics.
 bottom(::AliasAnalysis) = ALIAS_UNIVERSE
 top(::AliasAnalysis) = ALIAS_UNIVERSE
 
@@ -39,9 +45,8 @@ function init_arg(::AliasAnalysis, i::Int, @nospecialize(argtype))
     end
 end
 
-function operand_value(::AliasAnalysis, r::DataflowResult, @nospecialize(op))
-    op isa LatticeAnchor ? r[op] : ALIAS_UNIVERSE
-end
+# `operand_value` default (LatticeAnchor → r[op], else bottom) is already
+# correct here since bottom == ALIAS_UNIVERSE — no override needed.
 
 function transfer(a::AliasAnalysis, r::DataflowResult, @nospecialize(func),
                   ops, ::Block, ::Any)
@@ -85,7 +90,6 @@ Run forward sparse alias analysis and return the result in the legacy
 function alias_analysis_pass!(sci::StructuredIRCode)
     result = analyze(AliasAnalysis(), sci)
     # token_order still consumes the legacy dict shape; expose that.
-    result.values::Dict{LatticeAnchor, AliasSet}
     legacy = Dict{Any, AliasSet}()
     for (k, v) in result.values
         legacy[k] = v
