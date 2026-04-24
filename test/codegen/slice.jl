@@ -93,11 +93,11 @@ end
     end
 end
 
-@testset "slice — divisibility annotations (Phase 3)" begin
+@testset "slice — divisibility annotations" begin
     # For spec1d {alignment=16}, @view A[3:10]:
-    #   start_0 = 3-1 = 2, stop = 10; new size = stop - start = 8.
-    #   new_size divby = gcd(2, 10) = 2  (loose — see Gap 1 in divisibility.jl).
-    #   new_base divby = gcd(16, 2 * stride * sizeof(T)) with stride=1, elem=4 → gcd(16, 8) = 8.
+    #   start_0 = 2, stop = 10; new_size = subi(stop, start).
+    #   new_size divby = gcd(2, 10) = 2  (loose — const operands aren't folded).
+    #   new_base divby = gcd(16, 2 * stride * sizeof(T)) = gcd(16, 8) = 8.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -106,14 +106,13 @@ end
             ct.store(sub, 1, t)
             return
         end
-        @check "assume div_by<2>"   # new_size = subi(stop=10, start=2); loose gcd bound
+        @check "assume div_by<2>"
         @check "offset"
-        @check "assume div_by<8>"   # on derived new_base pointer
+        @check "assume div_by<8>"
         @check "make_tensor_view"
     end
 
-    # Once Gap 1 (constant folding for subi(const, const)) lands, the new_size
-    # should tighten to the exact value abs(stop - start).
+    # Tightens once a const-fold pass reaches the subi(stop, start): div_by<8>.
     @test_broken @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -122,18 +121,12 @@ end
             ct.store(sub, 1, t)
             return
         end
-        @check "assume div_by<8>"   # tight: abs(10 - 2) = 8  (blocked on Gap 1)
+        @check "assume div_by<8>"
         @check "offset"
         @check "assume div_by<8>"
         @check "make_tensor_view"
     end
 
-    # Dynamic slice with divby-annotated bounds (e.g. @view A[bid*TILE : (bid+1)*TILE])
-    # should get a divby=TILE annotation on the derived size. Blocked on Gap 1 or
-    # Gap 2 in src/compiler/passes/divisibility.jl (constant folding + ArraySpec
-    # seeding). Flip this to @test once either lands.
-    @test_broken begin
-        # Placeholder for when dynamic-bounds divby propagation lands.
-        false
-    end
+    # Dynamic-bounds divby propagation (ArraySpec seeding into derived values).
+    @test_broken false
 end

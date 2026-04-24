@@ -13,9 +13,9 @@
 """
     slice_spec(spec::ArraySpec{N}, axis::Int) -> ArraySpec{N}
 
-Conservative ArraySpec for a sliced TileArray. Phase 1: drops alignment to 0
-and resets `shape_div_by[axis]` to 0 (unknown). Strides and other axes'
-divisibility are preserved. Phase 3's divisibility analysis will refine this.
+Conservative ArraySpec for a sliced TileArray: drops alignment to 0 and resets
+`shape_div_by[axis]` to 0 (unknown). Strides and other axes' divisibility are
+preserved.
 """
 function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
     new_shape_div_by = ntuple(N) do i
@@ -121,9 +121,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     new_size_axis = encode_SubIOp!(cb, scalar_size_type, stop_val, start_val)
 
     # Read divby of start/stop from local assume_div_by wrappers (inserted by
-    # insert_divby_assumes!) or literals. Pure local lookup — no external state.
-    # The new-size divby is gcd(start, stop); for literal constants this is
-    # looser than abs(stop - start) until the divisibility pass closes Gap 1.
+    # insert_divby_assumes!) or literals.
     start_div = operand_divby_local(ctx.sci, start_arg)
     stop_div = operand_divby_local(ctx.sci, stop_arg)
     size_div = gcd(start_div, stop_div)
