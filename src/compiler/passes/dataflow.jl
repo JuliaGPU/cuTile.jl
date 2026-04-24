@@ -89,9 +89,10 @@ Public API:
   updating anchors that the analysis already visited — call the analysis
   again instead.
 - `has_value(r, key)` — distinguish "known bottom" from "absent".
+- `pairs(r)`         — iterate non-bottom (anchor, value) entries.
 
-`values` is an internal dict backing the above; don't poke it directly
-from outside the framework.
+`values` is an internal dict backing the above; consumers must go through
+this API rather than poking the field directly.
 """
 struct DataflowResult{A <: ForwardAnalysis, T}
     analysis::A
@@ -118,6 +119,9 @@ True iff `key` has a non-bottom entry in the result. Useful for telling
 """
 has_value(r::DataflowResult, @nospecialize(key)) =
     key isa LatticeAnchor && haskey(r.values, key)
+
+"""Iterate (anchor, value) entries — only non-bottom entries are stored."""
+Base.pairs(r::DataflowResult) = pairs(r.values)
 
 """
     operand_value(analysis, result, op) -> T
@@ -150,7 +154,7 @@ function analyze(analysis::A, sci::StructuredIRCode) where {A <: ForwardAnalysis
     for (i, argtype) in enumerate(sci.argtypes)
         v = init_arg(analysis, i, argtype)
         if !is_bottom(analysis, v)
-            result.values[Argument(i)] = v
+            result[Argument(i)] = v
         end
     end
 
@@ -219,14 +223,14 @@ anchor (feeds the non-convergence diagnostic).
 """
 function record!(analysis::ForwardAnalysis{T}, result::DataflowResult,
                  key::LatticeAnchor, new_val::T, tracker::ChangeTracker) where {T}
-    old = get(result.values, key, nothing)
-    if old === nothing
-        is_bottom(analysis, new_val) && return  # don't pollute the dict with ⊥
-        result.values[key] = new_val
-    else
+    if has_value(result, key)
+        old = result[key]
         merged = tmerge(analysis, old, new_val)
         merged == old && return
-        result.values[key] = merged
+        result[key] = merged
+    else
+        is_bottom(analysis, new_val) && return  # don't pollute the dict with ⊥
+        result[key] = new_val
     end
     tracker.dirty = true
     tracker.last_changed = key

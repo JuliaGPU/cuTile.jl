@@ -91,7 +91,7 @@ function alias_analysis_pass!(sci::StructuredIRCode)
     result = analyze(AliasAnalysis(), sci)
     # token_order still consumes the legacy dict shape; expose that.
     legacy = Dict{Any, AliasSet}()
-    for (k, v) in result.values
+    for (k, v) in pairs(result)
         legacy[k] = v
     end
     return legacy
