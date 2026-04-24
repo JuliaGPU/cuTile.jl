@@ -31,11 +31,13 @@ end
 end
 
 # Base.unitrange_last adjusts `stop` to `start - 1` when `stop < start`, so the
-# resulting UnitRange reports length 0 for empty ranges. That adjustment emits
-# a cmpi + if/else per `@view A[i:j]` axis in Tile IR. Inside a kernel we don't
-# need that adjustment — downstream use of `first(r) / last(r)` hits the raw
-# field anyway, and reversed ranges indicate a user bug just like in Python
-# cuTile's `Array.slice(start, stop)` (no runtime check).
+# resulting UnitRange reports length 0 for empty ranges. For dynamic bounds
+# (kernel-parameter ranges like `@view A[i:j]`) that adjustment lowers to a
+# `cmpi` + `select` per axis, which the overlay skips — reversed ranges are
+# a user bug and match cuTile Python's `Array.slice(start, stop)` behavior
+# (no runtime check either). For literal ranges, Julia's constant propagation
+# on the regular `unitrange_last` wins at inference time before the overlay
+# has a chance to fire — `5:2` still comes through as `UnitRange{Int}(5, 4)`.
 @overlay Base.unitrange_last(start::T, stop::T) where {T<:Base.BitInteger} = stop
 
 
@@ -190,9 +192,23 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
 =============================================================================#
 
 # Route Julia's standard `@view A[...]` and explicit `view(A, ...)` on a
-# TileArray through `Intrinsics.slice` via the _view_chain dispatch in
-# operations.jl. Each UnitRange axis produces one slice; `:` is a no-op.
-@overlay Base.maybeview(arr::TileArray{T, N}, inds::Vararg{Any, N}) where {T, N} =
+# TileArray through the `_view_chain` dispatch in operations.jl. Each UnitRange
+# axis produces one slice; `:` is a no-op.
+#
+# Restricted to `Vararg{Union{Colon, UnitRange}, N}`: both rank mismatches and
+# unsupported index types (StepRange, Int, CartesianIndex, …) fall through to
+# `Base.view`'s regular methods (which don't match TileArray) and surface as a
+# codegen-time `IRError`. The error message is currently whatever the first
+# failure in `_throw_method_error`'s formatting produces — cleaning that up is
+# tied to a broader rework of unsupported-call error reporting toward runtime
+# asserts; defer.
+#
+# Checking inside `_view_chain` and throwing there doesn't work either: a
+# `throw(ArgumentError(...))` reached from inlined kernel code leaks the
+# exception object to codegen, which can't lower String / Exception values.
+@overlay Base.maybeview(arr::TileArray{T, N},
+                        inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
     _view_chain(arr, Val(1), inds)
-@overlay Base.view(arr::TileArray{T, N}, inds::Vararg{Any, N}) where {T, N} =
+@overlay Base.view(arr::TileArray{T, N},
+                   inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
     _view_chain(arr, Val(1), inds)

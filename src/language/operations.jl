@@ -6,20 +6,21 @@
 =============================================================================#
 
 # Users express slices via Julia's standard `@view A[i:j, :]` macro, which is
-# routed to `Intrinsics.slice` by the `Base.view` / `Base.maybeview` overlays
-# in overlays.jl via the `_view_chain` dispatch below. No public cuTile-level
-# `slice` function is exposed.
+# routed here by the `Base.view` / `Base.maybeview` overlays in overlays.jl.
+# The overlays restrict the index types (`Colon` / `UnitRange`) and rank, so
+# `_view_chain` only needs to handle the three matching cases below.
 
-# Single UnitRange per sliced axis; `:` is pass-through.
-@inline function _view_chain(arr::TileArray, ::Val{Axis}, ::Tuple{}) where {Axis}
-    arr
-end
+# Empty tuple: all axes walked, return the accumulated slice.
+@inline _view_chain(arr::TileArray, ::Val{Axis}, ::Tuple{}) where {Axis} = arr
+# `:` is a no-op; advance to the next axis.
 @inline function _view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
     _view_chain(arr, Val(Axis + 1), Base.tail(inds))
 end
+# UnitRange: emit the slice and recurse.
 @inline function _view_chain(arr::TileArray, ::Val{Axis},
                              inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
+    _check_slice_bounds(r)
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
     # Julia 1-indexed inclusive [first, last] → 0-indexed half-open [start, stop).
     # `stop = last(r)` because inclusive 1-indexed end == half-open 0-indexed end
@@ -36,11 +37,20 @@ end
     sub = Intrinsics.slice(arr, Val(Axis), new_base, new_size)
     _view_chain(sub, Val(Axis + 1), Base.tail(inds))
 end
-# Reject unsupported index types with a clear message.
-@inline function _view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple) where {Axis}
-    throw(ArgumentError("@view on a TileArray only supports UnitRange and `:` per axis; " *
-                        "got $(typeof(inds[1])) at axis $Axis"))
+
+# Python-parity compile-time sanity checks on slice bounds. These fire only
+# when the UnitRange element type is `Int` — literal ranges authored with
+# default Int literals. Kernel-parameter ranges (typically `Int32`) fall
+# through to the no-op method, since a runtime-conditional throw cannot
+# lower to Tile IR. Mirrors `_m_array_slice`'s `is_constant()` guards in
+# res/cutile-python/src/cuda/tile/_ir/ops.py.
+@inline function _check_slice_bounds(r::UnitRange{Int})
+    start, stop = first(r), last(r)
+    start < 1 && throw(ArgumentError("slice start must be ≥ 1, got $start"))
+    stop < start - 1 && throw(ArgumentError("slice stop must be ≥ start - 1, got start=$start, stop=$stop"))
+    return
 end
+@inline _check_slice_bounds(::UnitRange) = nothing
 
 
 # Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples

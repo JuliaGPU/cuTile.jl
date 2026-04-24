@@ -100,3 +100,22 @@ end
     @test got == want
 end
 
+@testset "slice — nested view" begin
+    # Slicing a slice: view(view(a, r1, :), :, r2) — exercises the arg_ref
+    # chain across two successive slice intrinsics. Uses the `view` function
+    # rather than `@view` for legibility.
+    function kern(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                  r1s::Int32, r1e::Int32, c2s::Int32, c2e::Int32)
+        outer = view(a, r1s:r1e, :)
+        inner = view(outer, :, c2s:c2e)
+        t = ct.load(inner, (1, 1), (4, 4))
+        ct.store(b, (1, 1), t)
+        return
+    end
+
+    a = CUDA.rand(Float32, 8, 8)
+    b = CUDA.zeros(Float32, 4, 4)
+    ct.launch(kern, 1, a, b, Int32(3), Int32(6), Int32(2), Int32(5))
+    @test Array(b) == Array(a)[3:6, 2:5]
+end
+
