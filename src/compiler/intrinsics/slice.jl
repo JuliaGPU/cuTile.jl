@@ -24,14 +24,16 @@ function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
     ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, new_shape_div_by}()
 end
 
-# cuda_tile slice: narrow a TileArray along a single axis.
+# cuda_tile slice: narrow a TileArray along a single axis to `[start, start+size)`.
 # `axis_v::Val{Axis}` makes the axis compile-time without requiring CC.Const
-# propagation through unrelated paths.
-@intrinsic slice(arr, axis_v::Val, start, stop)
+# propagation through unrelated paths. Taking `size` (rather than `stop`) keeps
+# the subtraction `stop - start` at the Julia IR level so standard constant
+# folding applies — the downstream divisibility analysis sees a tighter bound.
+@intrinsic slice(arr, axis_v::Val, start, size)
 
 function tfunc(𝕃, ::typeof(Intrinsics.slice),
                @nospecialize(arr), @nospecialize(axis_v),
-               @nospecialize(start), @nospecialize(stop))
+               @nospecialize(start), @nospecialize(size))
     T = CC.widenconst(arr)
     T <: TileArray || return nothing
     T isa DataType || return nothing
@@ -57,8 +59,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (arr, Val(Axis), start, stop)
-    arr_arg, axis_arg, start_arg, stop_arg = args[1], args[2], args[3], args[4]
+    # args: (arr, Val(Axis), start, size)
+    arr_arg, axis_arg, start_arg, size_arg = args[1], args[2], args[3], args[4]
 
     # Resolve axis from Val type parameter
     axis_val = @something get_constant(ctx, axis_arg) throw(IRError("slice: axis must be a Val{N}"))
@@ -107,16 +109,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     old_strides = collect_child_values(ctx, src_arg_idx, strides_path, ndim)
     old_strides === nothing && throw(IRError("slice: cannot resolve strides of source array"))
 
-    # Resolve start / stop scalars
+    # Resolve start and size scalars (both in elements).
     start_tv = emit_value!(ctx, start_arg)
-    stop_tv = emit_value!(ctx, stop_arg)
-    (start_tv === nothing || stop_tv === nothing) &&
-        throw(IRError("slice: cannot resolve start/stop"))
+    size_tv = emit_value!(ctx, size_arg)
+    (start_tv === nothing || size_tv === nothing) &&
+        throw(IRError("slice: cannot resolve start/size"))
     start_val = start_tv.v::Value
-    stop_val = stop_tv.v::Value
+    new_size_axis = size_tv.v::Value
 
-    # new_size[axis] = stop - start
-    new_size_axis = encode_SubIOp!(cb, scalar_size_type, stop_val, start_val)
+    # Read divby of start/size from local assume_div_by wrappers (inserted by
+    # insert_divby_assumes!) or literals. Pure local lookup — no external state.
+    start_div = operand_divby_local(ctx.sci, start_arg)
+    size_div = operand_divby_local(ctx.sci, size_arg)
+
+    if size_div > 1
+        new_size_axis = encode_AssumeOp!(cb, scalar_size_type, new_size_axis, DivBy(size_div))
+    end
 
     # new_base = base + start * stride[axis]
     stride_axis = old_strides[axis]
@@ -127,11 +135,28 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     ptr_tile_type = tile_type!(tt, ptr_dtype, RowMajorShape(()))
     new_base = encode_OffsetOp!(cb, ptr_tile_type, base_ptr, offset_val)
 
+    # Source ArraySpec (if known) feeds both divby computation and the result
+    # type below. `stride_div_by[axis]` and `alignment` are compile-time facts.
+    src_spec = array_spec(src_type)
+
+    # new_base divby = gcd(src_alignment_bytes, start_div * stride_axis_div * elem_bytes).
+    # `stride_div_by[i] == 0` in ArraySpec means "unknown"; treat as 1 for the
+    # purposes of this product (the trivial bound — every integer is divisible by 1).
+    stride_axis_div = src_spec === nothing ? 1 : max(src_spec.stride_div_by[axis], 1)
+    src_alignment = src_spec === nothing ? 0 : src_spec.alignment
+    elem_bytes = sizeof(elem_T)
+    if src_alignment > 0 && start_div > 0
+        offset_bytes_div = cap_divby(Int128(start_div) * Int128(stride_axis_div) * Int128(elem_bytes))
+        new_base_div = gcd(src_alignment, offset_bytes_div)
+        if new_base_div > 1
+            new_base = encode_AssumeOp!(cb, ptr_tile_type, new_base, DivBy(new_base_div))
+        end
+    end
+
     # Build new sizes (axis replaced)
     new_sizes = Value[i == axis ? new_size_axis : old_sizes[i] for i in 1:ndim]
 
     # Compute the result TileArray type (same as the tfunc).
-    src_spec = array_spec(src_type)
     result_type = src_spec === nothing ?
         TileArray{elem_T, ndim} :
         TileArray{elem_T, ndim, slice_spec(src_spec, axis)}

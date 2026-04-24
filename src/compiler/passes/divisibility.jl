@@ -27,6 +27,14 @@ const DivByResult = Dict{Any, Int}
 
 const MAX_DIVBY = 1024
 
+# TODO (tightening): when both operands of `addi/subi` resolve to known
+# integer constants, the current `gcd`-based rule gives a looser bound than
+# `abs(a ± b)` (e.g. `subi(10, 2)` yields `gcd(10,2) = 2` rather than `8`).
+# Matching Python's tightness here wants a *separate* constant-folding pass
+# that lowers such ops to `broadcast(scalar, shape)` before this analysis
+# runs — then the existing constant rule below fires naturally. The rewriter
+# framework is not the right home for it.
+
 """
     divisibility_analysis(sci, seeds=DivByResult()) -> DivByResult
 
@@ -311,4 +319,126 @@ function update_divby_gcd!(divby::DivByResult, @nospecialize(k), v::Int, dirty::
         end
     end
     return nothing
+end
+
+
+#=============================================================================
+ Assume Insertion (rewriter)
+=============================================================================#
+
+# Phase 3: after the analysis, walk the IR and wrap each sink's integer inputs
+# with `Intrinsics.assume_div_by(x, Val(D))` when `divby[x] > 1`. Codegen then
+# lowers the wrapper to `encode_AssumeOp!(DivBy(D))` naturally, with no codegen
+# coupling to the analysis result.
+#
+# Sinks in cuTile.jl that benefit from divby on integer inputs:
+#   - `Intrinsics.slice(arr, axis, start, stop)` — start and stop
+# (`Intrinsics.make_tensor_view` does not take integer inputs at the IR level;
+# its sizes/strides are materialized inside codegen from the TileArray's
+# destructured parameters, which already get AssumeOps from `emit_assume_ops!`.)
+
+const ASSUME_SINKS = Set{Any}([Intrinsics.slice])
+
+"""
+    insert_divby_assumes!(sci, seeds=DivByResult())
+
+Run divisibility analysis and mutate `sci` by inserting
+`Intrinsics.assume_div_by(x, Val(D))` calls before each recognized sink's
+integer operands with divby > 1.
+
+After this pass, downstream consumers read divisibility directly from the IR
+(no external Dict lookup) — e.g., slice's `emit_intrinsic!` calls
+`operand_divby_local(sci, op)` to recover `D` from the wrapper.
+"""
+function insert_divby_assumes!(sci::StructuredIRCode, seeds::DivByResult = DivByResult())
+    divby = divisibility_analysis(sci, seeds)
+    insert_assumes_in_block!(sci.entry, divby)
+    return sci
+end
+
+function insert_assumes_in_block!(block::Block, divby::DivByResult)
+    # Collect rewrites first so we don't invalidate the instruction iterator.
+    # Each rewrite is: (reference-instruction, stmt-to-mutate, arg-index, operand, divisor).
+    rewrites = Vector{Tuple{SSAValue, Expr, Int, Any, Int}}()
+
+    for inst in instructions(block)
+        s = stmt(inst)
+        if s isa ControlFlowOp
+            for sub in blocks(s)
+                insert_assumes_in_block!(sub, divby)
+            end
+            continue
+        end
+        s isa Expr || continue
+        call = resolve_call(block, inst)
+        call === nothing && continue
+        func, ops = call
+        func in ASSUME_SINKS || continue
+        # For slice: annotate start (ops[3]) and stop (ops[4]) if divby > 1.
+        for op_idx in sink_integer_operand_indices(func)
+            op_idx <= length(ops) || continue
+            op = ops[op_idx]
+            op isa SSAValue || continue
+            d = get(divby, op, 1)
+            d > 1 || continue
+            push!(rewrites, (SSAValue(inst.ssa_idx), s, op_idx, op, d))
+        end
+    end
+
+    for (ref, stmt_expr, op_idx, op, d) in rewrites
+        # Assume ops on this operand's type; reuse the source op's known type.
+        op_type = value_type(block, op)
+        op_type === nothing && continue
+        # Insert: assume_div_by(op, Val(d)) just before the sink.
+        assume_call = Expr(:call, Intrinsics.assume_div_by, op, Val(d))
+        new_inst = insert_before!(block, ref, assume_call, op_type)
+        # Rewrite the sink's arg to use the wrapper's SSA value.
+        rewrite_call_arg!(stmt_expr, op_idx, SSAValue(new_inst.ssa_idx))
+    end
+
+    return block
+end
+
+"""For a sink function, return the indices (into `ops`) of integer operands
+that benefit from divisibility annotation."""
+function sink_integer_operand_indices(@nospecialize(func))
+    func === Intrinsics.slice && return (3, 4)   # start, stop
+    return ()
+end
+
+"""Replace operand `op_idx` of an `:call`/`:invoke` Expr with `new_op`."""
+function rewrite_call_arg!(stmt::Expr, op_idx::Int, new_op)
+    if stmt.head === :call
+        stmt.args[op_idx + 1] = new_op
+    elseif stmt.head === :invoke
+        stmt.args[op_idx + 2] = new_op
+    end
+    return stmt
+end
+
+
+#=============================================================================
+ Local divby query (used by emit_intrinsic!)
+=============================================================================#
+
+"""
+    operand_divby_local(sci, op) -> Int
+
+Resolve the known divisor of `op` by peeking at its def. For SSAValues that are
+Intrinsics.assume_div_by wrappers, returns `D`. For integer literals, returns
+`abs_divby(n)`. Otherwise 1.
+
+Local (no external state). Used by emit_intrinsic! to emit AssumeOp on derived
+values without depending on the analysis dict.
+"""
+function operand_divby_local(sci::StructuredIRCode, @nospecialize(op))::Int
+    if op isa Integer
+        return abs_divby(op)
+    elseif op isa QuoteNode && op.value isa Integer
+        return abs_divby(op.value)
+    elseif op isa SSAValue
+        d = find_assume_div_by(sci, op)
+        return d === nothing ? 1 : d
+    end
+    return 1
 end

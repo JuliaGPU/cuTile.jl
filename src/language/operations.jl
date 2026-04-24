@@ -36,8 +36,10 @@ end
         throw(ArgumentError("axis $Axis out of range for $N-D TileArray"))
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
     s = size_elem_T(start)
-    e = size_elem_T(stop)
-    Intrinsics.slice(arr, Val(Axis), s, e)
+    # Compute size at the Julia level so inference folds literal arithmetic;
+    # the intrinsic takes (start, size) to keep subtraction out of bytecode.
+    sz = size_elem_T(stop) - s
+    Intrinsics.slice(arr, Val(Axis), s, sz)
 end
 
 # @view A[inds...] macro expansion routes here.
@@ -52,10 +54,10 @@ end
                              inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
-    # Julia @view is 1-indexed inclusive → 0-indexed half-open for Intrinsics.slice
+    # Julia @view is 1-indexed inclusive → 0-indexed + explicit size.
     start_0 = size_elem_T(first(r)) - size_elem_T(1)
-    stop_0 = size_elem_T(last(r))
-    sub = Intrinsics.slice(arr, Val(Axis), start_0, stop_0)
+    sz = size_elem_T(last(r)) - start_0
+    sub = Intrinsics.slice(arr, Val(Axis), start_0, sz)
     _view_chain(sub, Val(Axis + 1), Base.tail(inds))
 end
 # Reject unsupported index types with a clear message.

@@ -10,7 +10,9 @@ spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 
 @testset "slice — 1D single axis" begin
-    # Static bounds fold start/stop to constants; the IR still carries subi/muli/offset.
+    # Static literal bounds: Julia inference folds `stop - start` to a literal
+    # size, so the IR shows `muli`/`offset`/`make_tensor_view` but no explicit
+    # `subi` for the size computation.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -19,13 +21,13 @@ spec2d = ct.ArraySpec{2}(16, true)
             ct.store(sub, 1, t)
             return
         end
-        @check "subi"
         @check "muli"
         @check "offset"
         @check "make_tensor_view"
     end
 
-    # Dynamic bounds: start/stop are runtime kernel args.
+    # Dynamic bounds: start and (stop - start) are runtime values. `subi` is
+    # present at the Julia-IR level (stop - start) → passed to the intrinsic.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
@@ -104,5 +106,34 @@ end
         @check "muli"
         @check "offset"
         @check "make_tensor_view"
+    end
+end
+
+@testset "slice — divisibility annotations (Phase 3)" begin
+    # For spec1d {alignment=16}, @view A[3:10]:
+    #   start_0 = 3-1 = 2, size = 10-2 = 8 (Julia inference folds to literal).
+    #   new_size divby = abs_divby(8) = 8.
+    #   new_base divby = gcd(16, 2 * stride * sizeof(T)) with stride=1, elem=4 → gcd(16, 8) = 8.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            sub = @view a[3:10]
+            t = ct.load(sub, 1, (4,))
+            ct.store(sub, 1, t)
+            return
+        end
+        @check "assume div_by<8>"   # on derived new_size literal 8
+        @check "offset"
+        @check "assume div_by<8>"   # on derived new_base pointer
+        @check "make_tensor_view"
+    end
+
+    # TODO: dynamic slice with divby-annotated bounds (e.g. @view A[bid*TILE : (bid+1)*TILE])
+    # should get a divby=TILE annotation on the derived size. Requires the pass
+    # to wrap the runtime `size` operand with assume_div_by when divby analysis
+    # discovers the multiplication by TILE.
+    @test_broken begin
+        # Placeholder for when dynamic-bounds divby propagation lands.
+        false
     end
 end
