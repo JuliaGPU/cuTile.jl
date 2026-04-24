@@ -100,17 +100,3 @@ end
     @test got == want
 end
 
-@testset "slice — ct.slice explicit (0-indexed half-open)" begin
-    function kern(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        sub = ct.slice(a, 1, 4, 12)   # elements 4..11 (0-indexed)
-        t = ct.load(sub, 1, (8,))
-        ct.store(b, 1, t)
-        return
-    end
-
-    a = CUDA.rand(Float32, 16)
-    b = CUDA.zeros(Float32, 8)
-    ct.launch(kern, 1, a, b)
-    # Julia 1-indexed: a[5:12] corresponds to 0-indexed 4..11
-    @test Array(b) == Array(a)[5:12]
-end

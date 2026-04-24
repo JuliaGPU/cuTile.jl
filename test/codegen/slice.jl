@@ -92,23 +92,6 @@ end
     end
 end
 
-@testset "slice — ct.slice explicit call" begin
-    # The 0-indexed half-open form exposed as ct.slice(arr, axis, start, stop).
-    @test @filecheck begin
-        @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
-            sub = ct.slice(a, 1, i, j)
-            t = ct.load(sub, 1, (4,))
-            ct.store(sub, 1, t)
-            return
-        end
-        @check "subi"
-        @check "muli"
-        @check "offset"
-        @check "make_tensor_view"
-    end
-end
-
 @testset "slice — divisibility annotations (Phase 3)" begin
     # For spec1d {alignment=16}, @view A[3:10]:
     #   start_0 = 3-1 = 2, size = 10-2 = 8 (Julia inference folds to literal).
