@@ -6,9 +6,19 @@
 # walking, fixpoint iteration, and the structured-control-flow merges at
 # IfOp / ForOp / WhileOp / LoopOp.
 #
-# Inspired by MLIR's `SparseForwardDataFlowAnalysis` (per-Value lattice,
-# `ChangeResult` worklist, queryable state after convergence) and Julia's
-# `AbstractLattice` (lattice-as-interface, fallthrough composition).
+# Driver shape: per-anchor lattice in a Dict, whole-CFG re-walk until no
+# element changes for a full pass (capped at `max_iters`). Deliberately no
+# worklist: cuTile kernels are small and our lattices are short-height, so
+# the `ops × height` bound already dominates any per-op worklist overhead.
+# Upgrade path if this ever becomes a bottleneck: reuse the rewrite engine's
+# `Worklist` (SSAValue-keyed), generalise the key to `LatticeAnchor`, and
+# add an inverse-of-`transfer_cf!` index for indirect flow through
+# IfOp/ForOp/WhileOp/LoopOp (so a moved `ContinueOp.values[i]` re-enqueues
+# the matching `body.args[i]`, etc.).
+#
+# API shape borrowed from MLIR's `SparseForwardDataFlowAnalysis` (per-Value
+# lattice, queryable result post-convergence) and Julia's `AbstractLattice`
+# (lattice-as-interface, fallthrough composition).
 
 """
     LatticeAnchor
