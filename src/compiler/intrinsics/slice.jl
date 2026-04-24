@@ -1,14 +1,16 @@
-# Slicing of TileArrays
+# Slicing of TileArrays — codegen side.
 #
-# Implements `Intrinsics.slice(arr, Val(axis), start, stop)` that mirrors cuTile
-# Python's `_m_array_slice`. Produces a new TileArray whose base pointer is offset
-# by `start * stride[axis]` and whose `sizes[axis]` is `stop - start`. Other
-# dimensions are unchanged. `start`/`stop` are 0-indexed half-open bounds.
+# The arithmetic (`subi`, `muli`, pointer `offset`) lives at the language level
+# in `_view_chain` (src/language/operations.jl) so it goes through the regular
+# arithmetic intrinsics and benefits from constant folding, strength reduction,
+# and — once it lands — the divisibility dataflow analysis (see DIVBY.md).
 #
-# The result is registered as a "virtual" destructured argument using a negative
-# `arg_idx` (derived from the current SSA index). This reuses the existing lazy
-# arg_ref machinery so downstream intrinsics (make_tensor_view, chained slice,
-# field access via `.ptr`/`.sizes`/`.strides`) work without special-casing.
+# What remains in codegen is aggregate synthesis: register the slice result as
+# a virtual destructured argument (negative `arg_idx` to stay disjoint from
+# real kernel params) with `new_base`/`new_sizes`/source strides filed under
+# `ctx.arg_flat_values`, and pre-create the `TensorView` keyed so that a later
+# `make_tensor_view(sub)` finds it. This mirrors Python's
+# `unflatten_aggregates` + `make_aggregate` in `_m_array_slice`.
 
 """
     slice_spec(spec::ArraySpec{N}, axis::Int) -> ArraySpec{N}
@@ -24,16 +26,15 @@ function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
     ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, new_shape_div_by}()
 end
 
-# cuda_tile slice: narrow a TileArray along a single axis to `[start, stop)`.
-# Half-open bounds matching cuTile Python's `Array.slice(axis, start, stop)`
-# (`res/cutile-python/src/cuda/tile/_ir/ops.py:_m_array_slice`). `axis_v::Val{Axis}`
-# makes the axis compile-time without requiring CC.Const propagation through
-# unrelated paths.
-@intrinsic slice(arr, axis_v::Val, start, stop)
+# cuda_tile slice: package an already-derived `(new_base, new_size)` pair into
+# a sliced TileArray aggregate. Arithmetic is done at the language level; see
+# `_view_chain` in src/language/operations.jl. `axis_v::Val{Axis}` makes the
+# axis compile-time.
+@intrinsic slice(arr, axis_v::Val, new_base, new_size)
 
 function tfunc(𝕃, ::typeof(Intrinsics.slice),
                @nospecialize(arr), @nospecialize(axis_v),
-               @nospecialize(start), @nospecialize(stop))
+               @nospecialize(new_base), @nospecialize(new_size))
     T = CC.widenconst(arr)
     T <: TileArray || return nothing
     T isa DataType || return nothing
@@ -56,11 +57,8 @@ function tfunc(𝕃, ::typeof(Intrinsics.slice),
 end
 
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    # args: (arr, Val(Axis), start, stop) — half-open [start, stop)
-    arr_arg, axis_arg, start_arg, stop_arg = args[1], args[2], args[3], args[4]
+    # args: (arr, Val(Axis), new_base, new_size) — arithmetic already emitted
+    arr_arg, axis_arg, new_base_arg, new_size_arg = args[1], args[2], args[3], args[4]
 
     # Resolve axis from Val type parameter
     axis_val = @something get_constant(ctx, axis_arg) throw(IRError("slice: axis must be a Val{N}"))
@@ -86,54 +84,32 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     ndim = ndims(src_type)
     1 <= axis <= ndim || throw(IRError("slice: axis $axis out of range for $ndim-D array"))
 
-    elem_T = eltype(src_type)
-    size_elem_T = eltype(fieldtype(src_type, :sizes))
-    scalar_size_type = tile_type_for_julia!(ctx, size_elem_T)
-
     ptr_fi = Base.fieldindex(src_type, :ptr)
     sizes_fi = Base.fieldindex(src_type, :sizes)
     strides_fi = Base.fieldindex(src_type, :strides)
 
-    # Resolve ptr / sizes / strides of source
-    ptr_path = [src_path..., ptr_fi]
     sizes_path = [src_path..., sizes_fi]
     strides_path = [src_path..., strides_fi]
-
-    ptr_vals = get_arg_flat_values(ctx, src_arg_idx, ptr_path)
-    (ptr_vals === nothing || isempty(ptr_vals)) &&
-        throw(IRError("slice: cannot resolve base pointer of source array"))
-    base_ptr = ptr_vals[1]
 
     old_sizes = collect_child_values(ctx, src_arg_idx, sizes_path, ndim)
     old_sizes === nothing && throw(IRError("slice: cannot resolve sizes of source array"))
     old_strides = collect_child_values(ctx, src_arg_idx, strides_path, ndim)
     old_strides === nothing && throw(IRError("slice: cannot resolve strides of source array"))
 
-    # Resolve start and stop scalars (both in elements).
-    start_tv = emit_value!(ctx, start_arg)
-    stop_tv = emit_value!(ctx, stop_arg)
-    (start_tv === nothing || stop_tv === nothing) &&
-        throw(IRError("slice: cannot resolve start/stop"))
-    start_val = start_tv.v::Value
-    stop_val = stop_tv.v::Value
-
-    # new_size = stop - start
-    new_size_axis = encode_SubIOp!(cb, scalar_size_type, stop_val, start_val)
-
-    # new_base = base + start * stride[axis]
-    stride_axis = old_strides[axis]
-    offset_val = encode_MulIOp!(cb, scalar_size_type, start_val, stride_axis)
-
-    elem_dtype = julia_to_tile_dtype!(tt, elem_T)
-    ptr_dtype = pointer_type!(tt, elem_dtype)
-    ptr_tile_type = tile_type!(tt, ptr_dtype, RowMajorShape(()))
-    new_base = encode_OffsetOp!(cb, ptr_tile_type, base_ptr, offset_val)
+    # Pre-computed new base pointer and new axis size (emitted at language level).
+    new_base_tv = emit_value!(ctx, new_base_arg)
+    new_size_tv = emit_value!(ctx, new_size_arg)
+    (new_base_tv === nothing || new_size_tv === nothing) &&
+        throw(IRError("slice: cannot resolve new_base / new_size"))
+    new_base = new_base_tv.v::Value
+    new_size_axis = new_size_tv.v::Value
 
     # Build new sizes (axis replaced).
     new_sizes = Value[i == axis ? new_size_axis : old_sizes[i] for i in 1:ndim]
 
-    # Result TileArray type (same as the tfunc). slice_spec drops alignment and
-    # the axis's shape_div_by; a future dataflow pass will recover tighter facts.
+    # Result TileArray type. slice_spec drops alignment and the axis's
+    # shape_div_by; a future dataflow pass will recover tighter facts.
+    elem_T = eltype(src_type)
     src_spec = array_spec(src_type)
     result_type = src_spec === nothing ?
         TileArray{elem_T, ndim} :
@@ -141,7 +117,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
 
     # Register the slice result as a virtual destructured argument. Using
     # `-current_ssa_idx` keeps the namespace disjoint from real kernel params
-    # (which are positive indices) while reusing the lazy arg_ref plumbing.
+    # (positive indices) while reusing the lazy arg_ref plumbing.
     slice_arg_idx = -ctx.current_ssa_idx
     ctx.arg_types[slice_arg_idx] = result_type
     ctx.arg_flat_values[(slice_arg_idx, [ptr_fi])] = Value[new_base]
@@ -150,8 +126,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
         ctx.arg_flat_values[(slice_arg_idx, [strides_fi, i])] = Value[old_strides[i]]
     end
 
-    # Emit the TensorView now so that downstream make_tensor_view(sliced_arr) can
-    # fetch it. Caches under the bare slice_arg_idx (empty path).
+    # Emit the TensorView now so that downstream make_tensor_view(sliced_arr)
+    # can fetch it. Caches under the bare slice_arg_idx (empty path).
     key = tensor_view_key(slice_arg_idx, Int[])
     create_tensor_view!(ctx, key, new_base, new_sizes, Value[s for s in old_strides], result_type)
 

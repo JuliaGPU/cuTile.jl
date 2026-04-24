@@ -26,7 +26,14 @@ end
     # (e.g. 3:10 is 8 elements → [2, 10) in 0-indexed half-open).
     start_0 = size_elem_T(first(r)) - size_elem_T(1)
     stop_0 = size_elem_T(last(r))
-    sub = Intrinsics.slice(arr, Val(Axis), start_0, stop_0)
+    # Derive the slice values at the language level so `-`/`*`/`offset` go
+    # through the usual intrinsics (constant folding, strength reduction,
+    # future divisibility analysis). `Intrinsics.slice` only packages the
+    # result into a TileArray aggregate.
+    new_size = stop_0 - start_0
+    offset_elems = start_0 * arr.strides[Axis]
+    new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
+    sub = Intrinsics.slice(arr, Val(Axis), new_base, new_size)
     _view_chain(sub, Val(Axis + 1), Base.tail(inds))
 end
 # Reject unsupported index types with a clear message.

@@ -1,7 +1,7 @@
 # Tests for @view / slice on TileArrays.
 #
-# These tests FileCheck-match the core IR shape produced by the slicing path:
-# - a `subi` for the new size (stop - start)
+# FileCheck-matches the core IR shape produced by the slicing path:
+# - a `subi` for the new size (stop - start) — unless const-folded
 # - a `muli` for start * stride
 # - an `offset` for base + offset
 # - a follow-up `make_tensor_view` on the derived pointer
@@ -10,9 +10,10 @@ spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 
 @testset "slice — 1D single axis" begin
-    # Static literal bounds: `stop - start` is emitted as `subi` at the Tile IR
-    # level inside the intrinsic, then the usual `muli`/`offset`/make_tensor_view
-    # pipeline runs.
+    # Static literal bounds: the arithmetic is emitted via language-level
+    # `-`/`*`/`offset` intrinsics, so constant operands get folded. `3 - 1`
+    # and `10 - 2` fold to `2` and `8`; `muli` and `offset` remain because the
+    # stride and base pointer are runtime kernel parameters.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -21,13 +22,15 @@ spec2d = ct.ArraySpec{2}(16, true)
             ct.store(sub, 1, t)
             return
         end
-        @check "subi"
+        @check_not "subi"  # folded: 3 - 1 and 10 - 2
+        @check "constant <i32: 2>"  # folded start_0
         @check "muli"
         @check "offset"
+        @check "constant <i32: 8>"  # folded new_size
         @check "make_tensor_view"
     end
 
-    # Dynamic bounds: start and stop are runtime values; the intrinsic emits
+    # Dynamic bounds: start and stop are runtime values; the pipeline emits
     # `subi(stop, start)` for the new axis size.
     @test @filecheck begin
         @check_label "entry"
