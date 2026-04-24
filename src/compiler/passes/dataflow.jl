@@ -305,27 +305,37 @@ end
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
                       op::ForOp, ::SSAValue, ::Block, tracker::ChangeTracker)
     record!(analysis, result, op.iv_arg, top(analysis), tracker)
-    propagate_loop_carried!(analysis, result, op.body, op.init_values, tracker)
+    for (arg, v) in zip(op.body.args, op.init_values)
+        record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+    end
     walk!(analysis, result, op.body, tracker)
     term = op.body.terminator
     if term isa ContinueOp
-        propagate_loop_carried!(analysis, result, op.body, term.values, tracker)
+        for (arg, v) in zip(op.body.args, term.values)
+            record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+        end
     end
 end
 
 # WhileOp — before.args ← init ⊔ after yields; after.args ← before's ConditionOp args.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
                       op::WhileOp, ::SSAValue, ::Block, tracker::ChangeTracker)
-    propagate_loop_carried!(analysis, result, op.before, op.init_values, tracker)
+    for (arg, v) in zip(op.before.args, op.init_values)
+        record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+    end
     walk!(analysis, result, op.before, tracker)
     before_term = op.before.terminator
     if before_term isa ConditionOp
-        propagate_loop_carried!(analysis, result, op.after, before_term.args, tracker)
+        for (arg, v) in zip(op.after.args, before_term.args)
+            record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+        end
     end
     walk!(analysis, result, op.after, tracker)
     after_term = op.after.terminator
     if after_term isa YieldOp
-        propagate_loop_carried!(analysis, result, op.before, after_term.values, tracker)
+        for (arg, v) in zip(op.before.args, after_term.values)
+            record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+        end
     end
 end
 
@@ -336,19 +346,15 @@ end
 # `reachable_terminators` encodes that scoping rule.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
                       op::LoopOp, ::SSAValue, ::Block, tracker::ChangeTracker)
-    propagate_loop_carried!(analysis, result, op.body, op.init_values, tracker)
+    for (arg, v) in zip(op.body.args, op.init_values)
+        record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+    end
     walk!(analysis, result, op.body, tracker)
     for t in reachable_terminators(op.body)
         if t isa ContinueOp || t isa BreakOp
-            propagate_loop_carried!(analysis, result, op.body, t.values, tracker)
+            for (arg, v) in zip(op.body.args, t.values)
+                record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
+            end
         end
-    end
-end
-
-function propagate_loop_carried!(analysis::ForwardAnalysis, result::DataflowResult,
-                                 body::Block, values::Vector, tracker::ChangeTracker)
-    for (i, arg) in enumerate(body.args)
-        i <= length(values) || break
-        record!(analysis, result, arg, operand_value(analysis, result, values[i]), tracker)
     end
 end
