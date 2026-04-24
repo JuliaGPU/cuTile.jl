@@ -533,38 +533,47 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
 end
 
 """
-    extract_token_getfields!(parent_block, inst, start_idx, effects, token_map)
+    token_keys_for(effects) -> Vector{TokenKey}
 
-Insert getfield extractions after a control flow op for each per-alias token result.
-Updates `token_map` with SSAValues pointing to the extracted tokens.
-`start_idx` is the 0-based index of the first token result (i.e., number of user results).
+The ordered list of token keys produced by a CF op for the given memory effects,
+matching the order in which `add_token_carries!` pushes them. Used to map
+extracted SSA values back to their token keys.
 """
-function extract_token_getfields!(parent_block::Block, inst::Instruction, start_idx::Int,
-                                    effects::MemoryEffects, token_map::Dict{TokenKey, Any})
-    last_ref = SSAValue(inst)
-    idx = start_idx
+function token_keys_for(effects::MemoryEffects)
+    keys = TokenKey[]
     for (alias_set, effect) in effects.effects
         effect == MEM_NONE && continue
         if effect >= MEM_LOAD
-            idx += 1
-            gf_inst = insert_after!(parent_block, last_ref,
-                           Expr(:call, GlobalRef(Core, :getfield), SSAValue(inst), idx), TOKEN_TYPE)
-            token_map[last_op_key(alias_set)] = SSAValue(gf_inst)
-            last_ref = SSAValue(gf_inst)
+            push!(keys, last_op_key(alias_set))
         end
         if effect == MEM_STORE
-            idx += 1
-            gf_inst = insert_after!(parent_block, last_ref,
-                           Expr(:call, GlobalRef(Core, :getfield), SSAValue(inst), idx), TOKEN_TYPE)
-            token_map[last_store_key(alias_set)] = SSAValue(gf_inst)
-            last_ref = SSAValue(gf_inst)
+            push!(keys, last_store_key(alias_set))
         end
     end
     if effects.has_acquire
-        idx += 1
+        push!(keys, ACQUIRE_TOKEN_KEY)
+    end
+    return keys
+end
+
+"""
+    extract_token_getfields!(parent_block, inst, start_idx, effects, token_map)
+
+Insert getfield extractions after a control flow op for each per-alias token
+result. Updates `token_map` with SSAValues pointing to the extracted tokens.
+`start_idx` is the 0-based index of the first token result.
+"""
+function extract_token_getfields!(parent_block::Block, inst::Instruction, start_idx::Int,
+                                  effects::MemoryEffects, token_map::Dict{TokenKey, Any})
+    keys = token_keys_for(effects)
+    isempty(keys) && return
+    last_ref = SSAValue(inst)
+    for (i, key) in enumerate(keys)
+        idx = start_idx + i
         gf_inst = insert_after!(parent_block, last_ref,
-                       Expr(:call, GlobalRef(Core, :getfield), SSAValue(inst), idx), TOKEN_TYPE)
-        token_map[ACQUIRE_TOKEN_KEY] = SSAValue(gf_inst)
+            Expr(:call, GlobalRef(Core, :getfield), SSAValue(inst), idx), TOKEN_TYPE)
+        token_map[key] = SSAValue(gf_inst)
+        last_ref = SSAValue(gf_inst)
     end
 end
 
@@ -572,8 +581,11 @@ end
     insert_token_result_getfields!(parent_block, inst, block_args, n_user, effects, token_map)
 
 Insert getfield extractions after a loop for each per-alias token result.
-Updates the result type to include TokenType parameters and calls
-`extract_token_getfields!` for the actual extraction.
+Rebuilds the result type from `block_args` (so post-`add_token_carries!`
+TOKEN_TYPE-instance args become TokenType-typed fields) and extracts the
+trailing token positions. Cannot use `extract_carry_results!` because the
+existing tuple type may not reflect the freshly-added token carries — the
+body args are the canonical source.
 """
 function insert_token_result_getfields!(parent_block::Block, inst::Instruction,
                                          block_args, n_user::Int,
@@ -723,17 +735,11 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     n_token_results += merged_effects.has_acquire ? 1 : 0
 
     if n_token_results > 0
-        old_type = value_type(inst)
-        user_types = if old_type === Nothing
-            Type[]
-        elseif old_type <: Tuple
-            collect(Type, old_type.parameters)
-        else
-            Type[old_type]
+        ssas = extract_carry_results!(parent_block, inst, fill(TokenType, n_token_results))
+        keys = token_keys_for(merged_effects)
+        for (key, val) in zip(keys, ssas)
+            token_map[key] = val
         end
-        new_type = Tuple{user_types..., fill(TokenType, n_token_results)...}
-        update_type!(parent_block, inst, new_type)
-        extract_token_getfields!(parent_block, inst, length(user_types), merged_effects, token_map)
     end
 end
 
