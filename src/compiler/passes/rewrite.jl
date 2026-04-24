@@ -222,7 +222,9 @@ mutable struct RewriteDriver
     defs::Dict{SSAValue, DefEntry}
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
-    constants::Dict{SSAValue, Any}   # SSA → constant value (from propagate_constants)
+    constants::Any                   # DataflowResult{ConstAnalysis}, from the pipeline.
+                                     # Untyped here to avoid a forward reference
+                                     # to pipeline.jl's ConstAnalysis.
     modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end
@@ -345,17 +347,14 @@ end
 
 # PLiteral: match if the operand equals the given value.
 # For non-SSA operands (enum constants, predicates): checks ===.
-# For SSA operands: O(1) lookup in the constants map built by propagate_constants.
+# For SSA operands: routed through const_value on the ConstAnalysis result.
 function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::PLiteral,
                        block::Block=driver.sci.entry)
     val === pat.val && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
     if val isa SSAValue
-        c = get(driver.constants, val, nothing)
-        if c isa AbstractArray
-            all(==(pat.val), c) && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
-        elseif c !== nothing
-            c == pat.val && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
-        end
+        c = const_value(driver.constants, val)
+        c !== nothing && c == pat.val &&
+            return MatchResult(Dict{Symbol,Any}(), SSAValue[])
     end
     return nothing
 end
@@ -546,7 +545,7 @@ Dead code left behind is cleaned up by the pipeline's `dce_pass!`.
 """
 function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
                            max_rewrites::Int=10_000,
-                           constants::Dict{SSAValue, Any}=Dict{SSAValue, Any}())
+                           constants=nothing)
     # Build dispatch table
     dispatch = Dict{Any, Vector{RewriteRule}}()
     for rule in rules

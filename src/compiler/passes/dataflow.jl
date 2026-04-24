@@ -100,6 +100,20 @@ Base.getindex(r::DataflowResult, @nospecialize(key)) =
     key isa LatticeAnchor ? get(r.values, key, bottom(r.analysis)) : bottom(r.analysis)
 
 """
+    r[key] = val
+
+Record a lattice value for `key`, bypassing `tmerge`. Use this only to
+side-inject facts for *newly synthesised* SSA values (e.g. when a rewriter
+creates a broadcast op whose constant value is known by construction).
+For re-analysis of an existing anchor, call the analysis again instead.
+"""
+function Base.setindex!(r::DataflowResult{A, T}, val::T,
+                        key::LatticeAnchor) where {A, T}
+    r.values[key] = val
+    return r
+end
+
+"""
     has_value(r, key) -> Bool
 
 True iff `key` has a non-bottom entry in the result. Useful for telling
