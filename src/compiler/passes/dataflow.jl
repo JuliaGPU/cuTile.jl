@@ -46,6 +46,8 @@ lattice element type is `T`. Concrete analyses subtype this and implement:
 - `top(a)::T`     — the "maximally loose" element. Returned by the default
   `init_arg` and used for unknown-op transfer fallback. `tmerge(x, top) == top`.
 - `tmerge(a, x::T, y::T)::T` — least upper bound. Must be monotone and commute.
+- `T` must support `==` — the driver uses equality on `T` to detect when a
+  merge made no progress (short-circuits the `dirty` flag).
 - `transfer(a, result, func, ops, block, inst)::T` — lattice element for the
   result of a resolved call. `result` is the live `DataflowResult` being built
   (read-only; use `result[op]` to query operand anchors).
@@ -170,15 +172,14 @@ function analyze(analysis::A, sci::StructuredIRCode) where {A <: ForwardAnalysis
 
     tracker = ChangeTracker(true, nothing)
     cap = max_iters(analysis)
-    for iter in 1:cap
+    for _ in 1:cap
         tracker.dirty || return result
         tracker.dirty = false
         walk!(analysis, result, sci.entry, tracker)
-        if iter == cap && tracker.dirty
-            error("dataflow analysis $(nameof(A)) did not converge in $cap iterations " *
-                  "(last changed anchor: $(tracker.last_changed))")
-        end
     end
+    tracker.dirty && error(
+        "dataflow analysis $(nameof(A)) did not converge in $cap iterations " *
+        "(last changed anchor: $(tracker.last_changed))")
     return result
 end
 
@@ -297,8 +298,10 @@ function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
     record!(analysis, result, ssa, merged, tracker)
 end
 
-# ForOp — body args receive loop-carried values: join(init_values, ContinueOp yields).
-# The IV argument is seeded to `top` (unknown at compile time).
+# ForOp — body.args receives loop-carried values: join(init_values, ContinueOp
+# yields). The IV lives in `op.iv_arg` (not in `body.args`), so init/continue
+# values line up positionally with `body.args` without skipping slot 1.
+# The IV is seeded to `top` (unknown at compile time).
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
                       op::ForOp, ::SSAValue, ::Block, tracker::ChangeTracker)
     record!(analysis, result, op.iv_arg, top(analysis), tracker)
