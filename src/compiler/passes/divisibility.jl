@@ -50,18 +50,23 @@ const MAX_DIVBY = 1024
 # lowers these to `typed_const(folded_value)` before its dataflow runs, at
 # which point its `TypedConst` rule applies `abs_divby(value)` directly.
 #
-# For literal arithmetic inside Julia code, Julia's own inference already
-# folds at compile time (`Int32(10) - Int32(2)` is just `Int32(8)`), so
-# this gap is invisible for that case. It only shows up for arithmetic
-# whose operands become `Intrinsics.constant(...)` SSA defs (e.g. produced
-# by the broadcast system), where inference has already lowered past the
-# literal-level fold.
+# This shows up in two places today:
+#   - arithmetic whose operands become `Intrinsics.constant(...)` SSA defs
+#     (e.g. produced by the broadcast system), where inference has already
+#     lowered past the literal-level fold.
+#   - `Intrinsics.slice`'s internal `stop - start` (emitted directly to Tile
+#     IR by `emit_intrinsic!`, not surfaced as a Julia-IR `subi`). The
+#     intrinsic mirrors this pass's loose gcd bound for its new-size divby,
+#     so `@view A[3:10]` gets `div_by<gcd(2, 10)=2>` instead of `div_by<8>`.
 #
 # Fix shape: a standalone folding pass that rewrites
 # `(addi|subi|muli)(constant, constant)` → `broadcast(folded_scalar, shape)`
-# before `divisibility_analysis`. The rule is straightforward to write; it
-# does *not* belong inside the rewriter's ALGEBRA_RULES (algebraic
-# simplification and constant folding are separate concerns).
+# before `divisibility_analysis`, plus a matching tightening in
+# `slice.jl::emit_intrinsic!` for the `stop - start` case (or a rewrite that
+# lifts the subtraction into Julia IR so the folding pass catches it). The
+# rule is straightforward to write; it does *not* belong inside the
+# rewriter's ALGEBRA_RULES (algebraic simplification and constant folding
+# are separate concerns).
 #
 # ──────────────────────────────────────────────────────────────────────────
 # Gap 2: No seeding from `ArraySpec` into derived-value divby.

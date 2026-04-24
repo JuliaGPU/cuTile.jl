@@ -24,16 +24,16 @@ function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
     ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, new_shape_div_by}()
 end
 
-# cuda_tile slice: narrow a TileArray along a single axis to `[start, start+size)`.
-# `axis_v::Val{Axis}` makes the axis compile-time without requiring CC.Const
-# propagation through unrelated paths. Taking `size` (rather than `stop`) keeps
-# the subtraction `stop - start` at the Julia IR level so standard constant
-# folding applies — the downstream divisibility analysis sees a tighter bound.
-@intrinsic slice(arr, axis_v::Val, start, size)
+# cuda_tile slice: narrow a TileArray along a single axis to `[start, stop)`.
+# Half-open bounds matching cuTile Python's `Array.slice(axis, start, stop)`
+# (`res/cutile-python/src/cuda/tile/_ir/ops.py:_m_array_slice`). `axis_v::Val{Axis}`
+# makes the axis compile-time without requiring CC.Const propagation through
+# unrelated paths.
+@intrinsic slice(arr, axis_v::Val, start, stop)
 
 function tfunc(𝕃, ::typeof(Intrinsics.slice),
                @nospecialize(arr), @nospecialize(axis_v),
-               @nospecialize(start), @nospecialize(size))
+               @nospecialize(start), @nospecialize(stop))
     T = CC.widenconst(arr)
     T <: TileArray || return nothing
     T isa DataType || return nothing
@@ -59,8 +59,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (arr, Val(Axis), start, size)
-    arr_arg, axis_arg, start_arg, size_arg = args[1], args[2], args[3], args[4]
+    # args: (arr, Val(Axis), start, stop) — half-open [start, stop)
+    arr_arg, axis_arg, start_arg, stop_arg = args[1], args[2], args[3], args[4]
 
     # Resolve axis from Val type parameter
     axis_val = @something get_constant(ctx, axis_arg) throw(IRError("slice: axis must be a Val{N}"))
@@ -109,18 +109,24 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     old_strides = collect_child_values(ctx, src_arg_idx, strides_path, ndim)
     old_strides === nothing && throw(IRError("slice: cannot resolve strides of source array"))
 
-    # Resolve start and size scalars (both in elements).
+    # Resolve start and stop scalars (both in elements).
     start_tv = emit_value!(ctx, start_arg)
-    size_tv = emit_value!(ctx, size_arg)
-    (start_tv === nothing || size_tv === nothing) &&
-        throw(IRError("slice: cannot resolve start/size"))
+    stop_tv = emit_value!(ctx, stop_arg)
+    (start_tv === nothing || stop_tv === nothing) &&
+        throw(IRError("slice: cannot resolve start/stop"))
     start_val = start_tv.v::Value
-    new_size_axis = size_tv.v::Value
+    stop_val = stop_tv.v::Value
 
-    # Read divby of start/size from local assume_div_by wrappers (inserted by
+    # new_size = stop - start
+    new_size_axis = encode_SubIOp!(cb, scalar_size_type, stop_val, start_val)
+
+    # Read divby of start/stop from local assume_div_by wrappers (inserted by
     # insert_divby_assumes!) or literals. Pure local lookup — no external state.
+    # The new-size divby is gcd(start, stop); for literal constants this is
+    # looser than abs(stop - start) until the divisibility pass closes Gap 1.
     start_div = operand_divby_local(ctx.sci, start_arg)
-    size_div = operand_divby_local(ctx.sci, size_arg)
+    stop_div = operand_divby_local(ctx.sci, stop_arg)
+    size_div = gcd(start_div, stop_div)
 
     if size_div > 1
         new_size_axis = encode_AssumeOp!(cb, scalar_size_type, new_size_axis, DivBy(size_div))

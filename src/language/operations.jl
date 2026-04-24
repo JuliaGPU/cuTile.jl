@@ -21,10 +21,12 @@ end
                              inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
-    # Julia @view is 1-indexed inclusive → 0-indexed + explicit size.
+    # Julia 1-indexed inclusive [first, last] → 0-indexed half-open [start, stop).
+    # `stop = last(r)` because inclusive 1-indexed end == half-open 0-indexed end
+    # (e.g. 3:10 is 8 elements → [2, 10) in 0-indexed half-open).
     start_0 = size_elem_T(first(r)) - size_elem_T(1)
-    sz = size_elem_T(last(r)) - start_0
-    sub = Intrinsics.slice(arr, Val(Axis), start_0, sz)
+    stop_0 = size_elem_T(last(r))
+    sub = Intrinsics.slice(arr, Val(Axis), start_0, stop_0)
     _view_chain(sub, Val(Axis + 1), Base.tail(inds))
 end
 # Reject unsupported index types with a clear message.
