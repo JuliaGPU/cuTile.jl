@@ -329,11 +329,6 @@ function run_passes!(sci::StructuredIRCode)
     constants = propagate_constants(sci)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
 
-    # Annotate integer operands feeding memory-shape sinks (slice etc.) with
-    # `Intrinsics.assume_div_by` wrappers based on the divisibility analysis.
-    # Decoupled: downstream codegen reads divisibility from wrapper ops only.
-    insert_divby_assumes!(sci)
-
     alias_result = alias_analysis_pass!(sci)
 
     token_order_pass!(sci, alias_result)

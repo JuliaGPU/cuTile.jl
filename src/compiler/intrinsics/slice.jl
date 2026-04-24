@@ -120,16 +120,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     # new_size = stop - start
     new_size_axis = encode_SubIOp!(cb, scalar_size_type, stop_val, start_val)
 
-    # Read divby of start/stop from local assume_div_by wrappers (inserted by
-    # insert_divby_assumes!) or literals.
-    start_div = operand_divby_local(ctx.sci, start_arg)
-    stop_div = operand_divby_local(ctx.sci, stop_arg)
-    size_div = gcd(start_div, stop_div)
-
-    if size_div > 1
-        new_size_axis = encode_AssumeOp!(cb, scalar_size_type, new_size_axis, DivBy(size_div))
-    end
-
     # new_base = base + start * stride[axis]
     stride_axis = old_strides[axis]
     offset_val = encode_MulIOp!(cb, scalar_size_type, start_val, stride_axis)
@@ -139,28 +129,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     ptr_tile_type = tile_type!(tt, ptr_dtype, RowMajorShape(()))
     new_base = encode_OffsetOp!(cb, ptr_tile_type, base_ptr, offset_val)
 
-    # Source ArraySpec (if known) feeds both divby computation and the result
-    # type below. `stride_div_by[axis]` and `alignment` are compile-time facts.
-    src_spec = array_spec(src_type)
-
-    # new_base divby = gcd(src_alignment_bytes, start_div * stride_axis_div * elem_bytes).
-    # `stride_div_by[i] == 0` in ArraySpec means "unknown"; treat as 1 for the
-    # purposes of this product (the trivial bound — every integer is divisible by 1).
-    stride_axis_div = src_spec === nothing ? 1 : max(src_spec.stride_div_by[axis], 1)
-    src_alignment = src_spec === nothing ? 0 : src_spec.alignment
-    elem_bytes = sizeof(elem_T)
-    if src_alignment > 0 && start_div > 0
-        offset_bytes_div = cap_divby(Int128(start_div) * Int128(stride_axis_div) * Int128(elem_bytes))
-        new_base_div = gcd(src_alignment, offset_bytes_div)
-        if new_base_div > 1
-            new_base = encode_AssumeOp!(cb, ptr_tile_type, new_base, DivBy(new_base_div))
-        end
-    end
-
-    # Build new sizes (axis replaced)
+    # Build new sizes (axis replaced).
     new_sizes = Value[i == axis ? new_size_axis : old_sizes[i] for i in 1:ndim]
 
-    # Compute the result TileArray type (same as the tfunc).
+    # Result TileArray type (same as the tfunc). slice_spec drops alignment and
+    # the axis's shape_div_by; a future dataflow pass will recover tighter facts.
+    src_spec = array_spec(src_type)
     result_type = src_spec === nothing ?
         TileArray{elem_T, ndim} :
         TileArray{elem_T, ndim, slice_spec(src_spec, axis)}
