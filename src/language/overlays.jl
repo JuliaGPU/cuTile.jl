@@ -9,7 +9,7 @@ end
 
 
 #=============================================================================
- StepRange Construction
+ Range Construction
 =============================================================================#
 
 # GPU-safe replacement for Base.steprange_last to enable `for i in start:step:stop`.
@@ -29,6 +29,14 @@ end
         return stop + remain
     end
 end
+
+# Base.unitrange_last adjusts `stop` to `start - 1` when `stop < start`, so the
+# resulting UnitRange reports length 0 for empty ranges. That adjustment emits
+# a cmpi + if/else per `@view A[i:j]` axis in Tile IR. Inside a kernel we don't
+# need that adjustment — downstream use of `first(r) / last(r)` hits the raw
+# field anyway, and reversed ranges indicate a user bug just like in Python
+# cuTile's `Array.slice(start, stop)` (no runtime check).
+@overlay Base.unitrange_last(start::T, stop::T) where {T<:Base.BitInteger} = stop
 
 
 #=============================================================================
