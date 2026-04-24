@@ -1389,6 +1389,22 @@ end
                 return
             end
         end
+
+        # a .- b .* c → fma(negf(b), c, a)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                ta = ct.load(a, pid, (16,))
+                tb = ct.load(a, pid, (16,))
+                tc = ct.load(a, pid, (16,))
+                @check "negf"
+                @check "fma"
+                result = ta .- tb .* tc
+                ct.store(a, pid, result)
+                return
+            end
+        end
     end
 
     @testset "remf" begin

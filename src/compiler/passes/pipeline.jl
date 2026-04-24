@@ -33,6 +33,8 @@ const FMA_RULES = RewriteRule[
             Intrinsics.fma(~x, ~y, ~z)
     @rewrite Intrinsics.subf(one_use(Intrinsics.mulf(~x, ~y)), ~z) =>
             Intrinsics.fma(~x, ~y, Intrinsics.negf(~z))
+    @rewrite Intrinsics.subf(~z, one_use(Intrinsics.mulf(~x, ~y))) =>
+            Intrinsics.fma(Intrinsics.negf(~x), ~y, ~z)
 ]
 
 fma_fusion_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, FMA_RULES)
