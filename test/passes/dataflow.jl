@@ -116,5 +116,15 @@ max_iters(::Oscillate) = 3
         end
         return acc
     end |> only
-    @test_throws ErrorException analyze(Oscillate(), sci)
+    err = try
+        analyze(Oscillate(), sci)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    # The diagnostic should name the analysis and surface a concrete
+    # offending anchor to point the reader at what oscillated.
+    @test occursin("Oscillate", err.msg)
+    @test occursin("last changed anchor", err.msg)
 end

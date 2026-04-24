@@ -79,14 +79,19 @@ max_iters(::ForwardAnalysis) = 32
     DataflowResult{A, T}
 
 Queryable result of a forward analysis `A` with lattice element type `T`.
-Read via `r[anchor]` — absent keys collapse to `bottom(analysis)`, so the
-query is total.
 
-The underlying `values::Dict` is exposed for callers that need to synthesize
-new entries after analysis has converged (the rewriter does this when it
-inserts a fresh constant mid-rewrite). Direct writes bypass the analysis'
-`tmerge`, which is intentional for synthesis of *new* SSA values. For updating
-existing keys, use `record!`.
+Public API:
+- `r[anchor]`        — read lattice value; absent keys collapse to
+  `bottom(analysis)` so the query is total.
+- `r[anchor] = val`  — synthesise a fresh entry (bypasses `tmerge`). Use
+  only for *newly created* SSA values (e.g. a rewriter inserting a
+  broadcast whose constant value is known by construction). Not for
+  updating anchors that the analysis already visited — call the analysis
+  again instead.
+- `has_value(r, key)` — distinguish "known bottom" from "absent".
+
+`values` is an internal dict backing the above; don't poke it directly
+from outside the framework.
 """
 struct DataflowResult{A <: ForwardAnalysis, T}
     analysis::A
@@ -99,14 +104,6 @@ DataflowResult(a::ForwardAnalysis{T}) where {T} =
 Base.getindex(r::DataflowResult, @nospecialize(key)) =
     key isa LatticeAnchor ? get(r.values, key, bottom(r.analysis)) : bottom(r.analysis)
 
-"""
-    r[key] = val
-
-Record a lattice value for `key`, bypassing `tmerge`. Use this only to
-side-inject facts for *newly synthesised* SSA values (e.g. when a rewriter
-creates a broadcast op whose constant value is known by construction).
-For re-analysis of an existing anchor, call the analysis again instead.
-"""
 function Base.setindex!(r::DataflowResult{A, T}, val::T,
                         key::LatticeAnchor) where {A, T}
     r.values[key] = val
@@ -157,16 +154,31 @@ function analyze(analysis::A, sci::StructuredIRCode) where {A <: ForwardAnalysis
         end
     end
 
-    dirty = Ref(true)
+    tracker = ChangeTracker(true, nothing)
     cap = max_iters(analysis)
     for iter in 1:cap
-        dirty[] || return result
-        dirty[] = false
-        walk!(analysis, result, sci.entry, dirty)
-        iter == cap && dirty[] &&
-            error("dataflow analysis $(nameof(A)) did not converge in $cap iterations")
+        tracker.dirty || return result
+        tracker.dirty = false
+        walk!(analysis, result, sci.entry, tracker)
+        if iter == cap && tracker.dirty
+            error("dataflow analysis $(nameof(A)) did not converge in $cap iterations " *
+                  "(last changed anchor: $(tracker.last_changed))")
+        end
     end
     return result
+end
+
+"""
+    ChangeTracker
+
+Mutable iteration state. `dirty` is the outer-loop continuation signal;
+`last_changed` carries the most recent anchor whose lattice value moved
+(`nothing` when no change has been recorded yet this run) and feeds the
+non-convergence diagnostic.
+"""
+mutable struct ChangeTracker
+    dirty::Bool
+    last_changed::Union{Nothing, LatticeAnchor}
 end
 
 """Predicate: is `v` the lattice bottom for `analysis`?"""
@@ -177,47 +189,47 @@ is_bottom(analysis::ForwardAnalysis, @nospecialize(v)) = v === bottom(analysis)
  Block walk & transfer dispatch
 =============================================================================#
 
-function walk!(analysis::ForwardAnalysis, result::DataflowResult, block::Block, dirty::Ref{Bool})
+function walk!(analysis::ForwardAnalysis, result::DataflowResult, block::Block, tracker::ChangeTracker)
     for inst in instructions(block)
         s = stmt(inst)
         if s isa ControlFlowOp
-            transfer_cf!(analysis, result, s, SSAValue(inst.ssa_idx), block, dirty)
+            transfer_cf!(analysis, result, s, SSAValue(inst.ssa_idx), block, tracker)
         elseif s isa Expr
-            transfer_call!(analysis, result, block, inst, dirty)
+            transfer_call!(analysis, result, block, inst, tracker)
         end
     end
 end
 
 function transfer_call!(analysis::ForwardAnalysis, result::DataflowResult,
-                        block::Block, inst::Instruction, dirty::Ref{Bool})
+                        block::Block, inst::Instruction, tracker::ChangeTracker)
     call = resolve_call(block, inst)
     call === nothing && return
     func, ops = call
     new_val = transfer(analysis, result, func, ops, block, inst)
-    record!(analysis, result, SSAValue(inst.ssa_idx), new_val, dirty)
+    record!(analysis, result, SSAValue(inst.ssa_idx), new_val, tracker)
 end
 
 """
-    record!(analysis, result, key, new_val, dirty)
+    record!(analysis, result, key, new_val, tracker)
 
 Write `new_val` into `result` at `key`. On insert, the new value lands as-is;
-on conflict, it is merged with the existing entry via `tmerge`. Sets `dirty` when
-the stored element actually changes.
+on conflict, it is merged with the existing entry via `tmerge`. On any
+actual change, flags `tracker.dirty` and records `key` as the last-changed
+anchor (feeds the non-convergence diagnostic).
 """
 function record!(analysis::ForwardAnalysis{T}, result::DataflowResult,
-                 key::LatticeAnchor, new_val::T, dirty::Ref{Bool}) where {T}
+                 key::LatticeAnchor, new_val::T, tracker::ChangeTracker) where {T}
     old = get(result.values, key, nothing)
     if old === nothing
         is_bottom(analysis, new_val) && return  # don't pollute the dict with ⊥
         result.values[key] = new_val
-        dirty[] = true
     else
         merged = tmerge(analysis, old, new_val)
-        if merged != old
-            result.values[key] = merged
-            dirty[] = true
-        end
+        merged == old && return
+        result.values[key] = merged
     end
+    tracker.dirty = true
+    tracker.last_changed = key
     return
 end
 
@@ -227,7 +239,7 @@ end
 =============================================================================#
 
 """
-    transfer_cf!(analysis, result, op, ssa, block, dirty)
+    transfer_cf!(analysis, result, op, ssa, block, tracker)
 
 Default control-flow transfer. Concrete analyses rarely need to override this
 — add a method for a particular `op` type if a specialized rule is required
@@ -240,9 +252,9 @@ function transfer_cf! end
 # `getfield`, so a per-position lattice adds complexity without a consumer.
 # Same aggregate model as the existing divisibility analysis.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::IfOp, ssa::SSAValue, ::Block, dirty::Ref{Bool})
-    walk!(analysis, result, op.then_region, dirty)
-    walk!(analysis, result, op.else_region, dirty)
+                      op::IfOp, ssa::SSAValue, ::Block, tracker::ChangeTracker)
+    walk!(analysis, result, op.then_region, tracker)
+    walk!(analysis, result, op.else_region, tracker)
 
     tt = op.then_region.terminator
     et = op.else_region.terminator
@@ -255,56 +267,56 @@ function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
         merged = tmerge(analysis, merged, operand_value(analysis, result, tt.values[i]))
         merged = tmerge(analysis, merged, operand_value(analysis, result, et.values[i]))
     end
-    record!(analysis, result, ssa, merged, dirty)
+    record!(analysis, result, ssa, merged, tracker)
 end
 
 # ForOp — body args receive loop-carried values: join(init_values, ContinueOp yields).
 # The IV argument is seeded to `top` (unknown at compile time).
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::ForOp, ::SSAValue, ::Block, dirty::Ref{Bool})
-    record!(analysis, result, op.iv_arg, top(analysis), dirty)
-    propagate_loop_carried!(analysis, result, op.body, op.init_values, dirty)
-    walk!(analysis, result, op.body, dirty)
+                      op::ForOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+    record!(analysis, result, op.iv_arg, top(analysis), tracker)
+    propagate_loop_carried!(analysis, result, op.body, op.init_values, tracker)
+    walk!(analysis, result, op.body, tracker)
     term = op.body.terminator
     if term isa ContinueOp
-        propagate_loop_carried!(analysis, result, op.body, term.values, dirty)
+        propagate_loop_carried!(analysis, result, op.body, term.values, tracker)
     end
 end
 
 # WhileOp — before.args ← init ⊔ after yields; after.args ← before's ConditionOp args.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::WhileOp, ::SSAValue, ::Block, dirty::Ref{Bool})
-    propagate_loop_carried!(analysis, result, op.before, op.init_values, dirty)
-    walk!(analysis, result, op.before, dirty)
+                      op::WhileOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+    propagate_loop_carried!(analysis, result, op.before, op.init_values, tracker)
+    walk!(analysis, result, op.before, tracker)
     before_term = op.before.terminator
     if before_term isa ConditionOp
-        propagate_loop_carried!(analysis, result, op.after, before_term.args, dirty)
+        propagate_loop_carried!(analysis, result, op.after, before_term.args, tracker)
     end
-    walk!(analysis, result, op.after, dirty)
+    walk!(analysis, result, op.after, tracker)
     after_term = op.after.terminator
     if after_term isa YieldOp
-        propagate_loop_carried!(analysis, result, op.before, after_term.values, dirty)
+        propagate_loop_carried!(analysis, result, op.before, after_term.values, tracker)
     end
 end
 
 # LoopOp — body.args ← init ⊔ ContinueOp values ⊔ BreakOp values (walked via
 # nested blocks, which the terminator walker handles).
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::LoopOp, ::SSAValue, ::Block, dirty::Ref{Bool})
-    propagate_loop_carried!(analysis, result, op.body, op.init_values, dirty)
-    walk!(analysis, result, op.body, dirty)
+                      op::LoopOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+    propagate_loop_carried!(analysis, result, op.body, op.init_values, tracker)
+    walk!(analysis, result, op.body, tracker)
     walk_terminators(op.body) do t
         if t isa ContinueOp || t isa BreakOp
-            propagate_loop_carried!(analysis, result, op.body, t.values, dirty)
+            propagate_loop_carried!(analysis, result, op.body, t.values, tracker)
         end
     end
 end
 
 function propagate_loop_carried!(analysis::ForwardAnalysis, result::DataflowResult,
-                                 body::Block, values::Vector, dirty::Ref{Bool})
+                                 body::Block, values::Vector, tracker::ChangeTracker)
     for (i, arg) in enumerate(body.args)
         i <= length(values) || break
-        record!(analysis, result, arg, operand_value(analysis, result, values[i]), dirty)
+        record!(analysis, result, arg, operand_value(analysis, result, values[i]), tracker)
     end
 end
 
