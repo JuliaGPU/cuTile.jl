@@ -342,9 +342,13 @@ function token_order_pass!(sci::StructuredIRCode, alias_result::Dict{Any, AliasS
     root_inst = pushfirst!(sci.entry, MakeTokenNode(), TOKEN_TYPE)
     root_token = SSAValue(root_inst)
 
-    # Initialize: all alias sets start at root token
+    # Initialize: all alias sets start at root token. Always include
+    # ALIAS_UNIVERSE — unrecognised/unknown operands resolve to it and
+    # must have a seeded last-op / last-store slot.
     token_map = Dict{TokenKey, Any}()
-    for alias_set in Set(values(alias_result))
+    seen_sets = Set{AliasSet}(values(alias_result))
+    push!(seen_sets, ALIAS_UNIVERSE)
+    for alias_set in seen_sets
         token_map[last_op_key(alias_set)] = root_token
         token_map[last_store_key(alias_set)] = root_token
     end
