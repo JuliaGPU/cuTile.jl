@@ -175,3 +175,16 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.zeros(::Typ
     _full(zero(T), T, dims)
 Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
     _full(one(T), T, dims)
+
+
+#=============================================================================
+ @view / view for TileArrays
+=============================================================================#
+
+# Route Julia's standard `@view A[...]` and explicit `view(A, ...)` on a
+# TileArray through `Intrinsics.slice` via the _view_chain dispatch in
+# operations.jl. Each UnitRange axis produces one slice; `:` is a no-op.
+@overlay Base.maybeview(arr::TileArray{T, N}, inds::Vararg{Any, N}) where {T, N} =
+    _view_chain(arr, Val(1), inds)
+@overlay Base.view(arr::TileArray{T, N}, inds::Vararg{Any, N}) where {T, N} =
+    _view_chain(arr, Val(1), inds)

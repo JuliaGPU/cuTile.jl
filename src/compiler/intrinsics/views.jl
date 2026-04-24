@@ -194,15 +194,13 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
                             path::Vector{Int}=Int[],
                             @nospecialize(tilearray_type::Type=Nothing))
     cb = ctx.cb
-    tt = ctx.tt
 
     if tilearray_type === Nothing
         tilearray_type = get_arg_type(ctx, arg_idx)
     end
-    elem_type = eltype(tilearray_type)
     ndim = ndims(tilearray_type)
-    spec = array_spec(tilearray_type)
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
+    scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
 
     # Build paths for nested fields using field indices
     ptr_fi = Base.fieldindex(tilearray_type, :ptr)
@@ -225,10 +223,6 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
     sizes_from_arg === nothing && throw(IRError("TileArray at kernel entry requires explicit sizes"))
     length(sizes_from_arg) < ndim && throw(IRError("TileArray sizes don't match ndim"))
 
-    # Deduce size/stride type from TileArray fields
-    size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
-    scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
-
     # Sizes in Julia column-major order from parameters
     julia_size_vals = Value[sizes_from_arg[i] for i in 1:ndim]
 
@@ -247,6 +241,44 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
             end
         end
     end
+
+    key = tensor_view_key(arg_idx, path)
+    create_tensor_view!(ctx, key, array_val, julia_size_vals, julia_stride_vals,
+                        tilearray_type)
+end
+
+"""
+    tensor_view_key(arg_idx, path) -> Any
+
+Build the cache key used by `ctx.tensor_views`. Bare `arg_idx` for empty paths
+(top-level args / slice results), a `(arg_idx, path)` tuple for nested paths.
+"""
+tensor_view_key(arg_idx::Int, path::Vector{Int}) =
+    isempty(path) ? arg_idx : (arg_idx, path)
+
+"""
+    create_tensor_view!(ctx, key, base_ptr, sizes, strides, tilearray_type) -> (Value, TypeId)
+
+Emit a `MakeTensorViewOp` from pre-resolved column-major base pointer, sizes,
+and strides. Handles TileArray-style `AssumeOp` annotations and caches the
+resulting TensorView under `key` for later retrieval by `make_tensor_view`.
+
+`sizes` and `strides` are Julia column-major (reversed on the way to Tile IR).
+"""
+function create_tensor_view!(ctx::CGCtx, key,
+                             array_val::Value,
+                             julia_size_vals::Vector{Value},
+                             julia_stride_vals::Vector{Value},
+                             @nospecialize(tilearray_type::Type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    elem_type = eltype(tilearray_type)
+    ndim = ndims(tilearray_type)
+    spec = array_spec(tilearray_type)
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
+    scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
 
     # Reverse sizes and strides for Tile IR row-major order
     size_vals = reverse(julia_size_vals)
@@ -267,10 +299,8 @@ function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
 
     # Create tensor view
     tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, dynamic_stride_vals)
-
-    # Cache it: use arg_idx for top-level, (arg_idx, path) for nested
-    key = isempty(path) ? arg_idx : (arg_idx, path)
     ctx.tensor_views[key] = (tensor_view, tv_type)
+    return tensor_view, tv_type
 end
 
 """
@@ -329,11 +359,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
         return CGVal(tensor_view, tv_type, result_jltype)
     end
 
-    # Case 2: Lazy arg ref (nested TileArray inside a struct)
+    # Case 2: Lazy arg ref (nested TileArray, or slice result)
     tv = emit_value!(ctx, array_arg)
     if tv !== nothing && is_arg_ref(tv)
         arg_idx, chain = tv.arg_ref
-        key = (arg_idx, chain)
+        key = tensor_view_key(arg_idx, chain)
         haskey(ctx.tensor_views, key) || throw(IRError("TensorView not found for arg $arg_idx at path $chain"))
         tensor_view, tv_type = ctx.tensor_views[key]
         ta_type = CC.widenconst(tv.jltype)

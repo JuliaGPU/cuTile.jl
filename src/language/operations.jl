@@ -1,6 +1,70 @@
 # cuTile DSL operations
 
 
+#=============================================================================
+ Slicing
+=============================================================================#
+
+public slice
+
+"""
+    slice(arr::TileArray, axis::Integer, start, stop) -> TileArray
+
+Create a non-owning view over `arr` narrowed along `axis` to the half-open
+range `[start, stop)` (0-indexed). Other axes are unchanged. Analogous to
+cuTile Python's `Array.slice(axis, start, stop)`.
+
+The preferred user-facing spelling is Julia's standard `@view A[i:j, :]` macro,
+which routes through this function via an overlay on `Base.view` / `Base.maybeview`.
+
+# Example
+```julia
+# 1D slice: 0-indexed half-open
+sub = ct.slice(A, 1, 4, 12)   # elements 4..11 (8 elements)
+
+# Via @view (1-indexed inclusive): equivalent to the above
+sub = @view A[5:12]
+```
+"""
+@inline function slice(arr::TileArray, axis::Integer, start::Integer, stop::Integer)
+    _slice(arr, Val(Int(axis)), start, stop)
+end
+
+@inline function _slice(arr::TileArray{T, N}, ::Val{Axis},
+                        start::Integer, stop::Integer) where {T, N, Axis}
+    1 <= Axis <= N ||
+        throw(ArgumentError("axis $Axis out of range for $N-D TileArray"))
+    size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
+    s = size_elem_T(start)
+    e = size_elem_T(stop)
+    Intrinsics.slice(arr, Val(Axis), s, e)
+end
+
+# @view A[inds...] macro expansion routes here.
+# Single UnitRange per sliced axis; `:` is pass-through.
+@inline function _view_chain(arr::TileArray, ::Val{Axis}, ::Tuple{}) where {Axis}
+    arr
+end
+@inline function _view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
+    _view_chain(arr, Val(Axis + 1), Base.tail(inds))
+end
+@inline function _view_chain(arr::TileArray, ::Val{Axis},
+                             inds::Tuple{UnitRange, Vararg}) where {Axis}
+    r = inds[1]
+    size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
+    # Julia @view is 1-indexed inclusive → 0-indexed half-open for Intrinsics.slice
+    start_0 = size_elem_T(first(r)) - size_elem_T(1)
+    stop_0 = size_elem_T(last(r))
+    sub = Intrinsics.slice(arr, Val(Axis), start_0, stop_0)
+    _view_chain(sub, Val(Axis + 1), Base.tail(inds))
+end
+# Reject unsupported index types with a clear message.
+@inline function _view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple) where {Axis}
+    throw(ArgumentError("@view on a TileArray only supports UnitRange and `:` per axis; " *
+                        "got $(typeof(inds[1])) at axis $Axis"))
+end
+
+
 # Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
 @inline _deinterleave_accs(a, e, rest...) = (a, _deinterleave_accs(rest...)...)
 @inline _deinterleave_accs() = ()
