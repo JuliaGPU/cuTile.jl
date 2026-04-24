@@ -129,9 +129,9 @@ end
     end
 
     # TODO: dynamic slice with divby-annotated bounds (e.g. @view A[bid*TILE : (bid+1)*TILE])
-    # should get a divby=TILE annotation on the derived size. Requires the pass
-    # to wrap the runtime `size` operand with assume_div_by when divby analysis
-    # discovers the multiplication by TILE.
+    # should get a divby=TILE annotation on the derived size. Blocked on Gap 1 or
+    # Gap 2 in src/compiler/passes/divisibility.jl (constant folding + ArraySpec
+    # seeding). Flip this to @test once either lands.
     @test_broken begin
         # Placeholder for when dynamic-bounds divby propagation lands.
         false

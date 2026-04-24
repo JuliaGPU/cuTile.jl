@@ -27,13 +27,88 @@ const DivByResult = Dict{Any, Int}
 
 const MAX_DIVBY = 1024
 
-# TODO (tightening): when both operands of `addi/subi` resolve to known
-# integer constants, the current `gcd`-based rule gives a looser bound than
-# `abs(a ± b)` (e.g. `subi(10, 2)` yields `gcd(10,2) = 2` rather than `8`).
-# Matching Python's tightness here wants a *separate* constant-folding pass
-# that lowers such ops to `broadcast(scalar, shape)` before this analysis
-# runs — then the existing constant rule below fires naturally. The rewriter
-# framework is not the right home for it.
+#=============================================================================
+ Precision gaps vs. cuTile Python's `dataflow_analysis.py`
+=============================================================================#
+#
+# Both gaps below are correctness-safe (our bounds are always sound, just
+# looser than Python's). They're called out here rather than hidden in the
+# code they constrain so follow-up work has a single list to work from.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Gap 1: No const-fold for arithmetic on known constants.
+# ──────────────────────────────────────────────────────────────────────────
+#
+# For `addi(a, b)` / `subi(a, b)` where both operands resolve to known
+# integer constants, this pass uses `gcd(divby[a], divby[b])` which is
+# strictly looser than the exact `abs_divby(a ± b)` value. Examples:
+#
+#     subi(10, 2) →  divby = gcd(10, 2) = 2     (actual: abs(8) = 8)
+#     addi( 4, 4) →  divby = gcd( 4, 4) = 4     (actual: abs(8) = 8)
+#
+# Python gets the tight bound because a separate constant-folding stage
+# lowers these to `typed_const(folded_value)` before its dataflow runs, at
+# which point its `TypedConst` rule applies `abs_divby(value)` directly.
+#
+# For literal arithmetic inside Julia code, Julia's own inference already
+# folds at compile time (`Int32(10) - Int32(2)` is just `Int32(8)`), so
+# this gap is invisible for that case. It only shows up for arithmetic
+# whose operands become `Intrinsics.constant(...)` SSA defs (e.g. produced
+# by the broadcast system), where inference has already lowered past the
+# literal-level fold.
+#
+# Fix shape: a standalone folding pass that rewrites
+# `(addi|subi|muli)(constant, constant)` → `broadcast(folded_scalar, shape)`
+# before `divisibility_analysis`. The rule is straightforward to write; it
+# does *not* belong inside the rewriter's ALGEBRA_RULES (algebraic
+# simplification and constant folding are separate concerns).
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Gap 2: No seeding from `ArraySpec` into derived-value divby.
+# ──────────────────────────────────────────────────────────────────────────
+#
+# `ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}` on a
+# `TileArray` kernel parameter encodes divisibility of its ptr/sizes/strides
+# at compile time. Today these facts reach Tile IR via two independent
+# paths:
+#
+#   - `emit_assume_ops!` (intrinsics/misc.jl) wraps the kernel-entry
+#     `MakeTensorView` operands with `AssumeOp(DivBy)` from `ArraySpec`.
+#   - `Intrinsics.slice`'s codegen consults `src_spec.alignment` and
+#     `src_spec.stride_div_by[axis]` directly on the source type for the
+#     new-pointer divby.
+#
+# Neither flows into this pass. As a consequence, when the user writes:
+#
+#     m = arr.sizes[1]                         # SSA from getfield chain
+#     sub = @view arr[start:start+m-1, :]      # m has divby = 1 here
+#
+# `m`'s divby is recorded as 1 even though `ArraySpec.shape_div_by[1]`
+# might say 16. Python, by contrast, seeds every TileArray field access
+# with its `DataPredicate.div_by` at the start of its dataflow (see
+# `DataflowResult` construction in `dataflow_analysis.py`). Subsequent
+# slices whose bounds are derived from `arr.sizes[i]` / `arr.strides[i]`
+# miss out on tight pointer/size annotations.
+#
+# Fix shape: walk the entry block for each `getfield(arg, :ptr | :sizes[i]
+# | :strides[i])` SSA that resolves to a TileArray kernel parameter, and
+# populate `seeds[SSAValue] = <from ArraySpec>` before running the
+# fixpoint. Needs a small helper that mirrors `cache_tensor_view!`'s path
+# resolution. Orthogonal to Gap 1 and to the insert-assumes rewriter; the
+# three passes compose cleanly.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Observable effect and test coverage
+# ──────────────────────────────────────────────────────────────────────────
+#
+# `examples/slice.jl`'s ragged-copy kernel hits Gap 2 directly: its derived
+# `new_base` carries `assume div_by<4>` where Python emits `div_by<16>`.
+# Both are sound; the Python annotation unlocks one more level of
+# vectorisation in the tile backend.
+#
+# `test/codegen/slice.jl` has a `@test_broken` at the tail of the "Phase 3"
+# testset that should flip to `@test` once either gap is closed enough to
+# produce a non-trivial divby on dynamic bounds.
 
 """
     divisibility_analysis(sci, seeds=DivByResult()) -> DivByResult
