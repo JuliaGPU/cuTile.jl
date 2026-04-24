@@ -141,29 +141,19 @@ operand_value(a::ForwardAnalysis, r::DataflowResult, @nospecialize(op)) =
 =============================================================================#
 
 """
-    analyze(analysis, sci; seeds=Dict()) -> DataflowResult
+    analyze(analysis, sci) -> DataflowResult
 
-Run `analysis` over `sci` to fixpoint. `seeds` pre-populates the result with
-known lattice values (for callers that want to thread facts from elsewhere).
-Kernel parameter anchors (`Argument(i)`) are seeded from `init_arg(analysis, i, T)`.
+Run `analysis` over `sci` to fixpoint. Kernel parameter anchors
+(`Argument(i)`) are seeded from `init_arg(analysis, i, T)`; everything
+else is derived from the IR by the transfer rules.
 """
-function analyze(analysis::A, sci::StructuredIRCode;
-                 seeds::AbstractDict=Dict{LatticeAnchor, Any}()) where {A <: ForwardAnalysis}
+function analyze(analysis::A, sci::StructuredIRCode) where {A <: ForwardAnalysis}
     result = DataflowResult(analysis)
 
-    # User-supplied seeds first, so init_arg can't clobber them.
-    for (k, v) in seeds
-        k isa LatticeAnchor || continue
-        result.values[k] = v
-    end
-
-    # Seed kernel parameters via init_arg.
     for (i, argtype) in enumerate(sci.argtypes)
-        anchor = Argument(i)
-        haskey(result.values, anchor) && continue
         v = init_arg(analysis, i, argtype)
         if !is_bottom(analysis, v)
-            result.values[anchor] = v
+            result.values[Argument(i)] = v
         end
     end
 
