@@ -6,8 +6,9 @@
 # intrinsic IR exercises `IfOp` / `ForOp` / `WhileOp` paths with shape
 # that we can assert against.
 
-using Core: SSAValue, Argument
-using IRStructurizer: code_structured, Block, ForOp, instructions, stmt
+using Core: SSAValue, Argument, ReturnNode
+using IRStructurizer: code_structured, Block, BlockArgument, ForOp, LoopOp,
+                      ContinueOp, StructuredIRCode, instructions, stmt
 
 using cuTile: ForwardAnalysis, DataflowResult, analyze, record!, has_value, LatticeAnchor
 import cuTile: bottom, top, tmerge, transfer, max_iters, operand_value
@@ -92,6 +93,40 @@ end
             break
         end
     end
+end
+
+
+@testset "nested LoopOp carries don't leak across loop scope" begin
+    # Two nested LoopOps. The inner ContinueOp's values target the inner
+    # loop; they must NOT be merged into the outer loop's body.args.
+    #
+    # Outer carry: init 100, outer ContinueOp 100  → a_out stays at 100.
+    # Inner carry: init 200, inner ContinueOp 999  → a_in collapses to CTOP.
+    # If the framework crossed the inner loop scope, 999 would land on a_out
+    # too, dragging it to CTOP.
+    a_out = BlockArgument(1, Int)
+    a_in  = BlockArgument(2, Int)
+
+    inner_body = Block()
+    push!(inner_body.args, a_in)
+    inner_body.terminator = ContinueOp(Any[999])
+    inner_loop = LoopOp(inner_body, Any[200])
+
+    outer_body = Block()
+    push!(outer_body.args, a_out)
+    push!(outer_body, 1, inner_loop, Nothing)
+    outer_body.terminator = ContinueOp(Any[100])
+    outer_loop = LoopOp(outer_body, Any[100])
+
+    entry = Block()
+    push!(entry, 2, outer_loop, Nothing)
+    entry.terminator = ReturnNode(nothing)
+
+    sci = StructuredIRCode(Any[Any], Any[], entry, 2)
+    r = analyze(ConstInt(), sci)
+
+    @test r[a_out] === 100      # outer carry preserved; inner didn't leak in
+    @test r[a_in]  === CTOP     # inner carry: 200 ⊔ 999 → ⊤
 end
 
 

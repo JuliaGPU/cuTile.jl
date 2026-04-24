@@ -313,13 +313,16 @@ function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
     end
 end
 
-# LoopOp — body.args ← init ⊔ ContinueOp values ⊔ BreakOp values (walked via
-# nested blocks, which the terminator walker handles).
+# LoopOp — body.args ← init ⊔ ContinueOp values ⊔ BreakOp values. ContinueOp /
+# BreakOp can appear directly as `body.terminator` or as the terminator of a
+# nested IfOp branch (transparent); nested LoopOp/ForOp/WhileOp introduce their
+# own scope and their terminators target *themselves*, not this outer LoopOp.
+# `reachable_terminators` encodes that scoping rule.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
                       op::LoopOp, ::SSAValue, ::Block, tracker::ChangeTracker)
     propagate_loop_carried!(analysis, result, op.body, op.init_values, tracker)
     walk!(analysis, result, op.body, tracker)
-    walk_terminators(op.body) do t
+    for t in reachable_terminators(op.body)
         if t isa ContinueOp || t isa BreakOp
             propagate_loop_carried!(analysis, result, op.body, t.values, tracker)
         end
@@ -331,19 +334,5 @@ function propagate_loop_carried!(analysis::ForwardAnalysis, result::DataflowResu
     for (i, arg) in enumerate(body.args)
         i <= length(values) || break
         record!(analysis, result, arg, operand_value(analysis, result, values[i]), tracker)
-    end
-end
-
-"""Recursively visit every (nested) block's terminator, invoking `f(terminator)`."""
-function walk_terminators(f, block::Block)
-    t = block.terminator
-    t === nothing || f(t)
-    for inst in instructions(block)
-        s = stmt(inst)
-        if s isa ControlFlowOp
-            for sub in blocks(s)
-                walk_terminators(f, sub)
-            end
-        end
     end
 end
