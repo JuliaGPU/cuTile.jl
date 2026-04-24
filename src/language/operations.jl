@@ -38,19 +38,21 @@ end
     _view_chain(sub, Val(Axis + 1), Base.tail(inds))
 end
 
-# Python-parity compile-time sanity checks on slice bounds. These fire only
-# when the UnitRange element type is `Int` — literal ranges authored with
-# default Int literals. Kernel-parameter ranges (typically `Int32`) fall
-# through to the no-op method, since a runtime-conditional throw cannot
-# lower to Tile IR. Mirrors `_m_array_slice`'s `is_constant()` guards in
-# res/cutile-python/src/cuda/tile/_ir/ops.py.
-@inline function _check_slice_bounds(r::UnitRange{Int})
+# Slice-bounds sanity checks, routed through `Intrinsics.assert` so they lower
+# to a Tile IR AssertOp. For literal ranges the operands fold and the assert
+# intrinsic's codegen produces a compile error on `Const(false)` — matching
+# cuTile Python's `is_constant()` guards in `_m_array_slice`. For kernel-
+# parameter ranges the same checks become runtime AssertOps that abort the
+# kernel with the message if the bounds are wrong.
+# `@constprop :aggressive` is needed to push literal range endpoints through
+# the generic `UnitRange{T<:Integer}` signature so `first(r) >= T(1)` folds
+# at call sites like `@view a[0:10]`.
+Base.@constprop :aggressive @inline function _check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
     start, stop = first(r), last(r)
-    start < 1 && throw(ArgumentError("slice start must be ≥ 1, got $start"))
-    stop < start - 1 && throw(ArgumentError("slice stop must be ≥ start - 1, got start=$start, stop=$stop"))
+    Intrinsics.assert(start >= T(1), "@view: slice start must be ≥ 1")
+    Intrinsics.assert(stop >= start - T(1), "@view: slice stop must be ≥ start - 1")
     return
 end
-@inline _check_slice_bounds(::UnitRange) = nothing
 
 
 # Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples

@@ -6,8 +6,17 @@ tfunc(𝕃, ::typeof(Intrinsics.assert), @nospecialize(cond), @nospecialize(mess
 efunc(::typeof(Intrinsics.assert), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assert), args)
-    cond = @something emit_value!(ctx, args[1]) throw(IRError("assert: cannot resolve condition"))
     message = @something get_constant(ctx, args[2]) throw(IRError("assert: requires constant message"))
+
+    # Elide the AssertOp when the condition folds to `true`: an always-true
+    # assert is dead weight and dropping it is sound regardless of whether
+    # this program point is reachable. Do NOT fold `Some(false)` to a
+    # compile error — the assert may be sitting in a conditional branch
+    # that's never taken at runtime (e.g. `if cond; @view a[0:10]; end`),
+    # and emit_intrinsic! has no reachability information.
+    get_constant(ctx, args[1]) === Some(true) && return nothing
+
+    cond = @something emit_value!(ctx, args[1]) throw(IRError("assert: cannot resolve condition"))
     encode_AssertOp!(ctx.cb, cond.v, message)
     nothing  # no result value
 end

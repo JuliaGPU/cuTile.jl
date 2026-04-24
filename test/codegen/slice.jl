@@ -96,3 +96,51 @@ end
     end
 end
 
+@testset "slice — bounds asserts" begin
+    # Static literal bounds that are valid: `start >= 1` and `stop >= start - 1`
+    # fold to `true`, so the AssertOps are elided by the assert intrinsic's
+    # Const(true) fast path.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            sub = @view a[3:10]
+            t = ct.load(sub, 1, (4,))
+            ct.store(sub, 1, t)
+            return
+        end
+        @check_not "assert {{.*}}slice start"
+        @check_not "assert {{.*}}slice stop"
+    end
+
+    # Dynamic bounds lower to runtime AssertOps (one per bound).
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
+            sub = @view a[i:j]
+            t = ct.load(sub, 1, (4,))
+            ct.store(sub, 1, t)
+            return
+        end
+        @check "assert {{.*}}slice start must be"
+        @check "assert {{.*}}slice stop must be"
+    end
+
+    # Bad static literal: `start < 1` folds to `true`, so the AssertOp is
+    # emitted with an `i1 false` condition — the kernel will always abort at
+    # runtime with the slice-start message when this point is reached.
+    # (We don't fold `Const(false)` to a compile error because the assert may
+    # be sitting in a conditional branch that isn't taken; see the comment in
+    # `emit_intrinsic!(::typeof(Intrinsics.assert), ...)`.)
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            sub = @view a[0:10]
+            t = ct.load(sub, 1, (4,))
+            ct.store(sub, 1, t)
+            return
+        end
+        @check "constant <i1: false>"
+        @check "assert {{.*}}slice start must be"
+    end
+end
+
