@@ -58,7 +58,7 @@ Optional methods, with defaults:
   transfer-function position. Default routes anchors to `result[anchor]`
   and returns `bottom(a)` for anything else. Override to recognise raw
   literal operands (e.g. an integer literal is its own constant for a
-  constant-propagation analysis).
+  constant analysis).
 - `init_arg(a, i, argtype)::T` — seed for kernel parameter `Argument(i)` with
   inferred type `argtype`. Default returns `top(a)`.
 - `max_iters(a)::Int` — convergence cap. Default 32. The driver errors if the
@@ -142,7 +142,7 @@ Lattice value for an operand as used *inside a transfer function*. The
 default handles `LatticeAnchor`s (via dict lookup) and treats everything
 else (integer/float literals, QuoteNodes, GlobalRefs, …) as `bottom`.
 Analyses override this to recognise raw literals when those are
-meaningful lattice inputs — e.g. a constant-propagation analysis returns
+meaningful lattice inputs — e.g. a constant analysis returns
 the integer itself for a raw `Int` operand.
 """
 operand_value(a::ForwardAnalysis, r::DataflowResult, @nospecialize(op)) =

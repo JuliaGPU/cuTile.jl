@@ -222,9 +222,9 @@ mutable struct RewriteDriver
     defs::Dict{SSAValue, DefEntry}
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
-    constants::Any                   # DataflowResult{ConstAnalysis}, from the pipeline.
+    constants::Any                   # DataflowResult{ConstantAnalysis}, from the pipeline.
                                      # Untyped here to avoid a forward reference
-                                     # to pipeline.jl's ConstAnalysis.
+                                     # to pipeline.jl's ConstantAnalysis.
     modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end
@@ -347,7 +347,7 @@ end
 
 # PLiteral: match if the operand equals the given value.
 # For non-SSA operands (enum constants, predicates): checks ===.
-# For SSA operands: routed through const_value on the ConstAnalysis result.
+# For SSA operands: routed through const_value on the ConstantAnalysis result.
 function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::PLiteral,
                        block::Block=driver.sci.entry)
     val === pat.val && return MatchResult(Dict{Symbol,Any}(), SSAValue[])
