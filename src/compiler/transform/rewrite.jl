@@ -222,9 +222,7 @@ mutable struct RewriteDriver
     defs::Dict{SSAValue, DefEntry}
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
-    constants::Any                   # DataflowResult{ConstantAnalysis}, from the pipeline.
-                                     # Untyped here to avoid a forward reference
-                                     # to pipeline.jl's ConstantAnalysis.
+    constants::Union{Nothing, DataflowResult{ConstantAnalysis, ConstantElement}}
     modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end
