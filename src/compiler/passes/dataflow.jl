@@ -255,11 +255,24 @@ end
 """
     transfer_cf!(analysis, result, op, ssa, block, tracker)
 
-Default control-flow transfer. Concrete analyses rarely need to override this
-— add a method for a particular `op` type if a specialized rule is required
-(e.g., an analysis that sharpens based on a branch condition).
+Dispatched per `ControlFlowOp` subtype. Dedicated methods below cover the
+four shapes IRStructurizer currently produces (`IfOp`, `ForOp`, `WhileOp`,
+`LoopOp`). Analyses rarely need to override these — add a method for a
+particular `op` type if a specialized rule is required (e.g., an analysis
+that sharpens based on a branch condition).
+
+The generic fallback below walks every sub-block (so SSAs defined inside
+are still visited) and conservatively records the op's own SSA as `top`.
+It fires for any new `ControlFlowOp` subtype added upstream, keeping the
+framework forward-compatible instead of failing with `MethodError`.
 """
-function transfer_cf! end
+function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
+                      op::ControlFlowOp, ssa::SSAValue, ::Block, tracker::ChangeTracker)
+    for sub in blocks(op)
+        walk!(analysis, result, sub, tracker)
+    end
+    record!(analysis, result, ssa, top(analysis), tracker)
+end
 
 # IfOp — a single aggregate lattice element covering all yielded positions
 # from both regions. Our IR uses one SSA per IfOp and downstream access via

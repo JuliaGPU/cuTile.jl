@@ -7,8 +7,10 @@
 # that we can assert against.
 
 using Core: SSAValue, Argument, ReturnNode
+using IRStructurizer
 using IRStructurizer: code_structured, Block, BlockArgument, ForOp, LoopOp,
-                      ContinueOp, StructuredIRCode, instructions, stmt
+                      ContinueOp, ControlFlowOp, StructuredIRCode, blocks,
+                      instructions, stmt
 
 using cuTile: ForwardAnalysis, DataflowResult, analyze, record!, has_value, LatticeAnchor
 import cuTile: bottom, top, tmerge, transfer, max_iters, operand_value
@@ -95,6 +97,27 @@ end
     end
 end
 
+
+# Dummy CF op used to exercise the generic `transfer_cf!` fallback.
+struct FakeCFOp <: ControlFlowOp
+    region::Block
+end
+IRStructurizer.blocks(op::FakeCFOp) = (op.region,)
+
+@testset "fallback transfer_cf! handles unknown ControlFlowOp subtypes" begin
+    # Sub-block has no instructions we can assert on, but we can confirm the
+    # outer op's SSA was recorded as `top` — the safe default.
+    region = Block()
+    region.terminator = ReturnNode(nothing)
+    entry = Block()
+    push!(entry, 1, FakeCFOp(region), Any)
+    entry.terminator = ReturnNode(nothing)
+
+    sci = StructuredIRCode(Any[Any], Any[], entry, 1)
+    r = analyze(ConstInt(), sci)
+
+    @test r[SSAValue(1)] === CTOP
+end
 
 @testset "nested LoopOp carries don't leak across loop scope" begin
     # Two nested LoopOps. The inner ContinueOp's values target the inner
