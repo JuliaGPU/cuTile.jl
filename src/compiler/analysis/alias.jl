@@ -76,9 +76,12 @@ function transfer(a::AliasAnalysis, r::DataflowResult, @nospecialize(func),
         return ALIAS_UNIVERSE
     end
 
-    # View constructors and pointer passthroughs: propagate from first operand.
+    # View constructors and pointer passthroughs: propagate from the source
+    # operand. `make_tensor_view(::Type{T}, ptr, sizes, strides)` — alias source
+    # is the ptr (operand 2). `make_partition_view(tv, ...)` — operand 1.
     if is_view_constructor(func) || is_pointer_passthrough(func)
-        length(ops) >= 1 && return operand_value(a, r, ops[1])
+        src_idx = func === Intrinsics.make_tensor_view ? 2 : 1
+        length(ops) >= src_idx && return operand_value(a, r, ops[src_idx])
         return ALIAS_UNIVERSE
     end
 

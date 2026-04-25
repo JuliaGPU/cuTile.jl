@@ -320,19 +320,74 @@ function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{I
 end
 
 # cuda_tile.make_tensor_view
-@intrinsic make_tensor_view(arr::TileArray{T, N}) where {T, N}
-function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view), @nospecialize(arr))
-    t = CC.widenconst(arr)
-    t <: TileArray || return nothing
-    TensorView{eltype(t), ndims(t)}
+#
+# Takes the originating TileArray type plus its destructured pieces (ptr,
+# sizes-tuple, strides-tuple) so the language layer can call it directly with
+# `make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)`. The Tile
+# IR `MakeTensorViewOp` consumes the destructured pieces as separate operands;
+# this matches that 1:1 (no aggregate side-table). The TileArray type carries
+# the `ArraySpec` (alignment, contiguity, per-axis divisibility) needed for
+# AssumeOp emission.
+#
+# Each call emits a fresh `MakeTensorViewOp` (with its own AssumeOp chain).
+# `cuda_tile_translate`'s bytecode optimizer is expected to CSE redundant
+# tensor views; AssumeOps are likewise pure and dedup as well.
+@intrinsic make_tensor_view(::Type{T}, ptr, sizes, strides) where {T}
+function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view),
+               @nospecialize(T_arg), @nospecialize args...)
+    T_outer = CC.widenconst(T_arg)
+    T_outer isa DataType && T_outer <: Type || return nothing
+    T = T_outer.parameters[1]
+    T isa Type && T <: TileArray || return nothing
+    TensorView{eltype(T), ndims(T)}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
-    cv = emit_value!(ctx, args[1])
-    cv === nothing && throw(IRError("make_tensor_view() requires a TileArray argument"))
-    av = find_array_value(ctx, cv)
-    av === nothing && throw(IRError("make_tensor_view(): no ArrayValue for $(CC.widenconst(cv.jltype))"))
-    tensor_view, tv_type = emit_tensor_view!(ctx, av)
-    result_jltype = TensorView{eltype(av.tilearray_type), ndims(av.tilearray_type)}
+    cb = ctx.cb
+    tt = ctx.tt
+
+    T_arg, ptr_arg, sizes_arg, strides_arg = args
+
+    T = @something get_constant(ctx, T_arg) throw(IRError("make_tensor_view: TileArray type must be a compile-time constant"))
+    T isa Type && T <: TileArray ||
+        throw(IRError("make_tensor_view: first arg must be a TileArray type, got $T"))
+
+    elem_T = eltype(T)
+    ndim = ndims(T)
+    spec = array_spec(T)
+    dtype = julia_to_tile_dtype!(tt, elem_T)
+    size_elem_T = eltype(fieldtype(T, :sizes))
+    scalar_size_type = tile_type_for_julia!(ctx, size_elem_T)
+
+    # Resolve operands. ptr is a single Value; sizes/strides expand to N values.
+    ptr_tv = emit_value!(ctx, ptr_arg)
+    ptr_tv === nothing && throw(IRError("make_tensor_view: cannot resolve ptr"))
+    base_ptr = ptr_tv.v::Value
+
+    size_tvs = resolve_tuple(ctx, sizes_arg, "make_tensor_view: sizes")
+    stride_tvs = resolve_tuple(ctx, strides_arg, "make_tensor_view: strides")
+    length(size_tvs) == ndim ||
+        throw(IRError("make_tensor_view: expected $ndim sizes, got $(length(size_tvs))"))
+    length(stride_tvs) == ndim ||
+        throw(IRError("make_tensor_view: expected $ndim strides, got $(length(stride_tvs))"))
+
+    # Julia column-major order: (stride/size for dim 1, dim 2, ...). Reverse to
+    # Tile IR's row-major order at the IR boundary.
+    size_vals = reverse!(Value[tv.v for tv in size_tvs])
+    stride_vals = reverse!(Value[tv.v for tv in stride_tvs])
+
+    tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
+    tv_strides = compute_tensor_view_strides(spec, ndim)
+    tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
+
+    if spec !== nothing
+        base_ptr, size_vals, stride_vals = emit_assume_ops!(ctx, base_ptr, size_vals, stride_vals,
+                                                            spec, dtype, scalar_size_type; tv_strides)
+    end
+
+    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
+
+    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr, size_vals, dynamic_stride_vals)
+    result_jltype = TensorView{elem_T, ndim}
     return CGVal(tensor_view, tv_type, result_jltype)
 end
 

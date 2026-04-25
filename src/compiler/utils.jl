@@ -533,8 +533,27 @@ error messages.
 """
 function resolve_tuple(ctx::CGCtx, @nospecialize(arg), name::AbstractString)
     tv = emit_value!(ctx, arg)
-    (tv === nothing || tv.tuple === nothing) &&
-        throw(IRError("$name must be a tuple"))
+    tv === nothing && throw(IRError("$name must be a tuple"))
+
+    # arg_ref of tuple type: expand from arg_flat_values via path-keyed scalars.
+    # Used when a destructured arg's tuple-typed field (e.g. TileArray.sizes)
+    # is consumed directly without going through Core.tuple in the IR.
+    if tv.arg_ref !== nothing
+        T_jl = CC.widenconst(tv.jltype)
+        T_jl <: Tuple || throw(IRError("$name must be a tuple"))
+        N = length(T_jl.parameters)
+        arg_idx, chain = tv.arg_ref
+        return CGVal[
+            let elem_T = T_jl.parameters[i],
+                cv = try_materialize_scalar(ctx, arg_idx, [chain..., i], elem_T)
+                cv === nothing && throw(IRError("$name: cannot resolve element $i"))
+                cv
+            end
+            for i in 1:N
+        ]
+    end
+
+    tv.tuple === nothing && throw(IRError("$name must be a tuple"))
     return CGVal[
         let comp = emit_value!(ctx, ref)
             comp === nothing && throw(IRError("$name: cannot resolve element"))

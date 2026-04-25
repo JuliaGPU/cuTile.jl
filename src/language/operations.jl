@@ -307,7 +307,7 @@ Axis is 1-indexed. Equivalent to cld(size(arr, axis), shape[axis]).
 ```
 """
 @inline function num_tiles(arr::TileArray, axis::Integer, shape::NTuple{<:Any, Int})
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
 end
@@ -372,7 +372,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
     tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
     reshape(tile, shape)
@@ -385,7 +385,7 @@ end
 
 # Scalar indexing: arr[i, j, ...] → scalar T
 @overlay function Base.getindex(arr::TileArray{T, N}, indices::Vararg{Integer, N}) where {T, N}
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
@@ -464,7 +464,7 @@ end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
                                  order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, size(tile), PaddingMode.Undetermined, order)
     Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices)
 end
