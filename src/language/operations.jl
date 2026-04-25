@@ -7,17 +7,29 @@
 
 # Users express slices via Julia's standard `@view A[i:j, :]` macro, which is
 # routed here by the `Base.view` / `Base.maybeview` overlays in overlays.jl.
-# The overlays restrict the index types (`Colon` / `UnitRange`) and rank, so
-# `view_chain` only needs to handle the three matching cases below.
+# The layout mirrors Base's view hierarchy:
+#
+#   Base.maybeview / Base.view (overlay) → unsafe_view
+#
+# `unsafe_view` walks the index tuple axis by axis, calling `Intrinsics.slice`
+# for each `UnitRange`. All slice arithmetic and the new shape / strides
+# tuples are built here so they go through the regular intrinsics (constant
+# folding, strength reduction); `Intrinsics.slice` is just an aggregate-
+# packaging step. Per-axis range-bounds asserts (start ≥ 1, stop ≥ start − 1)
+# are emitted inline with the recursion — folding away on literal ranges and
+# becoming runtime `AssertOp`s on kernel-parameter ranges. They live inside
+# `unsafe_view` because lifting them to `Base.view` via `foreach` / `map` over
+# the index tuple breaks inlining of literal ranges across the overlay
+# boundary (Julia keeps the `UnitRange` value alive into codegen).
 
 # Empty tuple: all axes walked, return the accumulated slice.
-@inline view_chain(arr::TileArray, ::Val{Axis}, ::Tuple{}) where {Axis} = arr
+@inline unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
 # `:` is a no-op; advance to the next axis.
-@inline function view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
-    view_chain(arr, Val(Axis + 1), Base.tail(inds))
+@inline function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
+    unsafe_view(arr, Val(Axis + 1), Base.tail(inds))
 end
 # UnitRange: emit the slice and recurse.
-@inline function view_chain(arr::TileArray, ::Val{Axis},
+@inline function unsafe_view(arr::TileArray, ::Val{Axis},
                              inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
     check_slice_bounds(r)
@@ -27,26 +39,18 @@ end
     # (e.g. 3:10 is 8 elements → [2, 10) in 0-indexed half-open).
     start_0 = size_elem_T(first(r)) - size_elem_T(1)
     stop_0 = size_elem_T(last(r))
-    # Derive the slice values at the language level so `-`/`*`/`offset` go
-    # through the usual intrinsics (constant folding, strength reduction,
-    # future divisibility analysis). `Intrinsics.slice` only packages the
-    # result into a TileArray aggregate.
-    new_size = stop_0 - start_0
+    new_axis_size = stop_0 - start_0
     offset_elems = start_0 * arr.strides[Axis]
     new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
-    sub = Intrinsics.slice(arr, Val(Axis), new_base, new_size)
-    view_chain(sub, Val(Axis + 1), Base.tail(inds))
+    new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
+    new_strides = ntuple(i -> arr.strides[i], Val(ndims(arr)))
+    sub = Intrinsics.slice(arr, new_base, new_sizes, new_strides)
+    unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
 end
 
-# Slice-bounds sanity checks, routed through `Intrinsics.assert` so they lower
-# to a Tile IR AssertOp. For literal ranges the operands fold and the assert
-# intrinsic's codegen produces a compile error on `Const(false)` — matching
-# cuTile Python's `is_constant()` guards in `_m_array_slice`. For kernel-
-# parameter ranges the same checks become runtime AssertOps that abort the
-# kernel with the message if the bounds are wrong.
-# `@constprop :aggressive` is needed to push literal range endpoints through
-# the generic `UnitRange{T<:Integer}` signature so `first(r) >= T(1)` folds
-# at call sites like `@view a[0:10]`.
+# Per-range bounds asserts. `@constprop :aggressive` pushes literal range
+# endpoints through the generic `UnitRange{T<:Integer}` signature so
+# `first(r) >= T(1)` folds at call sites like `@view a[0:10]`.
 Base.@constprop :aggressive @inline function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
     start, stop = first(r), last(r)
     Intrinsics.assert(start >= T(1), "@view: slice start must be ≥ 1")

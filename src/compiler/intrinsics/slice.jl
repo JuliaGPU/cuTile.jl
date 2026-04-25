@@ -1,104 +1,82 @@
-# Slicing of TileArrays — codegen side. Arithmetic happens at the language
-# level in `view_chain`; this file just packages the result as a virtual
-# destructured argument (negative `arg_idx` to stay disjoint from real kernel
-# params) and pre-creates the `TensorView` so a later `make_tensor_view(sub)`
-# finds it.
+# Slicing of TileArrays — codegen side. Arithmetic and the new shape /
+# strides tuples are built at the language level in `unsafe_view`; this file
+# just packages them as a virtual destructured argument (negative `arg_idx`
+# to stay disjoint from real kernel params) and pre-creates the `TensorView`
+# so a later `make_tensor_view(sub)` finds it.
 
 """
-    slice_spec(spec::ArraySpec{N}, axis::Int) -> ArraySpec{N}
+    slice_spec(spec::ArraySpec{N}) -> ArraySpec{N}
 
-Conservative ArraySpec for a sliced TileArray: drops alignment to 0 and resets
-`shape_div_by[axis]` to 0 (unknown). Strides and other axes' divisibility are
-preserved. A future divisibility analysis can recover tighter facts from the
-IR, at which point this function (and the `slice_spec`-bearing return type
-from `tfunc`) becomes redundant.
+Conservative ArraySpec for a sliced TileArray: drops alignment to 0 and zeros
+all per-axis `shape_div_by`. Strides and contiguity are preserved (slicing
+doesn't change `stride[1] == 1` for column-major arrays). A future
+divisibility analysis can recover tighter facts from the IR, at which point
+this function (and the `slice_spec`-bearing return type from `tfunc`) becomes
+redundant.
 """
-function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
-    new_shape_div_by = ntuple(N) do i
-        i == axis ? 0 : spec.shape_div_by[i]
-    end
-    ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, new_shape_div_by}()
+function slice_spec(@nospecialize(spec::ArraySpec{N})) where N
+    ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, ntuple(_ -> 0, N)}()
 end
 
-# Package an already-derived `(new_base, new_size)` pair into a sliced
-# TileArray aggregate. `axis_v::Val{Axis}` makes the axis compile-time.
-@intrinsic slice(arr, axis_v::Val, new_base, new_size)
+# Package an already-derived `(new_base, new_sizes, new_strides)` triple into
+# a sliced TileArray aggregate. `arr` is carried purely for type information.
+@intrinsic slice(arr, new_base, new_sizes, new_strides)
 
 function tfunc(𝕃, ::typeof(Intrinsics.slice),
-               @nospecialize(arr), @nospecialize(axis_v),
-               @nospecialize(new_base), @nospecialize(new_size))
+               @nospecialize(arr), @nospecialize args...)
     T = CC.widenconst(arr)
     T <: TileArray || return nothing
     T isa DataType || return nothing
 
-    axisT = CC.widenconst(axis_v)
-    axisT <: Val || return nothing
-    axisT isa DataType && length(axisT.parameters) >= 1 || return nothing
-    axis = axisT.parameters[1]
-    axis isa Integer || return nothing
-    N = ndims(T)
-    1 <= axis <= N || return nothing
-
     spec = array_spec(T)
     elem_T = eltype(T)
-    if spec === nothing
-        return TileArray{elem_T, N}
-    else
-        return TileArray{elem_T, N, slice_spec(spec, Int(axis))}
-    end
+    N = ndims(T)
+    spec === nothing && return TileArray{elem_T, N}
+    return TileArray{elem_T, N, slice_spec(spec)}
+end
+
+# Walk a Core.tuple SSA value and emit each component as a Tile IR Value.
+function resolve_tuple(ctx::CGCtx, arg, name::String)
+    tv = emit_value!(ctx, arg)
+    (tv === nothing || tv.tuple === nothing) &&
+        throw(IRError("slice: $name must be a tuple"))
+    Value[
+        let comp = emit_value!(ctx, ref)
+            comp === nothing && throw(IRError("slice: cannot resolve $name element"))
+            comp.v::Value
+        end
+        for ref in tv.tuple
+    ]
 end
 
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
-    # args: (arr, Val(Axis), new_base, new_size) — arithmetic already emitted
-    arr_arg, axis_arg, new_base_arg, new_size_arg = args[1], args[2], args[3], args[4]
+    arr_arg, new_base_arg, new_sizes_arg, new_strides_arg = args
 
-    # Resolve axis from the Val type parameter. `tfunc` already validates that
-    # the axis is an integer in [1, ndim], so we just unpack here.
-    axis_val = @something get_constant(ctx, axis_arg) throw(IRError("slice: axis must be a Val{N}"))
-    axis_val isa Val || throw(IRError("slice: axis must be a Val{Int}, got $axis_val"))
-    axis = Int(first(typeof(axis_val).parameters))
-
-    # Resolve source array as a lazy arg_ref (must point to a TileArray).
+    # Resolve the source array purely for its type — the new flat values
+    # arrive as explicit arguments below.
     arr_tv = emit_value!(ctx, arr_arg)
     arr_tv === nothing && throw(IRError("slice: cannot resolve array argument"))
-    is_arg_ref(arr_tv) || throw(IRError("slice: array must be a TileArray (kernel parameter or slice result)"))
-
-    src_arg_idx, src_path = arr_tv.arg_ref
     src_type = CC.widenconst(arr_tv.jltype)
     src_type <: TileArray || throw(IRError("slice: expected TileArray, got $src_type"))
-
     ndim = ndims(src_type)
 
     ptr_fi = Base.fieldindex(src_type, :ptr)
     sizes_fi = Base.fieldindex(src_type, :sizes)
     strides_fi = Base.fieldindex(src_type, :strides)
 
-    sizes_path = [src_path..., sizes_fi]
-    strides_path = [src_path..., strides_fi]
-
-    old_sizes = collect_child_values(ctx, src_arg_idx, sizes_path, ndim)
-    old_sizes === nothing && throw(IRError("slice: cannot resolve sizes of source array"))
-    old_strides = collect_child_values(ctx, src_arg_idx, strides_path, ndim)
-    old_strides === nothing && throw(IRError("slice: cannot resolve strides of source array"))
-
-    # Pre-computed new base pointer and new axis size (emitted at language level).
+    # Pre-derived base pointer (scalar Ptr) and shape / stride tuples.
     new_base_tv = emit_value!(ctx, new_base_arg)
-    new_size_tv = emit_value!(ctx, new_size_arg)
-    (new_base_tv === nothing || new_size_tv === nothing) &&
-        throw(IRError("slice: cannot resolve new_base / new_size"))
+    new_base_tv === nothing && throw(IRError("slice: cannot resolve new_base"))
     new_base = new_base_tv.v::Value
-    new_size_axis = new_size_tv.v::Value
+    new_sizes = resolve_tuple(ctx, new_sizes_arg, "new_sizes")
+    new_strides = resolve_tuple(ctx, new_strides_arg, "new_strides")
 
-    # Build new sizes (axis replaced).
-    new_sizes = Value[i == axis ? new_size_axis : old_sizes[i] for i in 1:ndim]
-
-    # Result TileArray type. slice_spec drops alignment and the axis's
-    # shape_div_by; a future dataflow pass will recover tighter facts.
+    # Result type: conservative spec (see `slice_spec`).
     elem_T = eltype(src_type)
     src_spec = array_spec(src_type)
     result_type = src_spec === nothing ?
         TileArray{elem_T, ndim} :
-        TileArray{elem_T, ndim, slice_spec(src_spec, axis)}
+        TileArray{elem_T, ndim, slice_spec(src_spec)}
 
     # Register the slice result as a virtual destructured argument. Using
     # `-current_ssa_idx` keeps the namespace disjoint from real kernel params
@@ -108,13 +86,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     ctx.arg_flat_values[(slice_arg_idx, [ptr_fi])] = Value[new_base]
     for i in 1:ndim
         ctx.arg_flat_values[(slice_arg_idx, [sizes_fi, i])] = Value[new_sizes[i]]
-        ctx.arg_flat_values[(slice_arg_idx, [strides_fi, i])] = Value[old_strides[i]]
+        ctx.arg_flat_values[(slice_arg_idx, [strides_fi, i])] = Value[new_strides[i]]
     end
 
-    # Emit the TensorView now so that downstream make_tensor_view(sliced_arr)
-    # can fetch it. Caches under the bare slice_arg_idx (empty path).
-    key = tensor_view_key(slice_arg_idx, Int[])
-    create_tensor_view!(ctx, key, new_base, new_sizes, Value[s for s in old_strides], result_type)
+    # Emit the TensorView now so a later make_tensor_view(sub) can fetch it.
+    create_tensor_view!(ctx, tensor_view_key(slice_arg_idx, Int[]),
+                        new_base, new_sizes, new_strides, result_type)
 
     arg_ref_value(slice_arg_idx, Int[], result_type)
 end
