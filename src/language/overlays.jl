@@ -177,30 +177,3 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
     _full(one(T), T, dims)
 
 
-#=============================================================================
- @view / view for TileArrays
-=============================================================================#
-
-# Route Julia's standard `@view A[...]` and explicit `view(A, ...)` on a
-# TileArray to `unsafe_view` in operations.jl, with bounds checks beforehand.
-# Each UnitRange axis produces one slice; `:` is a no-op.
-#
-# Restricted to `Vararg{Union{Colon, UnitRange}, N}`: both rank mismatches and
-# unsupported index types (StepRange, Int, CartesianIndex, …) fall through to
-# `Base.view`'s regular methods (which don't match TileArray) and surface as a
-# codegen-time `IRError`. The error message is currently whatever the first
-# failure in `_throw_method_error`'s formatting produces — cleaning that up is
-# tied to a broader rework of unsupported-call error reporting toward runtime
-# asserts; defer.
-#
-# Throwing from inside `unsafe_view` doesn't work either: a
-# `throw(ArgumentError(...))` reached from inlined kernel code leaks the
-# exception object to codegen, which can't lower String / Exception values.
-@overlay Base.maybeview(arr::TileArray{T, N},
-                        inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
-    Base.view(arr, inds...)
-@overlay function Base.view(arr::TileArray{T, N},
-                            inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N}
-    check_slice_bounds(inds)
-    unsafe_view(arr, Val(1), inds)
-end
