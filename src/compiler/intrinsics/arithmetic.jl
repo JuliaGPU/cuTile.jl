@@ -11,11 +11,11 @@ function _broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
     if length(lhs.shape) < length(rhs.shape)
         bv = broadcast_tile_to_shape!(cb, tt, lhs, rhs.shape, dtype)
         lhs = CGVal(bv, tile_type!(tt, dtype, rhs.shape), rhs.jltype, rhs.shape,
-                    nothing, lhs.constant, nothing)
+                    nothing, lhs.constant, nothing, nothing)
     else
         bv = broadcast_tile_to_shape!(cb, tt, rhs, lhs.shape, dtype)
         rhs = CGVal(bv, tile_type!(tt, dtype, lhs.shape), lhs.jltype, lhs.shape,
-                    nothing, rhs.constant, nothing)
+                    nothing, rhs.constant, nothing, nothing)
     end
     return (lhs, rhs)
 end

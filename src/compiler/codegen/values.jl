@@ -14,12 +14,17 @@ emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
 emit_value!(ctx::CGCtx, block_arg::BlockArgument) = ctx[block_arg]
 
+# Pre-resolved CGVals can appear as tuple components (e.g. as the per-element
+# pieces of a TileArray's destructured `sizes`/`strides` aggregate). They
+# resolve to themselves; avoids needing fake SSAValue refs to look them up.
+emit_value!(ctx::CGCtx, tv::CGVal) = tv
+
 function emit_value!(ctx::CGCtx, val::Integer)
     jltype = typeof(val)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
+    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing, nothing)
 end
 
 function emit_value!(ctx::CGCtx, val::AbstractFloat)
@@ -27,7 +32,7 @@ function emit_value!(ctx::CGCtx, val::AbstractFloat)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
+    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing, nothing)
 end
 
 function emit_value!(ctx::CGCtx, node::QuoteNode)
@@ -68,7 +73,7 @@ function emit_value!(ctx::CGCtx, ref::GlobalRef)
             bytes = constant_to_bytes(val, T)
             v = encode_ConstantOp!(ctx.cb, type_id, bytes)
             tile_jltype = T <: Number ? Tile{T, Tuple{}} : T
-            return CGVal(v, type_id, tile_jltype, RowMajorShape(()), nothing, Some(val), nothing)
+            return CGVal(v, type_id, tile_jltype, RowMajorShape(()), nothing, Some(val), nothing, nothing)
         end
     end
     ghost_value(T, val)

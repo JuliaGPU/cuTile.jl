@@ -135,7 +135,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                 # Primitive: emit ConstantOp (jltype promoted to 0D tile)
                 bytes = constant_to_bytes(val, T)
                 v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, Tile{T, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
+                tv = CGVal(v, type_id, Tile{T, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing, nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)
@@ -145,16 +145,33 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         end
     end
 
-    # For destructured args, create lazy CGVals that track the argument index
+    # Build ArrayValues for every TileArray reachable from the destructured
+    # args, then materialize the slot CGVal:
+    # - Top-level TileArray arg → CGVal carries the ArrayValue directly.
+    # - Struct arg containing TileArray fields → CGVal stays a lazy arg_ref;
+    #   the nested ArrayValues live in `ctx.array_values` and are picked up
+    #   by `resolve_arg_ref` when navigation lands on a TileArray field.
     for (arg_idx, argtype) in ctx.arg_types
-        tv = arg_ref_value(arg_idx, Int[], argtype)
+        if argtype <: TileArray
+            av = build_array_value!(ctx, arg_idx, Int[], argtype)
+            tv = array_value_cgval(av, argtype)
+        else
+            cache_nested_array_values!(ctx, arg_idx, argtype, Int[])
+            tv = arg_ref_value(arg_idx, Int[], argtype)
+        end
         ctx[SlotNumber(arg_idx)] = tv
         ctx[Argument(arg_idx)] = tv
     end
 
-    # Create TensorViews for all TileArray arguments at kernel entry
-    for (arg_idx, argtype) in ctx.arg_types
-        create_tensor_views!(ctx, arg_idx, argtype, Int[])
+    # Emit MakeTensorView eagerly for every kernel-arg ArrayValue so the SSA
+    # value dominates any later use (including ones inside control flow).
+    # Top-level TileArrays carry their ArrayValue on the slot CGVal; nested
+    # ones live in `ctx.array_values`. Both reach the same set via the slot.
+    for tv in values(ctx.args)
+        tv.array_value !== nothing && emit_tensor_view!(ctx, tv.array_value)
+    end
+    for av in values(ctx.array_values)
+        emit_tensor_view!(ctx, av)
     end
 
     # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
@@ -174,19 +191,21 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 end
 
 """
-    create_tensor_views!(ctx, arg_idx, T, path)
+    cache_nested_array_values!(ctx, arg_idx, T, path)
 
-Walk the type tree and create TensorViews for all nested TileArrays.
+Walk a struct type tree under `arg_idx`/`path` and register an `ArrayValue`
+in `ctx.array_values` for every TileArray field encountered. Top-level
+TileArray args are handled directly in the entry loop; this helper only
+covers nested ones.
 """
-function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Int})
+function cache_nested_array_values!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Int})
     if T <: TileArray
-        cache_tensor_view!(ctx, arg_idx, path, T)
+        ctx.array_values[(arg_idx, path)] = build_array_value!(ctx, arg_idx, path, T)
     else
         for fi in 1:fieldcount(T)
             ftype = fieldtype(T, fi)
             (is_ghost_type(ftype) || isprimitivetype(ftype)) && continue
-            field_path = [path..., fi]
-            create_tensor_views!(ctx, arg_idx, ftype, field_path)
+            cache_nested_array_values!(ctx, arg_idx, ftype, [path..., fi])
         end
     end
 end
@@ -233,6 +252,11 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
         return emit_value!(ctx, obj_tv.tuple[field])
     end
 
+    # TileArray aggregate: read .ptr/.sizes/.strides off the carried ArrayValue
+    if obj_tv !== nothing && has_array_value(obj_tv)
+        return emit_array_value_getfield!(ctx, obj_tv.array_value, field)
+    end
+
     # If obj is a lazy arg_ref, extend the chain
     if obj_tv !== nothing && is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref
@@ -252,6 +276,34 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
     end
 
     nothing
+end
+
+# Resolve a `getfield(arr, :ptr|:sizes|:strides)` (or 1/2/3) on a TileArray
+# CGVal that carries an ArrayValue. `:sizes`/`:strides` return tuple CGVals
+# whose components are ready-made scalar CGVals — `getindex` then reads them
+# straight off without going through arg_flat_values.
+function emit_array_value_getfield!(ctx::CGCtx, av::ArrayValue, field)
+    T = av.tilearray_type
+    fi = field isa Symbol ? Base.fieldindex(T, field) :
+         field isa Integer ? Int(field) :
+         throw(IRError("TileArray getfield: unsupported field $field"))
+    fname = fieldname(T, fi)
+
+    if fname === :ptr
+        ptr_jl = fieldtype(T, :ptr)
+        ptr_type_id = tile_type_for_julia!(ctx, ptr_jl)
+        return CGVal(av.base_ptr, ptr_type_id, ptr_jl)
+    elseif fname === :sizes || fname === :strides
+        vals = fname === :sizes ? av.sizes : av.strides
+        elem_T = eltype(fieldtype(T, fname))
+        elem_type_id = tile_type_for_julia!(ctx, elem_T)
+        elem_jl = Tile{elem_T, Tuple{}}
+        components = Any[CGVal(v, elem_type_id, elem_jl) for v in vals]
+        constants = Vector{Any}(fill(nothing, length(components)))
+        return tuple_value(fieldtype(T, fname), components, constants)
+    else
+        throw(IRError("TileArray getfield: unknown field $fname"))
+    end
 end
 
 # getindex for tuple field access (lazy chain extension)
