@@ -9,7 +9,7 @@ end
 
 
 #=============================================================================
- Range Construction
+ StepRange Construction
 =============================================================================#
 
 # GPU-safe replacement for Base.steprange_last to enable `for i in start:step:stop`.
@@ -29,16 +29,6 @@ end
         return stop + remain
     end
 end
-
-# Base.unitrange_last adjusts `stop` to `start - 1` when `stop < start`, so the
-# resulting UnitRange reports length 0 for empty ranges. For dynamic bounds
-# (kernel-parameter ranges like `@view A[i:j]`) that adjustment lowers to a
-# `cmpi` + `select` per axis. The overlay skips it; reversed ranges are
-# instead caught by `check_slice_bounds` at the slice site (an AssertOp that
-# aborts the kernel). For literal ranges, Julia's constant propagation on the
-# regular `unitrange_last` wins at inference time before the overlay has a
-# chance to fire — `5:2` still comes through as `UnitRange{Int}(5, 4)`.
-@overlay Base.unitrange_last(start::T, stop::T) where {T<:Base.BitInteger} = stop
 
 
 #=============================================================================

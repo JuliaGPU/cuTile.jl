@@ -49,6 +49,10 @@ end
 # literal range alive into codegen. `@constprop :aggressive` on each step is
 # what propagates Const-ness through the helper boundary so that
 # `first(r) >= T(1)` folds at literal call sites like `@view a[0:10]`.
+#
+# Only `start >= 1` is checked: Julia's `unitrange_last` already clamps
+# `last(r)` to `>= first(r) - 1`, so a `last >= start - 1` assert would always
+# pass at runtime.
 check_slice_bounds(::Tuple{}) = nothing
 Base.@constprop :aggressive function check_slice_bounds(inds::Tuple)
     check_slice_bounds(inds[1])
@@ -56,9 +60,7 @@ Base.@constprop :aggressive function check_slice_bounds(inds::Tuple)
 end
 check_slice_bounds(::Colon) = nothing
 Base.@constprop :aggressive function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
-    start, stop = first(r), last(r)
-    Intrinsics.assert(start >= T(1), "@view: slice start must be ≥ 1")
-    Intrinsics.assert(stop >= start - T(1), "@view: slice stop must be ≥ start - 1")
+    Intrinsics.assert(first(r) >= T(1), "@view: slice start must be ≥ 1")
     return
 end
 

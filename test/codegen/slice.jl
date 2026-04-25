@@ -97,9 +97,8 @@ end
 end
 
 @testset "slice — bounds asserts" begin
-    # Static literal bounds that are valid: `start >= 1` and `stop >= start - 1`
-    # fold to `true`, so the AssertOps are elided by the assert intrinsic's
-    # Const(true) fast path.
+    # Static literal bounds that are valid: `start >= 1` folds to `true`, so
+    # the AssertOp is elided by the assert intrinsic's Const(true) fast path.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -109,10 +108,11 @@ end
             return
         end
         @check_not "assert {{.*}}slice start"
-        @check_not "assert {{.*}}slice stop"
     end
 
-    # Dynamic bounds lower to runtime AssertOps (one per bound).
+    # Dynamic bounds lower to a runtime AssertOp on `start >= 1`. The stop
+    # bound is not asserted: Julia's `unitrange_last` already clamps
+    # `last(r) >= first(r) - 1`, so any such assert would always pass.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
@@ -122,7 +122,7 @@ end
             return
         end
         @check "assert {{.*}}slice start must be"
-        @check "assert {{.*}}slice stop must be"
+        @check_not "assert {{.*}}slice stop"
     end
 
     # Bad static literal: `start < 1` folds to `true`, so the AssertOp is
