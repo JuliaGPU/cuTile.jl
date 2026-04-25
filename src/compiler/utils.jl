@@ -486,19 +486,11 @@ end
 Extend an arg_ref chain by `idx` and pick the right CGVal variant for the
 new path:
 
-- If the result type is a TileArray and we have a pre-built `ArrayValue`
-  registered for that path (via `cache_nested_array_value!` at kernel entry),
-  return an `array_value_cgval` so subsequent field access skips the
-  arg_flat_values map and goes through the aggregate.
 - If the path maps to a single scalar leaf, materialize a concrete CGVal.
 - Otherwise return a new lazy arg_ref (e.g. for further struct navigation).
 """
 function resolve_arg_ref(ctx::CGCtx, arg_idx::Int, chain::Vector{Int}, idx::Int, @nospecialize(rt))
     new_chain = [chain..., idx]
-    if rt isa Type && rt <: TileArray
-        av = get(ctx.array_values, (arg_idx, new_chain), nothing)
-        av !== nothing && return array_value_cgval(av, rt)
-    end
     cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
     cv !== nothing && return cv
     return arg_ref_value(arg_idx, new_chain, rt)

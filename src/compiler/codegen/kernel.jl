@@ -145,33 +145,16 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         end
     end
 
-    # Build ArrayValues for every TileArray reachable from the destructured
-    # args, then materialize the slot CGVal:
-    # - Top-level TileArray arg → CGVal carries the ArrayValue directly.
-    # - Struct arg containing TileArray fields → CGVal stays a lazy arg_ref;
-    #   the nested ArrayValues live in `ctx.array_values` and are picked up
-    #   by `resolve_arg_ref` when navigation lands on a TileArray field.
+    # Every destructured arg (TileArray or struct) lands as a lazy `arg_ref`
+    # CGVal. Field accesses on it (`arr.ptr`, `arr.sizes[i]`) go through
+    # `resolve_arg_ref`, which materializes leaf scalars from
+    # `ctx.arg_flat_values`. Tensor views are emitted lazily at each
+    # `make_tensor_view` call site (not eagerly here), letting the bytecode
+    # optimizer CSE redundant ones.
     for (arg_idx, argtype) in ctx.arg_types
-        if argtype <: TileArray
-            av = build_array_value!(ctx, arg_idx, Int[], argtype)
-            tv = array_value_cgval(av, argtype)
-        else
-            cache_nested_array_values!(ctx, arg_idx, argtype, Int[])
-            tv = arg_ref_value(arg_idx, Int[], argtype)
-        end
+        tv = arg_ref_value(arg_idx, Int[], argtype)
         ctx[SlotNumber(arg_idx)] = tv
         ctx[Argument(arg_idx)] = tv
-    end
-
-    # Emit MakeTensorView eagerly for every kernel-arg ArrayValue so the SSA
-    # value dominates any later use (including ones inside control flow).
-    # Top-level TileArrays carry their ArrayValue on the slot CGVal; nested
-    # ones live in `ctx.array_values`. Both reach the same set via the slot.
-    for tv in values(ctx.args)
-        tv.array_value !== nothing && emit_tensor_view!(ctx, tv.array_value)
-    end
-    for av in values(ctx.array_values)
-        emit_tensor_view!(ctx, av)
     end
 
     # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
