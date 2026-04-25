@@ -209,6 +209,8 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
 @overlay Base.maybeview(arr::TileArray{T, N},
                         inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
     Base.view(arr, inds...)
-@overlay Base.view(arr::TileArray{T, N},
-                   inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
+@overlay function Base.view(arr::TileArray{T, N},
+                            inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N}
+    check_slice_bounds(inds)
     unsafe_view(arr, Val(1), inds)
+end

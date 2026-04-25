@@ -9,18 +9,13 @@
 # routed here by the `Base.view` / `Base.maybeview` overlays in overlays.jl.
 # The layout mirrors Base's view hierarchy:
 #
-#   Base.maybeview / Base.view (overlay) → unsafe_view
+#   Base.maybeview / Base.view (overlay) → check_slice_bounds → unsafe_view
 #
 # `unsafe_view` walks the index tuple axis by axis, calling `Intrinsics.slice`
 # for each `UnitRange`. All slice arithmetic and the new shape / strides
 # tuples are built here so they go through the regular intrinsics (constant
 # folding, strength reduction); `Intrinsics.slice` is just an aggregate-
-# packaging step. Per-axis range-bounds asserts (start ≥ 1, stop ≥ start − 1)
-# are emitted inline with the recursion — folding away on literal ranges and
-# becoming runtime `AssertOp`s on kernel-parameter ranges. They live inside
-# `unsafe_view` because lifting them to `Base.view` via `foreach` / `map` over
-# the index tuple breaks inlining of literal ranges across the overlay
-# boundary (Julia keeps the `UnitRange` value alive into codegen).
+# packaging step.
 
 # Empty tuple: all axes walked, return the accumulated slice.
 @inline unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
@@ -32,7 +27,6 @@ end
 @inline function unsafe_view(arr::TileArray, ::Val{Axis},
                              inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
-    check_slice_bounds(r)
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
     # Julia 1-indexed inclusive [first, last] → 0-indexed half-open [start, stop).
     # `stop = last(r)` because inclusive 1-indexed end == half-open 0-indexed end
@@ -48,9 +42,19 @@ end
     unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
 end
 
-# Per-range bounds asserts. `@constprop :aggressive` pushes literal range
-# endpoints through the generic `UnitRange{T<:Integer}` signature so
-# `first(r) >= T(1)` folds at call sites like `@view a[0:10]`.
+# Per-range bounds asserts. The tuple methods recurse via `inds[1]`/`Base.tail`
+# (rather than `foreach`/`map`/`ntuple`) because constprop on `UnitRange`
+# endpoints survives only through direct indexing — every higher-order
+# alternative we tried widened `Const(3:10)` to `UnitRange{Int}` and left the
+# literal range alive into codegen. `@constprop :aggressive` on each step is
+# what propagates Const-ness through the helper boundary so that
+# `first(r) >= T(1)` folds at literal call sites like `@view a[0:10]`.
+@inline check_slice_bounds(::Tuple{}) = nothing
+Base.@constprop :aggressive @inline function check_slice_bounds(inds::Tuple)
+    check_slice_bounds(inds[1])
+    check_slice_bounds(Base.tail(inds))
+end
+@inline check_slice_bounds(::Colon) = nothing
 Base.@constprop :aggressive @inline function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
     start, stop = first(r), last(r)
     Intrinsics.assert(start >= T(1), "@view: slice start must be ≥ 1")
