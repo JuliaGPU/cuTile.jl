@@ -282,6 +282,24 @@ any scalar function element-wise over tiles: `sqrt.(tile)`, `max.(a, b)`,
 | `arr[i, j, ...] = val` | Store scalar element to `TileArray` |
 | `tile[i, j, ...]` | Extract scalar from `Tile` |
 | `setindex(tile, val, i, j, ...)` | Return new `Tile` with element replaced |
+| `@view arr[r1:r2, :, ...]` / `view(arr, ...)` | Sub-range view of a `TileArray` |
+
+`@view` and `view` derive a sub-range `TileArray` from an existing one. Each
+index must be `:` or a `UnitRange` (e.g. `i:j`); other forms (`StepRange`,
+scalar `Int`, `CartesianIndex`, ...) are rejected at compile time. The result
+is itself a `TileArray` and can be passed to `ct.load`/`ct.store` (or sliced
+again). A runtime assert verifies that each range starts at ≥ 1; the upper
+bound is not checked because Julia's range construction already clamps
+`last(r) >= first(r) - 1`.
+
+```julia
+function rowsum(a, b, r1::Int32, r2::Int32)
+    sub = @view a[r1:r2, :]                    # sub-range TileArray
+    tile = ct.load(sub, (1, 1), (4, 4))
+    ct.store(b, (1, 1), sum(tile; dims=2))
+    return
+end
+```
 
 ### Atomics
 | Operation | Description |
