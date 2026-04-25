@@ -18,14 +18,14 @@
 # packaging step.
 
 # Empty tuple: all axes walked, return the accumulated slice.
-@inline unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
+unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
 # `:` is a no-op; advance to the next axis.
-@inline function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
+function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
     unsafe_view(arr, Val(Axis + 1), Base.tail(inds))
 end
 # UnitRange: emit the slice and recurse.
-@inline function unsafe_view(arr::TileArray, ::Val{Axis},
-                             inds::Tuple{UnitRange, Vararg}) where {Axis}
+function unsafe_view(arr::TileArray, ::Val{Axis},
+                     inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
     # Julia 1-indexed inclusive [first, last] → 0-indexed half-open [start, stop).
@@ -49,13 +49,13 @@ end
 # literal range alive into codegen. `@constprop :aggressive` on each step is
 # what propagates Const-ness through the helper boundary so that
 # `first(r) >= T(1)` folds at literal call sites like `@view a[0:10]`.
-@inline check_slice_bounds(::Tuple{}) = nothing
-Base.@constprop :aggressive @inline function check_slice_bounds(inds::Tuple)
+check_slice_bounds(::Tuple{}) = nothing
+Base.@constprop :aggressive function check_slice_bounds(inds::Tuple)
     check_slice_bounds(inds[1])
     check_slice_bounds(Base.tail(inds))
 end
-@inline check_slice_bounds(::Colon) = nothing
-Base.@constprop :aggressive @inline function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
+check_slice_bounds(::Colon) = nothing
+Base.@constprop :aggressive function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
     start, stop = first(r), last(r)
     Intrinsics.assert(start >= T(1), "@view: slice start must be ≥ 1")
     Intrinsics.assert(stop >= start - T(1), "@view: slice stop must be ≥ start - 1")
