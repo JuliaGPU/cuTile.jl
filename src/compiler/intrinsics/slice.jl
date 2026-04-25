@@ -1,8 +1,9 @@
-# Slicing of TileArrays — codegen side. Arithmetic and the new shape /
-# strides tuples are built at the language level in `unsafe_view`; this file
-# just packages them as a virtual destructured argument (negative `arg_idx`
-# to stay disjoint from real kernel params) and pre-creates the `TensorView`
-# so a later `make_tensor_view(sub)` finds it.
+# Slicing of TileArrays
+#
+# Arithmetic and the new shape / strides tuples are built at the language level
+# in `unsafe_view`; intrinsics just package them as a virtual destructured
+# argument (negative `arg_idx` to stay disjoint from real kernel params) and
+# pre-creates the `TensorView` so a later `make_tensor_view(sub)` finds it.
 
 """
     slice_spec(spec::ArraySpec{N}) -> ArraySpec{N}
