@@ -8,22 +8,23 @@
 #
 # Unknown operations conservatively produce ALIAS_UNIVERSE (may alias anything).
 #
-# Consumed by token_order_pass! to partition memory operations into
-# independent token chains, enabling parallelism across independent regions.
+# Consumers go through the public query API (`alias_class`, `alias_classes`,
+# `aliases`) which hides the underlying lattice; in particular, the
+# "unvisited → may alias anything" policy is encoded once, in `alias_class`.
+# The dataflow framework is an implementation detail.
+
+#=============================================================================
+ Lattice
+=============================================================================#
 
 """
     AliasElement
 
-3-state lattice for alias analysis:
+3-state lattice for alias analysis (internal):
 
-    nothing         — ⊥: not yet analysed (dict-absent return value)
+    nothing         — ⊥: not yet analysed
     Set{Any}        — concrete root tags this anchor may point into
     ALIAS_UNIVERSE  — ⊤: may alias anything
-
-Consumers must map a missing entry (or `nothing`) to `ALIAS_UNIVERSE`
-themselves: an SSA the analysis hasn't reached is conservatively
-may-alias-anything. `something(result[anchor], ALIAS_UNIVERSE)` is the
-canonical idiom.
 """
 const AliasElement = Union{Nothing, AliasSet}
 
@@ -103,4 +104,66 @@ end
 function is_pointer_passthrough(func)
     return func === Intrinsics.offset ||
         func === Core.Intrinsics.bitcast
+end
+
+
+#=============================================================================
+ Public query API
+=============================================================================#
+
+"""
+    AliasInfo
+
+Result of running alias analysis. Consumers query it via `alias_class`,
+`alias_classes`, and `aliases`; the underlying lattice representation is an
+implementation detail.
+"""
+const AliasInfo = DataflowResult{AliasAnalysis, AliasElement}
+
+"""
+    analyze_aliases(sci::StructuredIRCode) -> AliasInfo
+
+Run forward alias analysis on `sci`.
+"""
+analyze_aliases(sci::StructuredIRCode) = analyze(AliasAnalysis(), sci)::AliasInfo
+
+"""
+    alias_class(info::AliasInfo, op) -> AliasSet
+
+Alias set associated with `op`. Operands the analysis didn't reach (and
+non-anchor operands like literals) collapse to `ALIAS_UNIVERSE` — the
+"may alias anything" default policy is encoded here, once.
+"""
+function alias_class(info::AliasInfo, @nospecialize(op))
+    op isa SSAValue || op isa Argument || op isa SlotNumber || return ALIAS_UNIVERSE
+    return something(info[op], ALIAS_UNIVERSE)
+end
+
+"""
+    alias_classes(info::AliasInfo)
+
+Iterator over the distinct alias sets the analysis recorded. Used by
+consumers that need to enumerate alias equivalence classes (e.g. to seed
+per-class state).
+"""
+alias_classes(info::AliasInfo) = values(info)
+
+"""
+    AliasResult
+
+Result of a binary alias query (`aliases`). `MustAlias` / `PartialAlias` are
+not produced — the analysis isn't flow-precise enough — so the lattice is
+just `NoAlias` / `MayAlias`.
+"""
+@enum AliasResult NoAlias MayAlias
+
+"""
+    aliases(a::AliasSet, b::AliasSet) -> AliasResult
+
+Binary alias query. `MayAlias` if either set is `ALIAS_UNIVERSE` or the two
+sets share a root tag; `NoAlias` otherwise.
+"""
+function aliases(a::AliasSet, b::AliasSet)
+    (a isa AliasUniverse || b isa AliasUniverse) && return MayAlias
+    isempty(intersect(a, b)) ? NoAlias : MayAlias
 end

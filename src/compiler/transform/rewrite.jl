@@ -222,7 +222,7 @@ mutable struct RewriteDriver
     defs::Dict{SSAValue, DefEntry}
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
-    constants::Union{Nothing, DataflowResult{ConstantAnalysis, ConstantElement}}
+    constants::Union{Nothing, ConstantInfo}
     modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end

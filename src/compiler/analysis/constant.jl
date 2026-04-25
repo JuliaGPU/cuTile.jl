@@ -9,9 +9,9 @@
 # iteration, and control-flow merges (IfOp / ForOp / WhileOp / LoopOp) via
 # the shared protocol.
 #
-# Consumed by `rewrite_patterns!` via `const_value`: rewrite rules pattern-
-# match against the scalar and fold cancelling pairs, constant exponents,
-# etc.
+# Consumed by `rewrite_patterns!` via `const_value`. Consumers go through
+# the public query API (`const_value`); the dataflow framework is an
+# implementation detail.
 
 """⊤ of the constant-analysis lattice: "known non-constant / conflicting merges"."""
 struct ConstantTop end
@@ -72,20 +72,39 @@ function transfer(a::ConstantAnalysis, r::DataflowResult, @nospecialize(func),
     CONSTANT_TOP
 end
 
+#=============================================================================
+ Public query API
+=============================================================================#
+
 """
-    const_value(r, op) -> Number | nothing
+    ConstantInfo
+
+Result of running constant analysis. Consumers query it via `const_value`;
+the underlying lattice representation is an implementation detail.
+"""
+const ConstantInfo = DataflowResult{ConstantAnalysis, ConstantElement}
+
+"""
+    analyze_constants(sci::StructuredIRCode) -> ConstantInfo
+
+Run forward constant analysis on `sci`.
+"""
+analyze_constants(sci::StructuredIRCode) = analyze(ConstantAnalysis(), sci)::ConstantInfo
+
+"""
+    const_value(info, op) -> Number | nothing
 
 Resolve an operand to its scalar constant value, or `nothing` if unknown /
 non-constant. Accepts raw numeric operands, QuoteNodes, and SSAValues
-(resolved through the `ConstantAnalysis` result). When called with `nothing`
+(resolved through the `ConstantInfo` result). When called with `nothing`
 (no analysis result supplied), returns the scalar only for raw literal
 operands — SSAValues are treated as non-constant.
 """
-function const_value(r::DataflowResult{ConstantAnalysis}, @nospecialize(op))
+function const_value(info::ConstantInfo, @nospecialize(op))
     op isa Number && return op
     op isa QuoteNode && op.value isa Number && return op.value
     if op isa SSAValue
-        v = r[op]
+        v = info[op]
         return v isa Number ? v : nothing
     end
     nothing

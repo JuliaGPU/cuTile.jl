@@ -242,12 +242,12 @@ function run_passes!(sci::StructuredIRCode)
 
     rewrite_patterns!(sci, PRINT_FUSION_RULES)
 
-    constants = analyze(ConstantAnalysis(), sci)
+    constants = analyze_constants(sci)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
 
-    alias_result = analyze(AliasAnalysis(), sci)
+    alias_info = analyze_aliases(sci)
 
-    token_order_pass!(sci, alias_result)
+    token_order_pass!(sci, alias_info)
 
     licm_pass!(sci)
 

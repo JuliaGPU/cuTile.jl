@@ -90,18 +90,11 @@ function is_atomic_intrinsic(func)
     return false
 end
 
-function get_alias_set_for_operand(alias_result::DataflowResult{AliasAnalysis, AliasElement}, operand)
-    if operand isa SSAValue || operand isa Argument || operand isa SlotNumber
-        return something(alias_result[operand], ALIAS_UNIVERSE)
-    end
-    return ALIAS_UNIVERSE
-end
-
 #=============================================================================
  Compute per-block memory effects
 =============================================================================#
 
-function compute_block_memory_effects!(block::Block, alias_result::DataflowResult{AliasAnalysis, AliasElement},
+function compute_block_memory_effects!(block::Block, alias_info::AliasInfo,
                                        cache::Dict{UInt64, MemoryEffects})
     block_id = objectid(block)
     haskey(cache, block_id) && return cache[block_id]
@@ -111,7 +104,7 @@ function compute_block_memory_effects!(block::Block, alias_result::DataflowResul
         s = stmt(inst)
         if s isa ControlFlowOp
             for b in blocks(s)
-                effects = union(effects, compute_block_memory_effects!(b, alias_result, cache))
+                effects = union(effects, compute_block_memory_effects!(b, alias_info, cache))
             end
         else
             call = resolve_call(block, s)
@@ -119,7 +112,7 @@ function compute_block_memory_effects!(block::Block, alias_result::DataflowResul
             resolved_func, operands = call
             mem_effect = classify_memory_op(resolved_func)
             mem_effect == MEM_NONE && continue
-            alias_set = get_alias_set_for_operand(alias_result, first(operands))
+            alias_set = alias_class(alias_info, first(operands))
             effects.effects[alias_set] = max(get(effects.effects, alias_set, MEM_NONE), mem_effect)
             if is_atomic_intrinsic(resolved_func)
                 mo = extract_memory_order(resolved_func, operands)
@@ -149,10 +142,8 @@ function collect_join_tokens_ir(token_key::TokenKey, token_map::Dict{TokenKey, A
                 should_join = other_key.role == LAST_OP
             end
             if other_key.role == token_key.role
-                alias_overlap = (other_key.alias_set isa AliasUniverse) ||
-                    (token_key.alias_set isa AliasUniverse) ||
-                    !isempty(intersect(other_key.alias_set, token_key.alias_set))
-                should_join = should_join || alias_overlap
+                should_join = should_join ||
+                    aliases(other_key.alias_set, token_key.alias_set) == MayAlias
             end
         end
         if should_join && !any(t -> t === other_tok, tokens_to_join)
@@ -246,7 +237,7 @@ struct LoopParallelInfo
 end
 
 """
-    get_parallel_stores(op::ForOp, alias_result, effects_cache) -> Set{Int}
+    get_parallel_stores(op::ForOp, alias_info, effects_cache) -> Set{Int}
 
 Identify stores in a ForOp body that can use the parent's token instead of a
 loop-carried token. A store is eligible when:
@@ -260,7 +251,7 @@ loop-carried token. A store is eligible when:
 Matches Python's `_get_parallel_stores` (token_order.py:428-473) and
 `_filter_by_store_index` (token_order.py:487-496).
 """
-function get_parallel_stores(op::ForOp, alias_result::DataflowResult{AliasAnalysis, AliasElement},
+function get_parallel_stores(op::ForOp, alias_info::AliasInfo,
                               effects_cache::Dict{UInt64, MemoryEffects})
     body = op.body
     body_effects = get(effects_cache, objectid(body), EMPTY_MEMORY_EFFECTS)
@@ -277,7 +268,7 @@ function get_parallel_stores(op::ForOp, alias_result::DataflowResult{AliasAnalys
         s isa ControlFlowOp || continue
         for b in blocks(s)
             nested_effects = union(nested_effects,
-                compute_block_memory_effects!(b, alias_result, effects_cache))
+                compute_block_memory_effects!(b, alias_info, effects_cache))
         end
     end
 
@@ -291,7 +282,7 @@ function get_parallel_stores(op::ForOp, alias_result::DataflowResult{AliasAnalys
         resolved_func, operands = call
         mem_effect = classify_memory_op(resolved_func)
         mem_effect == MEM_NONE && continue
-        alias_set = get_alias_set_for_operand(alias_result, first(operands))
+        alias_set = alias_class(alias_info, first(operands))
         ops = get!(Vector{Tuple{Int, Any, Any}}, alias_set_to_ops, alias_set)
         push!(ops, (inst.ssa_idx, resolved_func, operands))
     end
@@ -334,9 +325,9 @@ end
  The main pass
 =============================================================================#
 
-function token_order_pass!(sci::StructuredIRCode, alias_result::DataflowResult{AliasAnalysis, AliasElement})
+function token_order_pass!(sci::StructuredIRCode, alias_info::AliasInfo)
     effects_cache = Dict{UInt64, MemoryEffects}()
-    compute_block_memory_effects!(sci.entry, alias_result, effects_cache)
+    compute_block_memory_effects!(sci.entry, alias_info, effects_cache)
 
     # Insert root MakeTokenNode at entry
     root_inst = pushfirst!(sci.entry, MakeTokenNode(), TOKEN_TYPE)
@@ -346,7 +337,7 @@ function token_order_pass!(sci::StructuredIRCode, alias_result::DataflowResult{A
     # ALIAS_UNIVERSE — unrecognised/unknown operands resolve to it and
     # must have a seeded last-op / last-store slot.
     token_map = Dict{TokenKey, Any}()
-    seen_sets = Set{AliasSet}(values(alias_result))
+    seen_sets = Set{AliasSet}(alias_classes(alias_info))
     push!(seen_sets, ALIAS_UNIVERSE)
     for alias_set in seen_sets
         token_map[last_op_key(alias_set)] = root_token
@@ -354,7 +345,7 @@ function token_order_pass!(sci::StructuredIRCode, alias_result::DataflowResult{A
     end
     token_map[ACQUIRE_TOKEN_KEY] = root_token
 
-    transform_block!(sci.entry, alias_result, token_map, effects_cache,
+    transform_block!(sci.entry, alias_info, token_map, effects_cache,
                       nothing, nothing, nothing, nothing)
     return nothing
 end
@@ -364,7 +355,7 @@ end
 =============================================================================#
 
 function transform_block!(block::Block,
-                           alias_result::DataflowResult{AliasAnalysis, AliasElement},
+                           alias_info::AliasInfo,
                            token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            loop_effects::Union{MemoryEffects, Nothing},
@@ -378,9 +369,9 @@ function transform_block!(block::Block,
         s = stmt(inst)
         if s isa ControlFlowOp
             transform_control_flow!(block, inst, s,
-                                     alias_result, token_map, effects_cache, loop_effects, token_carries)
+                                     alias_info, token_map, effects_cache, loop_effects, token_carries)
         else
-            transform_statement!(block, inst, alias_result, token_map, parallel_info)
+            transform_statement!(block, inst, alias_info, token_map, parallel_info)
         end
     end
 
@@ -389,7 +380,7 @@ function transform_block!(block::Block,
 end
 
 function transform_statement!(block::Block, inst::Instruction,
-                                alias_result::DataflowResult{AliasAnalysis, AliasElement},
+                                alias_info::AliasInfo,
                                 token_map::Dict{TokenKey, Any},
                                 parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
     s = stmt(inst)
@@ -399,7 +390,7 @@ function transform_statement!(block::Block, inst::Instruction,
     mem_effect = classify_memory_op(resolved_func)
     mem_effect == MEM_NONE && return
 
-    alias_set = get_alias_set_for_operand(alias_result, first(operands))
+    alias_set = alias_class(alias_info, first(operands))
 
     if mem_effect == MEM_LOAD
         input_token = get_input_token_ir!(block, SSAValue(inst),
@@ -523,21 +514,21 @@ end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::ForOp,
-                                  alias_result, token_map, effects_cache,
+                                  alias_info, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     # Compute parallel stores for ForOps (only ForOps have induction variables)
-    pstores = get_parallel_stores(op, alias_result, effects_cache)
+    pstores = get_parallel_stores(op, alias_info, effects_cache)
     parallel_info = isempty(pstores) ? nothing :
         LoopParallelInfo(pstores, copy(token_map))
-    transform_loop!(parent_block, inst, op, alias_result,
+    transform_loop!(parent_block, inst, op, alias_info,
                      token_map, effects_cache, parallel_info)
 end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::LoopOp,
-                                  alias_result, token_map, effects_cache,
+                                  alias_info, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
-    transform_loop!(parent_block, inst, op, alias_result,
+    transform_loop!(parent_block, inst, op, alias_info,
                      token_map, effects_cache, nothing)
 end
 
@@ -633,7 +624,7 @@ Add per-alias-set token carries to a ForOp/LoopOp.
 """
 function transform_loop!(parent_block::Block, inst::Instruction,
                            op::Union{ForOp, LoopOp},
-                           alias_result::DataflowResult{AliasAnalysis, AliasElement},
+                           alias_info::AliasInfo,
                            token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
@@ -649,7 +640,7 @@ function transform_loop!(parent_block::Block, inst::Instruction,
 
     # Recurse — pass token_carry_refs so transform_terminator! can overwrite
     # per-terminator carry values; pass parallel_info for ForOp parallel stores
-    transform_block!(body, alias_result, body_token_map, effects_cache,
+    transform_block!(body, alias_info, body_token_map, effects_cache,
                       body_effects, nothing, token_carry_refs, parallel_info)
 
     insert_token_result_getfields!(parent_block, inst, body.args,
@@ -663,7 +654,7 @@ end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::WhileOp,
-                                  alias_result, token_map, effects_cache,
+                                  alias_info, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     before_effects = get(effects_cache, objectid(op.before), EMPTY_MEMORY_EFFECTS)
     after_effects = get(effects_cache, objectid(op.after), EMPTY_MEMORY_EFFECTS)
@@ -683,7 +674,7 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     end
 
     # Transform before region — pass token_carry_refs for ConditionOp overwrite
-    transform_block!(op.before, alias_result, body_token_map, effects_cache,
+    transform_block!(op.before, alias_info, body_token_map, effects_cache,
                       loop_effects, nothing, token_carry_refs)
 
     # Propagate before's final token state to after_token_map.
@@ -694,7 +685,7 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     end
 
     # Transform after region — also pass token_carry_refs for terminator overwrite
-    transform_block!(op.after, alias_result, after_token_map, effects_cache,
+    transform_block!(op.after, alias_info, after_token_map, effects_cache,
                       loop_effects, nothing, token_carry_refs)
 
     insert_token_result_getfields!(parent_block, inst, op.before.args,
@@ -707,7 +698,7 @@ end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::IfOp,
-                                  alias_result, token_map, effects_cache,
+                                  alias_info, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     then_effects = get(effects_cache, objectid(op.then_region), EMPTY_MEMORY_EFFECTS)
     else_effects = get(effects_cache, objectid(op.else_region), EMPTY_MEMORY_EFFECTS)
@@ -717,10 +708,10 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     # ContinueOp/BreakOp inside branches (common for LoopOp→IfOp patterns) get
     # token exit values overwritten correctly.
     then_map = copy(token_map)
-    transform_block!(op.then_region, alias_result, then_map, effects_cache,
+    transform_block!(op.then_region, alias_info, then_map, effects_cache,
                       parent_loop_effects, merged_effects, parent_token_carries)
     else_map = copy(token_map)
-    transform_block!(op.else_region, alias_result, else_map, effects_cache,
+    transform_block!(op.else_region, alias_info, else_map, effects_cache,
                       parent_loop_effects, merged_effects, parent_token_carries)
 
     # Count token results for type update
@@ -749,6 +740,6 @@ end
 # Fallback
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::ControlFlowOp,
-                                  alias_result, token_map, effects_cache,
+                                  alias_info, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
 end
