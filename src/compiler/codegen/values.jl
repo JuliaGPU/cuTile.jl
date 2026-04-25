@@ -24,7 +24,7 @@ function emit_value!(ctx::CGCtx, val::Integer)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing, nothing)
+    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, val::AbstractFloat)
@@ -32,7 +32,7 @@ function emit_value!(ctx::CGCtx, val::AbstractFloat)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing, nothing)
+    CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, node::QuoteNode)
@@ -73,7 +73,7 @@ function emit_value!(ctx::CGCtx, ref::GlobalRef)
             bytes = constant_to_bytes(val, T)
             v = encode_ConstantOp!(ctx.cb, type_id, bytes)
             tile_jltype = T <: Number ? Tile{T, Tuple{}} : T
-            return CGVal(v, type_id, tile_jltype, RowMajorShape(()), nothing, Some(val), nothing, nothing)
+            return CGVal(v, type_id, tile_jltype, RowMajorShape(()), nothing, Some(val), nothing)
         end
     end
     ghost_value(T, val)

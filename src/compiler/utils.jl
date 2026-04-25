@@ -111,38 +111,6 @@ end
 Base.showerror(io::IO, e::IRError) = print(io, "IRError: ", e.msg)
 
 #=============================================================================
- ArrayValue: aggregate-on-SSA representation for TileArrays
-=============================================================================#
-
-"""
-    ArrayValue
-
-Aggregate value attached to a TileArray-typed SSA value, mirroring Python's
-`ArrayValue` in `cuda.tile._ir.ir`. Carries the destructured base pointer,
-sizes, and strides directly so that field access and tensor-view emission
-work uniformly for kernel-arg arrays, nested-struct fields, and synthesized
-intermediates (e.g. slice results).
-
-`tensor_view` is emitted lazily on first use by `emit_tensor_view!` and
-cached here. Mutable purely so that lazy emission can update the cache.
-
-`sizes` and `strides` are in Julia column-major order; `emit_tensor_view!`
-reverses to Tile IR row-major when emitting `MakeTensorViewOp`.
-"""
-mutable struct ArrayValue
-    base_ptr::Value
-    sizes::Vector{Value}
-    strides::Vector{Value}
-    tilearray_type::Type
-    tensor_view::Union{Nothing, Tuple{Value, TypeId}}
-end
-
-ArrayValue(base_ptr::Value, sizes::Vector{Value}, strides::Vector{Value},
-           @nospecialize(tilearray_type::Type)) =
-    ArrayValue(base_ptr, sizes, strides, tilearray_type, nothing)
-
-
-#=============================================================================
  CGVal: Unified value representation (analogous to Julia's jl_cgval_t)
 =============================================================================#
 
@@ -154,15 +122,14 @@ Julia compiler). Every SSA value in the IR being compiled maps to a CGVal.
 
 ## Variants
 
-A CGVal takes one of five forms, distinguished by field states:
+A CGVal takes one of four forms, distinguished by field states:
 
-| Variant              | `v`              | `type_id`    | `arg_ref`      | `array_value` | Notes                                          |
-|:---------------------|:-----------------|:-------------|:---------------|:--------------|:-----------------------------------------------|
-| Concrete SSA value   | `Value`          | `TypeId`     | `nothing`      | `nothing`     | Normal runtime value                           |
-| Multi-value result   | `Vector{Value}`  | `nothing`    | `nothing`      | `nothing`     | From loop/if ops; extracted via `getfield`     |
-| Lazy argument ref    | `nothing`        | `nothing`    | `(idx, chain)` | `nothing`     | Deferred field access into destructured args   |
-| TileArray aggregate  | `nothing`        | `nothing`    | `nothing`      | `ArrayValue`  | TileArray with destructured base/sizes/strides |
-| Ghost value          | `nothing`        | `TypeId(-1)` | `nothing`      | `nothing`     | Zero-size type, compile-time only              |
+| Variant              | `v`              | `type_id`    | `arg_ref`      | Notes                                          |
+|:---------------------|:-----------------|:-------------|:---------------|:-----------------------------------------------|
+| Concrete SSA value   | `Value`          | `TypeId`     | `nothing`      | Normal runtime value                           |
+| Multi-value result   | `Vector{Value}`  | `nothing`    | `nothing`      | From loop/if ops; extracted via `getfield`     |
+| Lazy argument ref    | `nothing`        | `nothing`    | `(idx, chain)` | Deferred field access into destructured args   |
+| Ghost value          | `nothing`        | `TypeId(-1)` | `nothing`      | Zero-size type, compile-time only              |
 
 ## Dual-level type representation
 
@@ -201,34 +168,23 @@ struct CGVal
     arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
     constant::Union{Some, Nothing}  # Nothing = no constant, Some(x) = constant value x
     tuple::Union{Vector{Any}, Nothing}  # For tuples: component refs (SSAValue, etc.)
-    array_value::Union{ArrayValue, Nothing}  # For TileArray-typed values: aggregate
 end
 
 # Convenience constructors for concrete values
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    CGVal(v, type_id, jltype, RowMajorShape(()), nothing, nothing, nothing, nothing)
+    CGVal(v, type_id, jltype, RowMajorShape(()), nothing, nothing, nothing)
 
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::TileShape) =
-    CGVal(v, type_id, jltype, shape, nothing, nothing, nothing, nothing)
+    CGVal(v, type_id, jltype, shape, nothing, nothing, nothing)
 
 # Constructor for multi-value results (from loops, ifs)
 CGVal(v::Vector{Value}, @nospecialize(jltype)) =
-    CGVal(v, nothing, jltype, RowMajorShape(()), nothing, nothing, nothing, nothing)
+    CGVal(v, nothing, jltype, RowMajorShape(()), nothing, nothing, nothing)
 
 # Constructor for lazy argument references
 function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
-    CGVal(nothing, nothing, jltype, RowMajorShape(()), (arg_idx, chain), nothing, nothing, nothing)
+    CGVal(nothing, nothing, jltype, RowMajorShape(()), (arg_idx, chain), nothing, nothing)
 end
-
-"""
-    array_value_cgval(av::ArrayValue, jltype) -> CGVal
-
-Wrap an `ArrayValue` as a CGVal carrying a TileArray-typed aggregate. Used at
-kernel entry for top-level TileArray args and at slice sites for synthesized
-results.
-"""
-array_value_cgval(av::ArrayValue, @nospecialize(jltype)) =
-    CGVal(nothing, nothing, jltype, RowMajorShape(()), nothing, nothing, nothing, av)
 
 """
     ghost_value(jltype[, constant]) -> CGVal
@@ -236,8 +192,8 @@ array_value_cgval(av::ArrayValue, @nospecialize(jltype)) =
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, nothing, nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, Some(constant), nothing, nothing)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, Some(constant), nothing)
 
 """
     tuple_value(jltype, component_refs, component_constants) -> CGVal
@@ -252,7 +208,7 @@ function tuple_value(@nospecialize(jltype), component_refs::Vector{Any}, compone
     else
         nothing
     end
-    CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, constant, component_refs, nothing)
+    CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, constant, component_refs)
 end
 
 """
@@ -260,7 +216,7 @@ end
 
 Check if a CGVal is a ghost (no runtime representation).
 """
-is_ghost(tv::CGVal) = tv.v === nothing && tv.arg_ref === nothing && tv.array_value === nothing
+is_ghost(tv::CGVal) = tv.v === nothing && tv.arg_ref === nothing
 
 """
     is_arg_ref(tv::CGVal) -> Bool
@@ -268,13 +224,6 @@ is_ghost(tv::CGVal) = tv.v === nothing && tv.arg_ref === nothing && tv.array_val
 Check if a CGVal is a lazy argument reference.
 """
 is_arg_ref(tv::CGVal) = tv.arg_ref !== nothing
-
-"""
-    has_array_value(tv::CGVal) -> Bool
-
-Check if a CGVal carries a TileArray aggregate (`ArrayValue`).
-"""
-has_array_value(tv::CGVal) = tv.array_value !== nothing
 
 
 #=============================================================================
@@ -315,12 +264,6 @@ mutable struct CGCtx
     # Key: (arg_idx, path) where path is e.g. [1] or [1, 2] (field indices)
     arg_flat_values::Dict{Tuple{Int, Vector{Int}}, Vector{Value}}
     arg_types::Dict{Int, Type}
-
-    # ArrayValues for nested TileArrays inside destructured struct args.
-    # Top-level TileArray args carry the ArrayValue directly on their CGVal;
-    # this map is just for arg_ref-mediated nested access (e.g. `o.inner.arr`).
-    # Key: (arg_idx, path) where path is the field-index chain to the TileArray.
-    array_values::Dict{Tuple{Int, Vector{Int}}, ArrayValue}
 
     # Bytecode infrastructure
     cb::CodeBuilder
@@ -371,7 +314,6 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Tuple{Int, Vector{Int}}, ArrayValue}(),
         cb,
         tt,
         sci,
