@@ -8,19 +8,19 @@
 # Users express slices via Julia's standard `@view A[i:j, :]` macro, which is
 # routed here by the `Base.view` / `Base.maybeview` overlays in overlays.jl.
 # The overlays restrict the index types (`Colon` / `UnitRange`) and rank, so
-# `_view_chain` only needs to handle the three matching cases below.
+# `view_chain` only needs to handle the three matching cases below.
 
 # Empty tuple: all axes walked, return the accumulated slice.
-@inline _view_chain(arr::TileArray, ::Val{Axis}, ::Tuple{}) where {Axis} = arr
+@inline view_chain(arr::TileArray, ::Val{Axis}, ::Tuple{}) where {Axis} = arr
 # `:` is a no-op; advance to the next axis.
-@inline function _view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
-    _view_chain(arr, Val(Axis + 1), Base.tail(inds))
+@inline function view_chain(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
+    view_chain(arr, Val(Axis + 1), Base.tail(inds))
 end
 # UnitRange: emit the slice and recurse.
-@inline function _view_chain(arr::TileArray, ::Val{Axis},
+@inline function view_chain(arr::TileArray, ::Val{Axis},
                              inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
-    _check_slice_bounds(r)
+    check_slice_bounds(r)
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
     # Julia 1-indexed inclusive [first, last] → 0-indexed half-open [start, stop).
     # `stop = last(r)` because inclusive 1-indexed end == half-open 0-indexed end
@@ -35,7 +35,7 @@ end
     offset_elems = start_0 * arr.strides[Axis]
     new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
     sub = Intrinsics.slice(arr, Val(Axis), new_base, new_size)
-    _view_chain(sub, Val(Axis + 1), Base.tail(inds))
+    view_chain(sub, Val(Axis + 1), Base.tail(inds))
 end
 
 # Slice-bounds sanity checks, routed through `Intrinsics.assert` so they lower
@@ -47,7 +47,7 @@ end
 # `@constprop :aggressive` is needed to push literal range endpoints through
 # the generic `UnitRange{T<:Integer}` signature so `first(r) >= T(1)` folds
 # at call sites like `@view a[0:10]`.
-Base.@constprop :aggressive @inline function _check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
+Base.@constprop :aggressive @inline function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
     start, stop = first(r), last(r)
     Intrinsics.assert(start >= T(1), "@view: slice start must be ≥ 1")
     Intrinsics.assert(stop >= start - T(1), "@view: slice stop must be ≥ start - 1")

@@ -33,11 +33,11 @@ end
 # Base.unitrange_last adjusts `stop` to `start - 1` when `stop < start`, so the
 # resulting UnitRange reports length 0 for empty ranges. For dynamic bounds
 # (kernel-parameter ranges like `@view A[i:j]`) that adjustment lowers to a
-# `cmpi` + `select` per axis, which the overlay skips — reversed ranges are
-# a user bug and match cuTile Python's `Array.slice(start, stop)` behavior
-# (no runtime check either). For literal ranges, Julia's constant propagation
-# on the regular `unitrange_last` wins at inference time before the overlay
-# has a chance to fire — `5:2` still comes through as `UnitRange{Int}(5, 4)`.
+# `cmpi` + `select` per axis. The overlay skips it; reversed ranges are
+# instead caught by `check_slice_bounds` at the slice site (an AssertOp that
+# aborts the kernel). For literal ranges, Julia's constant propagation on the
+# regular `unitrange_last` wins at inference time before the overlay has a
+# chance to fire — `5:2` still comes through as `UnitRange{Int}(5, 4)`.
 @overlay Base.unitrange_last(start::T, stop::T) where {T<:Base.BitInteger} = stop
 
 
@@ -192,7 +192,7 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
 =============================================================================#
 
 # Route Julia's standard `@view A[...]` and explicit `view(A, ...)` on a
-# TileArray through the `_view_chain` dispatch in operations.jl. Each UnitRange
+# TileArray through the `view_chain` dispatch in operations.jl. Each UnitRange
 # axis produces one slice; `:` is a no-op.
 #
 # Restricted to `Vararg{Union{Colon, UnitRange}, N}`: both rank mismatches and
@@ -203,12 +203,12 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
 # tied to a broader rework of unsupported-call error reporting toward runtime
 # asserts; defer.
 #
-# Checking inside `_view_chain` and throwing there doesn't work either: a
+# Checking inside `view_chain` and throwing there doesn't work either: a
 # `throw(ArgumentError(...))` reached from inlined kernel code leaks the
 # exception object to codegen, which can't lower String / Exception values.
 @overlay Base.maybeview(arr::TileArray{T, N},
                         inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
-    _view_chain(arr, Val(1), inds)
+    view_chain(arr, Val(1), inds)
 @overlay Base.view(arr::TileArray{T, N},
                    inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
-    _view_chain(arr, Val(1), inds)
+    view_chain(arr, Val(1), inds)

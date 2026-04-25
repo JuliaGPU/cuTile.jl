@@ -1,23 +1,17 @@
-# Slicing of TileArrays — codegen side.
-#
-# The arithmetic (`subi`, `muli`, pointer `offset`) lives at the language level
-# in `_view_chain` (src/language/operations.jl) so it goes through the regular
-# arithmetic intrinsics and benefits from constant folding, strength reduction,
-# and — once it lands — the divisibility dataflow analysis (see DIVBY.md).
-#
-# What remains in codegen is aggregate synthesis: register the slice result as
-# a virtual destructured argument (negative `arg_idx` to stay disjoint from
-# real kernel params) with `new_base`/`new_sizes`/source strides filed under
-# `ctx.arg_flat_values`, and pre-create the `TensorView` keyed so that a later
-# `make_tensor_view(sub)` finds it. This mirrors Python's
-# `unflatten_aggregates` + `make_aggregate` in `_m_array_slice`.
+# Slicing of TileArrays — codegen side. Arithmetic happens at the language
+# level in `view_chain`; this file just packages the result as a virtual
+# destructured argument (negative `arg_idx` to stay disjoint from real kernel
+# params) and pre-creates the `TensorView` so a later `make_tensor_view(sub)`
+# finds it.
 
 """
     slice_spec(spec::ArraySpec{N}, axis::Int) -> ArraySpec{N}
 
 Conservative ArraySpec for a sliced TileArray: drops alignment to 0 and resets
 `shape_div_by[axis]` to 0 (unknown). Strides and other axes' divisibility are
-preserved.
+preserved. A future divisibility analysis can recover tighter facts from the
+IR, at which point this function (and the `slice_spec`-bearing return type
+from `tfunc`) becomes redundant.
 """
 function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
     new_shape_div_by = ntuple(N) do i
@@ -26,10 +20,8 @@ function slice_spec(@nospecialize(spec::ArraySpec{N}), axis::Int) where N
     ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, new_shape_div_by}()
 end
 
-# cuda_tile slice: package an already-derived `(new_base, new_size)` pair into
-# a sliced TileArray aggregate. Arithmetic is done at the language level; see
-# `_view_chain` in src/language/operations.jl. `axis_v::Val{Axis}` makes the
-# axis compile-time.
+# Package an already-derived `(new_base, new_size)` pair into a sliced
+# TileArray aggregate. `axis_v::Val{Axis}` makes the axis compile-time.
 @intrinsic slice(arr, axis_v::Val, new_base, new_size)
 
 function tfunc(𝕃, ::typeof(Intrinsics.slice),
@@ -60,17 +52,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     # args: (arr, Val(Axis), new_base, new_size) — arithmetic already emitted
     arr_arg, axis_arg, new_base_arg, new_size_arg = args[1], args[2], args[3], args[4]
 
-    # Resolve axis from Val type parameter
+    # Resolve axis from the Val type parameter. `tfunc` already validates that
+    # the axis is an integer in [1, ndim], so we just unpack here.
     axis_val = @something get_constant(ctx, axis_arg) throw(IRError("slice: axis must be a Val{N}"))
-    axis = if axis_val isa Val
-        first(typeof(axis_val).parameters)
-    elseif axis_val isa Type{<:Val}
-        first(axis_val.parameters)
-    else
-        throw(IRError("slice: axis must be Val{Int}, got $axis_val"))
-    end
-    axis isa Integer || throw(IRError("slice: axis must be an Integer, got $(typeof(axis))"))
-    axis = Int(axis)
+    axis_val isa Val || throw(IRError("slice: axis must be a Val{Int}, got $axis_val"))
+    axis = Int(first(typeof(axis_val).parameters))
 
     # Resolve source array as a lazy arg_ref (must point to a TileArray).
     arr_tv = emit_value!(ctx, arr_arg)
@@ -82,7 +68,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     src_type <: TileArray || throw(IRError("slice: expected TileArray, got $src_type"))
 
     ndim = ndims(src_type)
-    1 <= axis <= ndim || throw(IRError("slice: axis $axis out of range for $ndim-D array"))
 
     ptr_fi = Base.fieldindex(src_type, :ptr)
     sizes_fi = Base.fieldindex(src_type, :sizes)
