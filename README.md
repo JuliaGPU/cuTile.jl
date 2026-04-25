@@ -185,9 +185,9 @@ Tile IR operations.
 ### Construction
 | Operation | Description |
 |-----------|-------------|
-| `zeros(T, dims...)` | Zero-filled tile (Base overlay) |
-| `ones(T, dims...)` | One-filled tile (Base overlay) |
-| `fill(value, dims...)` | Constant-filled tile (Base overlay) |
+| `zeros(T, dims...)` | Zero-filled tile |
+| `ones(T, dims...)` | One-filled tile |
+| `fill(value, dims...)` | Constant-filled tile |
 | `ct.arange(shape, T)` / `ct.arange(n, T)` | Sequence `[1, 2, 3, ..., n]` |
 
 ### Shape
@@ -301,6 +301,14 @@ function rowsum(a, b, r1::Int32, r2::Int32)
 end
 ```
 
+### TileArray Views
+| Operation | Description |
+|-----------|-------------|
+| `@view arr[r1:r2, :, ...]` / `view(arr, ...)` | Sub-range view |
+| `permutedims(arr, perm)` | Permute axes (1-indexed) |
+| `transpose(arr)` | 2D transpose (`permutedims(arr, (2, 1))`) |
+| `reshape(arr, dims)` | Column-major reshape, requires contiguous source |
+
 ### Atomics
 | Operation | Description |
 |-----------|-------------|
@@ -359,8 +367,8 @@ traffic scheduling:
 
 | Operation | Description |
 |-----------|-------------|
-| `print(args...)` | Print values (Base overlay) |
-| `println(args...)` | Print values with newline (Base overlay) |
+| `print(args...)` | Print values |
+| `println(args...)` | Print values with newline |
 | `ct.@assert cond [msg]` | Abort kernel if condition is false |
 
 Standard Julia `print`/`println` work inside kernels. String constants and tiles
