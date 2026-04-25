@@ -11,11 +11,29 @@
 #
 #   Base.maybeview / Base.view (overlay) → check_slice_bounds → unsafe_view
 #
-# `unsafe_view` walks the index tuple axis by axis, calling `Intrinsics.slice`
-# for each `UnitRange`. All slice arithmetic and the new shape / strides
-# tuples are built here so they go through the regular intrinsics (constant
-# folding, strength reduction); `Intrinsics.slice` is just an aggregate-
-# packaging step.
+# `unsafe_view` walks the index tuple axis by axis, performs the pointer /
+# size arithmetic for each `UnitRange` axis, and packages the result via the
+# generic `Intrinsics.make_array` aggregate constructor. Doing the math at
+# the language level keeps it in the SCI so it benefits from constant
+# folding, strength reduction, LICM, etc.
+
+"""
+    sliced_arraytype(SrcT) -> Type{<:TileArray}
+
+Result `TileArray` type for a slice of `SrcT`. Conservative ArraySpec:
+drops alignment to 0 and zeros all per-axis `shape_div_by`. Strides and
+contiguity are preserved (slicing doesn't change `stride[1] == 1` for
+column-major arrays). A future divisibility analysis can recover tighter
+facts from the IR.
+"""
+@inline function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray}))
+    spec = array_spec(SrcT)
+    elem_T = eltype(SrcT)
+    N = ndims(SrcT)
+    spec === nothing && return TileArray{elem_T, N}
+    new_spec = ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, ntuple(_ -> 0, N)}()
+    return TileArray{elem_T, N, new_spec}
+end
 
 # Empty tuple: all axes walked, return the accumulated slice.
 unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
@@ -23,7 +41,7 @@ unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
 function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
     unsafe_view(arr, Val(Axis + 1), Base.tail(inds))
 end
-# UnitRange: emit the slice and recurse.
+# UnitRange: derive the new components and package via make_array.
 function unsafe_view(arr::TileArray, ::Val{Axis},
                      inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
@@ -38,7 +56,7 @@ function unsafe_view(arr::TileArray, ::Val{Axis},
     new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
     new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
     new_strides = ntuple(i -> arr.strides[i], Val(ndims(arr)))
-    sub = Intrinsics.slice(arr, new_base, new_sizes, new_strides)
+    sub = Intrinsics.make_array(sliced_arraytype(typeof(arr)), new_base, new_sizes, new_strides)
     unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
 end
 
