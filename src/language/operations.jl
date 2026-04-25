@@ -11,9 +11,10 @@
 # arrays (`Base.view`, `Base.permutedims`, `Base.transpose`, `Base.reshape`)
 # and are defined as regular methods on `TileArray` — TileArray is its own
 # type, not an `AbstractArray` subtype, so there's no Base method to shadow
-# and no need for the `@overlay` mechanism. Field accesses (`arr.sizes[i]`
-# etc.) resolve via the carried `ArrayValue` aggregate; the new aggregate is
-# rebuilt via the generic `Intrinsics.make_array` packaging primitive.
+# and no need for the `@overlay` mechanism. The new aggregate is built via
+# the regular Julia inner constructor `TileArray{T,N,S}(ptr, sizes, strides)`;
+# Julia's SROA pass eliminates the temporary struct so the IR sees direct
+# field references at each downstream use.
 #
 # Doing the size/stride arithmetic at the language level keeps it in the SCI
 # so it benefits from constant folding, strength reduction, LICM, etc.
@@ -63,7 +64,9 @@ unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
 function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
     unsafe_view(arr, Val(Axis + 1), Base.tail(inds))
 end
-# UnitRange: derive the new components and package via make_array.
+# UnitRange: derive the new components and package via the TileArray
+# constructor. SROA elides the temporary aggregate so the IR sees direct
+# field references at each downstream use.
 function unsafe_view(arr::TileArray, ::Val{Axis},
                      inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
@@ -78,7 +81,7 @@ function unsafe_view(arr::TileArray, ::Val{Axis},
     new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
     new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
     new_strides = ntuple(i -> arr.strides[i], Val(ndims(arr)))
-    sub = Intrinsics.make_array(sliced_arraytype(typeof(arr)), new_base, new_sizes, new_strides)
+    sub = sliced_arraytype(typeof(arr))(new_base, new_sizes, new_strides)
     unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
 end
 
@@ -110,10 +113,10 @@ end
 =============================================================================#
 
 # These derive a new TileArray with adjusted sizes/strides (and sometimes a
-# different rank) without touching the underlying memory. Sizes and strides
-# come from `arr.sizes[i]` / `arr.strides[i]` — the language-level field
-# accesses route through the carried `ArrayValue`, so no actual decompose
-# happens at the IR level. The aggregate is rebuilt via `Intrinsics.make_array`.
+# different rank) without touching the underlying memory. The new aggregate
+# is built via the regular `TileArray{T,N,S}(ptr, sizes, strides)` inner
+# constructor; SROA eliminates the temporary so the IR sees direct field
+# references at each downstream use.
 
 """
     permuted_arraytype(SrcT, ::Val{Perm}) -> Type{<:TileArray}
@@ -142,8 +145,7 @@ end
         throw(ArgumentError("permutedims: Perm must be an NTuple{$N, Int}, got $Perm"))
     new_sizes = ntuple(i -> arr.sizes[Perm[i]], Val(N))
     new_strides = ntuple(i -> arr.strides[Perm[i]], Val(N))
-    Intrinsics.make_array(permuted_arraytype(typeof(arr), Val(Perm)),
-                          arr.ptr, new_sizes, new_strides)
+    permuted_arraytype(typeof(arr), Val(Perm))(arr.ptr, new_sizes, new_strides)
 end
 
 """
@@ -179,8 +181,7 @@ end
     # tuple build closure-free (closures over kernel-local values don't
     # lower cleanly).
     new_strides = _column_major_strides(new_sizes)
-    Intrinsics.make_array(reshaped_arraytype(typeof(arr), Val(NewShape)),
-                          arr.ptr, new_sizes, new_strides)
+    reshaped_arraytype(typeof(arr), Val(NewShape))(arr.ptr, new_sizes, new_strides)
 end
 
 @generated function _typed_shape(::Type{T}, ::Val{Shape}) where {T, Shape}

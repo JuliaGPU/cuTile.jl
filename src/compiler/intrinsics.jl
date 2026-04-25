@@ -69,7 +69,6 @@ include("intrinsics/math.jl")
 include("intrinsics/memory.jl")
 include("intrinsics/atomics.jl")
 include("intrinsics/views.jl")
-include("intrinsics/array.jl")
 include("intrinsics/misc.jl")
 include("intrinsics/fpmode.jl")
 

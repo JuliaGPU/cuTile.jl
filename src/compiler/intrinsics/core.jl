@@ -353,8 +353,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     offsets = offsets_tv.v
     tile_shape = offsets_tv.shape
 
-    # Get pointer element type from base pointer type (Ptr{T})
+    # Get pointer element type from base pointer type (Ptr{T}).
+    # `scalar_elim_pass!` may have forwarded a `Tile{Ptr{T}, Tuple{}}`
+    # (eliminated to_scalar) where inference originally saw `Ptr{T}` —
+    # unwrap so we look at the underlying scalar pointer type.
     base_ptr_type = CC.widenconst(base_ptr_tv.jltype)
+    if base_ptr_type <: Tile && eltype(base_ptr_type) <: Ptr
+        base_ptr_type = eltype(base_ptr_type)
+    end
     ptr_elem_type = eltype(base_ptr_type)  # T from Ptr{T}
     elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
