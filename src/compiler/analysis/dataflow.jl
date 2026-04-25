@@ -135,6 +135,9 @@ has_value(r::DataflowResult, @nospecialize(key)) =
 """Iterate (anchor, value) entries — only non-bottom entries are stored."""
 Base.pairs(r::DataflowResult) = pairs(r.values)
 
+"""Iterate the lattice values — only non-bottom entries are stored."""
+Base.values(r::DataflowResult) = values(r.values)
+
 """
     operand_value(analysis, result, op) -> T
 

@@ -90,9 +90,9 @@ function is_atomic_intrinsic(func)
     return false
 end
 
-function get_alias_set_for_operand(alias_result::Dict{Any, AliasSet}, operand)
+function get_alias_set_for_operand(alias_result::DataflowResult{AliasAnalysis, AliasElement}, operand)
     if operand isa SSAValue || operand isa Argument || operand isa SlotNumber
-        return get(alias_result, operand, ALIAS_UNIVERSE)
+        return something(alias_result[operand], ALIAS_UNIVERSE)
     end
     return ALIAS_UNIVERSE
 end
@@ -101,7 +101,7 @@ end
  Compute per-block memory effects
 =============================================================================#
 
-function compute_block_memory_effects!(block::Block, alias_result::Dict{Any, AliasSet},
+function compute_block_memory_effects!(block::Block, alias_result::DataflowResult{AliasAnalysis, AliasElement},
                                        cache::Dict{UInt64, MemoryEffects})
     block_id = objectid(block)
     haskey(cache, block_id) && return cache[block_id]
@@ -260,7 +260,7 @@ loop-carried token. A store is eligible when:
 Matches Python's `_get_parallel_stores` (token_order.py:428-473) and
 `_filter_by_store_index` (token_order.py:487-496).
 """
-function get_parallel_stores(op::ForOp, alias_result::Dict{Any, AliasSet},
+function get_parallel_stores(op::ForOp, alias_result::DataflowResult{AliasAnalysis, AliasElement},
                               effects_cache::Dict{UInt64, MemoryEffects})
     body = op.body
     body_effects = get(effects_cache, objectid(body), EMPTY_MEMORY_EFFECTS)
@@ -334,7 +334,7 @@ end
  The main pass
 =============================================================================#
 
-function token_order_pass!(sci::StructuredIRCode, alias_result::Dict{Any, AliasSet})
+function token_order_pass!(sci::StructuredIRCode, alias_result::DataflowResult{AliasAnalysis, AliasElement})
     effects_cache = Dict{UInt64, MemoryEffects}()
     compute_block_memory_effects!(sci.entry, alias_result, effects_cache)
 
@@ -364,7 +364,7 @@ end
 =============================================================================#
 
 function transform_block!(block::Block,
-                           alias_result::Dict{Any, AliasSet},
+                           alias_result::DataflowResult{AliasAnalysis, AliasElement},
                            token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            loop_effects::Union{MemoryEffects, Nothing},
@@ -389,7 +389,7 @@ function transform_block!(block::Block,
 end
 
 function transform_statement!(block::Block, inst::Instruction,
-                                alias_result::Dict{Any, AliasSet},
+                                alias_result::DataflowResult{AliasAnalysis, AliasElement},
                                 token_map::Dict{TokenKey, Any},
                                 parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
     s = stmt(inst)
@@ -633,7 +633,7 @@ Add per-alias-set token carries to a ForOp/LoopOp.
 """
 function transform_loop!(parent_block::Block, inst::Instruction,
                            op::Union{ForOp, LoopOp},
-                           alias_result::Dict{Any, AliasSet},
+                           alias_result::DataflowResult{AliasAnalysis, AliasElement},
                            token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            parallel_info::Union{LoopParallelInfo, Nothing}=nothing)

@@ -245,7 +245,7 @@ function run_passes!(sci::StructuredIRCode)
     constants = analyze(ConstantAnalysis(), sci)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
 
-    alias_result = alias_analysis_pass!(sci)
+    alias_result = analyze(AliasAnalysis(), sci)
 
     token_order_pass!(sci, alias_result)
 
