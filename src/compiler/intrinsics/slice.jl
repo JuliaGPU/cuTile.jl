@@ -35,20 +35,6 @@ function tfunc(𝕃, ::typeof(Intrinsics.slice),
     return TileArray{elem_T, N, slice_spec(spec)}
 end
 
-# Walk a Core.tuple SSA value and emit each component as a Tile IR Value.
-function resolve_tuple(ctx::CGCtx, arg, name::String)
-    tv = emit_value!(ctx, arg)
-    (tv === nothing || tv.tuple === nothing) &&
-        throw(IRError("slice: $name must be a tuple"))
-    Value[
-        let comp = emit_value!(ctx, ref)
-            comp === nothing && throw(IRError("slice: cannot resolve $name element"))
-            comp.v::Value
-        end
-        for ref in tv.tuple
-    ]
-end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     arr_arg, new_base_arg, new_sizes_arg, new_strides_arg = args
 
@@ -68,8 +54,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.slice), args)
     new_base_tv = emit_value!(ctx, new_base_arg)
     new_base_tv === nothing && throw(IRError("slice: cannot resolve new_base"))
     new_base = new_base_tv.v::Value
-    new_sizes = resolve_tuple(ctx, new_sizes_arg, "new_sizes")
-    new_strides = resolve_tuple(ctx, new_strides_arg, "new_strides")
+    new_sizes = Value[tv.v for tv in resolve_tuple(ctx, new_sizes_arg, "slice: new_sizes")]
+    new_strides = Value[tv.v for tv in resolve_tuple(ctx, new_strides_arg, "slice: new_strides")]
 
     # Result type: conservative spec (see `slice_spec`).
     elem_T = eltype(src_type)

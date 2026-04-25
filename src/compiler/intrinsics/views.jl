@@ -83,20 +83,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
 
     # Extract indices
-    tuple_arg = emit_value!(ctx, args[4])
-    tuple_arg === nothing && throw(IRError("load_partition_view(): cannot resolve index tuple argument"))
-
-    index_vals = Value[]
-    index_jl_types = Type[]
-
-    # Get tuple element refs
-    tuple_arg.tuple !== nothing || throw(IRError("load_partition_view(): index tuple must have component refs"))
-    for ref in tuple_arg.tuple
-        tv = emit_value!(ctx, ref)
-        tv === nothing && throw(IRError("load_partition_view(): cannot resolve index element"))
-        push!(index_vals, tv.v)
-        push!(index_jl_types, tv.jltype)
-    end
+    index_tvs = resolve_tuple(ctx, args[4], "load_partition_view indices")
+    index_vals = Value[tv.v for tv in index_tvs]
+    index_jl_types = Type[tv.jltype for tv in index_tvs]
 
     unique_types = unique(index_jl_types)
     length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
@@ -425,20 +414,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
 
     # Extract indices
-    tuple_arg = emit_value!(ctx, args[5])
-    tuple_arg === nothing && throw(IRError("store_partition_view(): cannot resolve index tuple argument"))
-
-    index_vals = Value[]
-    index_jl_types = Type[]
-
-    # Get tuple element refs
-    tuple_arg.tuple !== nothing || throw(IRError("store_partition_view(): index tuple must have component refs"))
-    for ref in tuple_arg.tuple
-        tv = emit_value!(ctx, ref)
-        tv === nothing && throw(IRError("store_partition_view(): cannot resolve index element"))
-        push!(index_vals, tv.v)
-        push!(index_jl_types, tv.jltype)
-    end
+    index_tvs = resolve_tuple(ctx, args[5], "store_partition_view indices")
+    index_vals = Value[tv.v for tv in index_tvs]
+    index_jl_types = Type[tv.jltype for tv in index_tvs]
 
     unique_types = unique(index_jl_types)
     length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))

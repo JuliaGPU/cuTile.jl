@@ -120,18 +120,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Emit tuple value to get CGVal with component refs in .tuple
-    tuple_tv = emit_value!(ctx, args[1])
-    tuple_tv === nothing && throw(IRError("cat() cannot resolve tuple argument"))
-
-    # Extract component refs from .tuple field
-    tuple_tv.tuple !== nothing || throw(IRError("cat() requires tuple with tracked components"))
-    length(tuple_tv.tuple) == 2 || throw(IRError("cat() expects exactly 2 tiles, got $(length(tuple_tv.tuple))"))
-
-    # Emit tiles from refs (looks up ctx.values, not stmts!)
-    lhs = emit_value!(ctx, tuple_tv.tuple[1])
-    rhs = emit_value!(ctx, tuple_tv.tuple[2])
-    (lhs === nothing || rhs === nothing) && throw(IRError("Cannot resolve tile operands for cat()"))
+    tile_tvs = resolve_tuple(ctx, args[1], "cat input")
+    length(tile_tvs) == 2 || throw(IRError("cat() expects exactly 2 tiles, got $(length(tile_tvs))"))
+    lhs, rhs = tile_tvs
 
     # Get axis
     axis_val = @something get_constant(ctx, args[2]) throw(IRError("cat() axis must be a compile-time constant"))
@@ -466,25 +457,13 @@ function emit_reduce!(ctx::CGCtx, args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Extract tile CGVals from the tuple argument
-    first_tv = emit_value!(ctx, args[1])
-    first_tv === nothing && throw(IRError("Cannot resolve input for reduction"))
-    first_tv.tuple === nothing && throw(IRError("reduce() requires a tuple of tiles (got $(first_tv.jltype))"))
-    tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
-        tv === nothing && throw(IRError("Cannot resolve tile operand in reduce"))
-        tv
-    end for ref in first_tv.tuple]
+    tile_tvs = resolve_tuple(ctx, args[1], "reduce input")
     N = length(tile_tvs)
 
     julia_axis = @something get_constant(ctx, args[2]) throw(IRError("reduce() axis must be a compile-time constant"))
     func = @something get_constant(ctx, args[3]) throw(IRError("reduce() combiner function must be a compile-time constant"))
 
-    id_tv = emit_value!(ctx, args[4])
-    id_tv === nothing && throw(IRError("Cannot resolve identity tuple for reduce"))
-    id_tv.tuple !== nothing || throw(IRError("reduce() identities must be a tuple of compile-time constants"))
-    identity_vals = Any[@something(get_constant(ctx, ref),
-                                   throw(IRError("reduce() identity values must be compile-time constants")))
-                        for ref in id_tv.tuple]
+    identity_vals = resolve_constant_tuple(ctx, args[4], "reduce identities")
 
     # Get shapes from the first tile (already in Tile IR order)
     input_shape = tile_tvs[1].shape
@@ -623,25 +602,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Extract tile CGVals from the tuple argument
-    first_tv = emit_value!(ctx, args[1])
-    first_tv === nothing && throw(IRError("Cannot resolve input for scan"))
-    first_tv.tuple === nothing && throw(IRError("scan() requires a tuple of tiles (got $(first_tv.jltype))"))
-    tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
-        tv === nothing && throw(IRError("Cannot resolve tile operand in scan"))
-        tv
-    end for ref in first_tv.tuple]
+    tile_tvs = resolve_tuple(ctx, args[1], "scan input")
     N = length(tile_tvs)
 
     julia_axis = @something get_constant(ctx, args[2]) throw(IRError("scan() axis must be a compile-time constant"))
     func = @something get_constant(ctx, args[3]) throw(IRError("scan() combiner function must be a compile-time constant"))
 
-    id_tv = emit_value!(ctx, args[4])
-    id_tv === nothing && throw(IRError("Cannot resolve identity tuple for scan"))
-    id_tv.tuple !== nothing || throw(IRError("scan() identities must be a tuple of compile-time constants"))
-    identity_vals = Any[@something(get_constant(ctx, ref),
-                                   throw(IRError("scan() identity values must be compile-time constants")))
-                        for ref in id_tv.tuple]
+    identity_vals = resolve_constant_tuple(ctx, args[4], "scan identities")
 
     reverse = false
     if length(args) >= 5

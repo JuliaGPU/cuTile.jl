@@ -457,6 +457,48 @@ get_arg_type(ctx::CGCtx, arg_idx::Int) = get(ctx.arg_types, arg_idx, nothing)
 
 
 #=============================================================================
+ Tuple operands
+=============================================================================#
+
+"""
+    resolve_tuple(ctx, arg, name) -> Vector{CGVal}
+
+Resolve a `Core.tuple` SSA value to its component CGVals. Throws if `arg`
+doesn't resolve to a tuple with tracked component refs. `name` is used in
+error messages.
+"""
+function resolve_tuple(ctx::CGCtx, @nospecialize(arg), name::AbstractString)
+    tv = emit_value!(ctx, arg)
+    (tv === nothing || tv.tuple === nothing) &&
+        throw(IRError("$name must be a tuple"))
+    return CGVal[
+        let comp = emit_value!(ctx, ref)
+            comp === nothing && throw(IRError("$name: cannot resolve element"))
+            comp
+        end
+        for ref in tv.tuple
+    ]
+end
+
+"""
+    resolve_constant_tuple(ctx, arg, name) -> Vector{Any}
+
+Resolve a `Core.tuple` SSA value to its component compile-time constants.
+Throws if `arg` isn't a tuple or any element isn't a constant.
+"""
+function resolve_constant_tuple(ctx::CGCtx, @nospecialize(arg), name::AbstractString)
+    tv = emit_value!(ctx, arg)
+    (tv === nothing || tv.tuple === nothing) &&
+        throw(IRError("$name must be a tuple"))
+    return Any[
+        @something(get_constant(ctx, ref),
+                   throw(IRError("$name: elements must be compile-time constants")))
+        for ref in tv.tuple
+    ]
+end
+
+
+#=============================================================================
  Type conversion utilities
 =============================================================================#
 
