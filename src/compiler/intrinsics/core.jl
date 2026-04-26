@@ -328,6 +328,16 @@ end
 # TODO: cuda_tile.module
 
 # cuda_tile.offset
+#
+# Pointer arithmetic: produces a (possibly broadcast) tile of pointers at
+# `base + offsets`. Inference accepts a scalar `Ptr{T}` base (matching
+# Julia's source-level view of pointer fields like `TileArray.ptr`); at
+# codegen time, every Ptr-valued CGVal carries a tile-typed jltype
+# (`Tile{Ptr{T}, ()}` for scalar pointers, `Tile{Ptr{T}, S}` for tiles of
+# pointers from gather/scatter), so the emitter peels Tile→Ptr→eltype to
+# recover the pointee type uniformly. This mirrors cuTile Python where
+# every IR value is a Tile and the shape distinguishes scalar (`()`) from
+# vector pointer arithmetic.
 @intrinsic offset(base, offsets)
 function tfunc(𝕃, ::typeof(Intrinsics.offset), @nospecialize(base), @nospecialize(offsets))
     base_type = CC.widenconst(base)
@@ -353,15 +363,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     offsets = offsets_tv.v
     tile_shape = offsets_tv.shape
 
-    # Get pointer element type from base pointer type (Ptr{T}).
-    # `scalar_elim_pass!` may have forwarded a `Tile{Ptr{T}, Tuple{}}`
-    # (eliminated to_scalar) where inference originally saw `Ptr{T}` —
-    # unwrap so we look at the underlying scalar pointer type.
+    # Recover the pointee type. The CGVal's jltype is uniformly tile-typed
+    # for Ptr (boundary_jltype promoted `Ptr{T}` → `Tile{Ptr{T}, ()}`), so
+    # the regular peel is one Tile-unwrap to reach `Ptr{T}`, then `eltype`
+    # to reach `T`. (Surviving raw `Ptr{T}` CGVals — e.g. from older code
+    # paths — short-circuit the unwrap.)
     base_ptr_type = CC.widenconst(base_ptr_tv.jltype)
     if base_ptr_type <: Tile && eltype(base_ptr_type) <: Ptr
         base_ptr_type = eltype(base_ptr_type)
     end
-    ptr_elem_type = eltype(base_ptr_type)  # T from Ptr{T}
+    ptr_elem_type = eltype(base_ptr_type)
     elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
     ptr_tile_type = tile_type!(tt, ptr_dtype, tile_shape)

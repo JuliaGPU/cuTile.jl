@@ -72,8 +72,7 @@ function emit_value!(ctx::CGCtx, ref::GlobalRef)
         if type_id !== nothing
             bytes = constant_to_bytes(val, T)
             v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-            tile_jltype = T <: Number ? Tile{T, Tuple{}} : T
-            return CGVal(v, type_id, tile_jltype, RowMajorShape(()), nothing, Some(val), nothing)
+            return CGVal(v, type_id, boundary_jltype(T), RowMajorShape(()), nothing, Some(val), nothing)
         end
     end
     ghost_value(T, val)

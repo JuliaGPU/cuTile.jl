@@ -409,15 +409,36 @@ function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, n::In
 end
 
 """
+    boundary_jltype(T) -> Type
+
+Promote a primitive scalar Julia type (`Number` or `Ptr`) to its 0-D tile
+representation `Tile{T, Tuple{}}` for the codegen boundary. Already-tile
+types and other types pass through unchanged.
+
+Used at every site that mints a CGVal from a kernel parameter / SSA leaf:
+the IR is uniformly tile-typed (matches cuTile Python's invariant that
+"scalar = 0-D tile"), even though Julia's source-level inference may
+annotate the value as a scalar `T`. Mirrors the promotion already applied
+to `Number` args; extends to `Ptr` so chained pointer arithmetic
+(slice-of-slice, recursive `unsafe_view`) doesn't trip on a
+scalar/tile mismatch after `scalar_elim_pass!`.
+"""
+boundary_jltype(@nospecialize(T)) =
+    (T <: Number || T <: Ptr) ? Tile{T, Tuple{}} : T
+
+"""
     try_materialize_scalar(ctx, arg_idx, path, rt) -> Union{CGVal, Nothing}
 
 If `path` maps to exactly one flat value, return a concrete CGVal for it.
+Promotes the jltype via `boundary_jltype` so the CGVal carries the
+tile-typed view of the value (the IR-level Tile IR type is always tiled
+regardless).
 """
 function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, @nospecialize(rt))
     values = get_arg_flat_values(ctx, arg_idx, path)
     if values !== nothing && length(values) == 1
         type_id = tile_type_for_julia!(ctx, rt)
-        return CGVal(values[1], type_id, rt)
+        return CGVal(values[1], type_id, boundary_jltype(rt))
     end
     nothing
 end

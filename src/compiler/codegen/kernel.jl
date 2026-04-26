@@ -116,7 +116,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             # Promote scalar kernel args to 0D tile jltype at the boundary.
             # sci.argtypes retains the Julia signature (Int32), but the IR
             # body is uniformly tile-typed after scalar_elim_pass!.
-            jltype = argtype <: Number ? Tile{argtype, Tuple{}} : sci.argtypes[arg_idx]
+            jltype = boundary_jltype(argtype)
             tv = CGVal(val, type_id, jltype)
             ctx[SlotNumber(arg_idx)] = tv
             ctx[Argument(arg_idx)] = tv
@@ -324,7 +324,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
 
     # Helper to promote scalar arg types to 0D tile at the boundary.
     # sci.argtypes retains the Julia signature; the IR body is tile-typed.
-    _arg_jltype(T) = let U = CC.widenconst(T); U <: Number ? Tile{U, Tuple{}} : T end
+    _arg_jltype(T) = boundary_jltype(CC.widenconst(T))
 
     if mi.def.isva
         # Varargs: fixed argtypes are 1:n_argtypes-1, last is the varargs tuple.
