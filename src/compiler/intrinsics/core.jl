@@ -328,72 +328,55 @@ end
 # TODO: cuda_tile.module
 
 # cuda_tile.offset
-#
-# Pointer arithmetic: produces a (possibly broadcast) tile of pointers at
-# `base + offsets`. Inference accepts a scalar `Ptr{T}` base (matching
-# Julia's source-level view of pointer fields like `TileArray.ptr`); at
-# codegen time, every Ptr-valued CGVal carries a tile-typed jltype
-# (`Tile{Ptr{T}, ()}` for scalar pointers, `Tile{Ptr{T}, S}` for tiles of
-# pointers from gather/scatter), so the emitter peels Tile→Ptr→eltype to
-# recover the pointee type uniformly. This mirrors cuTile Python where
-# every IR value is a Tile and the shape distinguishes scalar (`()`) from
-# vector pointer arithmetic.
 @intrinsic offset(base, offsets)
 function tfunc(𝕃, ::typeof(Intrinsics.offset), @nospecialize(base), @nospecialize(offsets))
     base_type = CC.widenconst(base)
-    base_type <: Ptr || return nothing
+    base_type isa DataType && base_type <: Tile || return nothing
+    ptr_type = eltype(base_type)
+    ptr_type <: Ptr || return nothing
     offsets_type = CC.widenconst(offsets)
     offsets_type isa DataType && offsets_type <: Tile || return nothing
-    T = eltype(base_type)
-    S = offsets_type.parameters[2]
+    T = eltype(ptr_type)
+    base_shape = base_type.parameters[2]
+    off_shape = offsets_type.parameters[2]
+    # Result shape: pick the operand with more dimensions (Python's
+    # pointer_offset broadcasts both to common shape; the dominant case is
+    # 0-D base + N-D offsets, so this picks the offsets' shape).
+    S = length(base_shape.parameters) >= length(off_shape.parameters) ? base_shape : off_shape
     return Tile{Ptr{T}, S}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Get base pointer (arg 1)
-    base_ptr_tv = emit_value!(ctx, args[1])
-    base_ptr_tv === nothing && throw(IRError("offset: cannot resolve base pointer"))
-    base_ptr = base_ptr_tv.v
-
-    # Get offsets tile (arg 2)
+    base_tv = emit_value!(ctx, args[1])
+    base_tv === nothing && throw(IRError("offset: cannot resolve base pointer tile"))
     offsets_tv = emit_value!(ctx, args[2])
     offsets_tv === nothing && throw(IRError("offset: cannot resolve offsets tile"))
-    offsets = offsets_tv.v
-    tile_shape = offsets_tv.shape
 
-    # Recover the pointee type. The CGVal's jltype is uniformly tile-typed
-    # for Ptr (boundary_jltype promoted `Ptr{T}` → `Tile{Ptr{T}, ()}`), so
-    # the regular peel is one Tile-unwrap to reach `Ptr{T}`, then `eltype`
-    # to reach `T`. (Surviving raw `Ptr{T}` CGVals — e.g. from older code
-    # paths — short-circuit the unwrap.)
-    base_ptr_type = CC.widenconst(base_ptr_tv.jltype)
-    if base_ptr_type <: Tile && eltype(base_ptr_type) <: Ptr
-        base_ptr_type = eltype(base_ptr_type)
-    end
-    ptr_elem_type = eltype(base_ptr_type)
+    base_jl = CC.widenconst(base_tv.jltype)
+    (base_jl <: Tile && eltype(base_jl) <: Ptr) ||
+        throw(IRError("offset: base must be Tile{Ptr{T}, S}, got $base_jl"))
+    ptr_elem_type = eltype(eltype(base_jl))
+
     elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
-    ptr_tile_type = tile_type!(tt, ptr_dtype, tile_shape)
 
-    # Broadcast base pointer to tile shape
-    ndims = length(tile_shape)
-    if ndims > 0
-        ones_shape = RowMajorShape(fill(1, ndims))
-        reshaped_ptr_type = tile_type!(tt, ptr_dtype, ones_shape)
-        base_ptr_reshaped = encode_ReshapeOp!(cb, reshaped_ptr_type, base_ptr)
-        base_ptr_tile = encode_BroadcastOp!(cb, ptr_tile_type, base_ptr_reshaped)
-    else
-        base_ptr_tile = base_ptr
-    end
+    # Common shape: pick the operand with more dimensions; broadcast the
+    # other to match. The underlying OffsetOp requires same-shape operands.
+    common_shape = length(base_tv.shape) >= length(offsets_tv.shape) ?
+                   base_tv.shape : offsets_tv.shape
+    ptr_tile_type = tile_type!(tt, ptr_dtype, common_shape)
 
-    # Compute offset pointers: base_ptr + offsets (element offset)
-    pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, offsets)
+    base = broadcast_tile_to_shape!(cb, tt, base_tv, common_shape, ptr_dtype)
+    offset_dtype = julia_to_tile_dtype!(tt, eltype(CC.widenconst(offsets_tv.jltype)))
+    offsets = broadcast_tile_to_shape!(cb, tt, offsets_tv, common_shape, offset_dtype)
 
-    julia_shape = ColMajorShape(tile_shape)
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, base, offsets)
+
+    julia_shape = ColMajorShape(common_shape)
     result_jltype = Tile{Ptr{ptr_elem_type}, TupleType(julia_shape)}
-    CGVal(pointers, ptr_tile_type, result_jltype, tile_shape)
+    CGVal(pointers, ptr_tile_type, result_jltype, common_shape)
 end
 
 # TODO: cudatile.pack

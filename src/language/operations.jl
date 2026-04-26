@@ -78,7 +78,7 @@ function unsafe_view(arr::TileArray, ::Val{Axis},
     stop_0 = size_elem_T(last(r))
     new_axis_size = stop_0 - start_0
     offset_elems = start_0 * arr.strides[Axis]
-    new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
+    new_base = Intrinsics.to_scalar(Intrinsics.offset(Tile(arr.ptr), Tile(offset_elems)))
     new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
     new_strides = ntuple(i -> arr.strides[i], Val(ndims(arr)))
     sub = sliced_arraytype(typeof(arr))(new_base, new_sizes, new_strides)
@@ -559,7 +559,7 @@ tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer}
     indices_0 = indices .- one(I)
     indices_i32 = convert(Tile{Int32}, indices_0)
-    ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), indices_i32)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
@@ -600,7 +600,7 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
     bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
@@ -632,7 +632,7 @@ ct.scatter(arr, indices, result_tile; mask=valid_mask)
                          latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     indices_0 = indices .- one(I)
     indices_i32 = convert(Tile{Int32}, indices_0)
-    ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), indices_i32)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
@@ -677,7 +677,7 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
     bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)

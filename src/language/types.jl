@@ -241,12 +241,14 @@ end
 """
     Tile(val::T) -> Tile{T, Tuple{}}
 
-Create a 0-dimensional (scalar) tile from a scalar value.
-This is used internally to convert scalars to tiles for broadcasting.
+Create a 0-dimensional (scalar) tile from a scalar value (`Number` or
+`Ptr`). This is used internally to convert scalars to tiles for
+broadcasting and to wrap pointer fields (`arr.ptr`) before passing
+them to ptr-consuming intrinsics that expect `Tile{Ptr{T}, S}`.
 
 In kernel code, this is compiled to a ConstantOp.
 """
-@inline function Tile(val::T) where {T <: Number}
+@inline function Tile(val::T) where {T <: Union{Number, Ptr}}
     # Wrap scalar as 0D tile via from_scalar — this is eliminated by
     # scalar_elim_pass! along with all other from_scalar calls, so no
     # special-casing of Tile constructors is needed in the pass.

@@ -35,7 +35,7 @@ end
 # Scalar index -> 0D pointer tile, no mask
 @inline function _atomic_ptr_and_mask(array::TileArray{T}, index::Integer; check_bounds::Bool=true) where {T}
     idx_0 = Tile(Int32(index - One()))
-    ptr_tile = Intrinsics.offset(array.ptr, idx_0)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), idx_0)
     (ptr_tile, nothing, ())
 end
 
@@ -57,7 +57,7 @@ end
         indices_i32[d] .* broadcast_to(Tile(array.strides[d]), S)
     end)
 
-    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
     mask = if check_bounds
         zero_bc = broadcast_to(Tile(Int32(0)), S)
