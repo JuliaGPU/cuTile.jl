@@ -49,7 +49,7 @@ contiguity are preserved (slicing doesn't change `stride[1] == 1` for
 column-major arrays). A future divisibility analysis can recover tighter
 facts from the IR.
 """
-@inline function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray}))
+function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray}))
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
     N = ndims(SrcT)
@@ -126,8 +126,8 @@ spec fields; alignment is preserved (the base pointer is unchanged); the
 contiguous flag is preserved iff `Perm[1] == 1` (since contiguity tracks
 `stride[1] == 1`).
 """
-@inline function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
-                                    ::Val{Perm}) where {Perm}
+function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
+                            ::Val{Perm}) where {Perm}
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
     N = ndims(SrcT)
@@ -140,7 +140,7 @@ contiguous flag is preserved iff `Perm[1] == 1` (since contiguity tracks
     return TileArray{elem_T, N, new_spec}
 end
 
-@inline function unsafe_permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm}
+function unsafe_permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm}
     Perm isa NTuple{N, Int} ||
         throw(ArgumentError("permutedims: Perm must be an NTuple{$N, Int}, got $Perm"))
     new_sizes = ntuple(i -> arr.sizes[Perm[i]], Val(N))
@@ -158,8 +158,8 @@ known. Reshape is only meaningful when the source is fully dense
 column-major; the language-level overlay should reject non-contiguous
 sources.
 """
-@inline function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
-                                    ::Val{NewShape}) where {NewShape}
+function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
+                            ::Val{NewShape}) where {NewShape}
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
     M = length(NewShape)
@@ -173,7 +173,7 @@ sources.
     return TileArray{elem_T, M, new_spec}
 end
 
-@inline function unsafe_reshape(arr::TileArray{T, N}, ::Val{NewShape}) where {T, N, NewShape}
+function unsafe_reshape(arr::TileArray{T, N}, ::Val{NewShape}) where {T, N, NewShape}
     size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
     new_sizes = _typed_shape(size_elem_T, Val(NewShape))
     # Column-major strides: stride[1]=1, stride[i]=stride[i-1]*new_sizes[i-1].
