@@ -91,5 +91,6 @@ include("intrinsics/atomics.jl")
 include("intrinsics/views.jl")
 include("intrinsics/misc.jl")
 include("intrinsics/fpmode.jl")
+include("intrinsics/kernel_state.jl")
 
 include("intrinsics/julia.jl")

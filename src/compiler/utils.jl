@@ -263,7 +263,10 @@ mutable struct CGCtx
     # Destructured argument handling: path-keyed flat values
     # Key: (arg_idx, path) where path is e.g. [1] or [1, 2] (field indices)
     arg_flat_values::Dict{Tuple{Int, Vector{Int}}, Vector{Value}}
-    arg_types::Dict{Int, Type}
+    # 1-indexed by arg_idx, sized `length(sci.argtypes) + 1`. Slots 1..N
+    # mirror Julia args (entry = type for destructured struct args, `nothing`
+    # otherwise). Slot N+1 is reserved for the implicit `KernelState`.
+    arg_types::Vector{Union{Type, Nothing}}
 
     # Bytecode infrastructure
     cb::CodeBuilder
@@ -313,7 +316,7 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
-        Dict{Int, Type}(),
+        Vector{Union{Type, Nothing}}(nothing, length(sci.argtypes) + 1),
         cb,
         tt,
         sci,
@@ -465,14 +468,14 @@ end
 
 Check if an argument was destructured into multiple flat parameters.
 """
-is_destructured_arg(ctx::CGCtx, arg_idx::Int) = haskey(ctx.arg_types, arg_idx)
+is_destructured_arg(ctx::CGCtx, arg_idx::Int) = ctx.arg_types[arg_idx] !== nothing
 
 """
     get_arg_type(ctx, arg_idx) -> Union{Type, Nothing}
 
 Get the original Julia type for a destructured argument.
 """
-get_arg_type(ctx::CGCtx, arg_idx::Int) = get(ctx.arg_types, arg_idx, nothing)
+get_arg_type(ctx::CGCtx, arg_idx::Int) = ctx.arg_types[arg_idx]
 
 
 #=============================================================================

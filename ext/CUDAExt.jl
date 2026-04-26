@@ -174,6 +174,9 @@ function cuTile.launch(@nospecialize(f), grid, args...;
                        opt_level::Union{Int, Nothing}=nothing,
                        num_ctas::Union{Int, Nothing}=nothing,
                        occupancy::Union{Int, Nothing}=nothing)
+    # `KernelState` is the implicit per-launch ambient state; today it's a
+    # ghost so `flatten(state)` adds zero kernel args and zero overhead.
+    state = cuTile.KernelState()
     bytecode_version = check_tile_ir_support()
 
     # Resolve sm_arch: nothing → device capability
@@ -216,8 +219,11 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     # Run cached compilation
     cufunc = emit_function!(cache, mi; const_argtypes)
 
-    # Flatten arguments for cudacall - Constant returns () so ghost types disappear
-    flat_args = Tuple(Iterators.flatten(map(flatten, tile_args)))
+    # Flatten arguments for cudacall - Constant returns () so ghost types
+    # disappear. The trailing `flatten(state)` matches the implicit
+    # KernelState destructured at the end of the bytecode kernel signature
+    # by `emit_kernel!`.
+    flat_args = (Iterators.flatten(map(flatten, tile_args))..., flatten(state)...)
     flat_types = Tuple{map(typeof, flat_args)...}
 
     # Get grid dimensions

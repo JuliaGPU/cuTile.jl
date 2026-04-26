@@ -33,6 +33,7 @@ include("bytecode/encodings.jl")
 
 # Language definitions
 include("language/types.jl")
+include("language/kernel_state.jl")
 
 # Compiler implementation
 include("compiler/interpreter.jl")

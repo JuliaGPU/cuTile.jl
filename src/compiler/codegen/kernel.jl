@@ -40,7 +40,11 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         require_concrete_type(argtype, "kernel argument $i")
     end
 
-    # Build parameter list, handling ghost types, const args, and struct destructuring
+    # Build parameter list, handling ghost types, const args, and struct
+    # destructuring. The implicit `KernelState` slot lives at the trailing
+    # codegen arg_idx (`length(sci.argtypes) + 1`) — one past the last Julia
+    # arg — and is destructured *after* the user args so its flat params
+    # occupy the trailing slots in the bytecode kernel signature.
     param_types = TypeId[]
     param_mapping = Tuple{Int, Vector{Int}}[]
 
@@ -66,6 +70,11 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         end
     end
 
+    state_arg_idx = length(sci.argtypes) + 1
+    ctx.arg_types[state_arg_idx] = KernelState
+    flatten_struct_params!(ctx, param_types, param_mapping,
+                           state_arg_idx, KernelState, Int[])
+
     # Return types
     result_types = TypeId[]
     if rettype !== Nothing && rettype !== Union{}
@@ -90,7 +99,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Set up argument values
     arg_values = make_block_args!(cb, length(param_types))
 
-    # Build arg_flat_values map
+    # Build arg_flat_values map. User args and the trailing KernelState
+    # pieces land here — they go through the same `param_mapping`-keyed path.
+    # `kernel_state()` resolves to a lazy arg_ref into this map.
     field_values = Dict{Tuple{Int, Vector{Int}}, Vector{Value}}()
     for (param_idx, val) in enumerate(arg_values)
         key = param_mapping[param_idx]
@@ -105,7 +116,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         arg_idx, path = key
         ctx.arg_flat_values[key] = values
 
-        if isempty(path) && !haskey(ctx.arg_types, arg_idx)
+        if isempty(path) && !is_destructured_arg(ctx, arg_idx)
             # Regular (non-destructured) argument - create concrete CGVal
             if length(values) != 1
                 throw(IRError("Expected exactly one value for argument $arg_idx, got $(length(values))"))
@@ -146,7 +157,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # For destructured args, create lazy CGVals that track the argument index
-    for (arg_idx, argtype) in ctx.arg_types
+    for (arg_idx, argtype) in enumerate(ctx.arg_types)
+        argtype === nothing && continue
         tv = arg_ref_value(arg_idx, Int[], argtype)
         ctx[SlotNumber(arg_idx)] = tv
         ctx[Argument(arg_idx)] = tv
@@ -311,6 +323,20 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
     append!(sub_ctx.fpmode_stack, ctx.fpmode_stack)
+
+    # Inherit kernel-state flat values from the parent. Subprograms compile
+    # inline as nested regions, so the parent's SSA `Value`s for the state
+    # fields remain in scope; copying them into `sub_ctx.arg_flat_values` makes
+    # `kernel_state()` resolve identically inside subprograms (e.g. reduce
+    # combiners, broadcast bodies) as in the entry kernel. Each ctx uses its
+    # own trailing arg_idx (`length(sci.argtypes) + 1`), so we re-key on the
+    # way in.
+    parent_state_idx = length(ctx.sci.argtypes) + 1
+    sub_state_idx    = length(sci.argtypes) + 1
+    sub_ctx.arg_types[sub_state_idx] = KernelState
+    for (k, v) in ctx.arg_flat_values
+        k[1] == parent_state_idx && (sub_ctx.arg_flat_values[(sub_state_idx, k[2])] = v)
+    end
 
     # 4. Map arguments dynamically: ghost args get ghost_value, non-ghost args
     #    consume block_args sequentially.
