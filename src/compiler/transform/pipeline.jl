@@ -249,6 +249,9 @@ function run_passes!(sci::StructuredIRCode)
 
     token_order_pass!(sci, alias_info)
 
+    assign_rng_streams!(sci)
+    lower_rng_state!(sci)
+
     licm_pass!(sci)
 
     dce_pass!(sci)

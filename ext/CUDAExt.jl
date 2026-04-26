@@ -174,8 +174,10 @@ function cuTile.launch(@nospecialize(f), grid, args...;
                        opt_level::Union{Int, Nothing}=nothing,
                        num_ctas::Union{Int, Nothing}=nothing,
                        occupancy::Union{Int, Nothing}=nothing)
-    # `KernelState` is the implicit per-launch ambient state; today it's a
-    # ghost so `flatten(state)` adds zero kernel args and zero overhead.
+    # `KernelState` is internal: a fresh `RandomDevice` seed every launch so
+    # bare `rand()` produces uncorrelated output across launches. Kernels that
+    # need a controlled seed should accept it as a regular argument and call
+    # `Random.seed!(Random.default_rng(), seed)` at entry.
     state = cuTile.KernelState()
     bytecode_version = check_tile_ir_support()
 
@@ -219,10 +221,10 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     # Run cached compilation
     cufunc = emit_function!(cache, mi; const_argtypes)
 
-    # Flatten arguments for cudacall - Constant returns () so ghost types
-    # disappear. The trailing `flatten(state)` matches the implicit
-    # KernelState destructured at the end of the bytecode kernel signature
-    # by `emit_kernel!`.
+    # Flatten arguments for cudacall - Constant returns () so ghost types disappear.
+    # The trailing `flatten(state)` pair matches the implicit KernelState
+    # destructured at the end of the bytecode kernel signature by
+    # `emit_kernel!`.
     flat_args = (Iterators.flatten(map(flatten, tile_args))..., flatten(state)...)
     flat_types = Tuple{map(typeof, flat_args)...}
 
@@ -267,5 +269,53 @@ to_tile_arg(t::Type) = Constant(t)
 
 # Tiled Broadcast — TiledStyle wins over CuArrayStyle
 BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.TiledStyle{max(N,M)}()
+
+
+#=============================================================================
+ Host-level `cuTile.RNG` methods that dispatch on `CuArray`.
+
+ The `RNG` struct and device-level fill kernels are defined in the main
+ package (`src/language/random.jl`); the methods below are extension-only
+ because they reference `CuArray` directly.
+=============================================================================#
+
+import Random
+using cuTile: RNG
+
+for T in (Float32, UInt32)
+    kname = Symbol("rand_fill_", nameof(T))
+    @eval function Random.rand!(rng::RNG, A::CuArray{$T})
+        n = length(A)
+        n == 0 && return A
+        # The fill kernel writes RAND_FILL_TILE elements per block via
+        # `store_partition_view`, which silently clips OOB elements when the
+        # last tile doesn't fully fit — so any `n` is supported with no kernel
+        # changes. Each block still consumes a full tile of counters though,
+        # so the host advances by `n_blocks * tile`, not `n`, to keep
+        # consecutive `rand!` calls disjoint.
+        n_blocks = cld(n, cuTile.RAND_FILL_TILE)
+        cuTile.launch(cuTile.$kname, n_blocks, A, rng.seed, rng.counter)
+        cuTile.advance_counter!(rng, UInt32(n_blocks * cuTile.RAND_FILL_TILE))
+        return A
+    end
+end
+
+Random.rand(rng::RNG, ::Type{T}, dims::Dims) where {T<:Union{Float32, UInt32}} =
+    Random.rand!(rng, CuArray{T}(undef, dims))
+Random.rand(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:Union{Float32, UInt32}} =
+    Random.rand(rng, T, Dims((d1, dims...)))
+Random.rand(rng::RNG, dims::Dims) = Random.rand(rng, Float32, dims)
+Random.rand(rng::RNG, d1::Integer, dims::Integer...) = Random.rand(rng, Dims((d1, dims...)))
+
+# `cuTile.rand` / `cuTile.rand!` aliases, mirroring `CUDA.rand` / `CUDA.rand!`.
+cuTile.rand(::Type{T}, dims::Dims) where {T<:Union{Float32, UInt32}} =
+    Random.rand(cuTile.get_global_rng(), T, dims)
+cuTile.rand(::Type{T}, d1::Integer, dims::Integer...) where {T<:Union{Float32, UInt32}} =
+    cuTile.rand(T, Dims((d1, dims...)))
+cuTile.rand(dims::Dims) = cuTile.rand(Float32, dims)
+cuTile.rand(d1::Integer, dims::Integer...) = cuTile.rand(Dims((d1, dims...)))
+
+cuTile.rand!(A::CuArray{<:Union{Float32, UInt32}}) =
+    Random.rand!(cuTile.get_global_rng(), A)
 
 end

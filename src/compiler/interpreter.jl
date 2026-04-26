@@ -243,24 +243,27 @@ end
 
 # Force inlining of all functions with source code.
 #
-# Julia 1.13+ changed inlining cost storage to encode costs into a UInt8 via
-# jl_encode_inlining_cost. This lossy encoding saturates costs above ~5000 to
-# MAX_INLINE_COST, making functions permanently non-inlineable regardless of the
-# caller's inline_cost_threshold. Each cuTile intrinsic call is penalized at
-# inline_nonleaf_penalty (1000), so functions with ≥5 intrinsic calls hit the
-# ceiling.
+# Julia's inliner stores per-function inlining cost in a fixed-width integer
+# field on CodeInfo, then sets `is_inlineable(src) := inlining_cost != MAX_INLINE_COST`.
+# When the body cost exceeds the storage's representable range it saturates to
+# MAX_INLINE_COST and the function becomes permanently non-inlineable, regardless
+# of the caller's `inline_cost_threshold`. The storage is UInt16 on 1.12 (cap
+# ≈65535) and was narrowed to UInt8 on 1.13+ (cap ≈5000 via jl_encode_inlining_cost).
+# Every cuTile intrinsic call is a `:call` penalized at `inline_nonleaf_penalty`
+# (1000), so functions like `philox2x_rounds` (≈170 such calls after inner
+# expansion) blow past both caps.
 #
-# This override tells the inliner to always consider functions with available
-# source code as inlineable, matching the behavior that our typemax(Int)
-# inline_cost_threshold intends.
-@static if VERSION >= v"1.13-"
-    function CC.src_inlining_policy(interp::cuTileInterpreter,
-            @nospecialize(src), @nospecialize(info::CC.CallInfo), stmt_flag::UInt32)
+# This override bypasses the `is_inlineable` check and tells the inliner to
+# always inline functions with available source, matching what our
+# `inline_cost_threshold = typemax(Int)` setting intends.
+function CC.src_inlining_policy(interp::cuTileInterpreter,
+        @nospecialize(src), @nospecialize(info::CC.CallInfo), stmt_flag::UInt32)
+    @static if isdefined(CC, :OptimizationState)
         isa(src, CC.OptimizationState) && (src = src.src)
-        isa(src, CC.MaybeCompressed) && return true
-        isa(src, CC.IRCode) && return true
-        return false
     end
+    isa(src, CC.MaybeCompressed) && return true
+    isa(src, CC.IRCode) && return true
+    return false
 end
 
 # Disable semi-concrete interpretation (broken with overlays per JuliaLang/julia#47349)
