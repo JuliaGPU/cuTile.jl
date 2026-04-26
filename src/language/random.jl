@@ -229,15 +229,11 @@ end
 # literal Int at the IR level by `rng_assign_ids_pass!`).
 DeviceRNG() = DeviceRNG(Intrinsics.rng_stream())
 
-# Overlays — non-foldable, state mutation is a real effect.
+# Overlays for methods that shadow stdlib's `Random.default_rng` / `Random.rand`.
+# Non-foldable, state mutation is a real effect.
 
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.default_rng() =
     DeviceRNG(Intrinsics.rng_default())
-
-Base.Experimental.@consistent_overlay cuTileMethodTable function Random.seed!(rng::DeviceRNG, seed::Integer)
-    Intrinsics.rng_set_seed(rng.stream, UInt32(seed))
-    return rng
-end
 
 # Bare rand / rand(T) / rand(T, dims) — route through the default stream.
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{Float32}) =
@@ -251,15 +247,25 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{T}, d
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(dims::NTuple{N, Int}) where {N} =
     rand_tile(Intrinsics.rng_default(), Float32, dims)
 
+# Untyped variadic — default to `Float32` instead of stdlib's `Float64`.
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(dims::Integer...) =
+    Random.rand(Dims(dims))
+
+function Random.seed!(rng::DeviceRNG, seed::Integer)
+    Intrinsics.rng_set_seed(rng.stream, UInt32(seed))
+    return rng
+end
+
 # Explicit-stream rand(rng, ...) variants — unwrap and pass the stream ID.
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(rng::DeviceRNG, ::Type{T}) where {T<:Union{Float32, UInt32}} =
+Random.rand(rng::DeviceRNG, ::Type{T}) where {T<:Union{Float32, UInt32}} =
     rand_scalar(rng.stream, T)
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(rng::DeviceRNG) =
-    rand_scalar(rng.stream, Float32)
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(rng::DeviceRNG, ::Type{T}, dims::NTuple{N, Int}) where {T<:Union{Float32, UInt32}, N} =
+Random.rand(rng::DeviceRNG) = rand_scalar(rng.stream, Float32)
+Random.rand(rng::DeviceRNG, ::Type{T}, dims::NTuple{N, Int}) where {T<:Union{Float32, UInt32}, N} =
     rand_tile(rng.stream, T, dims)
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(rng::DeviceRNG, dims::NTuple{N, Int}) where {N} =
+Random.rand(rng::DeviceRNG, dims::NTuple{N, Int}) where {N} =
     rand_tile(rng.stream, Float32, dims)
+Random.rand(rng::DeviceRNG, dims::Integer...) =
+    Random.rand(rng, Dims(dims))
 
 #=============================================================================
  Host-level RNG wrapper

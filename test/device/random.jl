@@ -43,6 +43,34 @@ end
     @test length(unique(v)) == n_blocks * 16
 end
 
+@testset "variadic-Integer dim forms" begin
+    function k_typed(out::ct.TileArray{Float32, 1})
+        pid = ct.bid(1); ct.store(out, pid, rand(Float32, 16)); return
+    end
+    function k_untyped(out::ct.TileArray{Float32, 1})
+        pid = ct.bid(1); ct.store(out, pid, rand(16)); return
+    end
+    function k_rng_typed(out::ct.TileArray{Float32, 1})
+        pid = ct.bid(1); a = ct.DeviceRNG()
+        ct.store(out, pid, rand(a, Float32, 16)); return
+    end
+    function k_rng_untyped(out::ct.TileArray{Float32, 1})
+        pid = ct.bid(1); a = ct.DeviceRNG()
+        ct.store(out, pid, rand(a, 16)); return
+    end
+    function k_multidim(out::ct.TileArray{Float32, 1})
+        pid = ct.bid(1); ct.store(out, pid, ct.reshape(rand(Float32, 4, 4), (16,))); return
+    end
+
+    for k in (k_typed, k_untyped, k_rng_typed, k_rng_untyped, k_multidim)
+        out = CUDA.zeros(Float32, 16)
+        ct.launch(k, 1, out)
+        v = Array(out)
+        @test all(0f0 .< v .< 1f0)
+        @test length(unique(v)) == 16
+    end
+end
+
 @testset "two rand() calls in the same kernel are disjoint" begin
     function k(a::ct.TileArray{Float32, 1}, b::ct.TileArray{Float32, 1})
         pid = ct.bid(1)
