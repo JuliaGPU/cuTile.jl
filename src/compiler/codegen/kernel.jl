@@ -145,12 +145,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         end
     end
 
-    # Every destructured arg (TileArray or struct) lands as a lazy `arg_ref`
-    # CGVal. Field accesses on it (`arr.ptr`, `arr.sizes[i]`) go through
-    # `resolve_arg_ref`, which materializes leaf scalars from
-    # `ctx.arg_flat_values`. Tensor views are emitted lazily at each
-    # `make_tensor_view` call site (not eagerly here), letting the bytecode
-    # optimizer CSE redundant ones.
+    # For destructured args, create lazy CGVals that track the argument index
     for (arg_idx, argtype) in ctx.arg_types
         tv = arg_ref_value(arg_idx, Int[], argtype)
         ctx[SlotNumber(arg_idx)] = tv
