@@ -1,6 +1,18 @@
 # Memory
 
-# cuda_tile.load_ptr_tko
+"""
+    Intrinsics.load_ptr_tko(ptrs::Tile{Ptr{T},S},
+                            latency::Union{Int,Nothing}=nothing,
+                            mask::Union{Tile{Bool,S},Nothing}=nothing,
+                            padding::Union{Tile{T,S},Nothing}=nothing) -> Tile{T,S}
+
+Token-ordered gather load from a tile of pointers; lowers to
+`cuda_tile.load_ptr_tko`.
+
+`latency` is a compile-time hint (1–10 or `nothing`). The token argument
+is appended by `token_order_pass!` and is not part of the user-visible
+signature.
+"""
 @intrinsic load_ptr_tko(ptrs, latency=nothing, mask=nothing, padding=nothing)
 function tfunc(𝕃, ::typeof(Intrinsics.load_ptr_tko), @nospecialize(ptrs), @nospecialize args...)
     ptrs_type = CC.widenconst(ptrs)
@@ -60,7 +72,18 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     return CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
 end
 
-# cuda_tile.store_ptr_tko
+"""
+    Intrinsics.store_ptr_tko(ptrs::Tile{Ptr{T},S}, values::Tile{T,S},
+                             latency::Union{Int,Nothing},
+                             mask::Union{Tile{Bool,S},Nothing}=nothing) -> Nothing  where {T,S}
+
+Token-ordered scatter store to a tile of pointers; lowers to
+`cuda_tile.store_ptr_tko`.
+
+`latency` is a compile-time hint (1–10 or `nothing`). The token argument
+is appended by `token_order_pass!` and is not part of the user-visible
+signature.
+"""
 @intrinsic store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
                                    latency::Union{Int, Nothing},
                                    mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}

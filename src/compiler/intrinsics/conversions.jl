@@ -1,6 +1,16 @@
 # Type conversions
 
-# cuda_tile.bitcast (reinterpret bits as different type, same bitwidth)
+"""
+    Intrinsics.bitcast(x::Tile, ::Type{T}) -> Tile{T}
+
+Reinterprets the bits of `x` element-wise as type `T`; lowers to
+`cuda_tile.bitcast`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen. `T`
+must be a compile-time constant. The op is elided when source and target
+map to the same Tile IR type (e.g. `Int32`/`UInt32`, since Tile IR integers
+are signless).
+"""
 @intrinsic bitcast(x, ::Type{T}) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.bitcast), @nospecialize(x), @nospecialize(target_type))
     T = instanceof_tfunc(target_type)
@@ -31,7 +41,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
-# cuda_tile.exti (scalar integer extension)
+"""
+    Intrinsics.exti(x::Tile{<:Integer}, ::Type{T}, s::Signedness.T) -> Tile{T}     where {T<:Integer}
+
+Element-wise integer extension; lowers to `cuda_tile.exti`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen. `s`
+and `T` are compile-time constants.
+"""
 @intrinsic exti(x::I, ::Type{T}, s::Signedness.T) where {I<:Integer, T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.exti), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     T = instanceof_tfunc(target_type)
@@ -56,7 +73,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
-# cuda_tile.ftof (scalar float to float)
+"""
+    Intrinsics.ftof(x::Tile{<:AbstractFloat}, ::Type{F2}) -> Tile{F2}     where {F2<:AbstractFloat}
+
+Element-wise floating-point to floating-point conversion; lowers to
+`cuda_tile.ftof`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen. `F2`
+must be a compile-time constant. The current emit does not pass a
+`rounding_mode` and so uses Tile IR's default.
+"""
 @intrinsic ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type))
     T = instanceof_tfunc(target_type)
@@ -80,7 +106,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
-# cuda_tile.ftoi (scalar float to integer)
+"""
+    Intrinsics.ftoi(x::Tile{<:AbstractFloat}, ::Type{I}, s::Signedness.T) -> Tile{I}     where {I<:Integer}
+
+Element-wise floating-point to integer conversion; lowers to
+`cuda_tile.ftoi`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen. `s`
+and `I` are compile-time constants.
+"""
 @intrinsic ftoi(x::AbstractFloat, ::Type{I}, s::Signedness.T) where {I<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.ftoi), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     T = instanceof_tfunc(target_type)
@@ -105,7 +139,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
-# cuda_tile.itof (scalar integer to float)
+"""
+    Intrinsics.itof(x::Tile{<:Integer}, ::Type{F}, s::Signedness.T) -> Tile{F}     where {F<:AbstractFloat}
+
+Element-wise integer to floating-point conversion; lowers to
+`cuda_tile.itof`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen. `s`
+and `F` are compile-time constants.
+"""
 @intrinsic itof(x::Integer, ::Type{F}, s::Signedness.T) where {F<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.itof), @nospecialize(x), @nospecialize(target_type), @nospecialize(s))
     T = instanceof_tfunc(target_type)
@@ -130,7 +172,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
-# cuda_tile.trunci (scalar integer truncation)
+"""
+    Intrinsics.trunci(x::Tile{<:Integer}, ::Type{T}) -> Tile{T}     where {T<:Integer}
+
+Element-wise integer truncation; lowers to `cuda_tile.trunci`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen. `T`
+must be a compile-time constant. The current emit does not pass an
+`overflow` flag and so uses Tile IR's default.
+"""
 @intrinsic trunci(x::Integer, ::Type{T}) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.trunci), @nospecialize(x), @nospecialize(target_type))
     T = instanceof_tfunc(target_type)

@@ -18,7 +18,15 @@ function validate_tile_shape(shape, context::String)
     end
 end
 
-# cuda_tile.broadcast
+"""
+    Intrinsics.broadcast(tile::Tile{T,S}, shape::Tuple) -> Tile{T,Tuple{shape...}}
+
+Broadcasts a tile to a new shape; lowers to `cuda_tile.broadcast` (preceded
+by a `cuda_tile.reshape` when leading singleton dimensions must be added).
+
+`shape` is a compile-time tuple in Julia (column-major) order; it is
+reversed to Tile IR's row-major order before emission.
+"""
 @intrinsic broadcast(tile, shape)
 function tfunc(𝕃, ::typeof(Intrinsics.broadcast), @nospecialize(tile), @nospecialize(shape_arg))
     tile_type = CC.widenconst(tile)
@@ -97,7 +105,14 @@ function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
     current_val
 end
 
-# cuda_tile.cat
+"""
+    Intrinsics.cat(tiles::Tuple{Tile,Tile}, axis::Integer) -> Tile
+
+Concatenates two tiles along `axis`; lowers to `cuda_tile.cat`.
+
+`axis` is a 0-indexed compile-time constant in Julia order; negative values
+index from the end.
+"""
 @intrinsic cat(tiles, axis)
 function tfunc(𝕃, ::typeof(Intrinsics.cat), @nospecialize(tiles), @nospecialize(axis_arg))
     tuple_type = CC.widenconst(tiles)
@@ -155,7 +170,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     CGVal(result, output_tile_type, Tile{elem_type, TupleType(julia_output)}, output_shape)
 end
 
-# cuda_tile.constant
+"""
+    Intrinsics.constant(shape::Tuple, value, ::Type{T}) -> Tile{T,Tuple{shape...}}
+
+Constructs a constant tile of the given shape and element type; lowers to
+`cuda_tile.constant`.
+
+`shape` and `T` must be compile-time constants. If `value` is also a
+compile-time constant the result is emitted as a single `ConstantOp`;
+otherwise the runtime scalar `value` is broadcast to fill the tile.
+"""
 @intrinsic constant(shape, value, T)
 function tfunc(𝕃, ::typeof(Intrinsics.constant), @nospecialize(shape_arg), @nospecialize(value), @nospecialize(type_arg_lat))
     isa(shape_arg, CC.Const) || return nothing
@@ -196,7 +220,14 @@ end
 
 # TODO: cuda_tile.entry
 
-# cuda_tile.extract
+"""
+    Intrinsics.extract(tile::Tile{T}, index::Tuple, shape::Tuple) -> Tile{T,Tuple{shape...}}
+
+Extracts a non-overlapping subtile from `tile`; lowers to `cuda_tile.extract`.
+
+`index` and `shape` are compile-time tuples in Julia order, reversed to
+Tile IR's row-major order before emission.
+"""
 @intrinsic extract(tile, index, shape)
 function tfunc(𝕃, ::typeof(Intrinsics.extract), @nospecialize(tile_lat), @nospecialize(index), @nospecialize(shape_arg))
     tile_type = CC.widenconst(tile_lat)
@@ -248,7 +279,14 @@ end
 
 # TODO: cuda_tile.get_global
 
-# cuda_tile.get_num_tile_blocks
+"""
+    Intrinsics.get_num_tile_blocks(axis::Integer) -> Int32
+
+Returns the grid size along `axis`; lowers to `cuda_tile.get_num_tile_blocks`.
+
+`axis` must be a compile-time constant in `(0, 1, 2)`. The Tile IR op returns
+all three dimensions in one go; the codegen selects the requested axis.
+"""
 @intrinsic get_num_tile_blocks(axis)
 tfunc(𝕃, ::typeof(Intrinsics.get_num_tile_blocks), @nospecialize(axis)) = Int32
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), args)
@@ -261,7 +299,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), a
     CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Tile{Int32, Tuple{}})
 end
 
-# cuda_tile.get_tile_block_id
+"""
+    Intrinsics.get_tile_block_id(axis::Integer) -> Int32
+
+Returns the current tile block's coordinate along `axis`; lowers to
+`cuda_tile.get_tile_block_id`.
+
+`axis` must be a compile-time constant in `(0, 1, 2)`. The Tile IR op returns
+all three coordinates in one go; the codegen selects the requested axis.
+"""
 @intrinsic get_tile_block_id(axis)
 tfunc(𝕃, ::typeof(Intrinsics.get_tile_block_id), @nospecialize(axis)) = Int32
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), args)
@@ -277,7 +323,14 @@ end
 
 # TODO: cuda_tile.global
 
-# cuda_tile.iota
+"""
+    Intrinsics.iota(shape::Tuple, ::Type{T}) -> Tile{T,Tuple{shape...}}
+
+Generates a tile filled with the unsigned-integer sequence `0:n-1`; lowers
+to `cuda_tile.iota`.
+
+`shape` and `T` are compile-time constants.
+"""
 @intrinsic iota(shape, T)
 function tfunc(𝕃, ::typeof(Intrinsics.iota), @nospecialize(shape_arg), @nospecialize(type_arg_lat))
     isa(shape_arg, CC.Const) || return nothing
@@ -308,7 +361,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
 end
 
-# cuda_tile.mmaf, cuda_tile.mmai
+"""
+    Intrinsics.mma(a::Tile, b::Tile, acc::Tile) -> typeof(acc)
+
+Floating-point matrix-multiply-accumulate computing `a*b + acc`; lowers to
+`cuda_tile.mmaf`.
+
+Integer MMA (`cuda_tile.mmai`) is not yet supported by this intrinsic.
+"""
 @intrinsic mma(a::Tile, b::Tile, acc::Tile)
 tfunc(𝕃, ::typeof(Intrinsics.mma), @nospecialize(a), @nospecialize(b), @nospecialize(acc)) = CC.widenconst(acc)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
@@ -327,7 +387,16 @@ end
 
 # TODO: cuda_tile.module
 
-# cuda_tile.offset
+"""
+    Intrinsics.offset(base::Tile{Ptr{T}}, offsets::Tile{<:Integer}) -> Tile{Ptr{T}}
+
+Element-wise advances a tile of pointers by an integer offset (scaled by
+the pointee bitwidth); lowers to `cuda_tile.offset`.
+
+`base` and `offsets` are broadcast to a common shape (the operand with more
+dimensions wins). Tile IR itself requires same-shape operands, so the
+broadcasts are emitted explicitly.
+"""
 @intrinsic offset(base, offsets)
 function tfunc(𝕃, ::typeof(Intrinsics.offset), @nospecialize(base), @nospecialize(offsets))
     base_type = CC.widenconst(base)
@@ -381,7 +450,14 @@ end
 
 # TODO: cudatile.pack
 
-# cuda_tile.permute
+"""
+    Intrinsics.permute(tile::Tile, perm::Tuple) -> Tile
+
+Permutes a tile's dimensions; lowers to `cuda_tile.permute`.
+
+`perm` is a compile-time tuple of 0-indexed dimension numbers in Julia
+order; it is translated to Tile IR row-major order before emission.
+"""
 @intrinsic permute(tile, perm)
 function tfunc(𝕃, ::typeof(Intrinsics.permute), @nospecialize(tile_lat), @nospecialize(perm_arg))
     tile_type = CC.widenconst(tile_lat)
@@ -432,7 +508,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
 end
 
 
-# cuda_tile.reduce
+"""
+    Intrinsics.reduce(tiles::Tuple{Tile,...}, axis::Integer, f, identities::Tuple) -> Tuple{Tile,...}
+
+Variadic reduction along `axis` with associative combiner `f` and per-operand
+`identities`; lowers to `cuda_tile.reduce`.
+
+`axis`, `f`, and `identities` must be compile-time constants. The reduced
+dimension is reintroduced as size 1 to preserve Julia's reduction semantics
+(Tile IR removes the dimension instead).
+"""
 @intrinsic reduce(tiles, axis, f, identities)
 function tfunc(𝕃, ::typeof(Intrinsics.reduce), @nospecialize(tiles), @nospecialize(axis_arg), @nospecialize args...)
     tuple_type = CC.widenconst(tiles)
@@ -550,7 +635,15 @@ make_identity_val(val, dtype, ::Type{T}) where T <: AbstractFloat =
 make_identity_val(val, dtype, ::Type{T}) where T <: Integer =
     IntegerIdentityVal(to_uint128(T(val)), dtype, T)
 
-# cuda_tile.reshape
+"""
+    Intrinsics.reshape(tile::Tile{T}, shape::Tuple) -> Tile{T,Tuple{shape...}}
+
+Reshapes a tile to a new shape with the same number of elements; lowers to
+`cuda_tile.reshape`.
+
+`shape` is a compile-time tuple in Julia (column-major) order; it is
+reversed to Tile IR's row-major order before emission.
+"""
 @intrinsic reshape(tile, shape)
 function tfunc(𝕃, ::typeof(Intrinsics.reshape), @nospecialize(tile_lat), @nospecialize(shape_arg))
     tile_type = CC.widenconst(tile_lat)
@@ -586,7 +679,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     CGVal(result, result_type_id, Tile{elem_type, Tuple{target_shape_tuple...}}, target_shape)
 end
 
-# cuda_tile.scan
+"""
+    Intrinsics.scan(tiles::Tuple{Tile,...}, axis::Integer, f, identities::Tuple, reverse::Bool=false) -> Tuple{Tile,...}
+
+Inclusive parallel prefix scan along `axis` with associative combiner `f`
+and per-operand `identities`; lowers to `cuda_tile.scan`.
+
+`axis`, `f`, `identities`, and `reverse` must be compile-time constants.
+The output shape matches the input shape.
+"""
 @intrinsic scan(tiles, axis, f, identities, reverse=false)
 function tfunc(𝕃, ::typeof(Intrinsics.scan), @nospecialize(tiles), @nospecialize args...)
     tuple_type = CC.widenconst(tiles)
@@ -672,7 +773,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     return CGVal(results, jltype)
 end
 
-# cuda_tile.select
+"""
+    Intrinsics.select(cond::Tile{Bool}, x::Tile, y::Tile) -> Tile
+
+Element-wise selects between `x` and `y` based on `cond`; lowers to
+`cuda_tile.select`. `cond`, `x`, and `y` must have matching shapes.
+
+Also invocable with scalar `cond`/`x`/`y`, which are promoted to 0-D tiles
+before codegen.
+"""
 @intrinsic select(cond::Bool, x::T, y::T) where {T}# = Core.ifelse(cond, x, y)
 @intrinsic select(cond::Tile{Bool}, x::T, y::T) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.select), @nospecialize(cond), @nospecialize(x), @nospecialize(y))
@@ -702,11 +811,26 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     CGVal(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
 end
 
-# cuda_tile.to_scalar / cuda_tile.from_scalar
-# Interpretation-only intrinsics for Julia's broadcast overlay dispatch.
-# to_scalar changes jltype from Tile{T,S} to T; from_scalar restores it.
-# Both are eliminated by scalar_elim_pass! before codegen — no emit needed.
+"""
+    Intrinsics.to_scalar(tile::Tile{T}) -> T
+
+Reinterprets a tile as its scalar element type, paired with [`from_scalar`](@ref).
+
+This intrinsic is interpretation-only: it bridges scalar/tile dispatch in
+Julia's broadcast overlays at type-inference time, and is removed by
+`scalar_elim_pass!` before codegen — no Tile IR is ever emitted.
+"""
 @intrinsic to_scalar(tile)
+
+"""
+    Intrinsics.from_scalar(x::T, ::Type{S}) -> Tile{T,S}
+
+Reinterprets a scalar as a tile of shape `S`, paired with [`to_scalar`](@ref).
+
+This intrinsic is interpretation-only: it bridges scalar/tile dispatch in
+Julia's broadcast overlays at type-inference time, and is removed by
+`scalar_elim_pass!` before codegen — no Tile IR is ever emitted.
+"""
 @intrinsic from_scalar(x, S)
 function tfunc(𝕃, ::typeof(Intrinsics.from_scalar), @nospecialize(x), @nospecialize(S_lat))
     T = CC.widenconst(x)

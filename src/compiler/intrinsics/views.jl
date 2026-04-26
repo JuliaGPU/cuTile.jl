@@ -2,7 +2,16 @@
 
 
 
-# cuda_tile.get_index_space_shape
+"""
+    Intrinsics.get_index_space_shape(pv::PartitionView, axis::Integer) -> Int32
+
+Returns the size of `pv`'s index space along `axis` (i.e. how many tiles
+fit along that dimension); lowers to `cuda_tile.get_index_space_shape`.
+
+`axis` is 0-indexed in Julia order and must be a compile-time constant.
+The Tile IR op returns the full shape; the codegen picks the requested
+axis (in row-major order).
+"""
 @intrinsic get_index_space_shape(pv, axis)
 tfunc(𝕃, ::typeof(Intrinsics.get_index_space_shape), @nospecialize(pv), @nospecialize(axis)) = Int32
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape), args)
@@ -40,7 +49,20 @@ end
 
 # TODO: cuda_tile.get_tensor_shape
 
-# cuda_tile.load_view_tko
+"""
+    Intrinsics.load_partition_view(pv::PartitionView{T,N,Shape},
+                                   latency::Union{Int,Nothing},
+                                   allow_tma::Bool,
+                                   indices::NTuple{M,<:Integer}) -> Tile{T,Shape}
+
+Token-ordered load of a tile from a `PartitionView`; lowers to
+`cuda_tile.load_view_tko`.
+
+`latency` and `allow_tma` are compile-time hints. `indices` is in Julia
+order and is reversed/zero-padded to match `pv`'s index space rank
+before emission. The token argument is appended by `token_order_pass!`
+and is not part of the user-visible signature.
+"""
 @intrinsic load_partition_view(pv, latency, allow_tma, indices)
 function tfunc(𝕃, ::typeof(Intrinsics.load_partition_view), @nospecialize(pv), @nospecialize args...)
     pv_type = CC.widenconst(pv)
@@ -120,7 +142,20 @@ function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type:
     return index_vals
 end
 
-# cuda_tile.make_partition_view
+"""
+    Intrinsics.make_partition_view(tv::TensorView{T,N},
+                                   shape::Tuple,
+                                   padding_mode::PaddingValue.T,
+                                   order::Union{Tuple,Nothing}) -> PartitionView{T,N,Tuple{shape...}}
+
+Constructs a `PartitionView` over `tv` with per-tile `shape`; lowers to
+`cuda_tile.make_partition_view`.
+
+`shape`, `padding_mode`, and `order` are compile-time constants. `shape`
+is in Julia (column-major) order, reversed for Tile IR's row-major
+layout. `order` may be `nothing` (identity) or a Julia-order 1-indexed
+permutation tuple, converted to Tile IR's 0-indexed row-major dim_map.
+"""
 @intrinsic make_partition_view(tv, shape, padding_mode, order)
 function tfunc(𝕃, ::typeof(Intrinsics.make_partition_view), @nospecialize(tv), @nospecialize(shape_arg), @nospecialize args...)
     tv_type = CC.widenconst(tv)
@@ -206,19 +241,19 @@ function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{I
     return dynamic_vals
 end
 
-# cuda_tile.make_tensor_view
-#
-# Takes the originating TileArray type plus its destructured pieces (ptr,
-# sizes-tuple, strides-tuple) so the language layer can call it directly with
-# `make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)`. The Tile
-# IR `MakeTensorViewOp` consumes the destructured pieces as separate operands;
-# this matches that 1:1 (no aggregate side-table). The TileArray type carries
-# the `ArraySpec` (alignment, contiguity, per-axis divisibility) needed for
-# AssumeOp emission.
-#
-# Each call emits a fresh `MakeTensorViewOp` (with its own AssumeOp chain).
-# `cuda_tile_translate`'s bytecode optimizer is expected to CSE redundant
-# tensor views; AssumeOps are likewise pure and dedup as well.
+"""
+    Intrinsics.make_tensor_view(::Type{<:TileArray{T,N}}, ptr, sizes::Tuple, strides::Tuple) -> TensorView{T,N}
+
+Constructs a `TensorView` from a destructured `TileArray`; lowers to
+`cuda_tile.make_tensor_view`.
+
+The first argument is a compile-time constant `TileArray` type carrying
+the `ArraySpec` (alignment, contiguity, per-axis divisibility) used to
+emit accompanying `cuda_tile.assume` ops. `sizes` and `strides` are tuples
+in Julia (column-major) order; they are reversed for Tile IR's row-major
+layout. Each call emits a fresh `MakeTensorViewOp` and `AssumeOp` chain;
+the bytecode optimizer is expected to CSE redundant ones.
+"""
 @intrinsic make_tensor_view(::Type{T}, ptr, sizes, strides) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view),
                @nospecialize(T_arg), @nospecialize args...)
@@ -278,7 +313,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     return CGVal(tensor_view, tv_type, result_jltype)
 end
 
-# cuda_tile.store_view_tko
+"""
+    Intrinsics.store_partition_view(pv::PartitionView{T,N,Shape}, tile::Tile{T},
+                                    latency::Union{Int,Nothing},
+                                    allow_tma::Bool,
+                                    indices::NTuple{M,<:Integer}) -> Nothing  where {T,N,Shape,M}
+
+Token-ordered store of a tile into a `PartitionView`; lowers to
+`cuda_tile.store_view_tko`.
+
+`latency` and `allow_tma` are compile-time hints. `indices` is in Julia
+order and is reversed/zero-padded to match `pv`'s index space rank
+before emission. 0-D tiles are reshaped to 1-D (size 1) since partition
+views require at least 1-D. The token argument is appended by
+`token_order_pass!` and is not part of the user-visible signature.
+"""
 @intrinsic store_partition_view(pv::PartitionView{T, N, Shape},
                                           tile::Tile{T},
                                           latency::Union{Int, Nothing},

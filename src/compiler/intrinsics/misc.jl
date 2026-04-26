@@ -1,6 +1,15 @@
 # miscellaneous intrinsics
 
-# cuda_tile.assert
+"""
+    Intrinsics.assert(cond::Tile{Bool}, message::String) -> Nothing
+
+Element-wise runtime assertion that every entry of `cond` is `true`;
+lowers to `cuda_tile.assert`.
+
+Also invocable with a scalar `Bool` `cond`, promoted to a 0-D tile before
+codegen. `message` must be a compile-time constant. The op is elided when
+`cond` folds to `true` at compile time.
+"""
 @intrinsic assert(cond::Bool, message::String)
 tfunc(𝕃, ::typeof(Intrinsics.assert), @nospecialize(cond), @nospecialize(message)) = Nothing
 efunc(::typeof(Intrinsics.assert), effects::CC.Effects) =
@@ -84,6 +93,19 @@ end
 # Escape literal `%` as `%%` for C printf format strings
 escape_printf(s::String) = replace(s, "%" => "%%")
 
+"""
+    Intrinsics.print_tko(xs...) -> Nothing
+
+Token-ordered formatted print to the device console; lowers to
+`cuda_tile.print_tko`.
+
+Each argument is either a compile-time constant (folded into the format
+string, with `%` escaped to `%%`) or a runtime tile (which receives an
+inferred `printf` specifier such as `%d`/`%ld`/`%f` based on its element
+type). The token argument is appended by `token_order_pass!` and is not
+part of the user-visible signature; on Tile IR < 13.2 a fresh token is
+synthesised since the op did not yet return one.
+"""
 @intrinsic print_tko(xs...)
 tfunc(𝕃, ::typeof(Intrinsics.print_tko), @nospecialize(args...)) = Nothing
 efunc(::typeof(Intrinsics.print_tko), effects::CC.Effects) =
@@ -139,7 +161,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.print_tko), args)
     nothing  # print returns Nothing
 end
 
-# cuda_tile.format_string (used by string interpolation fusion)
+"""
+    Intrinsics.format_string(xs...) -> String
+
+Placeholder for string-interpolation fusion: every call must be fused
+into a `print_tko` by the print-fusion pass before codegen runs.
+Reaching `emit_intrinsic!` for this op signals an unsupported standalone
+`string()` with tile arguments and raises an `IRError`.
+
+There is no Tile IR opcode for this intrinsic.
+"""
 @intrinsic format_string(xs...)
 tfunc(𝕃, ::typeof(Intrinsics.format_string), @nospecialize(args...)) = String
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.format_string), args)

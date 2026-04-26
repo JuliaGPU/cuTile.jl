@@ -17,7 +17,21 @@ function atomic_tfunc(𝕃, @nospecialize(ptrs), @nospecialize args...)
     return Tile{T, S}
 end
 
-# cuda_tile.atomic_cas_tko
+"""
+    Intrinsics.atomic_cas(ptr_tile::Tile{Ptr{T},S}, expected::Tile{T,S}, desired::Tile{T,S},
+                          mask::Union{Tile{Bool,S},Nothing},
+                          memory_order::MemoryOrderingSemantics.T,
+                          memory_scope::MemoryScope.T) -> Tile{T,S}
+
+Element-wise token-ordered atomic compare-and-swap on a tile of pointers;
+lowers to `cuda_tile.atomic_cas_tko`. Returns the original values prior
+to the swap.
+
+`memory_order` and `memory_scope` are compile-time constants. When `mask`
+is provided, masked-out elements are not modified and the corresponding
+result entry is `expected[i]`. The token argument is appended by
+`token_order_pass!` and is not part of the user-visible signature.
+"""
 @intrinsic atomic_cas(ptr_tile, expected, desired, mask, memory_order, memory_scope)
 function tfunc(𝕃, ::typeof(Intrinsics.atomic_cas), @nospecialize(ptrs), @nospecialize args...)
     atomic_tfunc(𝕃, ptrs, args...)
@@ -143,13 +157,31 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
 end
 
 # cuda_tile.atomic_rmw_tko variants
-for (op, mode) in ((:xchg, AtomicRMWMode.XCHG), (:add, AtomicRMWMode.ADD),
-                    (:max, AtomicRMWMode.MAX),   (:min, AtomicRMWMode.MIN),
-                    (:or,  AtomicRMWMode.OR),    (:and, AtomicRMWMode.AND),
-                    (:xor, AtomicRMWMode.XOR))
+for (op, mode, desc) in ((:xchg, AtomicRMWMode.XCHG, "exchange (`val`, returning the old value)"),
+                         (:add,  AtomicRMWMode.ADD,  "integer addition (or floating-point addition for AbstractFloat element types, via `cuda_tile.atomic_rmw_tko`'s `addf` mode)"),
+                         (:max,  AtomicRMWMode.MAX,  "signed maximum"),
+                         (:min,  AtomicRMWMode.MIN,  "signed minimum"),
+                         (:or,   AtomicRMWMode.OR,   "bitwise OR"),
+                         (:and,  AtomicRMWMode.AND,  "bitwise AND"),
+                         (:xor,  AtomicRMWMode.XOR,  "bitwise XOR"))
     name = Symbol(:atomic_, op)
+    docstring = """
+        Intrinsics.$name(ptr_tile::Tile{Ptr{T},S}, val::Tile{T,S},
+                         mask::Union{Tile{Bool,S},Nothing},
+                         memory_order::MemoryOrderingSemantics.T,
+                         memory_scope::MemoryScope.T) -> Tile{T,S}
+
+    Element-wise token-ordered atomic read-modify-write performing $desc;
+    lowers to `cuda_tile.atomic_rmw_tko`. Returns the original values
+    prior to the modification.
+
+    `memory_order` and `memory_scope` are compile-time constants. When
+    `mask` is provided, masked-out elements are not modified. The token
+    argument is appended by `token_order_pass!` and is not part of the
+    user-visible signature.
+    """
     @eval begin
-        @intrinsic $name(ptr_tile, val, mask, memory_order, memory_scope)
+        @doc $docstring @intrinsic $name(ptr_tile, val, mask, memory_order, memory_scope)
         tfunc(𝕃, ::typeof(Intrinsics.$name), @nospecialize args...) = atomic_tfunc(𝕃, args...)
         efunc(::typeof(Intrinsics.$name), effects::CC.Effects) =
             CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)

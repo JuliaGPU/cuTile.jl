@@ -97,7 +97,13 @@ end
 
 ## Integer arithmetic
 
-# cuda_tile.absi
+"""
+    Intrinsics.absi(x::Tile{<:Integer}) -> Tile
+
+Element-wise integer absolute value; lowers to `cuda_tile.absi`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen.
+"""
 @intrinsic absi(x::Integer)
 @intrinsic absi(x::Tile{<:Integer})
 tfunc(𝕃, ::typeof(Intrinsics.absi), @nospecialize(x)) = CC.widenconst(x)
@@ -105,7 +111,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absi), args)
     @something try_const_fold(ctx, abs, args) emit_unop!(ctx, args, encode_AbsIOp!)
 end
 
-# cuda_tile.addi
+"""
+    Intrinsics.addi(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer addition; lowers to `cuda_tile.addi`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic addi(x::T, y::T) where {T<:Integer}
 @intrinsic addi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.addi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -113,7 +126,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args)
     @something try_const_fold(ctx, +, args) emit_binop!(ctx, args, encode_AddIOp!)
 end
 
-# cuda_tile.cldi (ceiling division, toward positive infinity)
+"""
+    Intrinsics.cldi(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer division rounded toward positive infinity (ceiling
+division); lowers to `cuda_tile.divi` with `rounding=positive_inf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag. Mismatched-shape operands are
+broadcast to a common shape.
+"""
 @intrinsic cldi(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic cldi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.cldi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -122,7 +144,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cldi), args)
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.PositiveInf)
 end
 
-# cuda_tile.cmpi
+"""
+    Intrinsics.cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) -> Tile{Bool}  where {T<:Integer}
+
+Element-wise integer comparison; lowers to `cuda_tile.cmpi`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `pred`
+and `s` are compile-time `ComparisonPredicate.T` and `Signedness.T` flags.
+Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic cmpi(x::T, y::T, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Integer}
 @intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpi), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(s))
@@ -156,7 +186,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
-# cuda_tile.divi (truncating division, toward zero)
+"""
+    Intrinsics.divi(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer division rounded toward zero (truncating division);
+lowers to `cuda_tile.divi` with `rounding=zero`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag. Mismatched-shape operands are
+broadcast to a common shape.
+"""
 @intrinsic divi(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic divi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.divi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -165,7 +204,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divi), args)
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.Zero)
 end
 
-# cuda_tile.fldi (floor division, toward negative infinity)
+"""
+    Intrinsics.fldi(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer division rounded toward negative infinity (floor
+division); lowers to `cuda_tile.divi` with `rounding=negative_inf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag (using `unsigned` is invalid for floor
+division). Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic fldi(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic fldi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.fldi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -174,7 +222,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fldi), args)
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.NegativeInf)
 end
 
-# cuda_tile.maxi
+"""
+    Intrinsics.maxi(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer maximum; lowers to `cuda_tile.maxi`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag. Mismatched-shape operands are
+broadcast to a common shape.
+"""
 @intrinsic maxi(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic maxi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.maxi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -183,7 +239,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
     emit_binop!(ctx, args, encode_MaxIOp!; signedness)
 end
 
-# cuda_tile.mini
+"""
+    Intrinsics.mini(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer minimum; lowers to `cuda_tile.mini`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag. Mismatched-shape operands are
+broadcast to a common shape.
+"""
 @intrinsic mini(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic mini(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.mini), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -192,7 +256,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args)
     emit_binop!(ctx, args, encode_MinIOp!; signedness)
 end
 
-# cuda_tile.muli
+"""
+    Intrinsics.muli(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer multiplication, returning the low half of the
+double-width product; lowers to `cuda_tile.muli`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic muli(x::T, y::T) where {T<:Integer}
 @intrinsic muli(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.muli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -200,7 +272,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
     @something try_const_fold(ctx, *, args) emit_binop!(ctx, args, encode_MulIOp!)
 end
 
-# cuda_tile.mulhii
+"""
+    Intrinsics.mulhii(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer multiplication, returning the high half of the
+double-width product; lowers to `cuda_tile.mulhii`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+Tile IR op is unsigned-only, so the `s` operand is accepted for signature
+uniformity with other integer ops but ignored at codegen. Mismatched-shape
+operands are broadcast to a common shape.
+"""
 @intrinsic mulhii(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic mulhii(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.mulhii), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -208,7 +290,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulhii), args)
     emit_binop!(ctx, args, encode_MulhiIOp!)
 end
 
-# cuda_tile.negi
+"""
+    Intrinsics.negi(a::Tile{<:Integer}) -> Tile
+
+Element-wise integer negation; lowers to `cuda_tile.negi` with no overflow
+assumption (`overflow=none`).
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen.
+"""
 @intrinsic negi(x::T) where {T<:Integer}
 @intrinsic negi(a::Tile{<:Integer})
 tfunc(𝕃, ::typeof(Intrinsics.negi), @nospecialize(x)) = CC.widenconst(x)
@@ -216,7 +305,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negi), args)
     @something try_const_fold(ctx, -, args) emit_unop!(ctx, args, encode_NegIOp!; overflow=IntegerOverflow.None)
 end
 
-# cuda_tile.remi
+"""
+    Intrinsics.remi(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer remainder using truncated division (sign of dividend);
+lowers to `cuda_tile.remi`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag. Mismatched-shape operands are
+broadcast to a common shape.
+"""
 @intrinsic remi(x::T, y::T, s::Signedness.T) where {T<:Integer}
 @intrinsic remi(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.remi), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -225,7 +323,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remi), args)
     emit_binop!(ctx, args, encode_RemIOp!; signedness)
 end
 
-# cuda_tile.shli
+"""
+    Intrinsics.shli(a::Tile{T}, b::Tile{T}) -> Tile{T}    where {T<:Integer}
+
+Element-wise integer left shift, zero-filling the low bits; lowers to
+`cuda_tile.shli`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+shift amount is interpreted as unsigned. Mismatched-shape operands are
+broadcast to a common shape.
+"""
 @intrinsic shli(x::T, y::Integer) where {T<:Integer}
 @intrinsic shli(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.shli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -233,7 +340,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shli), args)
     @something try_const_fold(ctx, <<, args) emit_binop!(ctx, args, encode_ShLIOp!)
 end
 
-# cuda_tile.shri
+"""
+    Intrinsics.shri(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}    where {T<:Integer}
+
+Element-wise integer right shift; lowers to `cuda_tile.shri`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `s` is
+a compile-time `Signedness.T` flag controlling whether the shift is
+arithmetic (signed) or logical (unsigned). The shift amount is always
+interpreted as unsigned. Mismatched-shape operands are broadcast to a
+common shape.
+"""
 @intrinsic shri(x::T, y::Integer, s::Signedness.T) where {T<:Integer}
 @intrinsic shri(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.shri), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
@@ -242,7 +359,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shri), args)
     emit_binop!(ctx, args, encode_ShRIOp!; signedness)
 end
 
-# cuda_tile.subi
+"""
+    Intrinsics.subi(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
+
+Element-wise integer subtraction; lowers to `cuda_tile.subi`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic subi(x::T, y::T) where {T<:Integer}
 @intrinsic subi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.subi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -253,7 +377,13 @@ end
 
 ## Floating-point arithmetic
 
-# cuda_tile.absf
+"""
+    Intrinsics.absf(a::Tile{<:AbstractFloat}) -> Tile
+
+Element-wise floating-point absolute value; lowers to `cuda_tile.absf`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen.
+"""
 @intrinsic absf(x::T) where {T<:AbstractFloat}
 @intrinsic absf(a::Tile{<:AbstractFloat})
 tfunc(𝕃, ::typeof(Intrinsics.absf), @nospecialize(x)) = CC.widenconst(x)
@@ -261,7 +391,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absf), args)
     @something try_const_fold(ctx, abs, args) emit_unop!(ctx, args, encode_AbsFOp!)
 end
 
-# cuda_tile.addf
+"""
+    Intrinsics.addf(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
+
+Element-wise floating-point addition; lowers to `cuda_tile.addf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+active `@fpmode` scope supplies the `rounding_mode` and `flush_to_zero`
+attributes. Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic addf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic addf(a::Tile{T}, b::Tile{T}) where {T<:AbstractFloat}
 tfunc(𝕃, ::typeof(Intrinsics.addf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -269,7 +407,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addf), args)
     @something try_const_fold(ctx, +, args) emit_binop!(ctx, args, encode_AddFOp!; fpmode_kwargs(ctx)...)
 end
 
-# cuda_tile.cmpf
+"""
+    Intrinsics.cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T,
+                    ord::ComparisonOrdering.T = Ordered) -> Tile{Bool}  where {T<:AbstractFloat}
+
+Element-wise floating-point comparison; lowers to `cuda_tile.cmpf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. `pred`
+and `ord` are compile-time `ComparisonPredicate.T` and
+`ComparisonOrdering.T` flags. Mismatched-shape operands are broadcast to
+a common shape.
+"""
 @intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate.T) where {T<:AbstractFloat}
 @intrinsic cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T) where {T<:AbstractFloat}
 @intrinsic cmpf(x::T, y::T, pred::ComparisonPredicate.T, ord::ComparisonOrdering.T) where {T<:AbstractFloat}
@@ -317,7 +465,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
-# cuda_tile.divf
+"""
+    Intrinsics.divf(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
+
+Element-wise floating-point division; lowers to `cuda_tile.divf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+active `@fpmode` scope supplies the `rounding_mode` and `flush_to_zero`
+attributes. Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic divf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic divf(a::Tile{T}, b::Tile{T}) where {T<:AbstractFloat}
 tfunc(𝕃, ::typeof(Intrinsics.divf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -325,7 +481,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divf), args)
     @something try_const_fold(ctx, /, args) emit_binop!(ctx, args, encode_DivFOp!; fpmode_kwargs(ctx)...)
 end
 
-# cuda_tile.mulf
+"""
+    Intrinsics.mulf(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
+
+Element-wise floating-point multiplication; lowers to `cuda_tile.mulf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+active `@fpmode` scope supplies the `rounding_mode` and `flush_to_zero`
+attributes. Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic mulf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic mulf(a::Tile{T}, b::Tile{T}) where {T<:AbstractFloat}
 tfunc(𝕃, ::typeof(Intrinsics.mulf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -333,7 +497,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulf), args)
     @something try_const_fold(ctx, *, args) emit_binop!(ctx, args, encode_MulFOp!; fpmode_kwargs(ctx)...)
 end
 
-# cuda_tile.negf
+"""
+    Intrinsics.negf(a::Tile{<:AbstractFloat}) -> Tile
+
+Element-wise floating-point negation; lowers to `cuda_tile.negf`.
+
+Also invocable with a scalar, promoted to a 0-D tile before codegen.
+"""
 @intrinsic negf(x::T) where {T<:AbstractFloat}
 @intrinsic negf(a::Tile{<:AbstractFloat})
 tfunc(𝕃, ::typeof(Intrinsics.negf), @nospecialize(x)) = CC.widenconst(x)
@@ -341,7 +511,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negf), args)
     @something try_const_fold(ctx, -, args) emit_unop!(ctx, args, encode_NegFOp!)
 end
 
-# cuda_tile.subf
+"""
+    Intrinsics.subf(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
+
+Element-wise floating-point subtraction; lowers to `cuda_tile.subf`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+active `@fpmode` scope supplies the `rounding_mode` and `flush_to_zero`
+attributes. Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic subf(x::T, y::T) where {T<:AbstractFloat}
 @intrinsic subf(a::Tile{T}, b::Tile{T}) where {T<:AbstractFloat}
 tfunc(𝕃, ::typeof(Intrinsics.subf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
@@ -352,7 +530,16 @@ end
 
 ## Boolean arithmetic
 
-# cuda_tile.andi
+"""
+    Intrinsics.andi(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
+
+Element-wise bitwise AND; lowers to `cuda_tile.andi`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+tfunc short-circuits to `Const(false)` when one operand is constant
+`false` (avoiding unnecessary inference of the other operand).
+Mismatched-shape operands are broadcast to a common shape, and
+"""
 @intrinsic andi(x::T, y::T) where {T<:Integer}
 @intrinsic andi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.andi), @nospecialize(x), @nospecialize(y))
@@ -367,7 +554,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)
     @something try_const_fold(ctx, &, args) emit_binop!(ctx, args, encode_AndIOp!)
 end
 
-# cuda_tile.ori
+"""
+    Intrinsics.ori(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
+
+Element-wise bitwise OR; lowers to `cuda_tile.ori`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen. The
+tfunc short-circuits to `Const(true)` when one operand is constant `true`
+(avoiding unnecessary inference of the other operand). Mismatched-shape
+operands are broadcast to a common shape.
+"""
 @intrinsic ori(x::T, y::T) where {T<:Integer}
 @intrinsic ori(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.ori), @nospecialize(x), @nospecialize(y))
@@ -382,7 +578,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args)
     @something try_const_fold(ctx, |, args) emit_binop!(ctx, args, encode_OrIOp!)
 end
 
-# cuda_tile.xori
+"""
+    Intrinsics.xori(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
+
+Element-wise bitwise XOR; lowers to `cuda_tile.xori`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
 @intrinsic xori(x::T, y::T) where {T<:Integer}
 @intrinsic xori(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.xori), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)

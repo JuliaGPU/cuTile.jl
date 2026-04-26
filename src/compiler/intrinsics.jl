@@ -17,14 +17,34 @@ end
 Define a Tile IR intrinsic in the `Intrinsics` module. These intrinsics are
 defined to return `Any`, so need additional `tfunc` and `efunc` definitions
 to specify their behavior.
+
+A docstring can be attached to the intrinsic in the usual way:
+
+    \"\"\"
+        myop(x, y)
+
+    Description of `myop`.
+    \"\"\"
+    @intrinsic myop(x, y)
 """
 macro intrinsic(ex)
     body = quote
         compilerbarrier(:type, nothing)
     end
     funcdef = Expr(:function, ex, body)
-    funcdef = Expr(:macrocall, Symbol("@noinline"), nothing, funcdef)
-    return esc(:(Core.eval(Intrinsics, $(QuoteNode(funcdef)))))
+    funcdef = Expr(:macrocall, Symbol("@noinline"), __source__, funcdef)
+    name = ex isa Expr && ex.head === :where ? ex.args[1].args[1] : ex.args[1]
+    # Define in the Intrinsics module via Core.eval, then expose a Base.@__doc__
+    # marker on the binding so a leading docstring (handled by @doc) attaches to
+    # the function inside Intrinsics. The two statements live in their own
+    # top-level expressions (Expr(:toplevel, ...)) so each runs in a fresh world
+    # age — without this, the binding access in the second statement would
+    # trigger Julia 1.12+'s "access to binding in a world prior to its
+    # definition world" warning.
+    return esc(Expr(:toplevel,
+        :(Core.eval(Intrinsics, $(QuoteNode(funcdef)))),
+        :(Base.@__doc__ Intrinsics.$name),
+    ))
 end
 
 """

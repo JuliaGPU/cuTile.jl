@@ -1,6 +1,27 @@
 # Floating-point mode scope intrinsics (@fpmode)
 
+"""
+    Intrinsics.fpmode_begin(rounding_mode, flush_to_zero) -> Nothing
+
+Pushes a new floating-point mode (`rounding_mode`, `flush_to_zero`) onto
+the codegen's `@fpmode` stack so subsequent FP arithmetic intrinsics
+pick it up.
+
+Both arguments must be compile-time constants; passing `nothing`
+inherits the corresponding setting from the parent scope. Emits no
+Tile IR instructions — modes are baked into the per-op attributes when
+the surrounded ops are emitted.
+"""
 @intrinsic fpmode_begin(rounding_mode, flush_to_zero)
+
+"""
+    Intrinsics.fpmode_end() -> Nothing
+
+Pops the top of the codegen's `@fpmode` stack, restoring the previous
+floating-point mode.
+
+Emits no Tile IR instructions. Pairs with [`fpmode_begin`](@ref).
+"""
 @intrinsic fpmode_end()
 
 tfunc(𝕃, ::typeof(Intrinsics.fpmode_begin), @nospecialize args...) = Nothing
