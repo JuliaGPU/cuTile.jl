@@ -359,11 +359,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     # Extract shape (from Julia) and reverse to Tile IR order
     shape = @something get_constant(ctx, args[1]) throw(IRError("iota() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("iota() shape must be a tuple, got $(typeof(shape))"))
-    validate_tile_shape(collect(Int, shape), "arange")
+    length(shape) == 1 ||
+        throw(IRError("iota: shape must be 1-dimensional, got $shape"))
+    validate_tile_shape(collect(Int, shape), "iota")
     tile_shape = RowMajorShape(ColMajorShape(shape))
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[2]) throw(IRError("iota() requires a compile-time element type"))
+    elem_type <: Integer ||
+        throw(IRError("iota: element type must be an integer, got $elem_type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)

@@ -649,7 +649,7 @@ end
         end
 
         @testset "non-power-of-2 arange shape rejected" begin
-            @test_throws "arange: tile dimension 1 must be a power of 2, got 7" begin
+            @test_throws "iota: tile dimension 1 must be a power of 2, got 7" begin
                 code_tiled(Tuple{}) do
                     ct.arange(7)
                 end

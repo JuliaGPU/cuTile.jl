@@ -486,6 +486,17 @@ spec4d = ct.ArraySpec{4}(16, true)
                 return
             end
         end
+
+        # iota is restricted to 1-D integer tiles; reject the rest cleanly.
+        @test_throws "1-dimensional" code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+            Base.donotdelete(ct.Intrinsics.iota((4, 4), Int32))
+            return
+        end
+
+        @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            Base.donotdelete(ct.Intrinsics.iota((16,), Float32))
+            return
+        end
     end
 
     @testset "mmaf" begin
