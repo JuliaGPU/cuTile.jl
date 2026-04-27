@@ -243,7 +243,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     if tv.constant !== nothing
         # Compile-time constant: use ConstantOp directly
         value_bytes = constant_to_bytes(something(tv.constant), elem_type)
-        result = encode_ConstantOp!(cb, tile_type, value_bytes)
+        result = get_or_emit_constant!(ctx, tile_type, value_bytes)
     else
         # Runtime value: broadcast 0D tile to the target shape
         result = broadcast_tile_to_shape!(cb, tt, tv, tile_shape, dtype)
@@ -301,7 +301,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     index_vals = Value[]
     for idx in reverse(index_tuple)
         idx_bytes = collect(reinterpret(UInt8, [Int32(idx)]))
-        idx_val = encode_ConstantOp!(cb, scalar_i32, idx_bytes)
+        idx_val = get_or_emit_constant!(ctx, scalar_i32, idx_bytes)
         push!(index_vals, idx_val)
     end
 

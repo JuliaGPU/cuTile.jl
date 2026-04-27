@@ -145,7 +145,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             if type_id !== nothing
                 # Primitive: emit ConstantOp (jltype promoted to 0D tile)
                 bytes = constant_to_bytes(val, T)
-                v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+                v = get_or_emit_constant!(ctx, type_id, bytes)
                 tv = CGVal(v, type_id, Tile{T, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant

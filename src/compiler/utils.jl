@@ -287,6 +287,14 @@ mutable struct CGCtx
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
 
+    # ConstantOp cache: (TypeId, value bytes) -> Value. The bytecode encoder
+    # otherwise emits a fresh ConstantOp for every literal use, even when the
+    # same (type, value) was already materialised. The translator's bytecode
+    # optimiser CSEs them anyway, but the duplication still bloats the
+    # bytecode payload and the type table. Bytecode-level analogue of LLVM
+    # IRBuilder's constant cache.
+    constant_cache::Dict{Tuple{TypeId, Vector{UInt8}}, Value}
+
     # Target architecture (e.g., v"10.0" for sm_100)
     sm_arch::Union{VersionNumber, Nothing}
 
@@ -324,6 +332,7 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, Value}(),              # result_tokens
         0,                               # current_ssa_idx
         type_cache,
+        Dict{Tuple{TypeId, Vector{UInt8}}, Value}(),  # constant_cache
         sm_arch,
         cache,
         FPMode[],                        # fpmode_stack
@@ -554,6 +563,23 @@ function require_concrete_type(@nospecialize(T), context::String)
         throw(IRError("Type must be fully concrete in $context, got partial type: $T"))
     end
     return T_unwrapped
+end
+
+"""
+    get_or_emit_constant!(ctx, type_id, bytes) -> Value
+
+Return the cached `Value` for `(type_id, bytes)` if one was already emitted in
+this kernel; otherwise emit a `ConstantOp` and cache it. The cache key uses
+`bytes` by content, so distinct `Vector{UInt8}` instances with identical
+contents share a slot.
+"""
+function get_or_emit_constant!(ctx::CGCtx, type_id::TypeId, bytes::Vector{UInt8})
+    key = (type_id, bytes)
+    cached = get(ctx.constant_cache, key, nothing)
+    cached !== nothing && return cached
+    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+    ctx.constant_cache[key] = v
+    return v
 end
 
 """

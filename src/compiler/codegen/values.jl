@@ -18,7 +18,7 @@ function emit_value!(ctx::CGCtx, val::Integer)
     jltype = typeof(val)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = constant_to_bytes(val, jltype)
-    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+    v = get_or_emit_constant!(ctx, type_id, bytes)
     CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
 end
 
@@ -26,7 +26,7 @@ function emit_value!(ctx::CGCtx, val::AbstractFloat)
     jltype = typeof(val)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = constant_to_bytes(val, jltype)
-    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+    v = get_or_emit_constant!(ctx, type_id, bytes)
     CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
 end
 
@@ -66,7 +66,7 @@ function emit_value!(ctx::CGCtx, ref::GlobalRef)
         type_id = tile_type_for_julia!(ctx, T; throw_error=false)
         if type_id !== nothing
             bytes = constant_to_bytes(val, T)
-            v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+            v = get_or_emit_constant!(ctx, type_id, bytes)
             return CGVal(v, type_id, boundary_jltype(T), RowMajorShape(()), nothing, Some(val), nothing)
         end
     end
@@ -135,7 +135,7 @@ function emit_value!(ctx::CGCtx, undef::Undef)
     type_id = tile_type_for_julia!(ctx, T)
     elem_type = T <: Tile ? eltype(T) : T
     bytes = constant_to_bytes(zero(elem_type), elem_type)
-    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+    v = get_or_emit_constant!(ctx, type_id, bytes)
     CGVal(v, type_id, T)
 end
 
@@ -171,7 +171,7 @@ function emit_constant!(ctx::CGCtx, @nospecialize(value), @nospecialize(result_t
 
     type_id = tile_type_for_julia!(ctx, result_type_unwrapped)
     bytes = constant_to_bytes(value, elem_type)
-    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+    v = get_or_emit_constant!(ctx, type_id, bytes)
 
     CGVal(v, type_id, result_type_unwrapped)
 end

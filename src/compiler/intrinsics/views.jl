@@ -137,7 +137,7 @@ end
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
     while length(index_vals) < ndim
         idx_bytes = reinterpret(UInt8, [eltype(idx_jl_type)(0)])
-        push!(index_vals, encode_ConstantOp!(ctx.cb, idx_type, collect(idx_bytes)))
+        push!(index_vals, get_or_emit_constant!(ctx, idx_type, collect(idx_bytes)))
     end
     return index_vals
 end

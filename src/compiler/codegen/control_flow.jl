@@ -40,6 +40,20 @@ emit_control_flow_op!(ctx::CGCtx, op::ForOp, @nospecialize(rt), idx::Int) = emit
 emit_control_flow_op!(ctx::CGCtx, op::WhileOp, @nospecialize(rt), idx::Int) = emit_while_op!(ctx, op, rt, idx)
 emit_control_flow_op!(ctx::CGCtx, op::LoopOp, @nospecialize(rt), idx::Int) = emit_loop_op!(ctx, op, rt, idx)
 
+# Run `f` with the constant_cache scoped to a nested region: entries added
+# inside `f` are dropped on exit. `with_region` rewinds `next_value_id` when
+# a region closes, so any Value created inside is ephemeral and must not be
+# reachable from the parent's cache.
+function with_region_constant_scope!(f, ctx::CGCtx)
+    saved = copy(ctx.constant_cache)
+    try
+        f()
+    finally
+        empty!(ctx.constant_cache)
+        merge!(ctx.constant_cache, saved)
+    end
+end
+
 #=============================================================================
  IfOp
 =============================================================================#
@@ -65,16 +79,20 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     end
 
     then_body = function(_)
-        saved = copy(ctx.block_args)
-        emit_block!(ctx, op.then_region)
-        terminator(op.then_region) === nothing && encode_YieldOp!(ctx.cb, Value[])
-        empty!(ctx.block_args); merge!(ctx.block_args, saved)
+        with_region_constant_scope!(ctx) do
+            saved = copy(ctx.block_args)
+            emit_block!(ctx, op.then_region)
+            terminator(op.then_region) === nothing && encode_YieldOp!(ctx.cb, Value[])
+            empty!(ctx.block_args); merge!(ctx.block_args, saved)
+        end
     end
     else_body = function(_)
-        saved = copy(ctx.block_args)
-        emit_block!(ctx, op.else_region)
-        terminator(op.else_region) === nothing && encode_YieldOp!(ctx.cb, Value[])
-        empty!(ctx.block_args); merge!(ctx.block_args, saved)
+        with_region_constant_scope!(ctx) do
+            saved = copy(ctx.block_args)
+            emit_block!(ctx, op.else_region)
+            terminator(op.else_region) === nothing && encode_YieldOp!(ctx.cb, Value[])
+            empty!(ctx.block_args); merge!(ctx.block_args, saved)
+        end
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
@@ -115,22 +133,24 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in body_blk.args]
 
     body_builder = function(block_args)
-        saved = copy(ctx.block_args)
+        with_region_constant_scope!(ctx) do
+            saved = copy(ctx.block_args)
 
-        # Tile IR block args layout: [iv, carries...]
-        # (carries include both user values and token carries added by token_order_pass!)
-        ctx[iv_arg] = CGVal(block_args[1], iv_type, iv_jl_type)
-        for i in 1:n_carries
-            arg = body_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(arg.type))
-            ctx[arg] = CGVal(block_args[i + 1], result_types[i], arg.type, shape)
+            # Tile IR block args layout: [iv, carries...]
+            # (carries include both user values and token carries added by token_order_pass!)
+            ctx[iv_arg] = CGVal(block_args[1], iv_type, iv_jl_type)
+            for i in 1:n_carries
+                arg = body_blk.args[i]
+                shape = RowMajorShape(extract_tile_shape(arg.type))
+                ctx[arg] = CGVal(block_args[i + 1], result_types[i], arg.type, shape)
+            end
+            emit_block!(ctx, body_blk)
+            # If body has no terminator, emit a ContinueOp with all carried values
+            if terminator(body_blk) === nothing
+                encode_ContinueOp!(ctx.cb, block_args[2:end])
+            end
+            empty!(ctx.block_args); merge!(ctx.block_args, saved)
         end
-        emit_block!(ctx, body_blk)
-        # If body has no terminator, emit a ContinueOp with all carried values
-        if terminator(body_blk) === nothing
-            encode_ContinueOp!(ctx.cb, block_args[2:end])
-        end
-        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_ForOp!(body_builder, cb, result_types, iv_type,
                              lower_tv.v, upper_tv.v, step_tv.v, init_values)
@@ -157,23 +177,25 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in body_blk.args]
 
     body_builder = function(block_args)
-        saved = copy(ctx.block_args)
+        with_region_constant_scope!(ctx) do
+            saved = copy(ctx.block_args)
 
-        # Tile IR block args layout: [carries...]
-        # (includes both user values and token carries added by token_order_pass!)
-        for i in 1:n_carries
-            arg = body_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(arg.type))
-            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
+            # Tile IR block args layout: [carries...]
+            # (includes both user values and token carries added by token_order_pass!)
+            for i in 1:n_carries
+                arg = body_blk.args[i]
+                shape = RowMajorShape(extract_tile_shape(arg.type))
+                ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
+            end
+            emit_block!(ctx, body_blk)
+            # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
+            # in all branches), the if is NOT a terminator. We need an explicit terminator
+            # after the if. Add an unreachable ContinueOp as fallback terminator.
+            if terminator(body_blk) === nothing
+                encode_ContinueOp!(ctx.cb, copy(block_args))
+            end
+            empty!(ctx.block_args); merge!(ctx.block_args, saved)
         end
-        emit_block!(ctx, body_blk)
-        # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
-        # in all branches), the if is NOT a terminator. We need an explicit terminator
-        # after the if. Add an unreachable ContinueOp as fallback terminator.
-        if terminator(body_blk) === nothing
-            encode_ContinueOp!(ctx.cb, copy(block_args))
-        end
-        empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
@@ -205,6 +227,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in before_blk.args]
 
     body_builder = function(block_args)
+        with_region_constant_scope!(ctx) do
         saved = copy(ctx.block_args)
 
         # Tile IR block args layout: [carries...]
@@ -229,22 +252,24 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         # This keeps nested loops in "after" at LoopOp body level
         then_body = (_) -> encode_YieldOp!(ctx.cb, Value[])
         else_body = function(_)
-            # Break with ConditionOp args (become loop results)
-            break_operands = Value[]
-            for arg in operands(cond_op)
-                tv = emit_value!(ctx, arg)
-                tv !== nothing && tv.v !== nothing && push!(break_operands, tv.v)
-            end
-            if isempty(break_operands)
-                append!(break_operands, block_args[1:n_carries])
-            else
-                # Append token carries (block_args beyond user carries from ConditionOp)
-                n_user = length(break_operands)
-                for i in (n_user + 1):n_carries
-                    push!(break_operands, block_args[i])
+            with_region_constant_scope!(ctx) do
+                # Break with ConditionOp args (become loop results)
+                break_operands = Value[]
+                for arg in operands(cond_op)
+                    tv = emit_value!(ctx, arg)
+                    tv !== nothing && tv.v !== nothing && push!(break_operands, tv.v)
                 end
+                if isempty(break_operands)
+                    append!(break_operands, block_args[1:n_carries])
+                else
+                    # Append token carries (block_args beyond user carries from ConditionOp)
+                    n_user = length(break_operands)
+                    for i in (n_user + 1):n_carries
+                        push!(break_operands, block_args[i])
+                    end
+                end
+                encode_BreakOp!(ctx.cb, break_operands)
             end
-            encode_BreakOp!(ctx.cb, break_operands)
         end
         encode_IfOp!(then_body, else_body, cb, TypeId[], cond_tv.v)
 
@@ -287,6 +312,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         encode_ContinueOp!(ctx.cb, continue_operands)
 
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
+        end  # with_region_constant_scope!
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
