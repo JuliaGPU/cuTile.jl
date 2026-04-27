@@ -1,8 +1,6 @@
 using CUDA
 using Random
 
-@testset "device rand" begin
-
 # Bucket values in [lo, hi) into `n` bins; returns per-bin counts.
 # Used for distribution-shape sanity checks (avoids the strict-uniqueness flake).
 function bin_counts(v, n; lo=0.0, hi=1.0)
@@ -15,8 +13,19 @@ function bin_counts(v, n; lo=0.0, hi=1.0)
     counts
 end
 
+# Natural [lo, hi) span per RNG output type, for the bin-counts check.
+rand_span(::Type{T}) where {T<:AbstractFloat} = (0.0, 1.0)
+rand_span(::Type{T}) where {T<:Unsigned}      = (0.0, Float64(typemax(T)) + 1.0)
+rand_span(::Type{T}) where {T<:Signed}        = (Float64(typemin(T)), Float64(typemax(T)) + 1.0)
+
+@testset "device rand" begin
+
 @testset "typed rand surfaces (T=$T, dims=$dims)" for (T, dims) in
-        ((Float32, (16,)), (Float32, (32,)), (UInt32, (16,)))
+        ((Float32, (16,)), (Float32, (32,)),
+         (UInt32, (16,)), (Int32,  (16,)),
+         (UInt16, (16,)), (Int16,  (16,)),
+         (UInt8,  (16,)), (Int8,   (16,)),
+         (Float16, (16,)), (ct.BFloat16, (16,)))
 
     # Typed `rand` surfaces, polymorphic over (T, dims): scalar form, NTuple-typed
     # tile form, and variadic-Integer + explicit-RNG form. Each surface writes to
@@ -43,28 +52,19 @@ end
 
     for v in (Array(o1), Array(o2), Array(o3))
         @test eltype(v) === T
-        if T === Float32
-            # In-range check is type-specific: rand(Float32) returns values in
-            # (0, 1] (the +2^-33 bias keeps it strictly positive).
-            @test all(0f0 .< v .< 1f0)
-        else
-            # UInt32 has 2^32 buckets — strict uniqueness is flake-free.
-            @test length(unique(v)) == length(v)
+        if T <: AbstractFloat
+            # Floats land in [0, 1]; Float32 keeps the (0, 1] convention but
+            # Float16/BFloat16 can underflow Float32's 2^-33 minimum to 0.
+            @test all(zero(T) .<= v .<= one(T))
         end
     end
 
-    # Distribution-shape check: 4 bins, ~n_samples/4 expected per bin. For
-    # Float32 with N=4096, P(any bin < N/4 - 100) ≈ 5σ × 4-bin Bonferroni
-    # ≈ 1e-6, so well below CI-noise threshold.
-    if T === Float32
-        counts = bin_counts(Array(o2), 4; lo=0.0, hi=1.0)
-        @test minimum(counts) > length(o2) ÷ 4 - 100
-    else
-        # UInt32 mean check on 4096 samples: relative SE ≈0.9%, 5% tolerance ≈ 5σ.
-        v = Array(o2)
-        target = Float64(typemax(UInt32)) / 2
-        @test abs(sum(Float64.(v))/length(v) - target) / target < 0.05
-    end
+    # Distribution-shape check: 4 bins on the type's natural range, ~N/4
+    # expected per bin. With N=1024 the `> N/4 - 100` lower bound gives
+    # >7σ margin (P(failure per bin) ≈ 3e-13).
+    lo, hi = rand_span(T)
+    counts = bin_counts(Array(o2), 4; lo, hi)
+    @test minimum(counts) > length(o2) ÷ 4 - 100
 end
 
 @testset "untyped rand defaults to Float32" begin
@@ -283,6 +283,22 @@ end
         B = CUDA.zeros(Float32, N); ct.rand!(B)
         @test all(0f0 .< Array(B) .< 1f0)
         @test eltype(ct.rand(N)) === Float32
+    end
+
+    @testset "host rand! covers RandTypes (T=$T)" for T in
+            (Int8, UInt8, Int16, UInt16, Int32, UInt32, Float16, ct.BFloat16, Float32)
+        # End-to-end host fill for every supported element type. Verifies the
+        # generic `rand_fill_kernel` specializes correctly per T and produces
+        # values in the type's natural range (in-range is trivial for
+        # integers, [0, 1] for floats).
+        v = Array(Random.rand(ct.RNG(13), T, N))
+        @test eltype(v) === T
+        if T <: AbstractFloat
+            @test all(zero(T) .<= v .<= one(T))
+        end
+        lo, hi = rand_span(T)
+        counts = bin_counts(v, 4; lo, hi)
+        @test minimum(counts) > N ÷ 4 - 100
     end
 
     @testset "arbitrary length (partial last tile)" begin

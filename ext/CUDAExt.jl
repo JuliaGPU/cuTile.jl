@@ -280,42 +280,39 @@ BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.T
 =============================================================================#
 
 import Random
-using cuTile: RNG
+using cuTile: RNG, RandTypes
 
-for T in (Float32, UInt32)
-    kname = Symbol("rand_fill_", nameof(T))
-    @eval function Random.rand!(rng::RNG, A::CuArray{$T})
-        n = length(A)
-        n == 0 && return A
-        # The fill kernel writes RAND_FILL_TILE elements per block via
-        # `store_partition_view`, which silently clips OOB elements when the
-        # last tile doesn't fully fit — so any `n` is supported with no kernel
-        # changes. Each block still consumes a full tile of counters though,
-        # so the host advances by `n_blocks * tile`, not `n`, to keep
-        # consecutive `rand!` calls disjoint.
-        n_blocks = cld(n, cuTile.RAND_FILL_TILE)
-        cuTile.launch(cuTile.$kname, n_blocks, A, rng.seed, rng.counter)
-        cuTile.advance_counter!(rng, UInt32(n_blocks * cuTile.RAND_FILL_TILE))
-        return A
-    end
+function Random.rand!(rng::RNG, A::CuArray{T}) where {T<:RandTypes}
+    n = length(A)
+    n == 0 && return A
+    # The fill kernel writes RAND_FILL_TILE elements per block via
+    # `store_partition_view`, which silently clips OOB elements when the
+    # last tile doesn't fully fit — so any `n` is supported with no kernel
+    # changes. Each block still consumes a full tile of counters though,
+    # so the host advances by `n_blocks * tile`, not `n`, to keep
+    # consecutive `rand!` calls disjoint.
+    n_blocks = cld(n, cuTile.RAND_FILL_TILE)
+    cuTile.launch(cuTile.rand_fill_kernel, n_blocks, A, rng.seed, rng.counter)
+    cuTile.advance_counter!(rng, UInt32(n_blocks * cuTile.RAND_FILL_TILE))
+    return A
 end
 
-Random.rand(rng::RNG, ::Type{T}, dims::Dims) where {T<:Union{Float32, UInt32}} =
+Random.rand(rng::RNG, ::Type{T}, dims::Dims) where {T<:RandTypes} =
     Random.rand!(rng, CuArray{T}(undef, dims))
-Random.rand(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:Union{Float32, UInt32}} =
+Random.rand(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandTypes} =
     Random.rand(rng, T, Dims((d1, dims...)))
 Random.rand(rng::RNG, dims::Dims) = Random.rand(rng, Float32, dims)
 Random.rand(rng::RNG, d1::Integer, dims::Integer...) = Random.rand(rng, Dims((d1, dims...)))
 
 # `cuTile.rand` / `cuTile.rand!` aliases, mirroring `CUDA.rand` / `CUDA.rand!`.
-cuTile.rand(::Type{T}, dims::Dims) where {T<:Union{Float32, UInt32}} =
+cuTile.rand(::Type{T}, dims::Dims) where {T<:RandTypes} =
     Random.rand(cuTile.get_global_rng(), T, dims)
-cuTile.rand(::Type{T}, d1::Integer, dims::Integer...) where {T<:Union{Float32, UInt32}} =
+cuTile.rand(::Type{T}, d1::Integer, dims::Integer...) where {T<:RandTypes} =
     cuTile.rand(T, Dims((d1, dims...)))
 cuTile.rand(dims::Dims) = cuTile.rand(Float32, dims)
 cuTile.rand(d1::Integer, dims::Integer...) = cuTile.rand(Dims((d1, dims...)))
 
-cuTile.rand!(A::CuArray{<:Union{Float32, UInt32}}) =
+cuTile.rand!(A::CuArray{<:RandTypes}) =
     Random.rand!(cuTile.get_global_rng(), A)
 
 end

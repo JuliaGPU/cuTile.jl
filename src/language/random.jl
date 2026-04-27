@@ -9,7 +9,7 @@
 #
 # In-kernel API:
 #   rand()                              -> Float32 scalar
-#   rand(::Type{T})                     -> T scalar, T ∈ {Float32, UInt32}
+#   rand(::Type{T})                     -> T scalar, T ∈ RandTypes
 #   rand(::Type{T}, dims)               -> Tile{T, dims}
 #   rand(dims)                          -> Tile{Float32, dims}
 #   Random.seed!(Random.default_rng(), seed)   # re-seed the threaded state
@@ -21,7 +21,8 @@
 # producing a mathematically independent Philox stream.
 #
 # v1 limitations:
-#  - Output types: `Float32`, `UInt32`. No Float16/Float64/Bool.
+#  - Output types: `RandTypes` — 8/16/32-bit ints + Float16/BFloat16/Float32.
+#    Wider types (Int64/UInt64/Float64) come in tier 2.
 #  - No `randn`, `randexp`.
 #
 # Loops: the counter is threaded as a loop-carried SSA value by
@@ -95,6 +96,11 @@ function u01(::Type{Float32}, u::Tile{UInt32, S}) where {S}
     bias  = bc_const_f32(Float32(2)^-33, shape)
     uf .* scale .+ bias
 end
+
+# Narrower floats narrow from Float32. Float16 can underflow the (0, 1] lower
+# bound to 0 (probability ≈ 2^-32, when Float32 hits its 2^-33 minimum).
+u01(::Type{T}, u::Tile{UInt32}) where {T<:Union{Float16, BFloat16}} =
+    convert(Tile{T}, u01(Float32, u))
 
 
 bc_const_f32(val::Float32, shape::NTuple{N, Int}) where {N} =
@@ -175,11 +181,21 @@ function rand_uint32_tile(stream, dims::NTuple{N, Int}) where {N}
     c1
 end
 
-# Convert the UInt32 output to the requested type.
+# Convert the UInt32 sample to the requested type. Tile IR integers are
+# signless, so cross-sign at the same width is a relabel via `bitcast`;
+# narrower integers go through `trunci`. Floats route through `u01`.
+# Extending support to a new type means adding a method here — the Philox
+# core itself is strictly Tile{UInt32}.
+
+const RandTypes = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32,
+                        Float16, BFloat16, Float32}
 
 finalize_tile(::Type{UInt32}, u::Tile{UInt32}) = u
-
-finalize_tile(::Type{Float32}, u::Tile{UInt32}) = u01(Float32, u)
+finalize_tile(::Type{Int32},  u::Tile{UInt32}) = Intrinsics.bitcast(u, Int32)
+finalize_tile(::Type{T}, u::Tile{UInt32}) where {T<:Union{Int8, UInt8, Int16, UInt16}} =
+    Intrinsics.trunci(u, T)
+finalize_tile(::Type{T}, u::Tile{UInt32}) where {T<:Union{Float16, BFloat16, Float32}} =
+    u01(T, u)
 
 
 rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T, N} =
@@ -236,13 +252,11 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Random.default_rng() =
     DeviceRNG(Intrinsics.rng_default())
 
 # Bare rand / rand(T) / rand(T, dims) — route through the default stream.
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{Float32}) =
-    rand_scalar(Intrinsics.rng_default(), Float32)
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{UInt32}) =
-    rand_scalar(Intrinsics.rng_default(), UInt32)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{T}) where {T<:RandTypes} =
+    rand_scalar(Intrinsics.rng_default(), T)
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand() =
     rand_scalar(Intrinsics.rng_default(), Float32)
-Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{T}, dims::NTuple{N, Int}) where {T<:Union{Float32, UInt32}, N} =
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(::Type{T}, dims::NTuple{N, Int}) where {T<:RandTypes, N} =
     rand_tile(Intrinsics.rng_default(), T, dims)
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(dims::NTuple{N, Int}) where {N} =
     rand_tile(Intrinsics.rng_default(), Float32, dims)
@@ -257,10 +271,10 @@ function Random.seed!(rng::DeviceRNG, seed::Integer)
 end
 
 # Explicit-stream rand(rng, ...) variants — unwrap and pass the stream ID.
-Random.rand(rng::DeviceRNG, ::Type{T}) where {T<:Union{Float32, UInt32}} =
+Random.rand(rng::DeviceRNG, ::Type{T}) where {T<:RandTypes} =
     rand_scalar(rng.stream, T)
 Random.rand(rng::DeviceRNG) = rand_scalar(rng.stream, Float32)
-Random.rand(rng::DeviceRNG, ::Type{T}, dims::NTuple{N, Int}) where {T<:Union{Float32, UInt32}, N} =
+Random.rand(rng::DeviceRNG, ::Type{T}, dims::NTuple{N, Int}) where {T<:RandTypes, N} =
     rand_tile(rng.stream, T, dims)
 Random.rand(rng::DeviceRNG, dims::NTuple{N, Int}) where {N} =
     rand_tile(rng.stream, Float32, dims)
@@ -323,20 +337,17 @@ end
 # arrays and converges with the others at ≥64 MiB.
 const RAND_FILL_TILE = 512
 
-for T in (Float32, UInt32)
-    kname = Symbol("rand_fill_", nameof(T))
-    @eval function $kname(out::TileArray{$T, 1}, seed::UInt32, counter::UInt32)
-        # `RNG` plumbs its `(seed, counter)` through as explicit kernel args
-        # rather than via `KernelState`: seed re-keys the default stream and
-        # `rng_advance` shifts the per-element counter window so consecutive
-        # `rand!` calls on the same `RNG` produce disjoint output.
-        Random.seed!(Random.default_rng(), seed)
-        Intrinsics.rng_advance(Intrinsics.rng_default(), counter)
-        pid = bid(1)
-        t = Random.rand($T, (RAND_FILL_TILE,))
-        store(out, pid, t)
-        return
-    end
+function rand_fill_kernel(out::TileArray{T, 1}, seed::UInt32, counter::UInt32) where {T}
+    # `RNG` plumbs its `(seed, counter)` through as explicit kernel args
+    # rather than via `KernelState`: seed re-keys the default stream and
+    # `rng_advance` shifts the per-element counter window so consecutive
+    # `rand!` calls on the same `RNG` produce disjoint output.
+    Random.seed!(Random.default_rng(), seed)
+    Intrinsics.rng_advance(Intrinsics.rng_default(), counter)
+    pid = bid(1)
+    t = Random.rand(T, (RAND_FILL_TILE,))
+    store(out, pid, t)
+    return
 end
 
 # Global RNG handle lazily created on first use. The methods that actually
