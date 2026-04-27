@@ -1,5 +1,14 @@
 # atomics
 
+# `MemoryOrder.Weak` exists for non-atomic loads/stores; atomics reject it.
+function check_atomic_memory_order(memory_order, op_name::String)
+    if memory_order === MemoryOrder.Weak
+        throw(IRError("$op_name: memory_order=MemoryOrder.Weak is not supported on " *
+                      "atomic operations; pick Relaxed, Acquire, Release, or AcqRel"))
+    end
+    return memory_order
+end
+
 
 """
     atomic_tfunc(ptrs) -> Type
@@ -57,6 +66,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
 
     memory_order = @something get_constant(ctx, args[5]) throw(IRError("atomic CAS requires constant memory_order"))
     memory_scope = @something get_constant(ctx, args[6]) throw(IRError("atomic CAS requires constant memory_scope"))
+    check_atomic_memory_order(memory_order, "atomic_cas")
 
     shape = ptr_tv.shape
 
@@ -112,6 +122,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
 
     memory_order = @something get_constant(ctx, args[4]) throw(IRError("atomic RMW requires constant memory_order"))
     memory_scope = @something get_constant(ctx, args[5]) throw(IRError("atomic RMW requires constant memory_scope"))
+    check_atomic_memory_order(memory_order, "atomic RMW")
 
     shape = ptr_tv.shape
 

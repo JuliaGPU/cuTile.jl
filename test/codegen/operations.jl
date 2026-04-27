@@ -1872,6 +1872,22 @@ end
             end
         end
     end
+
+    # `weak` ordering is not supported on atomics; reject at the boundary.
+    @testset "reject MemoryOrder.Weak" begin
+        spec = ct.ArraySpec{1}(16, true)
+        @test_throws "Weak" code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
+            bid = ct.bid(1)
+            ct.atomic_cas(locks, bid, Int32(0), Int32(1);
+                          memory_order=ct.MemoryOrder.Weak)
+            return
+        end
+        @test_throws "Weak" code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            bid = ct.bid(1)
+            ct.atomic_xchg(arr, bid, Int32(0); memory_order=ct.MemoryOrder.Weak)
+            return
+        end
+    end
 end
 
 #=========================================================================
