@@ -96,10 +96,24 @@ function u01(::Type{Float32}, u::Tile{UInt32, S}) where {S}
     uf .* scale .+ bias
 end
 
-# Narrower floats narrow from Float32. Float16 can underflow the (0, 1] lower
-# bound to 0 (probability ≈ 2^-32, when Float32 hits its 2^-33 minimum).
-u01(::Type{T}, u::Tile{UInt32}) where {T<:Union{Float16, BFloat16}} =
-    convert(Tile{T}, u01(Float32, u))
+# Float16 / BFloat16 from a UInt16 sample — bit-pattern construction. Top
+# (mantissa-width) bits become the mantissa, exponent is set for [1, 2),
+# subtract 1. The low mantissa bit is forced set so the result lands in
+# (0, 1) — preserves the Float32 path's "no zero" property and is log-safe.
+function u01(::Type{Float16}, u::Tile{UInt16, S}) where {S}
+    shape = size(u)
+    # Float16: 10 mantissa bits, exponent for [1, 2) is 0x3C00.
+    m    = Intrinsics.shri(u, broadcast_to(Tile(UInt16(6)), shape), Signedness.Unsigned)
+    bits = Intrinsics.ori(m, broadcast_to(Tile(UInt16(0x3C01)), shape))
+    Intrinsics.bitcast(bits, Float16) - broadcast_to(Tile(Float16(1)), shape)
+end
+function u01(::Type{BFloat16}, u::Tile{UInt16, S}) where {S}
+    shape = size(u)
+    # BFloat16: 7 mantissa bits, exponent for [1, 2) is 0x3F80.
+    m    = Intrinsics.shri(u, broadcast_to(Tile(UInt16(9)), shape), Signedness.Unsigned)
+    bits = Intrinsics.ori(m, broadcast_to(Tile(UInt16(0x3F81)), shape))
+    Intrinsics.bitcast(bits, BFloat16) - broadcast_to(Tile(BFloat16(1)), shape)
+end
 
 # Float64 from a UInt64 sample — bit-pattern construction matching
 # GPUArrays / CUDA.jl. Avoids the costly `Float64(::UInt64)` conversion on
@@ -228,34 +242,70 @@ function rand_uint64_tile(stream, dims::NTuple{N, Int}) where {N}
     Intrinsics.ori(lo, Intrinsics.shli(hi, broadcast_to(Tile(UInt64(32)), dims)))
 end
 
-# Convert the Philox sample to the requested type. Tile IR integers are
-# signless, so cross-sign at the same width is a relabel via `bitcast`;
-# narrower integers go through `trunci`. Floats route through `u01`.
-# Extending support to a new type means adding a method here — the Philox
-# core itself is strictly Tile{UInt32} (32-bit outputs) or Tile{UInt64}
-# (packed 64-bit outputs).
+# UInt16 / UInt8 derive from rand_uint32_tile by splitting each UInt32 into
+# 2 / 4 chunks and concatenating. The cyclic tile distribution makes both
+# the cat and the per-chunk shri/trunci stay in-thread, so packing more
+# outputs per Philox call doesn't add warp shuffles or shared-mem traffic.
+# For `n < fan_out` (0D scalar UInt16; 0D / 2-elt UInt8) the natural split
+# produces more chunks than needed and we `extract` the prefix.
 
-const Rand32Types = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32,
-                          Float16, BFloat16, Float32}
-const Rand64Types = Union{Int64, UInt64, Float64}
-const RandTypes   = Union{Rand32Types, Rand64Types}
+function rand_uint16_tile(stream, dims::NTuple{N, Int}) where {N}
+    n     = prod(dims)
+    raw_n = max(1, n >> 1)
+    raw   = rand_uint32_tile(stream, (raw_n,))
+    sh    = (raw_n,)
+    lo = Intrinsics.trunci(raw, UInt16)
+    hi = Intrinsics.trunci(Intrinsics.shri(raw, broadcast_to(Tile(UInt32(16)), sh),
+                                           Signedness.Unsigned), UInt16)
+    full = cat((lo, hi), 1)
+    n < 2 * raw_n ? reshape(extract(full, (1,), (n,)), dims) : reshape(full, dims)
+end
 
-finalize_tile(::Type{UInt32}, u::Tile{UInt32}) = u
-finalize_tile(::Type{Int32},  u::Tile{UInt32}) = Intrinsics.bitcast(u, Int32)
-finalize_tile(::Type{T}, u::Tile{UInt32}) where {T<:Union{Int8, UInt8, Int16, UInt16}} =
-    Intrinsics.trunci(u, T)
-finalize_tile(::Type{T}, u::Tile{UInt32}) where {T<:Union{Float16, BFloat16, Float32}} =
-    u01(T, u)
+function rand_uint8_tile(stream, dims::NTuple{N, Int}) where {N}
+    n     = prod(dims)
+    raw_n = max(1, n >> 2)
+    raw   = rand_uint32_tile(stream, (raw_n,))
+    sh    = (raw_n,)
+    bcast(s) = broadcast_to(Tile(UInt32(s)), sh)
+    shr(amt) = Intrinsics.shri(raw, bcast(amt), Signedness.Unsigned)
+    b0 = Intrinsics.trunci(raw,    UInt8)
+    b1 = Intrinsics.trunci(shr(8),  UInt8)
+    b2 = Intrinsics.trunci(shr(16), UInt8)
+    b3 = Intrinsics.trunci(shr(24), UInt8)
+    full = cat((cat((b0, b1), 1), cat((b2, b3), 1)), 1)
+    n < 4 * raw_n ? reshape(extract(full, (1,), (n,)), dims) : reshape(full, dims)
+end
 
-finalize_tile(::Type{UInt64}, u::Tile{UInt64}) = u
-finalize_tile(::Type{Int64},  u::Tile{UInt64}) = Intrinsics.bitcast(u, Int64)
-finalize_tile(::Type{Float64}, u::Tile{UInt64}) = u01(Float64, u)
+# Map each output type to its underlying unsigned RNG core (matched in
+# width). This is the only place that decides how wide the Philox output
+# tile is; all bit-packing logic stays inside rand_uint{8,16,32,64}_tile.
+underlying_rand(::Type{T}, stream, dims) where {T<:Union{Int8,  UInt8}}                       = rand_uint8_tile(stream, dims)
+underlying_rand(::Type{T}, stream, dims) where {T<:Union{Int16, UInt16, Float16, BFloat16}}   = rand_uint16_tile(stream, dims)
+underlying_rand(::Type{T}, stream, dims) where {T<:Union{Int32, UInt32, Float32}}             = rand_uint32_tile(stream, dims)
+underlying_rand(::Type{T}, stream, dims) where {T<:Union{Int64, UInt64, Float64}}             = rand_uint64_tile(stream, dims)
+
+# Convert the Philox sample to the requested type, matched in width to the
+# underlying unsigned RNG core. Tile IR integers are signless, so the
+# unsigned→signed conversion is just a `bitcast` relabel.
+
+const RandTypes = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64,
+                        Float16, BFloat16, Float32, Float64}
+
+# Identity for unsigned RNG output types.
+finalize_tile(::Type{T}, u::Tile{T}) where {T<:Union{UInt8, UInt16, UInt32, UInt64}} = u
+# Same-width signed: signless bitcast.
+finalize_tile(::Type{Int8},  u::Tile{UInt8})  = Intrinsics.bitcast(u, Int8)
+finalize_tile(::Type{Int16}, u::Tile{UInt16}) = Intrinsics.bitcast(u, Int16)
+finalize_tile(::Type{Int32}, u::Tile{UInt32}) = Intrinsics.bitcast(u, Int32)
+finalize_tile(::Type{Int64}, u::Tile{UInt64}) = Intrinsics.bitcast(u, Int64)
+# Floats: u01 conversion (each float type matches its raw unsigned in width).
+finalize_tile(::Type{Float32},  u::Tile{UInt32}) = u01(Float32, u)
+finalize_tile(::Type{T}, u::Tile{UInt16}) where {T<:Union{Float16, BFloat16}} = u01(T, u)
+finalize_tile(::Type{Float64},  u::Tile{UInt64}) = u01(Float64, u)
 
 
-rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:Rand32Types, N} =
-    finalize_tile(T, rand_uint32_tile(stream, dims))
-rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:Rand64Types, N} =
-    finalize_tile(T, rand_uint64_tile(stream, dims))
+rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:RandTypes, N} =
+    finalize_tile(T, underlying_rand(T, stream, dims))
 
 # Scalar form: produce a 0D tile, extract via to_scalar.
 
