@@ -21,8 +21,7 @@
 # producing a mathematically independent Philox stream.
 #
 # v1 limitations:
-#  - Output types: `RandTypes` — 8/16/32-bit ints + Float16/BFloat16/Float32.
-#    Wider types (Int64/UInt64/Float64) come in tier 2.
+#  - Output types: `RandTypes` — 8/16/32/64-bit ints + Float16/BFloat16/Float32/Float64.
 #  - No `randn`, `randexp`.
 #
 # Loops: the counter is threaded as a loop-carried SSA value by
@@ -102,6 +101,17 @@ end
 u01(::Type{T}, u::Tile{UInt32}) where {T<:Union{Float16, BFloat16}} =
     convert(Tile{T}, u01(Float32, u))
 
+# Float64 from a UInt64 sample — bit-pattern construction matching
+# GPUArrays / CUDA.jl. Avoids the costly `Float64(::UInt64)` conversion on
+# consumer GPUs. The low mantissa bit is forced set so the result lands in
+# (0, 1), preserving the Float32 path's (0, 1] convention.
+function u01(::Type{Float64}, u::Tile{UInt64, S}) where {S}
+    shape = size(u)
+    shifted = Intrinsics.shri(u, broadcast_to(Tile(UInt64(12)), shape), Signedness.Unsigned)
+    bits    = Intrinsics.ori(shifted, broadcast_to(Tile(0x3ff0000000000001), shape))
+    Intrinsics.bitcast(bits, Float64) .- broadcast_to(Tile(1.0), shape)
+end
+
 
 bc_const_f32(val::Float32, shape::NTuple{N, Int}) where {N} =
     broadcast_to(Tile(val), shape)
@@ -166,6 +176,8 @@ end
 
 # Produce a tile of UInt32 randoms. `stream` is an `Int` ID returned by
 # `rng_stream`/`rng_default`; `rng_state_pass!` keys per-stream state on it.
+# Each Philox call produces two UInt32s (`c1`, `c2`); the UInt32 path uses
+# only `c1`, the UInt64 path below packs both.
 
 function rand_uint32_tile(stream, dims::NTuple{N, Int}) where {N}
     n = prod(dims)
@@ -181,14 +193,35 @@ function rand_uint32_tile(stream, dims::NTuple{N, Int}) where {N}
     c1
 end
 
-# Convert the UInt32 sample to the requested type. Tile IR integers are
+# UInt64 variant: same Philox cost as the UInt32 path (1 round per element)
+# by packing both Philox lanes into a UInt64 — `low | (high << 32)`.
+function rand_uint64_tile(stream, dims::NTuple{N, Int}) where {N}
+    n = prod(dims)
+    k_scalar = rng_key(stream)
+    c_base   = Intrinsics.rng_counter(stream)
+    Intrinsics.rng_advance(stream, n)
+
+    k_tile   = broadcast_to(Tile(k_scalar), dims)
+    counters = counter_tile(c_base, dims)
+    ctr2     = bc_const(UInt32(0), dims)
+
+    c1, c2 = philox2x_rounds(Val(7), counters, ctr2, k_tile)
+    lo = convert(Tile{UInt64}, c1)
+    hi = convert(Tile{UInt64}, c2)
+    Intrinsics.ori(lo, Intrinsics.shli(hi, broadcast_to(Tile(UInt64(32)), dims)))
+end
+
+# Convert the Philox sample to the requested type. Tile IR integers are
 # signless, so cross-sign at the same width is a relabel via `bitcast`;
 # narrower integers go through `trunci`. Floats route through `u01`.
 # Extending support to a new type means adding a method here — the Philox
-# core itself is strictly Tile{UInt32}.
+# core itself is strictly Tile{UInt32} (32-bit outputs) or Tile{UInt64}
+# (packed 64-bit outputs).
 
-const RandTypes = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32,
-                        Float16, BFloat16, Float32}
+const Rand32Types = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32,
+                          Float16, BFloat16, Float32}
+const Rand64Types = Union{Int64, UInt64, Float64}
+const RandTypes   = Union{Rand32Types, Rand64Types}
 
 finalize_tile(::Type{UInt32}, u::Tile{UInt32}) = u
 finalize_tile(::Type{Int32},  u::Tile{UInt32}) = Intrinsics.bitcast(u, Int32)
@@ -197,9 +230,15 @@ finalize_tile(::Type{T}, u::Tile{UInt32}) where {T<:Union{Int8, UInt8, Int16, UI
 finalize_tile(::Type{T}, u::Tile{UInt32}) where {T<:Union{Float16, BFloat16, Float32}} =
     u01(T, u)
 
+finalize_tile(::Type{UInt64}, u::Tile{UInt64}) = u
+finalize_tile(::Type{Int64},  u::Tile{UInt64}) = Intrinsics.bitcast(u, Int64)
+finalize_tile(::Type{Float64}, u::Tile{UInt64}) = u01(Float64, u)
 
-rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T, N} =
+
+rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:Rand32Types, N} =
     finalize_tile(T, rand_uint32_tile(stream, dims))
+rand_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:Rand64Types, N} =
+    finalize_tile(T, rand_uint64_tile(stream, dims))
 
 # Scalar form: produce a 0D tile, extract via to_scalar.
 

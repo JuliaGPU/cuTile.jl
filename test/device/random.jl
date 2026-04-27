@@ -25,7 +25,8 @@ rand_span(::Type{T}) where {T<:Signed}        = (Float64(typemin(T)), Float64(ty
          (UInt32, (16,)), (Int32,  (16,)),
          (UInt16, (16,)), (Int16,  (16,)),
          (UInt8,  (16,)), (Int8,   (16,)),
-         (Float16, (16,)), (ct.BFloat16, (16,)))
+         (UInt64, (16,)), (Int64,  (16,)),
+         (Float16, (16,)), (ct.BFloat16, (16,)), (Float64, (16,)))
 
     # Typed `rand` surfaces, polymorphic over (T, dims): scalar form, NTuple-typed
     # tile form, and variadic-Integer + explicit-RNG form. Each surface writes to
@@ -286,7 +287,8 @@ end
     end
 
     @testset "host rand! covers RandTypes (T=$T)" for T in
-            (Int8, UInt8, Int16, UInt16, Int32, UInt32, Float16, ct.BFloat16, Float32)
+            (Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64,
+             Float16, ct.BFloat16, Float32, Float64)
         # End-to-end host fill for every supported element type. Verifies the
         # generic `rand_fill_kernel` specializes correctly per T and produces
         # values in the type's natural range (in-range is trivial for
