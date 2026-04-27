@@ -247,23 +247,40 @@ end
 # field on CodeInfo, then sets `is_inlineable(src) := inlining_cost != MAX_INLINE_COST`.
 # When the body cost exceeds the storage's representable range it saturates to
 # MAX_INLINE_COST and the function becomes permanently non-inlineable, regardless
-# of the caller's `inline_cost_threshold`. The storage is UInt16 on 1.12 (cap
-# ≈65535) and was narrowed to UInt8 on 1.13+ (cap ≈5000 via jl_encode_inlining_cost).
-# Every cuTile intrinsic call is a `:call` penalized at `inline_nonleaf_penalty`
-# (1000), so functions like `philox2x_rounds` (≈170 such calls after inner
-# expansion) blow past both caps.
+# of the caller's `inline_cost_threshold`. The storage is UInt16 on 1.11/1.12
+# (cap ≈65535) and was narrowed to UInt8 on 1.13+ (cap ≈5000 via
+# jl_encode_inlining_cost). Every cuTile intrinsic call is a `:call` penalized
+# at `inline_nonleaf_penalty` (1000), so functions like `philox2x_rounds`
+# (≈170 such calls after inner expansion) blow past every cap.
 #
 # This override bypasses the `is_inlineable` check and tells the inliner to
 # always inline functions with available source, matching what our
-# `inline_cost_threshold = typemax(Int)` setting intends.
-function CC.src_inlining_policy(interp::cuTileInterpreter,
-        @nospecialize(src), @nospecialize(info::CC.CallInfo), stmt_flag::UInt32)
-    @static if isdefined(CC, :OptimizationState)
-        isa(src, CC.OptimizationState) && (src = src.src)
+# `inline_cost_threshold = typemax(Int)` setting intends. Julia 1.12+ split the
+# legacy `inlining_policy` (returns src or nothing) into `src_inlining_policy`
+# (returns Bool); we override the version-appropriate hook.
+@static if isdefined(CC, :src_inlining_policy)
+    function CC.src_inlining_policy(interp::cuTileInterpreter,
+            @nospecialize(src), @nospecialize(info::CC.CallInfo), stmt_flag::UInt32)
+        @static if isdefined(CC, :OptimizationState)
+            isa(src, CC.OptimizationState) && (src = src.src)
+        end
+        isa(src, CC.MaybeCompressed) && return true
+        isa(src, CC.IRCode) && return true
+        return false
     end
-    isa(src, CC.MaybeCompressed) && return true
-    isa(src, CC.IRCode) && return true
-    return false
+else
+    function CC.inlining_policy(interp::cuTileInterpreter,
+            @nospecialize(src), @nospecialize(info::CC.CallInfo), stmt_flag::UInt32)
+        if isa(src, CC.MaybeCompressed)
+            CC.is_source_inferred(src) || return nothing
+            return src
+        elseif isa(src, CC.IRCode)
+            return src
+        elseif isa(src, CC.SemiConcreteResult)
+            return src
+        end
+        return nothing
+    end
 end
 
 # Disable semi-concrete interpretation (broken with overlays per JuliaLang/julia#47349)
