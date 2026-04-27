@@ -366,6 +366,41 @@ Note: This is a compile-time only type for Tile IR code generation.
 """
 primitive type TFloat32 <: AbstractFloat 32 end
 
+# Pack into TF32's 19 bits: Float32 layout, low 13 mantissa bits rounded
+# (RNE) and dropped. Result occupies bits 0–18 of the returned UInt32.
+function float_to_bits(value::Float64, ::Type{TFloat32})
+    f32_bits = reinterpret(UInt32, Float32(value))
+    sign = (f32_bits >> 31) & 0x1
+    exp = (f32_bits >> 23) & 0xff
+    mantissa23 = f32_bits & 0x007fffff
+
+    if exp == 0xff
+        mantissa10 = mantissa23 >> 13
+        if mantissa23 != 0 && mantissa10 == 0
+            # Truncated payload would turn NaN into Inf; restore a NaN bit.
+            mantissa10 = UInt32(1)
+        end
+        return (sign << 18) | (exp << 10) | mantissa10
+    end
+
+    truncated = mantissa23 >> 13
+    dropped = mantissa23 & 0x1fff
+    half = UInt32(1) << 12
+    if dropped > half || (dropped == half && (truncated & 0x1) != 0)
+        truncated += 0x1
+    end
+
+    if truncated >= 0x400
+        truncated = 0x0
+        exp += 0x1
+        if exp >= 0xff
+            return (sign << 18) | (UInt32(0xff) << 10)
+        end
+    end
+
+    return (sign << 18) | (exp << 10) | truncated
+end
+
 
 #=============================================================================
  Type Unions

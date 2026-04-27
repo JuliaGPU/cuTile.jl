@@ -399,10 +399,10 @@ function float_to_bits(value::Float64, ::Type{Float64})
     reinterpret(UInt64, value)
 end
 
-# For TFloat32, use Float32 representation
+# Per-type methods live alongside the type definitions (e.g. TFloat32 in
+# language/types.jl, since its primitive isn't visible yet here).
 function float_to_bits(value::Float64, ::Type{T}) where T
-    # Fallback to Float32 for special types like TFloat32
-    reinterpret(UInt32, Float32(value))
+    throw(ArgumentError("float_to_bits: unsupported element type $T"))
 end
 
 """

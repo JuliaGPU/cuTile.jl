@@ -17,16 +17,16 @@ emit_value!(ctx::CGCtx, block_arg::BlockArgument) = ctx[block_arg]
 function emit_value!(ctx::CGCtx, val::Integer)
     jltype = typeof(val)
     type_id = tile_type_for_julia!(ctx, jltype)
-    bytes = reinterpret(UInt8, [jltype(val)])
-    v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
+    bytes = constant_to_bytes(val, jltype)
+    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
     CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
 end
 
 function emit_value!(ctx::CGCtx, val::AbstractFloat)
     jltype = typeof(val)
     type_id = tile_type_for_julia!(ctx, jltype)
-    bytes = reinterpret(UInt8, [jltype(val)])
-    v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
+    bytes = constant_to_bytes(val, jltype)
+    v = encode_ConstantOp!(ctx.cb, type_id, bytes)
     CGVal(v, type_id, Tile{jltype, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
 end
 
@@ -181,6 +181,10 @@ function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
         return UInt8[value ? 0xff : 0x00]
     elseif T <: Integer
         return collect(reinterpret(UInt8, [value % T]))
+    elseif T === TFloat32
+        # TF32: 19 bits packed into 3 little-endian bytes.
+        bits = float_to_bits(Float64(value), TFloat32)
+        return UInt8[bits & 0xff, (bits >> 8) & 0xff, (bits >> 16) & 0xff]
     elseif T <: AbstractFloat
         return collect(reinterpret(UInt8, [T(value)]))
     else

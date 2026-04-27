@@ -567,7 +567,7 @@ function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T); throw_error::Bool=tr
     actual_type = CC.widenconst(T)
     cached = get(ctx.type_cache, actual_type, nothing)
     cached !== nothing && return cached
-    type_id = _tile_type_for_julia!(ctx.tt, actual_type)
+    type_id = tile_type_for_julia!(ctx.tt, actual_type)
     if type_id !== nothing
         ctx.type_cache[actual_type] = type_id
         return type_id
@@ -576,7 +576,7 @@ function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T); throw_error::Bool=tr
     return nothing
 end
 
-function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
+function tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     # Scalar types -> 0-D tile
     if T === Bool
         return tile_type!(tt, I1(tt), RowMajorShape(()))
@@ -594,6 +594,8 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         return tile_type!(tt, BF16(tt), RowMajorShape(()))
     elseif T === Float32
         return tile_type!(tt, F32(tt), RowMajorShape(()))
+    elseif T === TFloat32
+        return tile_type!(tt, TF32(tt), RowMajorShape(()))
     elseif T === Float64
         return tile_type!(tt, F64(tt), RowMajorShape(()))
     end
