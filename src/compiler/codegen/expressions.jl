@@ -114,6 +114,8 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif func === Core.apply_type
         # Type construction is compile-time only - result_type tells us the constructed type
         return ghost_value(result_type, result_type)
+    elseif func === Core.getglobal
+        return emit_getglobal!(ctx, call_args)
     end
 
     result = emit_intrinsic!(ctx, func, call_args)
@@ -137,11 +139,25 @@ function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
             _throw_method_error(ctx, call_args)
         end
     end
+    if func === Core.getglobal
+        return emit_getglobal!(ctx, call_args)
+    end
 
     result = emit_intrinsic!(ctx, func, call_args)
     result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
     return result
+end
+
+# Resolve `Core.getglobal(mod::Module, name::Symbol)` at compile time. Both
+# arguments must be constants — the result is the value bound in `mod`.
+function emit_getglobal!(ctx::CGCtx, call_args)
+    length(call_args) >= 2 || throw(IRError("getglobal: expected (Module, Symbol) arguments"))
+    mod = @something get_constant(ctx, call_args[1]) throw(IRError("getglobal: module argument must be a compile-time constant"))
+    name = @something get_constant(ctx, call_args[2]) throw(IRError("getglobal: name argument must be a compile-time constant"))
+    mod isa Module || throw(IRError("getglobal: expected a Module, got $(typeof(mod))"))
+    name isa Symbol || throw(IRError("getglobal: expected a Symbol, got $(typeof(name))"))
+    return emit_value!(ctx, getglobal(mod, name))
 end
 
 """

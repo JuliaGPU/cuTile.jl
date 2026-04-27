@@ -115,6 +115,10 @@ end
 # Symbols are compile-time only values
 emit_value!(ctx::CGCtx, val::Symbol) = ghost_value(Symbol, val)
 
+# Modules are compile-time only values (e.g. literal `cuTile.Intrinsics` left
+# in IR by an unfolded `Base.getglobal(::Module, ::Symbol)` call).
+emit_value!(ctx::CGCtx, val::Module) = ghost_value(Module, val)
+
 # Tuples populate .tuple with elements so emit_value! can recurse uniformly
 function emit_value!(ctx::CGCtx, val::Tuple)
     elements = collect(Any, val)
