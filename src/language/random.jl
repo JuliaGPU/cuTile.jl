@@ -1,32 +1,67 @@
 # Device-side random number generation
 #
-# Uniform Philox2x32-7 on top of existing tile-aware arithmetic intrinsics
-# and four placeholder state intrinsics (`rng_counter`, `rng_advance`,
-# `rng_seed`, `rng_set_seed`) from `compiler/intrinsics/random.jl`. Those
-# intrinsics are rewritten to concrete SSA values by `rng_state_pass!`,
-# which threads two UInt32 state slots — counter and seed — through
-# structured control flow.
+# Uniform Philox2x32-7 RNG, tile-vectorized. Sits on top of the four
+# placeholder state intrinsics (`rng_counter`, `rng_advance`, `rng_seed`,
+# `rng_set_seed`) in `compiler/intrinsics/random.jl`, which the
+# `rng_state_pass!` lowering pass rewrites to concrete SSA — threading two
+# per-stream UInt32 slots (counter and seed) through structured control
+# flow.
 #
-# In-kernel API:
-#   rand()                              -> Float32 scalar
-#   rand(::Type{T})                     -> T scalar, T ∈ RandTypes
-#   rand(::Type{T}, dims)               -> Tile{T, dims}
-#   rand(dims)                          -> Tile{Float32, dims}
-#   Random.seed!(Random.default_rng(), seed)   # re-seed the threaded state
+# === Pipeline =============================================================
 #
-# The key is derived per block as `bid_linear * PHILOX_W ⊻ rng_seed()`.
-# With the default (unseeded) state, `rng_seed() = 0` and the key reduces
-# to the bid-derived value — two launches under the same grid produce
-# identical output. Seeding via `Random.seed!` changes the threaded seed,
-# producing a mathematically independent Philox stream.
+#   user code: Random.rand(T, dims)        # overlay → rand_tile
+#                       │
+#                       ▼
+#   rand_tile(stream, T, dims) =
+#       finalize_tile(T, underlying_rand(T, stream, dims))
+#                       │
+#       ┌───────────────┴────────────────────┐
+#       ▼                                    ▼
+#   Layer 1: width-matched unsigned core     Layer 2: same-width type
+#   ─ "use all the bits per Philox call"     ─ "give it the right Julia type"
 #
-# v1 limitations:
-#  - Output types: `RandTypes` — 8/16/32/64-bit ints + Float16/BFloat16/Float32/Float64.
-#  - No `randn`, `randexp`.
+#   underlying_rand dispatch (only place      finalize_tile dispatch (no bit
+#   that knows about bit-packing):            packing here):
+#     Int8/UInt8        → uint8_tile            Tile{UIntᵢ}  → identity
+#     Int16/UInt16/F16/BF16 → uint16_tile       Tile{UIntᵢ}  → bitcast (Int)
+#     Int32/UInt32/F32  → uint32_tile           Tile{UInt32} → u01(Float32)
+#     Int64/UInt64/F64  → uint64_tile           Tile{UInt16} → u01(Float16)
+#                                               Tile{UInt16} → u01(BFloat16)
+#                                               Tile{UInt64} → u01(Float64)
 #
-# Loops: the counter is threaded as a loop-carried SSA value by
-# `rng_state_pass!`, so each iteration's `rand` call sees a distinct
-# counter. The seed is carried similarly if set inside a loop body.
+# `rand_uint32_tile` is the primitive (calls philox2x_rounds). The other
+# three derive from it: `_uint64` packs (c1, c2) into UInt64s, `_uint16`
+# splits each UInt32 into 2 chunks via shri+trunci+cat, `_uint8` splits
+# 4 ways. The cyclic tile distribution makes every cat/split a
+# register-level no-op (verified on SASS — zero added warp shuffles).
+#
+# Adding a same-width output type: one line in `underlying_rand` + one
+# method on `finalize_tile`. The Philox core never needs to change.
+#
+# === In-kernel API ========================================================
+#
+#   rand()                              # → Float32 scalar
+#   rand(::Type{T})                     # → T scalar         (T ∈ RandTypes)
+#   rand(::Type{T}, dims)               # → Tile{T, dims}    (T ∈ RandTypes)
+#   rand(dims)                          # → Tile{Float32, dims}
+#   Random.seed!(Random.default_rng(), seed)   # re-seed threaded stream
+#
+# Per-stream key derivation (`rng_key`) hashes the linear block id with the
+# Weyl constant and XORs in the threaded seed — different seeds give
+# uncorrelated Philox streams across blocks; different blocks under the
+# same seed remain disjoint.
+#
+# Loops: `rng_state_pass!` threads (counter, seed) as loop-carried SSA, so
+# each iteration's `rand` sees a fresh counter; in-loop `Random.seed!`
+# similarly threads the seed.
+#
+# Limitations:
+#  - Output types: `RandTypes` (8/16/32/64-bit ints + F16/BF16/F32/F64).
+#  - No `randn` / `randexp` yet. The two-layer split above extends to
+#    `randn` cleanly: `underlying_normal` overrides narrow floats to
+#    UInt32 (Box-Muller's polynomial approximations need ≥23-bit input);
+#    a `randn_finalize_tile` does pair → boxmuller → cat. Same Philox
+#    core, no new intrinsics.
 
 using Random
 
