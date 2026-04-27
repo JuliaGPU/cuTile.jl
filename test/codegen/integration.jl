@@ -420,6 +420,36 @@ end
         end
     end
 
+    @testset "closure with non-inferrable capture (short-circuit && regression)" begin
+        # Regression: when a closure captures a tile of unknown type (e.g. the
+        # result of `iota` with a non-const shape), Julia inlines
+        # `_typeof_captured_variable(t) = t isa Type && has_free_typevars(t) ?
+        # typeof(t) : Typeof(t)` to materialize the closure type. The resulting
+        # short-circuit `&&` CFG has a multi-pred merge tail (`Typeof`'s
+        # implementation) that the structurizer must tail-duplicate. Before the
+        # fix: `internal error: SSA values used but not defined: %21`.
+        #
+        # We stop at `code_structured` because the codegen step still rejects
+        # the non-const `iota` shape — that's the upstream semantic error this
+        # MWE was masking. The structurization itself must succeed.
+        spec = ct.ArraySpec{1}(16, true)
+        function k_closure_capture(out::ct.TileArray{UInt16, 1}, n::Int)
+            pid = ct.bid(1)
+            raw = ct.Intrinsics.iota((n,), UInt32)
+            sh  = (n,)
+            bcast() = ct.broadcast_to(ct.Tile(UInt32(8)), sh)
+            shr()   = ct.Intrinsics.shri(raw, bcast(), ct.Signedness.Unsigned)
+            a = ct.Intrinsics.trunci(raw,   UInt16)
+            b = ct.Intrinsics.trunci(shr(), UInt16)
+            t = ct.cat((a, b), 1)
+            ct.store(out, pid, t)
+            return
+        end
+        @test ct.code_structured(k_closure_capture,
+                                 Tuple{ct.TileArray{UInt16, 1, spec}, Int};
+                                 optimize=false) isa Vector
+    end
+
     @testset "loop-invariant load (manually hoisted)" begin
         # Test that a manually-hoisted loop-invariant load appears before the loop.
         # Pattern: Y[n, m] = X[n, m] * W[m], iterating over N-tiles.
