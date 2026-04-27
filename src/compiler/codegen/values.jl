@@ -179,16 +179,10 @@ end
 function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
     if T === Bool
         return UInt8[value ? 0xff : 0x00]
-    elseif T === Int32 || T === UInt32
+    elseif T <: Integer
         return collect(reinterpret(UInt8, [value % T]))
-    elseif T === Int64 || T === UInt64
-        return collect(reinterpret(UInt8, [value % T]))
-    elseif T === Float16
-        return collect(reinterpret(UInt8, [Float16(value)]))
-    elseif T === Float32
-        return collect(reinterpret(UInt8, [Float32(value)]))
-    elseif T === Float64
-        return collect(reinterpret(UInt8, [Float64(value)]))
+    elseif T <: AbstractFloat
+        return collect(reinterpret(UInt8, [T(value)]))
     else
         throw(IRError("Cannot convert $T to constant bytes"))
     end

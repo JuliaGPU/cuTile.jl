@@ -83,21 +83,16 @@ const PHILOX_W = 0x9E3779B9 % UInt32   # Weyl step (bumpkey)
  Philox round (tile-polymorphic — works for 0D and ND shapes alike)
 =============================================================================#
 
-# Broadcast a scalar UInt32 constant to match a tile's shape.
-bc_const(val::UInt32, shape::NTuple{N, Int}) where {N} =
-    broadcast_to(Tile(val), shape)
-
 function philox2x_round(c1::Tile{UInt32, S}, c2::Tile{UInt32, S},
                         k::Tile{UInt32, S}) where {S}
-    shape = size(c1)
-    m = bc_const(PHILOX_M, shape)
+    m = fill(PHILOX_M, size(c1))
     hi = Intrinsics.mulhii(c1, m, Signedness.Unsigned)
     lo = Intrinsics.muli(c1, m)
     (hi .⊻ k .⊻ c2, lo)
 end
 
 philox2x_bumpkey(k::Tile{UInt32, S}) where {S} =
-    k .+ bc_const(PHILOX_W, size(k))
+    k .+ fill(PHILOX_W, size(k))
 
 # Unrolled R-round Philox, for R ∈ 1..7.
 function philox2x_rounds(::Val{R}, c1::Tile{UInt32, S}, c2::Tile{UInt32, S},
@@ -125,9 +120,9 @@ end
 # was prioritized over interval shape.
 function u01(::Type{Float32}, u::Tile{UInt32, S}) where {S}
     shape = size(u)
-    uf = convert(Tile{Float32}, u)
-    scale = bc_const_f32(Float32(2)^-32, shape)
-    bias  = bc_const_f32(Float32(2)^-33, shape)
+    uf    = convert(Tile{Float32}, u)
+    scale = fill(Float32(2)^-32, shape)
+    bias  = fill(Float32(2)^-33, shape)
     uf .* scale .+ bias
 end
 
@@ -138,16 +133,16 @@ end
 function u01(::Type{Float16}, u::Tile{UInt16, S}) where {S}
     shape = size(u)
     # Float16: 10 mantissa bits, exponent for [1, 2) is 0x3C00.
-    m    = Intrinsics.shri(u, broadcast_to(Tile(UInt16(6)), shape), Signedness.Unsigned)
-    bits = Intrinsics.ori(m, broadcast_to(Tile(UInt16(0x3C01)), shape))
-    Intrinsics.bitcast(bits, Float16) - broadcast_to(Tile(Float16(1)), shape)
+    m    = Intrinsics.shri(u, fill(UInt16(6), shape), Signedness.Unsigned)
+    bits = Intrinsics.ori(m, fill(UInt16(0x3C01), shape))
+    Intrinsics.bitcast(bits, Float16) - fill(Float16(1), shape)
 end
 function u01(::Type{BFloat16}, u::Tile{UInt16, S}) where {S}
     shape = size(u)
     # BFloat16: 7 mantissa bits, exponent for [1, 2) is 0x3F80.
-    m    = Intrinsics.shri(u, broadcast_to(Tile(UInt16(9)), shape), Signedness.Unsigned)
-    bits = Intrinsics.ori(m, broadcast_to(Tile(UInt16(0x3F81)), shape))
-    Intrinsics.bitcast(bits, BFloat16) - broadcast_to(Tile(BFloat16(1)), shape)
+    m    = Intrinsics.shri(u, fill(UInt16(9), shape), Signedness.Unsigned)
+    bits = Intrinsics.ori(m, fill(UInt16(0x3F81), shape))
+    Intrinsics.bitcast(bits, BFloat16) - fill(BFloat16(1), shape)
 end
 
 # Float64 from a UInt64 sample — bit-pattern construction matching
@@ -156,14 +151,10 @@ end
 # (0, 1), preserving the Float32 path's (0, 1] convention.
 function u01(::Type{Float64}, u::Tile{UInt64, S}) where {S}
     shape = size(u)
-    shifted = Intrinsics.shri(u, broadcast_to(Tile(UInt64(12)), shape), Signedness.Unsigned)
-    bits    = Intrinsics.ori(shifted, broadcast_to(Tile(0x3ff0000000000001), shape))
-    Intrinsics.bitcast(bits, Float64) .- broadcast_to(Tile(1.0), shape)
+    shifted = Intrinsics.shri(u, fill(UInt64(12), shape), Signedness.Unsigned)
+    bits    = Intrinsics.ori(shifted, fill(0x3ff0000000000001, shape))
+    Intrinsics.bitcast(bits, Float64) - fill(1.0, shape)
 end
-
-
-bc_const_f32(val::Float32, shape::NTuple{N, Int}) where {N} =
-    broadcast_to(Tile(val), shape)
 
 #=============================================================================
  Per-block key derivation
@@ -220,7 +211,7 @@ function counter_tile(c_base::Tile{UInt32, Tuple{}}, dims::NTuple{N, Int}) where
     # is all we care about.
     flat = Intrinsics.iota((prod(dims),), UInt32)
     idx  = reshape(flat, dims)
-    broadcast_to(c_base, dims) .+ idx
+    fill(c_base, dims) .+ idx
 end
 
 # Produce a tile of UInt32 randoms. `stream` is an `Int` ID returned by
@@ -243,17 +234,17 @@ function rand_uint32_tile(stream, dims::NTuple{N, Int}) where {N}
     Intrinsics.rng_advance(stream, n)
     if n == 1
         # 0D / scalar: one Philox call, take c1 only.
-        k_tile   = broadcast_to(Tile(k_scalar), dims)
+        k_tile   = fill(k_scalar, dims)
         counters = counter_tile(c_base, dims)
-        ctr2     = bc_const(UInt32(0), dims)
+        ctr2     = fill(UInt32(0), dims)
         c1, _c2  = philox2x_rounds(Val(7), counters, ctr2, k_tile)
         return c1
     else
         # n ≥ 2: do n/2 Philox calls and use both lanes.
         half = n >> 1
-        k_tile   = broadcast_to(Tile(k_scalar), (half,))
+        k_tile   = fill(k_scalar, half)
         counters = counter_tile(c_base, (half,))
-        ctr2     = bc_const(UInt32(0), (half,))
+        ctr2     = fill(UInt32(0), half)
         c1, c2   = philox2x_rounds(Val(7), counters, ctr2, k_tile)
         return reshape(cat((c1, c2), 1), dims)
     end
@@ -267,14 +258,14 @@ function rand_uint64_tile(stream, dims::NTuple{N, Int}) where {N}
     c_base   = Intrinsics.rng_counter(stream)
     Intrinsics.rng_advance(stream, n)
 
-    k_tile   = broadcast_to(Tile(k_scalar), dims)
+    k_tile   = fill(k_scalar, dims)
     counters = counter_tile(c_base, dims)
-    ctr2     = bc_const(UInt32(0), dims)
+    ctr2     = fill(UInt32(0), dims)
 
     c1, c2 = philox2x_rounds(Val(7), counters, ctr2, k_tile)
     lo = convert(Tile{UInt64}, c1)
     hi = convert(Tile{UInt64}, c2)
-    Intrinsics.ori(lo, Intrinsics.shli(hi, broadcast_to(Tile(UInt64(32)), dims)))
+    Intrinsics.ori(lo, Intrinsics.shli(hi, fill(UInt64(32), dims)))
 end
 
 # UInt16 / UInt8 derive from rand_uint32_tile by splitting each UInt32 into
@@ -288,11 +279,10 @@ function rand_uint16_tile(stream, dims::NTuple{N, Int}) where {N}
     n     = prod(dims)
     raw_n = max(1, n >> 1)
     raw   = rand_uint32_tile(stream, (raw_n,))
-    sh    = (raw_n,)
-    lo = Intrinsics.trunci(raw, UInt16)
-    hi = Intrinsics.trunci(Intrinsics.shri(raw, broadcast_to(Tile(UInt32(16)), sh),
-                                           Signedness.Unsigned), UInt16)
-    full = cat((lo, hi), 1)
+    lo    = Intrinsics.trunci(raw, UInt16)
+    hi    = Intrinsics.trunci(Intrinsics.shri(raw, fill(UInt32(16), raw_n),
+                                              Signedness.Unsigned), UInt16)
+    full  = cat((lo, hi), 1)
     n < 2 * raw_n ? reshape(extract(full, (1,), (n,)), dims) : reshape(full, dims)
 end
 
@@ -300,9 +290,7 @@ function rand_uint8_tile(stream, dims::NTuple{N, Int}) where {N}
     n     = prod(dims)
     raw_n = max(1, n >> 2)
     raw   = rand_uint32_tile(stream, (raw_n,))
-    sh    = (raw_n,)
-    bcast(s) = broadcast_to(Tile(UInt32(s)), sh)
-    shr(amt) = Intrinsics.shri(raw, bcast(amt), Signedness.Unsigned)
+    shr(amt) = Intrinsics.shri(raw, fill(UInt32(amt), raw_n), Signedness.Unsigned)
     b0 = Intrinsics.trunci(raw,    UInt8)
     b1 = Intrinsics.trunci(shr(8),  UInt8)
     b2 = Intrinsics.trunci(shr(16), UInt8)
