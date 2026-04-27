@@ -13,6 +13,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     # TODO: get_global - global variable access
     # TODO: global - global variable definition
     # TODO: pack - pack tiles
+    # TODO: unpack - unpack tiles
     @testset "offset" begin
         spec = ct.ArraySpec{1}(16, true)
         # Reject float offsets at the intrinsic boundary so direct callers
@@ -549,6 +550,48 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, bidy, (16, 32))
                 acc = zeros(Float32, (32, 32))
                 @check "mma"
+                result = muladd(tile_a, tile_b, acc)
+                ct.store(c, (bidx, bidy), result)
+                return
+            end
+        end
+    end
+
+    @testset "mmai" begin
+        # i8 × i8 → i32 with signedness derived from the Julia element type.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int8,2,spec2d},
+                             ct.TileArray{Int8,2,spec2d},
+                             ct.TileArray{Int32,2,spec2d}}) do a, b, c
+                bidx = ct.bid(1)
+                bidy = ct.bid(2)
+                tile_a = ct.load(a, bidx, (32, 16))
+                tile_b = ct.load(b, bidy, (16, 32))
+                acc = zeros(Int32, (32, 32))
+                @check "mmai"
+                @check "signed signed"
+                result = muladd(tile_a, tile_b, acc)
+                ct.store(c, (bidx, bidy), result)
+                return
+            end
+        end
+
+        # Mixed signedness: UInt8 × Int8 → Int32 should emit `unsigned signed`.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt8,2,spec2d},
+                             ct.TileArray{Int8,2,spec2d},
+                             ct.TileArray{Int32,2,spec2d}}) do a, b, c
+                bidx = ct.bid(1)
+                bidy = ct.bid(2)
+                tile_a = ct.load(a, bidx, (32, 16))
+                tile_b = ct.load(b, bidy, (16, 32))
+                acc = zeros(Int32, (32, 32))
+                @check "mmai"
+                # _muladd swaps lhs/rhs for row-major, so the signedness
+                # attributes also swap: rhs=UInt8 (unsigned), lhs=Int8 (signed).
+                @check "signed unsigned"
                 result = muladd(tile_a, tile_b, acc)
                 ct.store(c, (bidx, bidy), result)
                 return

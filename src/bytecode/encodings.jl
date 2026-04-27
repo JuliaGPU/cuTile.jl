@@ -1232,6 +1232,28 @@ function encode_MmaFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
     return new_op!(cb)
 end
 
+"""
+    encode_MmaIOp!(cb, result_type, lhs, rhs, acc; signedness_lhs, signedness_rhs) -> Value
+
+Integer matrix multiply-accumulate (`acc + lhs @ rhs`) on i8 inputs with
+i32 accumulator. The signedness of each input is encoded as an attribute;
+the accumulator and result are always signed i32.
+Opcode: 74
+"""
+function encode_MmaIOp!(cb::CodeBuilder, result_type::TypeId,
+                        lhs::Value, rhs::Value, acc::Value;
+                        signedness_lhs::Signedness.T=Signedness.Signed,
+                        signedness_rhs::Signedness.T=Signedness.Signed)
+    encode_varint!(cb.buf, Opcode.MmaIOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_enum!(cb.buf, signedness_lhs)
+    encode_enum!(cb.buf, signedness_rhs)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    encode_operand!(cb.buf, acc)
+    return new_op!(cb)
+end
+
 #=============================================================================
  Integer arithmetic operations
 =============================================================================#

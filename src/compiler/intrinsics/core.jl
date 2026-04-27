@@ -402,10 +402,13 @@ end
 """
     Intrinsics.mma(a::Tile, b::Tile, acc::Tile) -> typeof(acc)
 
-Floating-point matrix-multiply-accumulate computing `a*b + acc`; lowers to
-`cuda_tile.mmaf`.
+Matrix-multiply-accumulate computing `a*b + acc`. Dispatches at codegen
+based on element types:
 
-Integer MMA (`cuda_tile.mmai`) is not yet supported by this intrinsic.
+- Matching float `a`/`b`/`acc` lower to `cuda_tile.mmaf`.
+- `i8` `a`/`b` with `i32` `acc` lower to `cuda_tile.mmai`. Per-input
+  signedness is derived from the Julia type (`Int8` → signed,
+  `UInt8` → unsigned); `acc` and the result are always signed `i32`.
 """
 @intrinsic mma(a::Tile, b::Tile, acc::Tile)
 tfunc(𝕃, ::typeof(Intrinsics.mma), @nospecialize(a), @nospecialize(b), @nospecialize(acc)) = CC.widenconst(acc)
@@ -418,7 +421,23 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
 
     (lhs === nothing || rhs === nothing || acc === nothing) && throw(IRError("Cannot resolve operands for mma()"))
 
-    result = encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v)
+    lhs_elem = eltype(CC.widenconst(lhs.jltype))
+    rhs_elem = eltype(CC.widenconst(rhs.jltype))
+    acc_elem = eltype(CC.widenconst(acc.jltype))
+
+    result = if acc_elem <: AbstractFloat
+        encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v)
+    elseif lhs_elem <: Union{Int8, UInt8} && rhs_elem <: Union{Int8, UInt8} &&
+           acc_elem === Int32
+        s_lhs = lhs_elem <: Signed ? Signedness.Signed : Signedness.Unsigned
+        s_rhs = rhs_elem <: Signed ? Signedness.Signed : Signedness.Unsigned
+        encode_MmaIOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v;
+                       signedness_lhs=s_lhs, signedness_rhs=s_rhs)
+    else
+        throw(IRError("mma: unsupported element-type combination — got " *
+                      "lhs=$lhs_elem, rhs=$rhs_elem, acc=$acc_elem; expected " *
+                      "matching float (mmaf) or i8 × i8 → i32 (mmai)"))
+    end
 
     CGVal(result, acc.type_id, acc.jltype, acc.shape)
 end
