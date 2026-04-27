@@ -667,7 +667,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     validate_tile_shape(collect(Int, target_shape_tuple), "reshape")
     target_shape = RowMajorShape(ColMajorShape(target_shape_tuple))
 
-    # Get element type
+    src_n = isempty(source.shape) ? 1 : prod(source.shape.dims)
+    tgt_n = isempty(target_shape_tuple) ? 1 : prod(target_shape_tuple)
+    src_n == tgt_n || throw(IRError(
+        "reshape: source shape $(Tuple(source.shape.dims)) ($src_n elements) " *
+        "and target shape $target_shape_tuple ($tgt_n elements) must have the same number of elements"))
+
     elem_type = eltype(CC.widenconst(source.jltype))
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
