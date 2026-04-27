@@ -176,21 +176,38 @@ end
 
 # Produce a tile of UInt32 randoms. `stream` is an `Int` ID returned by
 # `rng_stream`/`rng_default`; `rng_state_pass!` keys per-stream state on it.
-# Each Philox call produces two UInt32s (`c1`, `c2`); the UInt32 path uses
-# only `c1`, the UInt64 path below packs both.
+# Each Philox call produces two UInt32s (`c1`, `c2`). For `n ≥ 2` we run
+# `n/2` Philox calls and `cat` the two lanes — halving Philox compute. The
+# cyclic tile distribution makes `cat` a register-level no-op (each thread's
+# c1 and c2 shares fall into its own output positions; verified via SASS:
+# zero added warp shuffles, zero shared-mem traffic). For `n == 1` (0D
+# scalar) we keep the single-call form since there's no second lane to
+# place. The host counter still advances by `n` (logical element count)
+# rather than `n/2` (actual Philox calls), wasting half the counter range
+# (2^31 still usable) in exchange for keeping the host advance scheme
+# T-agnostic.
 
 function rand_uint32_tile(stream, dims::NTuple{N, Int}) where {N}
     n = prod(dims)
     k_scalar = rng_key(stream)
     c_base   = Intrinsics.rng_counter(stream)
     Intrinsics.rng_advance(stream, n)
-
-    k_tile   = broadcast_to(Tile(k_scalar), dims)
-    counters = counter_tile(c_base, dims)
-    ctr2     = bc_const(UInt32(0), dims)
-
-    c1, _c2 = philox2x_rounds(Val(7), counters, ctr2, k_tile)
-    c1
+    if n == 1
+        # 0D / scalar: one Philox call, take c1 only.
+        k_tile   = broadcast_to(Tile(k_scalar), dims)
+        counters = counter_tile(c_base, dims)
+        ctr2     = bc_const(UInt32(0), dims)
+        c1, _c2  = philox2x_rounds(Val(7), counters, ctr2, k_tile)
+        return c1
+    else
+        # n ≥ 2: do n/2 Philox calls and use both lanes.
+        half = n >> 1
+        k_tile   = broadcast_to(Tile(k_scalar), (half,))
+        counters = counter_tile(c_base, (half,))
+        ctr2     = bc_const(UInt32(0), (half,))
+        c1, c2   = philox2x_rounds(Val(7), counters, ctr2, k_tile)
+        return reshape(cat((c1, c2), 1), dims)
+    end
 end
 
 # UInt64 variant: same Philox cost as the UInt32 path (1 round per element)
