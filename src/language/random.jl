@@ -86,7 +86,7 @@ const PHILOX_W = 0x9E3779B9 % UInt32   # Weyl step (bumpkey)
 function philox2x_round(c1::Tile{UInt32, S}, c2::Tile{UInt32, S},
                         k::Tile{UInt32, S}) where {S}
     m = fill(PHILOX_M, size(c1))
-    hi = Intrinsics.mulhii(c1, m, Signedness.Unsigned)
+    hi = Intrinsics.mulhii(c1, m)
     lo = Intrinsics.muli(c1, m)
     (hi .⊻ k .⊻ c2, lo)
 end

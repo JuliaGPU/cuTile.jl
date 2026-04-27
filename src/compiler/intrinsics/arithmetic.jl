@@ -273,20 +273,23 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
 end
 
 """
-    Intrinsics.mulhii(a::Tile{T}, b::Tile{T}, s::Signedness.T) -> Tile{T}  where {T<:Integer}
+    Intrinsics.mulhii(a::Tile{T}, b::Tile{T}) -> Tile{T}  where {T<:Integer}
 
 Element-wise integer multiplication, returning the high half of the
 double-width product; lowers to `cuda_tile.mulhii`.
 
-Also invocable with scalars, promoted to 0-D tiles before codegen. The
-Tile IR op is unsigned-only, so the `s` operand is accepted for signature
-uniformity with other integer ops but ignored at codegen. Mismatched-shape
-operands are broadcast to a common shape.
+Tile IR defines `mulhii` for unsigned integers only; signed element
+types are rejected at codegen with a pointer to `reinterpret`.
 """
-@intrinsic mulhii(x::T, y::T, s::Signedness.T) where {T<:Integer}
-@intrinsic mulhii(a::Tile{T}, b::Tile{T}, s::Signedness.T) where {T<:Integer}
-tfunc(𝕃, ::typeof(Intrinsics.mulhii), @nospecialize(x), @nospecialize(y), @nospecialize(s)) = CC.widenconst(x)
+@intrinsic mulhii(x::T, y::T) where {T<:Integer}
+@intrinsic mulhii(a::Tile{T}, b::Tile{T}) where {T<:Integer}
+tfunc(𝕃, ::typeof(Intrinsics.mulhii), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulhii), args)
+    arg_type = argextype(ctx, args[1])
+    elem_type = arg_type <: Tile ? eltype(arg_type) : arg_type
+    elem_type <: Signed && throw(IRError(
+        "mulhii: signed integer high-half multiply ($elem_type) is not supported; " *
+        "`reinterpret` to the unsigned counterpart if you accept losing sign info"))
     emit_binop!(ctx, args, encode_MulhiIOp!)
 end
 

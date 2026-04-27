@@ -1617,20 +1617,45 @@ end
     end
 
     @testset "binary" begin
+        spec_u32 = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt32,1,spec_u32},
+                             ct.TileArray{UInt32,1,spec_u32}}) do a, b
+                pid = ct.bid(1)
+                ta = ct.load(a, pid, (16,))
+                tb = ct.load(b, pid, (16,))
+                @check "mulhii"
+                Base.donotdelete(ct.mul_hi.(ta, tb))
+                return
+            end
+        end
+
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
-                @check "mulhii"
-                Base.donotdelete(ct.mul_hi.(ta, tb))
                 @check "maxi"
                 Base.donotdelete(max.(ta, tb))
                 @check "mini"
                 Base.donotdelete(min.(ta, tb))
                 return
             end
+        end
+    end
+
+    # mulhii is unsigned-only; signed mul_hi must surface as a clean error
+    # rather than silently emitting an unsigned multiply.
+    @testset "mul_hi rejects signed integers" begin
+        @test_throws "signed" code_tiled(
+                Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            Base.donotdelete(ct.mul_hi.(ta, tb))
+            return
         end
     end
 

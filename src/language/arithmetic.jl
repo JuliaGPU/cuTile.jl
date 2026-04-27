@@ -70,14 +70,13 @@ end
 # native implementations provide the element-wise logic, and map handles
 # broadcasting + to_scalar/from_scalar wrapping.
 
-# mul_hi (high bits of integer multiply — no Core.Intrinsic equivalent)
+# mul_hi (high bits of integer multiply — no Core.Intrinsic equivalent).
+# Tile IR's `mulhii` is unsigned-only; signed inputs are rejected at codegen.
 @static if VERSION >= v"1.13-"
     using Base: mul_hi
-    @overlay Base.mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, Signedness.Signed)
-    @overlay Base.mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, Signedness.Unsigned)
+    @overlay Base.mul_hi(x::T, y::T) where {T <: Integer} = Intrinsics.mulhii(x, y)
 else
-    @inline mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, Signedness.Signed)
-    @inline mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, Signedness.Unsigned)
+    @inline mul_hi(x::T, y::T) where {T <: Integer} = Intrinsics.mulhii(x, y)
 end
 
 
