@@ -245,6 +245,16 @@ function run_passes!(sci::StructuredIRCode)
     constants = analyze_constants(sci)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
 
+    # Common-subexpression elimination. Runs after the rewrite pass so
+    # algebraic equivalences (`x+c-c → x`, etc.) and FMA fusions have
+    # already canonicalised; CSE then collapses what's left. Runs
+    # before alias analysis so the alias map is built over the
+    # deduplicated form. The dedup naturally extends to TileViews and
+    # the `getfield(arg, :ptr|:sizes|:strides)` chains that feed them,
+    # which is what the downstream `assume_pass!` and `licm_pass!`
+    # benefit from most.
+    cse_pass!(sci)
+
     alias_info = analyze_aliases(sci)
 
     token_order_pass!(sci, alias_info)

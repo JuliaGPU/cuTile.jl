@@ -1566,6 +1566,7 @@ end
     end
 
     @testset "scalar broadcast" begin
+        # Distinct constants per line so CSE doesn't fold the broadcasts.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -1576,13 +1577,13 @@ end
                 Base.donotdelete(tile .+ 1.0f0)
                 @check "broadcast"
                 @check "subf"
-                Base.donotdelete(1.0f0 .- tile)
+                Base.donotdelete(1.5f0 .- tile)
                 @check "broadcast"
                 @check "mulf"
                 Base.donotdelete(tile .* 2.0f0)
                 @check "broadcast"
                 @check "divf"
-                Base.donotdelete(tile ./ 2.0f0)
+                Base.donotdelete(tile ./ 3.0f0)
                 return
             end
         end
