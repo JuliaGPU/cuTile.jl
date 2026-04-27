@@ -139,6 +139,9 @@ function tfunc(𝕃, ::typeof(Intrinsics.cat), @nospecialize(tiles), @nospeciali
     s1 = size(t1_type)
     s2 = size(t2_type)
     isempty(s1) && return nothing
+    # Defer the precise rank-mismatch diagnostic to emit_intrinsic!; widen
+    # the inferred type so the call still type-checks past inference.
+    length(s1) == length(s2) || return Tile{T}
     n = length(s1)
     a = axis < 0 ? n + axis : axis
     result_shape = ntuple(i -> i == a + 1 ? s1[i] + s2[i] : s1[i], n)
@@ -156,21 +159,39 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     axis_val = @something get_constant(ctx, args[2]) throw(IRError("cat() axis must be a compile-time constant"))
     axis_val isa Integer || throw(IRError("cat() axis must be an integer, got $(typeof(axis_val))"))
 
-    # Handle negative axis and flip to Tile IR order
+    # lhs/rhs must share rank, element type, and shape in every non-cat
+    # dimension; validate up-front for a clean Julia-level error.
     lhs_shape = lhs.shape
+    rhs_shape = rhs.shape
+    length(lhs_shape) == length(rhs_shape) ||
+        throw(IRError("cat: operand ranks differ — lhs has $(length(lhs_shape)) " *
+                      "dims, rhs has $(length(rhs_shape))"))
+
+    lhs_jltype = CC.widenconst(lhs.jltype)
+    rhs_jltype = CC.widenconst(rhs.jltype)
+    elem_type = eltype(lhs_jltype)
+    eltype(rhs_jltype) === elem_type ||
+        throw(IRError("cat: element types differ — lhs is $(eltype(lhs_jltype)), " *
+                      "rhs is $(eltype(rhs_jltype))"))
+
+    # Handle negative axis and flip to Tile IR order
     ndims = length(lhs_shape)
     julia_axis = axis_val < 0 ? ndims + axis_val : axis_val
+    0 <= julia_axis < ndims ||
+        throw(IRError("cat: axis $axis_val is out of range for a $ndims-dim tile"))
     tileir_axis = ndims - 1 - julia_axis
 
+    for i in 1:ndims
+        i == tileir_axis + 1 && continue
+        lhs_shape[i] == rhs_shape[i] ||
+            throw(IRError("cat: shape mismatch in non-cat dimension — lhs has " *
+                          "$(lhs_shape[i]), rhs has $(rhs_shape[i]) (Tile IR axis $(i-1))"))
+    end
+
     # Compute output shape - concatenate along the axis (in Tile IR order)
-    rhs_shape = rhs.shape
     output_shape = copy(lhs_shape)
     output_shape[tileir_axis + 1] += rhs_shape[tileir_axis + 1]
     validate_tile_shape(collect(output_shape), "cat")
-
-    # Get element type
-    lhs_type = CC.widenconst(lhs.jltype)
-    elem_type = eltype(lhs_type)
 
     # Create output tile type
     dtype = julia_to_tile_dtype!(tt, elem_type)

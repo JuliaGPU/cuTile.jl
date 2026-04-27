@@ -355,6 +355,37 @@ spec4d = ct.ArraySpec{4}(16, true)
                 return
             end
         end
+
+        # The user-facing `ct.cat` wrapper enforces same-rank/same-element-type
+        # via dispatch; exercise `Intrinsics.cat` directly to lock in the
+        # codegen-time validation for future internal callers.
+        @test_throws "ranks differ" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+                                                     ct.TileArray{Float32,1,spec1d}}) do a, b
+            pid = ct.bid(1)
+            tile1 = ct.load(a, pid, (4, 8))
+            tile2 = ct.load(b, pid, (16,))
+            Base.donotdelete(ct.Intrinsics.cat((tile1, tile2), 1))
+            return
+        end
+
+        @test_throws "element types differ" code_tiled(
+                Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Int32,2,spec2d}}) do a, b
+            pid = ct.bid(1)
+            tile1 = ct.load(a, pid, (4, 8))
+            tile2 = ct.load(b, pid, (4, 8))
+            Base.donotdelete(ct.Intrinsics.cat((tile1, tile2), 1))
+            return
+        end
+
+        # Differ on the non-cat axis to trigger the shape-mismatch check.
+        @test_throws "non-cat dimension" code_tiled(
+                Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            pid = ct.bid(1)
+            tile1 = ct.load(a, pid, (4, 8))
+            tile2 = ct.load(b, pid, (8, 8))  # 8 vs 4 on Julia axis 0
+            Base.donotdelete(ct.Intrinsics.cat((tile1, tile2), 1))
+            return
+        end
     end
 
     @testset "broadcast" begin
