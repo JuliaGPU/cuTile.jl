@@ -12,9 +12,18 @@ spec4d = ct.ArraySpec{4}(16, true)
     # TODO: extract - extract subtile
     # TODO: get_global - global variable access
     # TODO: global - global variable definition
-    # TODO: mmai - integer matrix multiply-accumulate
-    # TODO: offset - tile offset computation
     # TODO: pack - pack tiles
+    @testset "offset" begin
+        spec = ct.ArraySpec{1}(16, true)
+        # Reject float offsets at the intrinsic boundary so direct callers
+        # don't slip past the integer-only requirement.
+        @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+            base_ptr = ct.Tile(a.ptr)
+            float_offs = Float32.(ct.Intrinsics.iota((16,), Int32))
+            Base.donotdelete(ct.Intrinsics.offset(base_ptr, float_offs))
+            return
+        end
+    end
     @testset "scan" begin
         # Forward scan - float and integer types
         for (T, spec, op_check) in [

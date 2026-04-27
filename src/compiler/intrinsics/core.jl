@@ -466,6 +466,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
         throw(IRError("offset: base must be Tile{Ptr{T}, S}, got $base_jl"))
     ptr_elem_type = eltype(eltype(base_jl))
 
+    offsets_jl = CC.widenconst(offsets_tv.jltype)
+    offsets_elem = offsets_jl <: Tile ? eltype(offsets_jl) : offsets_jl
+    offsets_elem <: Integer ||
+        throw(IRError("offset: offsets must have integer element type, got $offsets_elem"))
+
     elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
 
