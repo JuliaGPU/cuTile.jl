@@ -84,6 +84,20 @@ spec4d = ct.ArraySpec{4}(16, true)
                 return
             end
         end
+
+        # Non-commutative combiner pins down the (acc, elem) convention.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "scan"
+                @check "([[ELEM:%[^:]+]]: tile<f32>, [[ACC:%[^:]+]]: tile<f32>)"
+                @check "subf [[ACC]], [[ELEM]]"
+                Base.donotdelete(accumulate((acc, elem) -> acc - elem, tile; dims=1, init=0.0f0))
+                return
+            end
+        end
     end
     # TODO: unpack - unpack tiles
 
@@ -680,6 +694,21 @@ spec4d = ct.ArraySpec{4}(16, true)
                 @check "reduce"
                 @check "addf"
                 Base.donotdelete(reduce((a, b) -> a + b, tile; dims=2, init=0.0f0))
+                return
+            end
+        end
+
+        # Non-commutative combiner pins down the (acc, elem) convention by
+        # capturing the block-arg names and asserting subf's operand order.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                @check "reduce"
+                @check "[[ELEM:%[^:]+]]: tile<f32>, [[ACC:%[^:]+]]: tile<f32>"
+                @check "subf [[ACC]], [[ELEM]]"
+                Base.donotdelete(reduce((acc, elem) -> acc - elem, tile; dims=2, init=0.0f0))
                 return
             end
         end

@@ -1368,12 +1368,11 @@ function encode_ReduceOp!(body::Function, cb::CodeBuilder,
     cb.num_ops += 1
     encode_varint!(cb.buf, 1)  # 1 region: body
 
-    # Body region - block args are pairs of (acc, elem) for each operand
-    # The body operates on 0D tiles (scalars)
+    # Block args: (element, accumulator) pairs per operand, both 0-D scalars.
     body_arg_types = TypeId[]
     for scalar_type in body_scalar_types
-        push!(body_arg_types, scalar_type)  # accumulator
         push!(body_arg_types, scalar_type)  # element
+        push!(body_arg_types, scalar_type)  # accumulator
     end
     with_region(body, cb, body_arg_types)
 
@@ -1440,12 +1439,11 @@ function encode_ScanOp!(body::Function, cb::CodeBuilder,
     cb.num_ops += 1
     encode_varint!(cb.buf, 1)  # 1 region: body
 
-    # Body region - block args are pairs of (acc, elem) for each operand
-    # The body operates on 0D tiles (scalars)
+    # Block args: (current_iter, prev_iter) = (element, accumulator) pairs per operand.
     body_arg_types = TypeId[]
     for scalar_type in body_scalar_types
-        push!(body_arg_types, scalar_type)  # accumulator
         push!(body_arg_types, scalar_type)  # element
+        push!(body_arg_types, scalar_type)  # accumulator
     end
     with_region(body, cb, body_arg_types)
 

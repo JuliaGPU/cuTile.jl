@@ -18,6 +18,19 @@ function validate_tile_shape(shape, context::String)
     end
 end
 
+# Convert reduce/scan body args from `(elem, acc, ...)` to `(acc, elem, ...)`
+# to match Julia's `Base.reduce` convention.
+function swap_pairs(xs::Vector{T}) where T
+    iseven(length(xs)) ||
+        throw(ArgumentError("swap_pairs expects an even-length vector"))
+    out = similar(xs)
+    @inbounds for k in 1:2:length(xs)
+        out[k]     = xs[k + 1]
+        out[k + 1] = xs[k]
+    end
+    return out
+end
+
 """
     Intrinsics.broadcast(tile::Tile{T,S}, shape::Tuple) -> Tile{T,Tuple{shape...}}
 
@@ -580,7 +593,8 @@ function emit_reduce!(ctx::CGCtx, args)
         push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end
 
-    # Body arg types: for each operand, (acc_type, elem_type) interleaved
+    # Body args: (element, accumulator) per spec; swap to (acc, elem) for Julia.
+    # Both halves of each pair share the type, so the swap only flips value bindings.
     body_arg_types = Type[]
     body_type_ids = TypeId[]
     for k in 1:N
@@ -590,10 +604,10 @@ function emit_reduce!(ctx::CGCtx, args)
         push!(body_type_ids, scalar_tile_types[k])
     end
 
-    # Emit ReduceOp with compiled combiner body
     results = encode_ReduceOp!(cb, reduced_tile_types, operand_values,
                                axis, identities, scalar_tile_types) do block_args
-        emit_subprogram!(ctx, func, body_arg_types, block_args, body_type_ids)
+        swapped = swap_pairs(block_args)
+        emit_subprogram!(ctx, func, body_arg_types, swapped, body_type_ids)
     end
 
     # Julia semantics: reintroduce reduced dimension as size 1 via ReshapeOp
@@ -752,7 +766,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end
 
-    # Body arg types: for each operand, (acc_type, elem_type) interleaved
+    # Same (elem, acc) → (acc, elem) swap as reduce; see emit_reduce!.
     body_arg_types = Type[]
     body_type_ids = TypeId[]
     for k in 1:N
@@ -762,10 +776,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         push!(body_type_ids, scalar_tile_types[k])
     end
 
-    # Emit ScanOp with compiled combiner body
     results = encode_ScanOp!(cb, output_tile_types, operand_values,
                              axis, reverse, identities, scalar_tile_types) do block_args
-        emit_subprogram!(ctx, func, body_arg_types, block_args, body_type_ids)
+        swapped = swap_pairs(block_args)
+        emit_subprogram!(ctx, func, body_arg_types, swapped, body_type_ids)
     end
 
     # Return multi-value CGVal (tuple)
