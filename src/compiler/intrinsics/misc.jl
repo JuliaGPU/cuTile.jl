@@ -148,14 +148,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.print_tko), args)
     result = encode_PrintTkoOp!(cb, token_type, tile_args;
                                  token=input_token, format_string)
 
-    # Store result token for TokenResultNode
-    # v13.2+ returns a token Value; v13.1 returns nothing (no token support)
-    new_token = if result isa Value
-        result
-    else
-        # Pre-13.2: create a fresh token to satisfy the token chain
-        encode_MakeTokenOp!(cb, token_type)
-    end
+    # v13.2+ returns a post-op token; v13.1 returns nothing, so forward the
+    # input token to keep prior happens-after edges instead of synthesising a
+    # fresh root that would discard them.
+    new_token = result isa Value ? result : input_token
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
 
     nothing  # print returns Nothing

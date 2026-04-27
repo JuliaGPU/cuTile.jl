@@ -2141,4 +2141,23 @@ end
             end
         end
     end
+
+    # On v13.1 we forward print_tko's input token; a second make_token here
+    # would mean we synthesised a disconnected one (the bug we're guarding).
+    @testset "v13.1 reuses input token for print_tko" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check_count 1 "make_token"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}};
+                       bytecode_version=v"13.1") do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                print("value: ", tile)
+                @check "store_view_tko"
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
 end
