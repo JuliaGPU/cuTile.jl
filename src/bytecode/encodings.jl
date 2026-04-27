@@ -95,6 +95,7 @@ module Opcode
     const TruncIOp = 107
     const XOrIOp = 108
     const YieldOp = 109
+    const Atan2Op = 110  # since 13.2
 end
 
 # Enums for operation attributes
@@ -808,6 +809,22 @@ function encode_PowOp!(cb::CodeBuilder, result_type::TypeId, base::Value, expone
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, base)
     encode_operand!(cb.buf, exponent)
+    return new_op!(cb)
+end
+
+"""
+    encode_Atan2Op!(cb, result_type, x, y) -> Value
+
+Floating-point element-wise atan2(x, y). Available in Tile IR v13.2+.
+Opcode: 110
+"""
+function encode_Atan2Op!(cb::CodeBuilder, result_type::TypeId, x::Value, y::Value)
+    cb.version >= v"13.2" ||
+        throw(IRError("cuda_tile.atan2 requires Tile IR v13.2+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.Atan2Op)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, x)
+    encode_operand!(cb.buf, y)
     return new_op!(cb)
 end
 

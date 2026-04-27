@@ -216,6 +216,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
 end
 
 """
+    Intrinsics.atan2(x::Tile{T}, y::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
+
+Element-wise principal-value `atan2(x, y)`; lowers to `cuda_tile.atan2`
+(Tile IR v13.2+). Half-precision inputs are emulated in `f32`.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
+@intrinsic atan2(x::T, y::T) where {T<:AbstractFloat}
+@intrinsic atan2(x::Tile{T}, y::Tile{T}) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.atan2), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atan2), args)
+    emit_binop!(ctx, args, encode_Atan2Op!)
+end
+
+"""
     Intrinsics.remf(x::Tile{T}, y::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
 
 Element-wise floating-point remainder using truncated division (sign of

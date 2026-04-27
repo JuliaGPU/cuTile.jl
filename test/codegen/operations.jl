@@ -1545,6 +1545,34 @@ end
         end
     end
 
+    @testset "atan2" begin
+        # atan2 is available from Tile IR v13.2.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Float32,1,spec1d}};
+                       bytecode_version=v"13.2") do y, x
+                pid = ct.bid(1)
+                ty = ct.load(y, pid, (16,))
+                tx = ct.load(x, pid, (16,))
+                @check "atan2"
+                Base.donotdelete(atan.(ty, tx))
+                return
+            end
+        end
+
+        # Older toolchains must reject the op cleanly.
+        @test_throws "v13.2" code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                                              ct.TileArray{Float32,1,spec1d}};
+                                        bytecode_version=v"13.1") do y, x
+            pid = ct.bid(1)
+            ty = ct.load(y, pid, (16,))
+            tx = ct.load(x, pid, (16,))
+            Base.donotdelete(atan.(ty, tx))
+            return
+        end
+    end
+
     @testset "power operations" begin
         @test @filecheck begin
             @check_label "entry"

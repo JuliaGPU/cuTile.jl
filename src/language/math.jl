@@ -21,6 +21,10 @@ end
 
 @overlay Base.fma(x::T, y::T, z::T) where {T <: ScalarFloat} = Intrinsics.fma(x, y, z)
 
+# Julia's `atan(y, x)` = `atan(y/x)`; Tile IR's `atan2(a, b)` = `atan(a/b)`.
+# Arguments map first-to-first.
+@overlay Base.atan(y::T, x::T) where {T <: ScalarFloat} = Intrinsics.atan2(y, x)
+
 # max/min
 @overlay Base.max(x::T, y::T) where {T <: Signed} = Intrinsics.maxi(x, y, Signedness.Signed)
 @overlay Base.max(x::T, y::T) where {T <: Unsigned} = Intrinsics.maxi(x, y, Signedness.Unsigned)
