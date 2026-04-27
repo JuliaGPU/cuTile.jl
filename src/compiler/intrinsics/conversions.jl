@@ -1,5 +1,17 @@
 # Type conversions
 
+# Result type for an element-wise conversion intrinsic with target type `T`.
+# - `src <: Tile`: result is `Tile` of the same shape with element type `T`.
+# - `src` is a concrete scalar: result is `T` (the scalar overload).
+# - otherwise (e.g. `Any`, abstract, or `Union`): return `nothing` so inference
+#   falls back to the intrinsic body's `Any`. Returning `T` here would lie about
+#   the result being scalar when the runtime value may well be a `Tile`.
+function convert_result_type(@nospecialize(src), @nospecialize(T))
+    src <: Tile && return similar_type(src, T)
+    src isa DataType && isconcretetype(src) && return T
+    return nothing
+end
+
 """
     Intrinsics.bitcast(x::Tile, ::Type{T}) -> Tile{T}
 
@@ -16,7 +28,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.bitcast), @nospecialize(x), @nospeciali
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
-    src <: Tile ? similar_type(src, T) : T
+    convert_result_type(src, T)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     cb = ctx.cb
@@ -54,7 +66,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.exti), @nospecialize(x), @nospecialize(
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
-    src <: Tile ? similar_type(src, T) : T
+    convert_result_type(src, T)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     cb = ctx.cb
@@ -88,7 +100,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
-    src <: Tile ? similar_type(src, T) : T
+    convert_result_type(src, T)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     cb = ctx.cb
@@ -120,7 +132,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.ftoi), @nospecialize(x), @nospecialize(
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
-    src <: Tile ? similar_type(src, T) : T
+    convert_result_type(src, T)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     cb = ctx.cb
@@ -153,7 +165,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.itof), @nospecialize(x), @nospecialize(
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
-    src <: Tile ? similar_type(src, T) : T
+    convert_result_type(src, T)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     cb = ctx.cb
@@ -186,7 +198,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.trunci), @nospecialize(x), @nospecializ
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
-    src <: Tile ? similar_type(src, T) : T
+    convert_result_type(src, T)
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     cb = ctx.cb
