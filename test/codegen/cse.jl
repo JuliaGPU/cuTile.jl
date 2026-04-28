@@ -120,10 +120,11 @@ end
 end
 
 @testset "cse — memory ops not deduplicated" begin
-    # Two `ct.load(a, 1, …)` calls have the same operands but each
-    # represents a distinct memory access. After `token_order_pass!`
-    # threads tokens, their token operands differ and they're trivially
-    # distinct; CSE additionally bails at the memory-op classifier.
+    # Two `ct.load(a, 1, …)` calls would have identical operand lists at
+    # CSE time (token threading happens later, in `token_order_pass!`).
+    # `is_pure_for_cse` bails at the `classify_memory_op == MEM_NONE` gate
+    # — loads carry `IR_FLAG_EFFECT_FREE` (the load itself doesn't write)
+    # but their value depends on memory state, not just operands.
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"

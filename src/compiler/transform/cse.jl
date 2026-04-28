@@ -82,16 +82,16 @@ function cse_one!(block::Block, inst::Instruction, table::Dict{Tuple, SSAValue})
     call === nothing && return
     func, ops = call
     is_pure_for_cse(inst, func) || return
-    sig = (func, inst[:type], Tuple(ops)...)
+    sig = (func, inst[:type], ops...)
     canonical = get(table, sig, nothing)
     if canonical === nothing
-        table[sig] = SSAValue(inst.ssa_idx)
+        table[sig] = SSAValue(inst)
     else
         # The redundant SSA is defined in `block`, so by SSA dominance its
         # uses are confined to `block` and the nested CF regions inside it.
         # `replace_uses!(block, …)` walks exactly that subtree (it recurses
         # into ControlFlowOps via `walk_uses!`).
-        replace_uses!(block, SSAValue(inst.ssa_idx), canonical)
+        replace_uses!(block, SSAValue(inst), canonical)
         delete!(block, inst)
     end
     return
