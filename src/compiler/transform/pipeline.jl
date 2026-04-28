@@ -234,10 +234,12 @@ const OPTIMIZATION_RULES = RewriteRule[
 =============================================================================#
 
 """
-    run_passes!(sci::StructuredIRCode)
+    run_passes!(sci::StructuredIRCode) -> AssumeInfo
 
-Run the full pass pipeline on a StructuredIRCode. Called for both kernel
-and subprogram compilation.
+Run the full pass pipeline on a StructuredIRCode. Called for both
+kernel and subprogram compilation. Returns the `AssumeInfo` aggregator
+that codegen consumes when emitting `make_tensor_view` operands; the
+caller stores it on the `CGCtx`.
 """
 function run_passes!(sci::StructuredIRCode)
     canonicalize!(sci)
@@ -266,5 +268,24 @@ function run_passes!(sci::StructuredIRCode)
 
     licm_pass!(sci)
 
+    # Build the assume sidecar for codegen. Runs after LICM so the
+    # dataflow analyses see the post-LICM form. Pure analysis: does
+    # *not* mutate the SCI — `make_tensor_view` codegen reads the
+    # result and emits `AssumeOp`s on the per-element bytecode `Value`s
+    # that `resolve_tuple` produces.
+    divby = analyze_divisibility(sci)
+    bnds  = analyze_bounds(sci)
+    assume_info = analyze_assume_info(sci, divby, bnds)
+
+    # Attach `no_signed_wrap` / `no_unsigned_wrap` flags to integer
+    # arithmetic where the bounds analysis proves the result fits in
+    # the destination width. Reuses the same `bnds` result; mutates
+    # `addi`/`subi`/`muli` Exprs in place by appending an
+    # `IntegerOverflow.T` operand that the codegen forwards as the
+    # encoder's overflow kwarg.
+    no_wrap_pass!(sci, bnds)
+
     dce_pass!(sci)
+
+    return assume_info
 end

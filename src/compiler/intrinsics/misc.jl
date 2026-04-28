@@ -24,55 +24,50 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assert), args)
     nothing  # no result value
 end
 
-# XXX: cuda_tile.assume
-# make this a pass?
-function emit_assume_ops!(ctx::CGCtx, array_val::Value, size_vals::Vector{Value},
-                          stride_vals::Vector{Value}, array_spec::ArraySpec, dtype::TypeId, scalar_type::TypeId;
-                          tv_strides::Union{Vector{Int64}, Nothing}=nothing)
-    cb = ctx.cb
-    tt = ctx.tt
+#=============================================================================
+ cuda_tile.assume
 
-    # Pointer alignment
-    if array_spec.alignment > 0
-        ptr_dtype = pointer_type!(tt, dtype)
-        ptr_tile_type = tile_type!(tt, ptr_dtype, RowMajorShape(()))
-        array_val = encode_AssumeOp!(cb, ptr_tile_type, array_val, DivBy(array_spec.alignment))
-    end
+ A single SCI intrinsic mirroring Tile IR's single `AssumeOp` opcode,
+ polymorphic over the predicate kind (`DivBy`, `Bounded`,
+ `SameElements`). Inserted by `assume_pass!` (transform/assume.jl) on
+ the operands of `make_tensor_view`, with the predicate value
+ constructed at pass time from the TileArray-type `ArraySpec` plus the
+ divisibility dataflow. Returns its input value — a pure-data
+ annotation, eliminated if downstream uses vanish.
 
-    # Bounds assumes for sizes
-    size_vals = Value[encode_AssumeOp!(cb, scalar_type, v, Bounded(0, nothing)) for v in size_vals]
+ cuTile Python uses one IR op class per predicate (`AssumeDivBy`,
+ `AssumeBounded`, …); we collapse to a single polymorphic intrinsic
+ because Julia's structural equality on the predicate type lifts
+ cleanly into the SCI signature for CSE — two
+ `Intrinsics.assume(x, DivBy(16))` calls dedup naturally.
 
-    # Bounds assumes for strides - only for dynamic strides
-    if tv_strides !== nothing
-        stride_vals = Value[tv_strides[i] == DYNAMIC_SHAPE ?
-                       encode_AssumeOp!(cb, scalar_type, v, Bounded(0, nothing)) : v
-                       for (i, v) in enumerate(stride_vals)]
-    else
-        stride_vals = Value[encode_AssumeOp!(cb, scalar_type, v, Bounded(0, nothing)) for v in stride_vals]
-    end
+ (Pointer alignment is *not* a separate predicate: it's encoded as
+ `DivBy(alignment)` on the pointer, the same way Tile IR / Python
+ represent it.)
+=============================================================================#
 
-    # Divisibility assumes for sizes
-    # ArraySpec fields are in Julia order; size_vals are in Tile IR order (reversed)
-    ndim = length(size_vals)
-    for (julia_i, div_by) in enumerate(array_spec.shape_div_by)
-        tileir_i = ndim + 1 - julia_i  # Reverse index mapping
-        if div_by > 0 && tileir_i <= length(size_vals)
-            size_vals[tileir_i] = encode_AssumeOp!(cb, scalar_type, size_vals[tileir_i], DivBy(div_by))
-        end
-    end
+"""
+    Intrinsics.assume(x, predicate::AssumePredicate) -> typeof(x)
 
-    # Divisibility assumes for strides - only for dynamic strides
-    for (julia_i, div_by) in enumerate(array_spec.stride_div_by)
-        tileir_i = ndim + 1 - julia_i  # Reverse index mapping
-        if div_by > 0 && tileir_i <= length(stride_vals)
-            # Skip if this stride is static (not DYNAMIC_SHAPE)
-            if tv_strides === nothing || tv_strides[tileir_i] == DYNAMIC_SHAPE
-                stride_vals[tileir_i] = encode_AssumeOp!(cb, scalar_type, stride_vals[tileir_i], DivBy(div_by))
-            end
-        end
-    end
-
-    return array_val, size_vals, stride_vals
+Annotate `x` with `predicate` (one of `DivBy`, `Bounded`,
+`SameElements`); lowers to `cuda_tile.assume`. `predicate` must be a
+compile-time constant.
+"""
+@intrinsic assume(x, predicate)
+tfunc(𝕃, ::typeof(Intrinsics.assume), @nospecialize(x), @nospecialize(predicate)) =
+    CC.widenconst(x)
+efunc(::typeof(Intrinsics.assume), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assume), args)
+    x = @something emit_value!(ctx, args[1]) throw(IRError("assume: cannot resolve value"))
+    x.v === nothing && throw(IRError("assume: value must be materialized"))
+    pred_c = get_constant(ctx, args[2])
+    pred_c === nothing && throw(IRError("assume: predicate must be a compile-time constant"))
+    pred = pred_c.value
+    pred isa AssumePredicate ||
+        throw(IRError("assume: predicate must be an AssumePredicate, got $(typeof(pred))"))
+    new_val = encode_AssumeOp!(ctx.cb, x.type_id, x.v, pred)
+    return CGVal(new_val, x.type_id, x.jltype, x.shape)
 end
 
 # cuda_tile.print_tko

@@ -45,6 +45,23 @@ function try_const_fold(ctx::CGCtx, op, args)
     emit_value!(ctx, op(vals...))
 end
 
+# `addi` / `subi` / `muli` accept an optional trailing operand carrying
+# an `IntegerOverflow.T` flag, set by `no_wrap_pass!` when the bounds
+# analysis proves the result fits in the destination width without
+# wraparound. When absent (most calls — only the no-wrap pass adds
+# it), defaults to `IntegerOverflow.None`.
+@inline function extract_overflow_arg(ctx::CGCtx, args, idx::Int)
+    length(args) >= idx || return IntegerOverflow.None
+    c = get_constant(ctx, args[idx])
+    c === nothing && return IntegerOverflow.None
+    v = c.value
+    v isa IntegerOverflow.T ? v : IntegerOverflow.None
+end
+
+# A view of just the first two operands — used to feed `try_const_fold`
+# without confusing it with the trailing `IntegerOverflow` operand.
+@inline view_first2(args) = view(args, 1:min(2, length(args)))
+
 function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     cb = ctx.cb
     tt = ctx.tt
@@ -123,7 +140,8 @@ Mismatched-shape operands are broadcast to a common shape.
 @intrinsic addi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.addi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args)
-    @something try_const_fold(ctx, +, args) emit_binop!(ctx, args, encode_AddIOp!)
+    overflow = extract_overflow_arg(ctx, args, 3)
+    @something try_const_fold(ctx, +, view_first2(args)) emit_binop!(ctx, args, encode_AddIOp!; overflow)
 end
 
 """
@@ -269,7 +287,8 @@ Mismatched-shape operands are broadcast to a common shape.
 @intrinsic muli(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.muli), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
-    @something try_const_fold(ctx, *, args) emit_binop!(ctx, args, encode_MulIOp!)
+    overflow = extract_overflow_arg(ctx, args, 3)
+    @something try_const_fold(ctx, *, view_first2(args)) emit_binop!(ctx, args, encode_MulIOp!; overflow)
 end
 
 """
@@ -374,7 +393,8 @@ Mismatched-shape operands are broadcast to a common shape.
 @intrinsic subi(a::Tile{T}, b::Tile{T}) where {T<:Integer}
 tfunc(𝕃, ::typeof(Intrinsics.subi), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subi), args)
-    @something try_const_fold(ctx, -, args) emit_binop!(ctx, args, encode_SubIOp!)
+    overflow = extract_overflow_arg(ctx, args, 3)
+    @something try_const_fold(ctx, -, view_first2(args)) emit_binop!(ctx, args, encode_SubIOp!; overflow)
 end
 
 

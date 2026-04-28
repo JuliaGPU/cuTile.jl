@@ -247,12 +247,15 @@ end
 Constructs a `TensorView` from a destructured `TileArray`; lowers to
 `cuda_tile.make_tensor_view`.
 
-The first argument is a compile-time constant `TileArray` type carrying
-the `ArraySpec` (alignment, contiguity, per-axis divisibility) used to
-emit accompanying `cuda_tile.assume` ops. `sizes` and `strides` are tuples
-in Julia (column-major) order; they are reversed for Tile IR's row-major
-layout. Each call emits a fresh `MakeTensorViewOp` and `AssumeOp` chain;
-the bytecode optimizer is expected to CSE redundant ones.
+The first argument is a compile-time constant `TileArray` type. Its
+`ArraySpec` (alignment, contiguity, per-axis divisibility) plus the
+divisibility / bounds dataflow analyses are aggregated by
+`analyze_assume_info` (analysis/assume.jl) into a per-operand
+predicate sidecar; codegen reads the sidecar via `predicates_for` and
+wraps each operand `Value` with `encode_AssumeOp!` before feeding the
+result to `encode_MakeTensorViewOp!`. `sizes` and `strides` are tuples
+in Julia (column-major) order; they are reversed for Tile IR's
+row-major layout.
 """
 @intrinsic make_tensor_view(::Type{T}, ptr, sizes, strides) where {T}
 function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view),
@@ -277,8 +280,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     ndim = ndims(T)
     spec = array_spec(T)
     dtype = julia_to_tile_dtype!(tt, elem_T)
-    size_elem_T = eltype(fieldtype(T, :sizes))
-    scalar_size_type = tile_type_for_julia!(ctx, size_elem_T)
 
     # Resolve operands. ptr is a single Value; sizes/strides expand to N values.
     ptr_tv = emit_value!(ctx, ptr_arg)
@@ -292,25 +293,55 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     length(stride_tvs) == ndim ||
         throw(IRError("make_tensor_view: expected $ndim strides, got $(length(stride_tvs))"))
 
+    # Wrap each operand `Value` with the AssumeOp chain the aggregator
+    # (analysis/assume.jl) computed for this make_tensor_view call. The
+    # bundle is per-mtv and tuple-shaped: `mtv_preds.ptr` is the ptr
+    # chain, `mtv_preds.sizes[i]` / `mtv_preds.strides[i]` are per-axis
+    # chains in Julia (column-major) order. Each `encode_AssumeOp!`
+    # emits one Tile IR `AssumeOp` and returns a fresh `Value` that we
+    # thread into the next link of the chain.
+    mtv_preds = predicates_for(ctx.assume_info, ctx.current_ssa_idx)
+
+    base_ptr = wrap_chain!(cb, base_ptr, ptr_tv.type_id::TypeId,
+                            mtv_preds === nothing ? EMPTY_PREDS : mtv_preds.ptr)
+
+    size_vals = Value[
+        wrap_chain!(cb, tv.v::Value, tv.type_id::TypeId,
+                     mtv_preds === nothing ? EMPTY_PREDS : mtv_preds.sizes[i])
+        for (i, tv) in enumerate(size_tvs)
+    ]
+    stride_vals = Value[
+        wrap_chain!(cb, tv.v::Value, tv.type_id::TypeId,
+                     mtv_preds === nothing ? EMPTY_PREDS : mtv_preds.strides[i])
+        for (i, tv) in enumerate(stride_tvs)
+    ]
+
     # Julia column-major order: (stride/size for dim 1, dim 2, ...). Reverse to
     # Tile IR's row-major order at the IR boundary.
-    size_vals = reverse!(Value[tv.v for tv in size_tvs])
-    stride_vals = reverse!(Value[tv.v for tv in stride_tvs])
+    reverse!(size_vals)
+    reverse!(stride_vals)
 
     tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
     tv_strides = compute_tensor_view_strides(spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
-
-    if spec !== nothing
-        base_ptr, size_vals, stride_vals = emit_assume_ops!(ctx, base_ptr, size_vals, stride_vals,
-                                                            spec, dtype, scalar_size_type; tv_strides)
-    end
 
     dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
 
     tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr, size_vals, dynamic_stride_vals)
     result_jltype = TensorView{elem_T, ndim}
     return CGVal(tensor_view, tv_type, result_jltype)
+end
+
+# Apply a predicate chain to a `Value`: each `AssumeOp` returns a new
+# `Value` that becomes the input to the next link. Empty chain returns
+# the input unchanged. Caller passes `EMPTY_PREDS` when the assume
+# sidecar has no entry for this operand.
+@inline function wrap_chain!(cb::CodeBuilder, value::Value, type_id::TypeId,
+                              preds::Vector{AssumePredicate})
+    for p in preds
+        value = encode_AssumeOp!(cb, type_id, value, p)
+    end
+    return value
 end
 
 """

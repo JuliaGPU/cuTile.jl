@@ -301,6 +301,15 @@ mutable struct CGCtx
 
     # Kernel linkage name (for debug info subprogram)
     linkage_name::String
+
+    # Per-make_tensor_view assume predicates, populated by `run_passes!`
+    # via `analyze_assume_info`. `nothing` when no pipeline ran (e.g.
+    # tests building a CGCtx by hand). Queried by `make_tensor_view`'s
+    # codegen; see `analysis/assume.jl`.
+    #
+    # Untyped (vs. `Union{AssumeInfo, Nothing}`) because `AssumeInfo` is
+    # defined in `analysis/assume.jl`, included after this file.
+    assume_info::Any
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
@@ -329,6 +338,7 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         FPMode[],                        # fpmode_stack
         debug_emitter,
         linkage_name,
+        nothing,                         # assume_info — set by run_passes!
     )
 end
 

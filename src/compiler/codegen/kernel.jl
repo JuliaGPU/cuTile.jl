@@ -169,7 +169,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     hoist_returns!(ctx.sci.entry)
 
     # Run the pass pipeline (normalize, optimize, token ordering, DCE).
-    run_passes!(sci)
+    # Returns the AssumeInfo sidecar consumed by `make_tensor_view` codegen.
+    ctx.assume_info = run_passes!(sci)
 
     # Cache the token bytecode type for codegen
     ctx.token_type = Token(tt)
@@ -315,13 +316,14 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     end
 
     # 2b. Run the pass pipeline on subprogram IR
-    run_passes!(sci)
+    sub_assume_info = run_passes!(sci)
 
     # 3. Create sub-context (inherits active fpmode from caller)
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
                       ctx.token_type,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
+    sub_ctx.assume_info = sub_assume_info
     append!(sub_ctx.fpmode_stack, ctx.fpmode_stack)
 
     # Inherit kernel-state flat values from the parent. Subprograms compile
