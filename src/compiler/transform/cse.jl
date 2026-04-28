@@ -87,23 +87,14 @@ function cse_one!(block::Block, inst::Instruction, table::Dict{Tuple, SSAValue})
     if canonical === nothing
         table[sig] = SSAValue(inst.ssa_idx)
     else
-        replace_uses!(block_root(block), SSAValue(inst.ssa_idx), canonical)
+        # The redundant SSA is defined in `block`, so by SSA dominance its
+        # uses are confined to `block` and the nested CF regions inside it.
+        # `replace_uses!(block, …)` walks exactly that subtree (it recurses
+        # into ControlFlowOps via `walk_uses!`).
+        replace_uses!(block, SSAValue(inst.ssa_idx), canonical)
         delete!(block, inst)
     end
     return
-end
-
-# Walk up to the SCI entry block to do a global use-replacement. `block`
-# might be a nested CF body whose `replace_uses!` only sees its own
-# region; uses in *enclosing* scopes can't reference an SSA defined
-# inside the nested block, but uses in *sibling* nested blocks (and in
-# the parent's instructions following the CF op) absolutely can.
-function block_root(block::Block)
-    p = block
-    while p.parent isa Block
-        p = p.parent
-    end
-    return p
 end
 
 #=============================================================================

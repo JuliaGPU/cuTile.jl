@@ -79,6 +79,46 @@ end
     end
 end
 
+@testset "cse — redundancy entirely inside a nested block" begin
+    # Both the canonical and the redundant make_tensor_view live inside
+    # the if-branch. `replace_uses!` is called on the nested block, and
+    # by SSA dominance every use of the redundant is confined to that
+    # block's subtree — no walk up to the root needed.
+    spec1d = ct.ArraySpec{1}(16, true)
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Bool}) do a, c
+            if c
+                ct.store(a, 1, ct.load(a, 1, (16,)))
+                ct.store(a, 1, ct.load(a, 1, (16,)))
+            end
+            return
+        end
+        @check "make_tensor_view"
+        @check_not "make_tensor_view"
+    end
+end
+
+@testset "cse — sibling branches do not share table" begin
+    # Identical expressions in then- and else- arms must stay distinct:
+    # neither arm dominates the other, so additions in one branch must
+    # not leak to its sibling.
+    spec1d = ct.ArraySpec{1}(16, true)
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Bool}) do a, c
+            if c
+                ct.store(a, 1, ct.load(a, 1, (16,)))
+            else
+                ct.store(a, 1, ct.load(a, 1, (16,)))
+            end
+            return
+        end
+        @check "make_tensor_view"
+        @check "make_tensor_view"
+    end
+end
+
 @testset "cse — memory ops not deduplicated" begin
     # Two `ct.load(a, 1, …)` calls have the same operands but each
     # represents a distinct memory access. After `token_order_pass!`
