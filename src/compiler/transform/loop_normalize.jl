@@ -36,9 +36,8 @@ function _get_constant_int(block::Block, @nospecialize(val))
         return val
     end
     if val isa SSAValue
-        haskey(block.body, val.id) || return nothing
-        entry = block.body[val.id]
-        s = entry.stmt
+        haskey(block, val.id) || return nothing
+        s = block[val.id][:stmt]
         if s isa Int32 || s isa Int64 || s isa Int
             return s
         end
@@ -52,7 +51,7 @@ end
 function _normalize_loops_in_block!(sci::StructuredIRCode, block::Block)
     changed = false
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ForOp
             changed |= _try_normalize_for!(sci, block, inst, s)
             changed |= _normalize_loops_in_block!(sci, s.body)
@@ -86,7 +85,7 @@ function _try_normalize_for!(sci::StructuredIRCode, parent_block::Block,
     #    a constant equal to lower_const
     subi_insts = Instruction[]
     for user_inst in iv_users
-        s = stmt(user_inst)
+        s = user_inst[:stmt]
         call = resolve_call(body, s)
         call === nothing && return false
         func, ops = call

@@ -33,7 +33,7 @@ end
 
 function collect_loops!(result, block::Block)
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ForOp || s isa LoopOp
             collect_loops!(result, s.body)
             push!(result, (inst, s))
@@ -55,8 +55,8 @@ function hoist_from_loop!(loop_inst::Instruction, loop_op)
         changed = false
         for body in blocks(loop_op)
             for inst in collect(instructions(body))
-                stmt(inst) isa ControlFlowOp && continue
-                is_store(body, stmt(inst)) && continue
+                inst[:stmt] isa ControlFlowOp && continue
+                is_store(body, inst[:stmt]) && continue
                 all(v -> is_defined_outside(v, loop_op), operands(body, inst)) || continue
                 move_before!(inst, loop_inst)
                 changed = true

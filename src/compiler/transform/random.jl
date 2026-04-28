@@ -118,7 +118,7 @@ end
 
 function block_modifies_slot(block::Block, pred, hkey::Int)
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if pred(s) && stream_key(stream_operand(s::Expr), block) == hkey
             return true
         elseif s isa ControlFlowOp
@@ -133,7 +133,7 @@ end
 function sci_uses_rng(sci::StructuredIRCode)
     function walk(block::Block)
         for inst in instructions(block)
-            s = stmt(inst)
+            s = inst[:stmt]
             is_rng_call(s) && return true
             if s isa ControlFlowOp
                 for b in blocks(s)
@@ -154,7 +154,7 @@ function collect_streams(sci::StructuredIRCode)
     keys = Set{Int}()
     function walk(block::Block)
         for inst in instructions(block)
-            s = stmt(inst)
+            s = inst[:stmt]
             if is_rng_read(s) || is_rng_write(s)
                 push!(keys, stream_key(stream_operand(s), block))
             elseif s isa ControlFlowOp
@@ -207,19 +207,19 @@ copystate_for(map::RngStateMap) = RngStateMap(k => RngState(v.counter, v.seed) f
 =============================================================================#
 
 function process_rng_counter!(block::Block, inst::Instruction, map::RngStateMap)
-    hkey = stream_key(stream_operand(stmt(inst)), block)
+    hkey = stream_key(stream_operand(inst[:stmt]), block)
     replace_uses!(block, SSAValue(inst), current_counter(map, hkey))
     delete!(block, inst)
 end
 
 function process_rng_seed!(block::Block, inst::Instruction, map::RngStateMap)
-    hkey = stream_key(stream_operand(stmt(inst)), block)
+    hkey = stream_key(stream_operand(inst[:stmt]), block)
     replace_uses!(block, SSAValue(inst), current_seed(map, hkey))
     delete!(block, inst)
 end
 
 function process_rng_advance!(block::Block, inst::Instruction, map::RngStateMap)
-    s = stmt(inst)::Expr
+    s = inst[:stmt]::Expr
     hkey = stream_key(stream_operand(s), block)
     n_operand = payload_operand(s)
     n = extract_const_int(n_operand, block)
@@ -232,7 +232,7 @@ function process_rng_advance!(block::Block, inst::Instruction, map::RngStateMap)
 end
 
 function process_rng_set_seed!(block::Block, inst::Instruction, map::RngStateMap)
-    s = stmt(inst)::Expr
+    s = inst[:stmt]::Expr
     hkey = stream_key(stream_operand(s), block)
     operand = payload_operand(s)
     n = extract_const_int(operand, block)
@@ -247,7 +247,7 @@ end
 function transform_block!(block::Block, map::RngStateMap)
     snapshot = collect(instructions(block))
     for inst in snapshot
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             transform_cf!(block, inst, s, map)
         elseif is_rng_counter_call(s)
@@ -383,7 +383,7 @@ function assign_rng_streams!(sci::StructuredIRCode)
     function walk(block::Block)
         snapshot = collect(instructions(block))
         for inst in snapshot
-            s = stmt(inst)
+            s = inst[:stmt]
             if s isa ControlFlowOp
                 for b in blocks(s)
                     walk(b)

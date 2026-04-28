@@ -91,7 +91,7 @@ end
 function scalar_elim_block!(block::Block)
     # Recurse into nested control flow first
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ForOp
             scalar_elim_block!(s.body)
         elseif s isa IfOp
@@ -108,7 +108,7 @@ function scalar_elim_block!(block::Block)
     # Phase 1: Eliminate to_scalar (forward tile-typed operand)
     to_delete = Instruction[]
     for inst in instructions(block)
-        call = resolve_call(block, stmt(inst))
+        call = resolve_call(block, inst[:stmt])
         call === nothing && continue
         func, ops = call
         func === Intrinsics.to_scalar || continue
@@ -120,7 +120,7 @@ function scalar_elim_block!(block::Block)
     # Instructions that consumed to_scalar results still have scalar type
     # annotations but now receive tile-typed operands — inherit their shape.
     for inst in instructions(block)
-        call = resolve_call(block, stmt(inst))
+        call = resolve_call(block, inst[:stmt])
         call === nothing && continue
         func, ops = call
 
@@ -143,14 +143,14 @@ function scalar_elim_block!(block::Block)
             OT = CC.widenconst(op_type)
             OT <: Tile || continue
             S = OT.parameters[2]
-            update_type!(block, inst, Tile{T, S})
+            inst[:type] = Tile{T, S}
             break
         end
     end
 
     # Phase 3: Eliminate from_scalar (operand now has correct tile type)
     for inst in instructions(block)
-        call = resolve_call(block, stmt(inst))
+        call = resolve_call(block, inst[:stmt])
         call === nothing && continue
         func, ops = call
         func === Intrinsics.from_scalar || continue
@@ -172,7 +172,7 @@ function scalar_elim_block!(block::Block)
         is_token_type(current_type) && continue
         new_type = promote_scalar_type(CC.widenconst(current_type))
         new_type === nothing && continue
-        update_type!(block, inst, new_type)
+        inst[:type] = new_type
     end
 
     # Phase 5: Promote block argument types (loop IVs, carries).

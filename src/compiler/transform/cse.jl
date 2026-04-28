@@ -15,12 +15,17 @@
 # definitions, but additions inside one branch don't leak to siblings
 # (e.g. `then` vs `else` of an `IfOp`).
 #
-# Side effects are gated through `classify_memory_op` (the same
-# classifier `token_order_pass!` uses) plus a positive skip list for
-# ops with hidden state that aren't memory in the token-chain sense
-# (RNG, `assert`, `fpmode_*`, `format_string`, …). Anything else —
-# arithmetic, casts, `make_tensor_view`, `make_partition_view`,
-# `getfield`, `Core.tuple`, the `assume_*` annotations — is CSE-able.
+# Purity is decided by two checks:
+#   1. The Julia-inferred `IR_FLAG_EFFECT_FREE` bit on the instruction
+#      (carried through the SCI from `IRCode.stmts.flag`). This is the
+#      authoritative source — it incorporates every `efunc` override
+#      (RNG, atomics, asserts, fpmode_*, stores, print_tko all set
+#      `effect_free=ALWAYS_FALSE`, so the bit is off).
+#   2. `classify_memory_op == MEM_NONE`. Loads have no observable
+#      side effect in Julia's sense (the load itself doesn't write),
+#      so they get `IR_FLAG_EFFECT_FREE`, but their *value* depends on
+#      memory state, not just operands — so CSE must still skip them.
+#      The memory-op classifier provides exactly this distinction.
 #
 # Single-pass: we don't iterate to fixpoint. Once a definition is
 # canonicalised, every later use of an equivalent expression in
@@ -47,7 +52,7 @@ function cse_block!(block::Block, parent_table::Dict{Tuple, SSAValue})
     table = copy(parent_table)
     snapshot = collect(instructions(block))
     for inst in snapshot
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             for sub in blocks(s)
                 cse_block!(sub, table)
@@ -71,13 +76,13 @@ end
 # `isIdenticalToWhenDefined` which compares both operands and result
 # type implicitly through the value-level structural identity check.
 function cse_one!(block::Block, inst::Instruction, table::Dict{Tuple, SSAValue})
-    s = stmt(inst)
+    s = inst[:stmt]
     s isa Expr || return
     call = resolve_call(block, inst)
     call === nothing && return
     func, ops = call
-    is_pure_for_cse(func, inst.typ) || return
-    sig = (func, inst.typ, Tuple(ops)...)
+    is_pure_for_cse(inst, func) || return
+    sig = (func, inst[:type], Tuple(ops)...)
     canonical = get(table, sig, nothing)
     if canonical === nothing
         table[sig] = SSAValue(inst.ssa_idx)
@@ -106,36 +111,24 @@ end
 =============================================================================#
 
 """
-    is_pure_for_cse(func, inst_type) -> Bool
+    is_pure_for_cse(inst::Instruction, func) -> Bool
 
-Decide whether a call to `func` returning a value of type `inst_type`
-is safe to CSE. An op is pure for CSE when it has no observable side
-effect beyond producing its return value, and that return value is a
-function of its operands alone.
+Decide whether `inst` is safe to CSE. An op is pure for CSE when it has
+no observable side effect beyond producing its return value, AND that
+return value is a function of its operands alone.
 
-Excludes:
-- Memory and token-ordered ops (caught by `classify_memory_op`).
-- Ops with no useful return SSA (`inst_type === Nothing`) — `assert`,
-  `fpmode_begin`/`end`, `format_string`. Replacing identical calls
-  doesn't help and can perturb effect ordering.
-- RNG state intrinsics — `rng_advance`/`rng_set_seed` mutate per-stream
-  counters; `rng_counter`/`rng_seed` *read* that mutable state, so the
-  `lower_rng_state!` pass owns their threading. CSE-ing them before
-  that pass runs would cross writes.
+Two checks:
+- Julia inference's `IR_FLAG_EFFECT_FREE` bit on the instruction. This
+  catches every `efunc(...) = effect_free=ALWAYS_FALSE` override (RNG
+  state ops, atomics, asserts, fpmode_*, stores, print_tko, ...) — no
+  per-pass skip lists needed.
+- `classify_memory_op == MEM_NONE`. A load's `effect_free` bit is set
+  (the load itself writes nothing), but its return value depends on
+  the underlying memory state — so CSE must still treat loads as
+  impure. The memory-op classifier provides that load-vs-pure split.
 """
-function is_pure_for_cse(@nospecialize(func), @nospecialize(inst_type))
+function is_pure_for_cse(inst::Instruction, @nospecialize(func))
+    CC.has_flag(inst[:flag], CC.IR_FLAG_EFFECT_FREE) || return false
     classify_memory_op(func) == MEM_NONE || return false
-    inst_type === Nothing && return false
-    is_rng_func(func) && return false
     return true
 end
-
-# RNG state ops live until `lower_rng_state!` rewrites them. Treat them
-# as impure for CSE so we don't fuse reads/writes of the per-stream
-# counter before the dedicated pass owns the rewriting.
-const RNG_FUNCS = (
-    Intrinsics.rng_counter, Intrinsics.rng_advance,
-    Intrinsics.rng_seed, Intrinsics.rng_set_seed,
-    Intrinsics.rng_stream, Intrinsics.rng_default,
-)
-is_rng_func(@nospecialize(func)) = any(f -> f === func, RNG_FUNCS)

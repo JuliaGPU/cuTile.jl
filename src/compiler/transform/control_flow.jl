@@ -20,8 +20,8 @@
 #
 # IRStructurizer already provides the primary carry API — `carries(op)`,
 # `push!(::LoopCarries, init_val, type)`, `body_arg`, `after_arg`,
-# `term_value!`, `update_type!`, `reachable_terminators`. This file builds on
-# it.
+# `term_value!`, `inst[:type] = …`, `reachable_terminators`. This file builds
+# on it.
 
 #=============================================================================
  Tuple-result extension
@@ -43,10 +43,9 @@ to expose them at the parent block.
 """
 function extract_carry_results!(parent_block::Block, inst::Instruction,
                                 types::AbstractVector)
-    # Read the live type from the block's storage rather than `inst.typ`,
-    # which is a snapshot taken at instruction creation and may be stale
-    # if a prior pass (or earlier call here) ran `update_type!`.
-    old_type = value_type(parent_block, SSAValue(inst))
+    # `inst[:type]` is a live read through the containing block, so it
+    # reflects any prior in-place type update.
+    old_type = inst[:type]
     user_types = if old_type === Nothing
         Type[]
     elseif old_type <: Tuple
@@ -56,7 +55,7 @@ function extract_carry_results!(parent_block::Block, inst::Instruction,
     end
     merged = isempty(user_types) && isempty(types) ? Nothing :
              Tuple{user_types..., types...}
-    update_type!(parent_block, inst, merged)
+    inst[:type] = merged
     n_user = length(user_types)
     result = SSAValue[]
     last_ref = SSAValue(inst)

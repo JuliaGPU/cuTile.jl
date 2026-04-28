@@ -15,7 +15,7 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
             ctx.cb.cur_debug_attr = resolve_debug_attr!(
                 ctx.debug_emitter, ctx.sci, inst.ssa_idx; linkage_name=ln)
         end
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)
         else
@@ -52,7 +52,7 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
 
     # Determine result types from parent_result_type (token_order_pass! already
-    # updated the type to include any token carries via update_type!)
+    # updated the type to include any token carries via inst[:type] = …)
     result_types = TypeId[]
     if parent_result_type !== Nothing
         if parent_result_type <: Tuple
@@ -343,7 +343,7 @@ ReturnNode (REGION_TERMINATION with 3 children). The 2-child case
 """
 function hoist_returns!(block::Block)
     walk(block; order=:postorder) do inst, blk
-        s = stmt(inst)
+        s = inst[:stmt]
         s isa IfOp || return
         terminator(s.then_region) isa ReturnNode || return
         terminator(s.else_region) isa ReturnNode || return

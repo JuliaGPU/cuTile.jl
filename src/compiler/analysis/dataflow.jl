@@ -209,7 +209,7 @@ is_bottom(analysis::ForwardAnalysis, @nospecialize(v)) = v === bottom(analysis)
 
 function walk!(analysis::ForwardAnalysis, result::DataflowResult, block::Block, tracker::ChangeTracker)
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             transfer_cf!(analysis, result, s, SSAValue(inst.ssa_idx), block, tracker)
         elseif s isa Expr

@@ -209,9 +209,8 @@ end
 
 """Operands of a DefEntry, read from the live IR."""
 function def_operands(entry::DefEntry)
-    pos = findfirst(==(entry.val.id), entry.block.body.ssa_idxes)
-    pos === nothing && return Any[]
-    call = resolve_call(entry.block, entry.block.body.stmts[pos])
+    haskey(entry.block, entry.val.id) || return Any[]
+    call = resolve_call(entry.block, entry.block[entry.val.id][:stmt])
     call === nothing && return Any[]
     _, ops = call
     return ops
@@ -253,11 +252,8 @@ end
 """Erase an instruction and notify the worklist."""
 function erase_op!(driver::RewriteDriver, entry::DefEntry)
     add_operands_to_worklist!(driver, entry)
-    pos = findfirst(==(entry.val.id), entry.block.body.ssa_idxes)
-    if pos !== nothing
-        deleteat!(entry.block.body.ssa_idxes, pos)
-        deleteat!(entry.block.body.stmts, pos)
-        deleteat!(entry.block.body.types, pos)
+    if haskey(entry.block, entry.val.id)
+        delete!(entry.block, entry.val.id)
     end
     delete!(driver.defs, entry.val)
     remove!(driver.worklist, entry.val)
@@ -398,13 +394,21 @@ In-place rewrite: walk LHS/RHS trees in parallel, modifying matched ops' operand
 No new instructions are created — existing ops are modified in-place.
 """
 function apply_inplace_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
-    pos = findfirst(==(val.id), block.body.ssa_idxes)
-    pos === nothing && return false
+    haskey(block, val.id) || return false
 
-    # Build new operands for the root op from the RHS
+    # Build new operands for the root op from the RHS.
     new_operands = Any[resolve_inplace_rhs(driver, match.bindings, op, lhs_op)
                        for (op, lhs_op) in zip(rule.rhs.operands, rule.lhs.operands)]
-    block.body.stmts[pos] = Expr(:call, rule.rhs.func, new_operands...)
+    new_stmt = Expr(:call, rule.rhs.func, new_operands...)
+    # Same-func rewrites (most common: only operands change) preserve flag
+    # via the partial-NamedTuple setindex. Different-func rewrites clear it to
+    # IR_FLAG_NULL since the inferred effects describe the OLD op (LLVM
+    # `copyIRFlags` analogue: don't blanket-inherit when the opcode changes).
+    if rule.rhs.func === driver.defs[val].func
+        block[val.id] = (stmt=new_stmt,)
+    else
+        block[val.id] = (stmt=new_stmt, flag=CC.IR_FLAG_NULL)
+    end
     driver.defs[val] = DefEntry(block, val, rule.rhs.func)
     push!(driver.worklist, val)
     add_users_to_worklist!(driver, val)
@@ -426,11 +430,14 @@ function resolve_inplace_rhs(driver, bindings, op::RCall, lhs_op::PCall)
         "inplace rewrite: could not find matched SSA for $(lhs_op.func)")
     entry = @something get(driver.defs, matched_ssa, nothing) error(
         "inplace rewrite: no def entry for $matched_ssa")
-    epos = @something findfirst(==(matched_ssa.id), entry.block.body.ssa_idxes) error(
-        "inplace rewrite: $matched_ssa not found in block")
+    haskey(entry.block, matched_ssa.id) ||
+        error("inplace rewrite: $matched_ssa not found in block")
     new_ops = Any[resolve_inplace_rhs(driver, bindings, sub_rhs, sub_lhs)
                   for (sub_rhs, sub_lhs) in zip(op.operands, lhs_op.operands)]
-    entry.block.body.stmts[epos] = Expr(:call, op.func, new_ops...)
+    # Sub-call func is enforced equal to the matched lhs func above
+    # (`op.func === lhs_op.func`), so the flag is still valid — only operands
+    # changed. Partial-NamedTuple setindex preserves type and flag.
+    entry.block[matched_ssa.id] = (stmt=Expr(:call, op.func, new_ops...),)
     push!(driver.worklist, matched_ssa)
     return matched_ssa
 end
@@ -480,9 +487,8 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
     entry = driver.defs[val]
     if rule.rhs isa RFunc
         # Look up live instruction for RFunc interface
-        pos = findfirst(==(val.id), block.body.ssa_idxes)
-        pos === nothing && return false
-        inst = Instruction(val.id, block.body.stmts[pos], block.body.types[pos], block)
+        haskey(block, val.id) || return false
+        inst = block[val.id]
         rule.rhs.func(driver.sci, block, inst, match, driver) || return false
         return true
     elseif rule.rhs isa RBind
@@ -508,8 +514,7 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
             use_count(driver, dead_val) == 0 || continue
             erase_op!(driver, dead_entry)
         end
-        pos = findfirst(==(val.id), block.body.ssa_idxes)
-        typ = block.body.types[pos]
+        typ = block[val.id][:type]
         # Build operands, flattening RSplat nodes into multiple operands
         operands = Any[]
         for op in rule.rhs.operands
@@ -519,10 +524,16 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
                 push!(operands, resolve_rhs(driver, block, val, op, match.bindings, typ))
             end
         end
-        # Recompute pos: resolve_rhs may insert instructions before val
-        # (e.g. negf in subf→fma), shifting positions.
-        pos = findfirst(==(val.id), block.body.ssa_idxes)
-        block.body.stmts[pos] = Expr(:call, rule.rhs.func, operands...)
+        # The substituted func almost always differs from the matched root
+        # (otherwise this would be an inplace rule). Inferred IR_FLAG_* bits
+        # describe the OLD op; reset to IR_FLAG_NULL on func change so
+        # downstream effect checks (CSE, LICM) don't act on stale info.
+        new_stmt = Expr(:call, rule.rhs.func, operands...)
+        if rule.rhs.func === driver.defs[val].func
+            block[val.id] = (stmt=new_stmt,)
+        else
+            block[val.id] = (stmt=new_stmt, flag=CC.IR_FLAG_NULL)
+        end
         # Update defs, re-add self and users to worklist (statement changed)
         driver.defs[val] = DefEntry(block, val, rule.rhs.func)
         push!(driver.worklist, val)
@@ -580,8 +591,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         entry === nothing && continue
 
         # Verify instruction is still live in its block
-        pos = findfirst(==(val.id), entry.block.body.ssa_idxes)
-        pos === nothing && begin
+        haskey(entry.block, val.id) || begin
             delete!(driver.defs, val)
             continue
         end
@@ -591,7 +601,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         # (e.g., FMA fusion needs mulf's dead transparent-op users removed
         # so the mulf reads as single-use). Full DCE handles the rest.
         if use_count(driver, val) == 0
-            stmt = entry.block.body.stmts[pos]
+            stmt = entry.block[val.id][:stmt]
             if !must_keep(entry.block, stmt)
                 erase_op!(driver, entry)
                 continue

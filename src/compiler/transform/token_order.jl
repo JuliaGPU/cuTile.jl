@@ -74,7 +74,7 @@ function compute_block_memory_effects!(block::Block, alias_info::AliasInfo,
 
     effects = MemoryEffects()
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             for b in blocks(s)
                 effects = union(effects, compute_block_memory_effects!(b, alias_info, cache))
@@ -237,7 +237,7 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo,
     # Compute nested memory effects (from ControlFlowOps inside the loop body only)
     nested_effects = EMPTY_MEMORY_EFFECTS
     for inst in instructions(body)
-        s = stmt(inst)
+        s = inst[:stmt]
         s isa ControlFlowOp || continue
         for b in blocks(s)
             nested_effects = union(nested_effects,
@@ -248,7 +248,7 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo,
     # Collect memory ops per alias set (direct statements only, not nested CFs)
     alias_set_to_ops = Dict{AliasSet, Vector{Tuple{Int, Any, Any}}}()
     for inst in instructions(body)
-        s = stmt(inst)
+        s = inst[:stmt]
         s isa ControlFlowOp && continue
         call = resolve_call(body, s)
         call === nothing && continue
@@ -339,7 +339,7 @@ function transform_block!(block::Block,
     snapshot = collect(instructions(block))
 
     for inst in snapshot
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             transform_control_flow!(block, inst, s,
                                      alias_info, token_map, effects_cache, loop_effects, token_carries)
@@ -356,7 +356,7 @@ function transform_statement!(block::Block, inst::Instruction,
                                 alias_info::AliasInfo,
                                 token_map::Dict{TokenKey, Any},
                                 parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
-    s = stmt(inst)
+    s = inst[:stmt]
     call = resolve_call(block, s)
     call === nothing && return
     resolved_func, operands = call
@@ -565,7 +565,7 @@ function insert_token_result_getfields!(parent_block::Block, inst::Instruction,
                                          effects::MemoryEffects, token_map::Dict{TokenKey, Any})
     length(block_args) > n_user || return
     all_types = Type[is_token_type(arg.type) ? TokenType : arg.type for arg in block_args]
-    update_type!(parent_block, inst, isempty(all_types) ? Nothing : Tuple{all_types...})
+    inst[:type] = isempty(all_types) ? Nothing : Tuple{all_types...}
     extract_token_getfields!(parent_block, inst, n_user, effects, token_map)
 end
 

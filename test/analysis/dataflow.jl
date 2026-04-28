@@ -10,7 +10,7 @@ using Core: SSAValue, Argument, ReturnNode
 using IRStructurizer
 using IRStructurizer: code_structured, Block, BlockArgument, ForOp, LoopOp,
                       ContinueOp, ControlFlowOp, StructuredIRCode, blocks,
-                      instructions, stmt
+                      instructions
 
 using cuTile: ForwardAnalysis, DataflowResult, analyze, record!, has_value, LatticeAnchor
 import cuTile: bottom, top, tmerge, transfer, max_iters, operand_value
@@ -66,7 +66,7 @@ end
     @test r[Argument(2)] === CTOP
     # Every statement SSA in the entry block should have been visited.
     for inst in instructions(sci.entry)
-        stmt(inst) isa Expr || continue
+        inst[:stmt] isa Expr || continue
         @test has_value(r, SSAValue(inst.ssa_idx))
     end
 end
@@ -85,7 +85,7 @@ end
     # The loop's body args should have received a lattice value (at minimum
     # their init_values propagated in via propagate_loop_carried!).
     for inst in instructions(sci.entry)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ForOp
             @test has_value(r, s.iv_arg)          # IV arg seeded to ⊤
             for arg in s.body.args

@@ -139,7 +139,7 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
                                   innermost_loop_cf::Union{CFNode, Nothing},
                                   innermost_cf::Union{CFNode, Nothing})
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         val = SSAValue(inst.ssa_idx)
 
         if s isa ForOp
@@ -337,8 +337,8 @@ function _build_loop_result_deps!(graph, parent_block::Block, loop_inst::Instruc
     n_carries = length(op.init_values)
 
     for inst in instructions(parent_block)
-        is_getfield_of(stmt(inst), loop_ssa) || continue
-        field_idx = stmt(inst).args[3]
+        is_getfield_of(inst[:stmt], loop_ssa) || continue
+        field_idx = inst[:stmt].args[3]
         field_idx isa Int || continue
         gf_val = SSAValue(inst.ssa_idx)
 
@@ -389,8 +389,8 @@ function _build_if_result_deps!(graph, parent_block::Block, if_inst::Instruction
     if_ssa = SSAValue(if_inst.ssa_idx)
 
     for inst in instructions(parent_block)
-        is_getfield_of(stmt(inst), if_ssa) || continue
-        field_idx = stmt(inst).args[3]
+        is_getfield_of(inst[:stmt], if_ssa) || continue
+        field_idx = inst[:stmt].args[3]
         field_idx isa Int || continue
         gf_val = SSAValue(inst.ssa_idx)
 
@@ -465,7 +465,7 @@ function _prune_block!(block::Block, live::Set{Any}, op_to_cf::Dict{UInt64, CFNo
     to_delete = Instruction[]
 
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         val = SSAValue(inst.ssa_idx)
 
         if s isa ForOp || s isa LoopOp || s isa WhileOp
@@ -527,8 +527,8 @@ function _prune_loop!(parent_block::Block, inst::Instruction,
     # Also check result getfield liveness
     loop_ssa = SSAValue(inst.ssa_idx)
     for pinst in instructions(parent_block)
-        is_getfield_of(stmt(pinst), loop_ssa) || continue
-        field_idx = stmt(pinst).args[3]
+        is_getfield_of(pinst[:stmt], loop_ssa) || continue
+        field_idx = pinst[:stmt].args[3]
         field_idx isa Int || continue
         if field_idx <= n_carries && SSAValue(pinst.ssa_idx) ∈ live
             carry_live[field_idx] = true
@@ -584,8 +584,8 @@ function _prune_if!(parent_block::Block, inst::Instruction, op::IfOp,
     if n_results > 0
         result_live = BitVector(false for _ in 1:n_results)
         for pinst in instructions(parent_block)
-            is_getfield_of(stmt(pinst), if_ssa) || continue
-            field_idx = stmt(pinst).args[3]
+            is_getfield_of(pinst[:stmt], if_ssa) || continue
+            field_idx = pinst[:stmt].args[3]
             field_idx isa Int || continue
             if field_idx <= n_results && SSAValue(pinst.ssa_idx) ∈ live
                 result_live[field_idx] = true
@@ -615,7 +615,7 @@ function _prune_if!(parent_block::Block, inst::Instruction, op::IfOp,
                 push!(kept_types, result_type)
             end
             new_type = isempty(kept_types) ? Nothing : Tuple{kept_types...}
-            update_type!(parent_block, inst, new_type)
+            inst[:type] = new_type
 
             yield_mask = result_live
             changed = true
@@ -672,10 +672,10 @@ Update or remove getfield extractions for a CF op after carry/result removal.
 function _renumber_getfields!(block::Block, cf_ssa::SSAValue, old_to_new::Dict{Int, Int})
     to_delete = Instruction[]
     for inst in instructions(block)
-        is_getfield_of(stmt(inst), cf_ssa) || continue
-        field_idx = stmt(inst).args[3]::Int
+        is_getfield_of(inst[:stmt], cf_ssa) || continue
+        field_idx = inst[:stmt].args[3]::Int
         if haskey(old_to_new, field_idx)
-            stmt(inst).args[3] = old_to_new[field_idx]
+            inst[:stmt].args[3] = old_to_new[field_idx]
         else
             push!(to_delete, inst)
         end
@@ -693,7 +693,7 @@ Recompute a CF op's result type from its remaining body block args.
 function _update_cf_result_type!(block::Block, inst::Instruction, body_block::Block)
     types = Type[is_token_type(arg.type) ? TokenType : arg.type for arg in body_block.args]
     new_type = isempty(types) ? Nothing : Tuple{types...}
-    update_type!(block, inst, new_type)
+    inst[:type] = new_type
 end
 
 #=============================================================================
