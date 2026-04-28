@@ -33,10 +33,12 @@
 using Core: SSAValue, Argument, SlotNumber
 
 #=============================================================================
- Memory effect classification
+ Per-block memory effects
 =============================================================================#
 
-@enum MemoryEffect MEM_NONE MEM_LOAD MEM_STORE
+# `classify_memory_op` and `MemoryEffect` are defined in `analysis/effects.jl`
+# (shared with licm and cse). `MemoryEffects` below is the per-block, alias-set
+# keyed summary specific to this pass.
 
 """
     MemoryEffects
@@ -60,35 +62,6 @@ function Base.union(a::MemoryEffects, b::MemoryEffects)
 end
 
 const EMPTY_MEMORY_EFFECTS = MemoryEffects()
-
-#=============================================================================
- Resolve and classify IR expressions
-=============================================================================#
-
-function classify_memory_op(resolved_func)
-    if resolved_func === Intrinsics.load_partition_view ||
-       resolved_func === Intrinsics.load_ptr_tko
-        return MEM_LOAD
-    elseif resolved_func === Intrinsics.store_partition_view ||
-           resolved_func === Intrinsics.store_ptr_tko
-        return MEM_STORE
-    elseif resolved_func === Intrinsics.print_tko
-        return MEM_STORE
-    elseif is_atomic_intrinsic(resolved_func)
-        return MEM_STORE
-    else
-        return MEM_NONE
-    end
-end
-
-function is_atomic_intrinsic(func)
-    isdefined(Intrinsics, :atomic_cas) && func === Intrinsics.atomic_cas && return true
-    for op in (:atomic_xchg, :atomic_add, :atomic_max, :atomic_min,
-               :atomic_or, :atomic_and, :atomic_xor)
-        isdefined(Intrinsics, op) && func === getfield(Intrinsics, op) && return true
-    end
-    return false
-end
 
 #=============================================================================
  Compute per-block memory effects
