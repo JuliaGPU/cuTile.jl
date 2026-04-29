@@ -364,11 +364,44 @@ function Base.getindex(ctx::CGCtx, ssa::SSAValue)
 end
 
 function Base.getindex(ctx::CGCtx, arg::Argument)
-    get(ctx.args, arg.n, nothing)
+    tv = get(ctx.args, arg.n, nothing)
+    materialize_lazy_const!(ctx, tv, ctx.args, arg.n)
 end
 
 function Base.getindex(ctx::CGCtx, slot::SlotNumber)
-    get(ctx.slots, slot.id, nothing)
+    tv = get(ctx.slots, slot.id, nothing)
+    materialize_lazy_const!(ctx, tv, ctx.slots, slot.id)
+end
+
+# Lazy const materialization: a CGVal that records `constant=Some(val)` but no
+# `Value` defers the ConstantOp emission until first lookup. Mirrors Julia's
+# `mark_julia_const` (codegen.cpp:2390): the cgval carries the value but only
+# materializes an LLVM constant when a downstream consumer reads `.v`. If the
+# argument was fully constant-folded by inference and never looked up, no op
+# is emitted at all.
+@inline function materialize_lazy_const!(ctx::CGCtx, tv::Union{CGVal, Nothing},
+                                          slot::Dict{Int, CGVal}, key::Int)
+    tv === nothing && return nothing
+    is_lazy_const(tv) || return tv
+    val = something(tv.constant)
+    elem_type = tv.jltype <: Tile ? eltype(tv.jltype) : tv.jltype
+    bytes = constant_to_bytes(val, elem_type)
+    v = encode_ConstantOp!(ctx.cb, tv.type_id::TypeId, bytes)
+    new_tv = CGVal(v, tv.type_id, tv.jltype, tv.shape, tv.arg_ref, tv.constant, tv.tuple)
+    slot[key] = new_tv
+    return new_tv
+end
+
+# A CGVal is a "lazy const" when it carries a compile-time constant whose
+# ConstantOp hasn't been emitted yet: no `Value`, no destructured arg ref, no
+# multi-value extraction, but a real (non-ghost) Tile IR type and a stashed
+# `constant`. Ghosts (`type_id == TypeId(-1)`) and arg_refs stay lazy forever.
+@inline function is_lazy_const(tv::CGVal)
+    tv.v === nothing &&
+        tv.constant !== nothing &&
+        tv.arg_ref === nothing &&
+        tv.type_id !== nothing &&
+        tv.type_id != TypeId(-1)
 end
 
 function Base.setindex!(ctx::CGCtx, tv::CGVal, ssa::SSAValue)

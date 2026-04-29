@@ -134,7 +134,12 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         end
     end
 
-    # Emit ConstantOps for const-seeded arguments (no kernel parameter)
+    # Register const-seeded arguments (no kernel parameter). Primitive constants
+    # are stored *lazily* — `v` stays `nothing` and only materializes into a
+    # ConstantOp on first access via `ctx[Argument(i)]`/`ctx[SlotNumber(i)]`.
+    # If Julia's inference folded the value into the body (the usual case),
+    # nothing references the argument and no ConstantOp is ever emitted.
+    # Mirrors `mark_julia_const` in Julia's codegen.cpp.
     if const_argtypes !== nothing
         for (i, cat) in enumerate(const_argtypes)
             cat isa CC.Const || continue
@@ -143,10 +148,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             T = typeof(val)
             type_id = tile_type_for_julia!(ctx, T; throw_error=false)
             if type_id !== nothing
-                # Primitive: emit ConstantOp (jltype promoted to 0D tile)
-                bytes = constant_to_bytes(val, T)
-                v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, Tile{T, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
+                # Primitive: lazy const (jltype promoted to 0D tile)
+                tv = CGVal(nothing, type_id, Tile{T, Tuple{}}, RowMajorShape(()),
+                           nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)
