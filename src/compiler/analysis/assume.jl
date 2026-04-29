@@ -112,7 +112,7 @@ function walk_collect!(info::AssumeInfo, block::Block,
                         divby_info::Union{DivByInfo, Nothing},
                         bounds_info::Union{BoundsInfo, Nothing})
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             for sub in blocks(s)
                 walk_collect!(info, sub, divby_info, bounds_info)

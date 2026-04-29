@@ -1,9 +1,11 @@
-# Codegen tests for `assume_pass!`: SCI-level emission of `assume_div_by`
-# and `assume_bounded` ops on `make_tensor_view` operands. Facts come from
-# the TileArray-type `ArraySpec` plus the divisibility dataflow analysis
-# (analysis/divisibility.jl), so derived TileArrays (slices, permutes,
-# reshapes) get assumes too — recovering through-arithmetic facts that
-# the conservative `sliced_arraytype` etc. drop.
+# Codegen tests for the `analyze_assume_info` aggregator + the
+# `make_tensor_view` codegen path that wraps each operand `Value` with
+# `encode_AssumeOp!`. Facts come from the TileArray-type `ArraySpec`
+# plus the divisibility dataflow analysis (analysis/divisibility.jl)
+# and bounds dataflow analysis (analysis/bounds.jl), so derived
+# TileArrays (slices, permutes, reshapes) get assumes too — recovering
+# through-arithmetic facts that the conservative `sliced_arraytype`
+# etc. drop.
 
 @testset "assume — kernel-arg alignment" begin
     spec1d = ct.ArraySpec{1}(128, true)

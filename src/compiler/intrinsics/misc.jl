@@ -29,11 +29,15 @@ end
 
  A single SCI intrinsic mirroring Tile IR's single `AssumeOp` opcode,
  polymorphic over the predicate kind (`DivBy`, `Bounded`,
- `SameElements`). Inserted by `assume_pass!` (transform/assume.jl) on
- the operands of `make_tensor_view`, with the predicate value
- constructed at pass time from the TileArray-type `ArraySpec` plus the
- divisibility dataflow. Returns its input value — a pure-data
- annotation, eliminated if downstream uses vanish.
+ `SameElements`). Returns its input value — a pure-data annotation,
+ eliminated if downstream uses vanish.
+
+ The make_tensor_view assume bundle is emitted directly to bytecode by
+ `analyze_assume_info` + `views.jl` codegen and never materialises as
+ an `Intrinsics.assume` SCI op; this intrinsic exists for hand-written
+ user annotations and as the lattice-level shape the dataflow analyses
+ recognise (so a future pass that does insert SCI-level assumes still
+ composes correctly with divisibility/bounds).
 
  cuTile Python uses one IR op class per predicate (`AssumeDivBy`,
  `AssumeBounded`, …); we collapse to a single polymorphic intrinsic

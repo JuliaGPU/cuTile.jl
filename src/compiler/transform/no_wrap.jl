@@ -36,7 +36,7 @@ end
 
 function walk_no_wrap!(block::Block, bounds_info::BoundsInfo)
     for inst in instructions(block)
-        s = stmt(inst)
+        s = inst[:stmt]
         if s isa ControlFlowOp
             for sub in blocks(s)
                 walk_no_wrap!(sub, bounds_info)
@@ -55,7 +55,7 @@ function try_attach_no_wrap!(block::Block, inst::Instruction, bounds_info::Bound
     is_no_wrap_eligible(func) || return
     length(ops) == 2 || return  # already annotated, leave alone
 
-    width = result_int_width(inst.typ)
+    width = result_int_width(inst[:type])
     width === nothing && return
 
     a = bounds(bounds_info, ops[1])
@@ -64,7 +64,7 @@ function try_attach_no_wrap!(block::Block, inst::Instruction, bounds_info::Bound
     flag = prove_no_wrap(func, width, a, b)
     flag === IntegerOverflow.None && return
 
-    push!(inst.stmt.args, flag)
+    push!(inst[:stmt].args, flag)
     return
 end
 

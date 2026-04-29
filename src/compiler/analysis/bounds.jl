@@ -14,10 +14,11 @@
 # precision on loop-carried values that vary per iteration; gains
 # precision on literal-constant flow and ForOp induction variables.
 #
-# Consumed by `assume_pass!` (transform/assume.jl) to emit sharper
-# `Bounded(...)` predicates on `make_tensor_view` operands, and by
-# `no_wrap_pass!` (transform/no_wrap.jl) to attach `nsw`/`nuw` flags on
-# integer arithmetic that provably fits in its destination width.
+# Consumed by `analyze_assume_info` (analysis/assume.jl) to emit
+# sharper `Bounded(...)` predicates on `make_tensor_view` operands at
+# codegen time, and by `no_wrap_pass!` (transform/no_wrap.jl) to
+# attach `nsw`/`nuw` flags on integer arithmetic that provably fits in
+# its destination width.
 
 """
     IntRange(lo, hi)

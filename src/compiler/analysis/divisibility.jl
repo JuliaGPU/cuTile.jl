@@ -6,9 +6,11 @@
 # transfer rules for arithmetic, pointer offset, and getfield chains
 # rooted at TileArray arguments.
 #
-# Consumed by `assume_pass!` (transform/assume.jl), which materialises
-# facts as `Intrinsics.assume` ops on the operands of
-# `make_tensor_view`.
+# Consumed by `analyze_assume_info` (analysis/assume.jl), which combines
+# this with the bounds analysis and the operand TileArray's `ArraySpec`
+# into per-`make_tensor_view` predicate bundles. Codegen reads those
+# bundles and wraps each operand `Value` with `encode_AssumeOp!` —
+# the analysis itself does *not* mutate the SCI.
 
 """
     DivByAnalysis

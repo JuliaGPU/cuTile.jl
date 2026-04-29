@@ -255,8 +255,8 @@ function run_passes!(sci::StructuredIRCode)
     # before alias analysis so the alias map is built over the
     # deduplicated form. The dedup naturally extends to TileViews and
     # the `getfield(arg, :ptr|:sizes|:strides)` chains that feed them,
-    # which is what the downstream `assume_pass!` and `licm_pass!`
-    # benefit from most.
+    # which is what the downstream `analyze_assume_info` and
+    # `licm_pass!` benefit from most.
     cse_pass!(sci)
 
     alias_info = analyze_aliases(sci)
