@@ -95,7 +95,8 @@ function commute_arith_transparent(sci, block, inst, match, driver)
     # Insert broadcast of the scalar to x's shape and register as constant
     x_shape = size(xT)
     bc_type = Tile{eltype(xT), Tuple{x_shape...}}
-    bc = insert_before!(block, val, Expr(:call, Intrinsics.broadcast, scalar, x_shape), bc_type)
+    bc = insert_before!(block, val, Expr(:call, Intrinsics.broadcast, scalar, x_shape), bc_type;
+                        flag=inferred_flags(Intrinsics.broadcast))
     notify_insert!(driver, block, bc)
     # Side-inject the freshly synthesized constant into the dataflow result so
     # downstream pattern matches see it. Bypasses tmerge (this is a brand-new
@@ -103,14 +104,15 @@ function commute_arith_transparent(sci, block, inst, match, driver)
     driver.constants[SSAValue(bc)] = convert(eltype(xT), scalar)
 
     # Insert op(x, broadcast) with x's type
-    op = insert_before!(block, val, Expr(:call, root_func, x, SSAValue(bc)), xT)
+    op = insert_before!(block, val, Expr(:call, root_func, x, SSAValue(bc)), xT;
+                        flag=inferred_flags(root_func))
     notify_insert!(driver, block, op)
 
     # Replace root with transparent_op(op_result, s). Func changes
-    # (subi/addi → reshape/broadcast), so clear the flag — the inferred
-    # effect bits describe the old op, not the transparent one.
+    # (subi/addi → reshape/broadcast), so recompute the flag from the new
+    # func's declared effects — the inferred bits describe the OLD op.
     block[val.id] = (stmt=Expr(:call, transparent_func, SSAValue(op), match.bindings[:s]),
-                     flag=CC.IR_FLAG_NULL)
+                     flag=inferred_flags(transparent_func))
     driver.defs[val] = DefEntry(block, val, transparent_func)
     push!(driver.worklist, val)
     add_users_to_worklist!(driver, val)

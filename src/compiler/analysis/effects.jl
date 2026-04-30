@@ -43,3 +43,26 @@ function is_atomic_intrinsic(func)
     end
     return false
 end
+
+"""
+    inferred_flags(func) -> UInt32
+
+IR flags corresponding to `func`'s declared effects, mirroring inference's
+`flags_for_effects`. Used by the rewriter to set fresh flags on inserted or
+opcode-changed instructions, so downstream gates (CSE, LICM) see the same
+information they would have gotten from a fresh inference.
+
+For cuTile intrinsics, starts from `EFFECTS_TOTAL` (intrinsics default to
+pure — `not_callable()` bodies have no observable effect) and applies any
+`efunc` override, which is the single source of truth for per-intrinsic
+effect adjustments. For non-intrinsic callees returns `IR_FLAG_NULL` —
+purity of arbitrary Julia functions isn't ours to claim.
+"""
+function inferred_flags(@nospecialize(func))
+    func isa Function || return CC.IR_FLAG_NULL
+    parentmodule(func) === Intrinsics || return CC.IR_FLAG_NULL
+    effects = CC.EFFECTS_TOTAL
+    override = efunc(func, effects)
+    override !== nothing && (effects = override)
+    return CC.flags_for_effects(effects)
+end

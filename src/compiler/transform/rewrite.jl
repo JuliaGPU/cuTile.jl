@@ -384,7 +384,8 @@ function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, roo
         typ = CC.widenconst(t)
         break
     end
-    inst = insert_before!(block, ref, Expr(:call, op.func, operands...), typ)
+    inst = insert_before!(block, ref, Expr(:call, op.func, operands...), typ;
+                          flag=inferred_flags(op.func))
     notify_insert!(driver, block, inst)
     SSAValue(inst)
 end
@@ -401,13 +402,14 @@ function apply_inplace_rewrite!(driver::RewriteDriver, block, val::SSAValue, rul
                        for (op, lhs_op) in zip(rule.rhs.operands, rule.lhs.operands)]
     new_stmt = Expr(:call, rule.rhs.func, new_operands...)
     # Same-func rewrites (most common: only operands change) preserve flag
-    # via the partial-NamedTuple setindex. Different-func rewrites clear it to
-    # IR_FLAG_NULL since the inferred effects describe the OLD op (LLVM
-    # `copyIRFlags` analogue: don't blanket-inherit when the opcode changes).
+    # via the partial-NamedTuple setindex. Different-func rewrites recompute
+    # the flag from the new func's declared effects (`efunc` overrides),
+    # mirroring inference's `flags_for_effects` — the inferred bits on the
+    # old call describe the OLD op and don't carry over.
     if rule.rhs.func === driver.defs[val].func
         block[val.id] = (stmt=new_stmt,)
     else
-        block[val.id] = (stmt=new_stmt, flag=CC.IR_FLAG_NULL)
+        block[val.id] = (stmt=new_stmt, flag=inferred_flags(rule.rhs.func))
     end
     driver.defs[val] = DefEntry(block, val, rule.rhs.func)
     push!(driver.worklist, val)
@@ -526,13 +528,13 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         end
         # The substituted func almost always differs from the matched root
         # (otherwise this would be an inplace rule). Inferred IR_FLAG_* bits
-        # describe the OLD op; reset to IR_FLAG_NULL on func change so
-        # downstream effect checks (CSE, LICM) don't act on stale info.
+        # describe the OLD op; recompute from the new func's `efunc` effects
+        # so downstream gates (CSE, LICM) see fresh, correct information.
         new_stmt = Expr(:call, rule.rhs.func, operands...)
         if rule.rhs.func === driver.defs[val].func
             block[val.id] = (stmt=new_stmt,)
         else
-            block[val.id] = (stmt=new_stmt, flag=CC.IR_FLAG_NULL)
+            block[val.id] = (stmt=new_stmt, flag=inferred_flags(rule.rhs.func))
         end
         # Update defs, re-add self and users to worklist (statement changed)
         driver.defs[val] = DefEntry(block, val, rule.rhs.func)
