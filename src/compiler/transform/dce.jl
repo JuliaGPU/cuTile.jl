@@ -71,10 +71,10 @@ end
 
 Check if a statement is side-effectful and must be kept as a root.
 
-Uses the Julia effects system: each cuTile intrinsic has an `efunc` override
-that specifies `effect_free=ALWAYS_FALSE` for side-effectful operations
-(stores, atomics, assert). Intrinsics without an efunc override are pure.
-Unknown calls are conservatively kept.
+Uses the Julia effects system via `intrinsic_effects`: each cuTile intrinsic
+has an `efunc` override that specifies `effect_free=ALWAYS_FALSE` for
+side-effectful operations (stores, atomics, assert). Intrinsics without an
+efunc override are pure. Unknown calls are conservatively kept.
 
 Mirrors Python cuTile's `_must_keep` (dce.py:205-206) and Julia's compiler
 `stmt_effect_free` — both classify by per-instruction effect annotations.
@@ -91,16 +91,9 @@ function must_keep(block::Block, @nospecialize(s))
     call = resolve_call(block, s)
     if call !== nothing
         resolved_func, _ = call
-        # cuTile intrinsics: use the efunc effects system
-        if resolved_func isa Function && parentmodule(resolved_func) === Intrinsics
-            # Query the efunc override for this intrinsic
-            override = efunc(resolved_func, CC.Effects())
-            if override !== nothing
-                # Has custom effects — keep if not effect-free
-                return override.effect_free !== CC.ALWAYS_TRUE
-            end
-            # No efunc override → pure intrinsic, safe to remove
-            return false
+        effects = intrinsic_effects(resolved_func)
+        if effects !== nothing
+            return effects.effect_free !== CC.ALWAYS_TRUE
         end
         # getfield is pure
         if s isa Expr
