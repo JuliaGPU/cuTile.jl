@@ -27,8 +27,7 @@ in a future release of CUDA.
 A simple vector addition kernel using cuTile looks like this:
 
 ```julia
-using CUDA
-using cuTile
+using CUDA, cuTile
 import cuTile as ct
 
 # Define kernel
