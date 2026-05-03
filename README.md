@@ -28,7 +28,7 @@ A simple vector addition kernel using cuTile looks like this:
 
 ```julia
 using CUDA
-import cuTile as ct
+using cuTile: cuTile, cuTile as ct
 
 # Define kernel
 function vadd(a, b, c, tile_size::Int)
