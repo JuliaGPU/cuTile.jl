@@ -27,7 +27,7 @@ Recognises:
 
 - `Intrinsics.addi` / `Intrinsics.subi` — `gcd(lhs, rhs)`
 - `Intrinsics.muli`                     — `lhs * rhs`
-- `Intrinsics.negi`                     — pass-through
+- `Intrinsics.negi` / `Intrinsics.absi` — pass-through
 - `Intrinsics.offset(ptr, off)`         — `gcd(ptr, off * sizeof(elem))`
 - `Intrinsics.constant(_, scalar, _)`   — `|scalar|` if integer
 - `Intrinsics.assume(x, DivBy(d))`      — `lcm(divby(x), d)` (refines)
@@ -81,7 +81,7 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
         # Saturate to avoid runaway products on lattice movement.
         return x <= typemax(Int) ÷ y ? x * y : 1
     end
-    if func === Intrinsics.negi
+    if func === Intrinsics.negi || func === Intrinsics.absi
         length(ops) >= 1 || return 1
         return operand_value(a, r, ops[1])
     end

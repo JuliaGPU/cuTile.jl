@@ -327,11 +327,20 @@ end
 
 Element-wise hyperbolic tangent; lowers to `cuda_tile.tanh`.
 
-Also invocable with a scalar, promoted to a 0-D tile before codegen.
+Also invocable with a scalar, promoted to a 0-D tile before codegen. On
+Tile IR v13.2+ the active `@fpmode` scope's `rounding_mode` is forwarded
+to `cuda_tile.tanh`; earlier bytecode versions ignore the attribute.
 """
 @intrinsic tanh(x::AbstractFloat)
 @intrinsic tanh(x::Tile{<:AbstractFloat})
 tfunc(𝕃, ::typeof(Intrinsics.tanh), @nospecialize(x)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.tanh), args)
-    emit_unop!(ctx, args, encode_TanHOp!)
+    # `tanh` only honours `rounding_mode` (no flush_to_zero), so reuse the
+    # generic fpmode kwargs and let the encoder ignore unsupported keys.
+    mode = current_fpmode(ctx)
+    if mode.rounding_mode !== nothing
+        emit_unop!(ctx, args, encode_TanHOp!; rounding_mode=mode.rounding_mode)
+    else
+        emit_unop!(ctx, args, encode_TanHOp!)
+    end
 end

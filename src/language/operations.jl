@@ -348,6 +348,11 @@ Index is 1-indexed. Shape must be compile-time constant.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Padding Modes
+
+For a tile that partially extends beyond the array boundaries, out-of-bounds
+elements are filled according to `padding_mode`. If the tile lies entirely
+outside the array, the behavior is undefined regardless of `padding_mode`.
+
 - `PaddingMode.Undetermined`: Unspecified behavior for OOB access
 - `PaddingMode.Zero`: Return zero for OOB elements
 - `PaddingMode.NegZero`: Return negative zero for OOB elements
@@ -429,6 +434,10 @@ end
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
+
+For a tile that partially extends beyond the array boundaries, out-of-bounds
+elements are ignored. If the tile lies entirely outside the array, the
+behavior is undefined.
 
 # Dimension Ordering
 - `order`: Optional tuple specifying the logical-to-physical dimension mapping (1-indexed).
@@ -1219,26 +1228,40 @@ end
 
 # Matrix multiplication: A * B = muladd(A, B, zeros)
 # Note: SA, SB type parameters required to avoid ambiguity with scalar*tile methods during codegen
+#
+# Result dtype semantics: the accumulator runs in tileiras' preferred acc
+# dtype for `T1` (e.g. Float32 for BFloat16 inputs) and the result is then
+# downcast to `T1`. Mirrors cuTile Python's mma → astype(input_dtype) →
+# reshape flow, so `bf16 * bf16` returns a `Tile{BFloat16}` rather than
+# accidentally widening to `Float32`.
 @inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
     _matmul(a, b, Val(ndims(a)), Val(ndims(b)))
 end
 
+@inline _matmul_acc_dtype(::Type{T}) where {T} = first_allowed_acc_dtype(T)
+@inline _matmul_acc_dtype(::Type{T}) where {T <: Integer} = T
+@inline _matmul_finalize(result::Tile{Tacc}, ::Type{Tin}) where {Tacc, Tin} =
+    Tacc === Tin ? result : convert(Tile{Tin}, result)
+
 # 2D × 2D → (M, N)
 @inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}, ::Val{2}) where {T1}
-    acc = zeros(T1, (size(a, 1), size(b, 2)))
-    muladd(a, b, acc)
+    Tacc = _matmul_acc_dtype(T1)
+    acc = zeros(Tacc, (size(a, 1), size(b, 2)))
+    _matmul_finalize(muladd(a, b, acc), T1)
 end
 
 # Vec-mat (1D × 2D) → (M, N)
 @inline function _matmul(a::Tile{T1}, b::Tile, ::Val{1}, ::Val{2}) where {T1}
-    acc = zeros(T1, (size(a, 1), size(b, 2)))
-    muladd(a, b, acc)
+    Tacc = _matmul_acc_dtype(T1)
+    acc = zeros(Tacc, (size(a, 1), size(b, 2)))
+    _matmul_finalize(muladd(a, b, acc), T1)
 end
 
 # Mat-vec (2D × 1D) → (M,)
 @inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}, ::Val{1}) where {T1}
-    acc = zeros(T1, (size(a, 1),))
-    muladd(a, b, acc)
+    Tacc = _matmul_acc_dtype(T1)
+    acc = zeros(Tacc, (size(a, 1),))
+    _matmul_finalize(muladd(a, b, acc), T1)
 end
 
 # Vec-vec (1D × 1D): not supported
@@ -1260,8 +1283,9 @@ end
     M = sa[1]; N = sb[2]
     out_shape = (M, N, batch_shape...)
     quote
-        acc = zeros(T1, $out_shape)
-        muladd(a, b, acc)
+        Tacc = _matmul_acc_dtype(T1)
+        acc = zeros(Tacc, $out_shape)
+        _matmul_finalize(muladd(a, b, acc), T1)
     end
 end
 

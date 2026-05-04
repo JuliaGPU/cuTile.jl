@@ -117,6 +117,28 @@ end
     NW = 3
 end
 
+"""
+    MemoryOrderingSemantics
+
+Memory ordering semantics of an atomic operation. Bytecode integer
+encoding is fixed (`Weak=0`, `Relaxed=1`, …) regardless of variant name.
+
+# Variants
+- `Weak` — no ordering guarantees; usable for plain (non-atomic) loads
+  and stores. Cannot be used to synchronize between threads.
+- `Relaxed` — atomic with no cross-thread ordering. The operation
+  itself is indivisible but other reads/writes can be reordered around
+  it.
+- `Acquire` — when this reads a value written by a `Release`, the
+  releasing thread's prior writes become visible to this thread.
+  Subsequent reads/writes within the same block cannot be reordered
+  before this operation.
+- `Release` — when an `Acquire` reads the value written by this, this
+  thread's prior writes become visible to the acquiring thread. Prior
+  reads/writes within the same block cannot be reordered after this
+  operation.
+- `AcqRel` — combined acquire and release semantics.
+"""
 @enumx MemoryOrderingSemantics begin
     Weak = 0
     Relaxed = 1
@@ -125,8 +147,23 @@ end
     AcqRel = 4
 end
 
+"""
+    MemoryScope
+
+The scope of threads that participate in memory ordering. Bytecode
+integer encoding is fixed (`Block=0`, `Device=1`, `System=2`)
+regardless of variant name.
+
+# Variants
+- `Block` — ordering guarantees apply to threads within the same
+  block. Previously `TLBlock` (matching cuTile Python's now-removed
+  `TL_BLK` spelling).
+- `Device` — ordering guarantees apply to all threads on the same GPU.
+- `System` — ordering guarantees apply to all threads across the
+  entire system, including multiple GPUs and the host.
+"""
 @enumx MemoryScope begin
-    TLBlock = 0
+    Block = 0
     Device = 1
     System = 2
 end

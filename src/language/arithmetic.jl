@@ -24,6 +24,9 @@
 @overlay Base.rem(x::T, y::T) where {T <: Signed} = Intrinsics.remi(x, y, Signedness.Signed)
 @overlay Base.rem(x::T, y::T) where {T <: Unsigned} = Intrinsics.remi(x, y, Signedness.Unsigned)
 
+# floor division on floats — `fld(x, y)` and `div(x, y, RoundDown)`
+@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: ScalarFloat} = Intrinsics.floor(Intrinsics.divf(x, y))
+
 # float power (expands to dozens of intrinsics in Julia — complex)
 @overlay Base.:^(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.pow(x, y)
 
@@ -49,6 +52,12 @@ end
 
 # integer != (Julia expands to not_int(===) — 2 ops; overlay gives 1 op)
 @overlay Base.:(!=)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, ComparisonPredicate.NotEqual, Signedness.Signed)
+
+# float != with NaN-correct semantics: Julia's `!=` on IEEEFloats lowers via
+# `ne_float` (canonicalized to `cmpf(NotEqual, Unordered)`), but non-IEEEFloat
+# scalars (BFloat16, TFloat32) take detours that can lose `Unordered`. Force
+# the unordered predicate uniformly so `NaN != NaN` returns `true`.
+@overlay Base.:(!=)(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.NotEqual, ComparisonOrdering.Unordered)
 
 # shifts (Julia's << includes range checking, bitcast, branching — complex)
 @overlay Base.:<<(x::ScalarInt, y::Integer) = Intrinsics.shli(x, y)

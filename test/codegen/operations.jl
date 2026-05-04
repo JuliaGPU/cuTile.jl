@@ -444,6 +444,23 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "float != is NaN-correct" begin
+        # `Base.:(!=)` overlay must emit `cmpf(NotEqual, Unordered)` so that
+        # `NaN != NaN` returns true (matching IEEE 754 / cuTile Python).
+        for T in (Float16, ct.BFloat16, Float32, Float64)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{T,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "cmpf not_equal unordered"
+                    Base.donotdelete(tile .!= tile)
+                    return
+                end
+            end
+        end
+    end
+
     @testset "mixed-type integer comparison" begin
         @test @filecheck begin
             @check_label "entry"
@@ -459,6 +476,25 @@ spec4d = ct.ArraySpec{4}(16, true)
                 b_promoted = convert(ct.Tile{Int64}, b)
                 selected = ifelse.(result, a, b_promoted)
                 ct.store(out, Int32(0), selected)
+                return
+            end
+        end
+    end
+
+    @testset "u16 + u64 promotes to u64" begin
+        # Pin promote_type(UInt16, UInt64) == UInt64 so the narrower operand
+        # is widened with `exti` (zero-extend) before `addi` rather than
+        # narrowing the wider one or going through a signed path.
+        @test promote_type(UInt16, UInt64) === UInt64
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt64,1,spec1d}}) do out
+                a = ct.arange(16; dtype=UInt16)
+                b = ct.arange(16; dtype=UInt64)
+                @check "exti"
+                @check "addi"
+                result = a .+ b
+                ct.store(out, Int32(0), result)
                 return
             end
         end
@@ -596,6 +632,48 @@ spec4d = ct.ArraySpec{4}(16, true)
                 ct.store(c, (bidx, bidy), result)
                 return
             end
+        end
+    end
+
+    @testset "bf16 matmul uses f32 acc and downcasts" begin
+        # BFloat16 × BFloat16 should pick a Float32 accumulator (the only
+        # tileiras-allowed acc dtype for bf16) and emit a final
+        # downcast back to BFloat16. Result element type is BFloat16.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{ct.BFloat16,2,spec2d},
+                             ct.TileArray{ct.BFloat16,2,spec2d},
+                             ct.TileArray{ct.BFloat16,2,spec2d}}) do a, b, c
+                bidx = ct.bid(1)
+                bidy = ct.bid(2)
+                tile_a = ct.load(a, bidx, (32, 16))
+                tile_b = ct.load(b, bidy, (16, 32))
+                @check "constant <f32"
+                @check "mmaf"
+                @check "tile<32x32xf32>"
+                @check "ftof"
+                result = tile_a * tile_b
+                ct.store(c, (bidx, bidy), result)
+                return
+            end
+        end
+    end
+
+    @testset "mma rejects mismatched float acc dtype" begin
+        # Direct Intrinsics.mma with bf16 inputs and bf16 acc must error
+        # with the tileiras-allowed-acc message rather than producing a
+        # mmaf op tileiras would later reject.
+        @test_throws "tileiras requires acc" code_tiled(
+            Tuple{ct.TileArray{ct.BFloat16,2,spec2d},
+                  ct.TileArray{ct.BFloat16,2,spec2d},
+                  ct.TileArray{ct.BFloat16,2,spec2d}}) do a, b, c
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, bidy, (16, 32))
+            acc = zeros(ct.BFloat16, (32, 32))
+            Base.donotdelete(ct.Intrinsics.mma(tile_a, tile_b, acc))
+            return
         end
     end
 
@@ -1421,6 +1499,24 @@ end
         end
     end
 
+    @testset "tanh rounding_mode honoured under @fpmode" begin
+        # On v13.2+ the active @fpmode rounding_mode is forwarded to TanHOp.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}};
+                       bytecode_version=v"13.2") do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                ct.@fpmode rounding_mode=ct.Rounding.Approx begin
+                    @check "tanh"
+                    @check "rounding<approx>"
+                    Base.donotdelete(tanh.(tile))
+                end
+                return
+            end
+        end
+    end
+
     @testset "fma" begin
         @test @filecheck begin
             @check_label "entry"
@@ -1560,6 +1656,22 @@ end
                 Base.donotdelete(ta .* tb)
                 @check "divf"
                 Base.donotdelete(ta ./ tb)
+                return
+            end
+        end
+    end
+
+    @testset "float floordiv" begin
+        # `fld(x, y)` on floats lowers to floor(divf).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                ta = ct.load(a, pid, (16,))
+                tb = ct.load(b, pid, (16,))
+                @check "divf"
+                @check "floor"
+                Base.donotdelete(fld.(ta, tb))
                 return
             end
         end
@@ -2246,6 +2358,53 @@ end
                 return
             end
         end
+    end
+
+    @testset "print accepts tuples" begin
+        # Tuple constants (e.g. `size(tile)`) expand inline as `(a, b, c)`
+        # in the format string, mirroring cuTile Python's print behaviour.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tile = ct.load(a, (1, 1), (4, 16))
+                @check "print_tko"
+                @check "shape=(4, 16)"
+                print("shape=", size(tile))
+                ct.store(a, (1, 1), tile)
+                return
+            end
+        end
+        # 1-element tuples render `(x,)` not `(x)` (matches Julia/Python).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                @check "print_tko"
+                @check "shape=(16,)"
+                print("shape=", size(tile))
+                ct.store(a, 1, tile)
+                return
+            end
+        end
+    end
+
+    @testset "format specifier widths" begin
+        for (T, spec) in [
+            (Int8,    "%d"),
+            (Int16,   "%d"),
+            (Int32,   "%d"),
+            (Int64,   "%lld"),
+            (UInt8,   "%u"),
+            (UInt16,  "%u"),
+            (UInt32,  "%u"),
+            (UInt64,  "%llu"),
+            (Float16, "%f"),
+            (Float32, "%f"),
+            (Float64, "%lf"),
+        ]
+            @test cuTile.infer_format_specifier(T) == spec
+        end
+        @test cuTile.infer_format_specifier(Bool) == "%d"
     end
 
     @testset "print multiple tiles" begin

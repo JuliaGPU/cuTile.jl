@@ -400,12 +400,39 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
 end
 
 """
+    mma_allowed_acc_dtypes(input_T) -> Union{Tuple, Nothing}
+
+Allowed accumulator element types for an `mma`/`matmul` whose operand
+element type is `input_T`. `nothing` means "no float `mma` overload for
+this input dtype" — used by `mma` to emit a clear IR error rather than
+let tileiras fail downstream. Mirrors the table in cuTile Python's
+`_first_allowed_acc_dtype`.
+"""
+mma_allowed_acc_dtypes(::Type{Float16})  = (Float16, Float32)
+mma_allowed_acc_dtypes(::Type{BFloat16}) = (Float32,)
+mma_allowed_acc_dtypes(::Type{Float32})  = (Float32,)
+mma_allowed_acc_dtypes(::Type{TFloat32}) = (Float32,)
+mma_allowed_acc_dtypes(::Type{Float64})  = (Float64,)
+mma_allowed_acc_dtypes(@nospecialize(::Type)) = nothing
+
+# First (preferred) accumulator dtype for a given input dtype. Used by
+# matmul to pick `acc = zeros(first_allowed_acc(T), …)` so that the input
+# dtype constraint and tileiras's acc-dtype constraint stay consistent
+# (e.g. bf16 input → f32 acc, then downcast back to bf16).
+first_allowed_acc_dtype(::Type{T}) where {T} =
+    let allowed = mma_allowed_acc_dtypes(T)
+        allowed === nothing ? T : first(allowed)
+    end
+
+"""
     Intrinsics.mma(a::Tile, b::Tile, acc::Tile) -> typeof(acc)
 
 Matrix-multiply-accumulate computing `a*b + acc`. Dispatches at codegen
 based on element types:
 
-- Matching float `a`/`b`/`acc` lower to `cuda_tile.mmaf`.
+- Matching float `a`/`b`/`acc` lower to `cuda_tile.mmaf`. The accumulator
+  dtype must be in the tileiras-allowed set for the input dtype (see
+  [`mma_allowed_acc_dtypes`](@ref)).
 - `i8` `a`/`b` with `i32` `acc` lower to `cuda_tile.mmai`. Per-input
   signedness is derived from the Julia type (`Int8` → signed,
   `UInt8` → unsigned); `acc` and the result are always signed `i32`.
@@ -426,6 +453,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     acc_elem = eltype(CC.widenconst(acc.jltype))
 
     result = if acc_elem <: AbstractFloat
+        # tileiras only supports a small set of (input_dtype, acc_dtype) pairs;
+        # mismatches outside this set are rejected at the IR level. Mirrors
+        # the table in cuTile Python's mma implementation.
+        lhs_elem === rhs_elem ||
+            throw(IRError("mma: float lhs and rhs must share dtype, got lhs=$lhs_elem, rhs=$rhs_elem"))
+        allowed_acc = mma_allowed_acc_dtypes(lhs_elem)
+        allowed_acc === nothing &&
+            throw(IRError("mma: unsupported float input dtype $lhs_elem"))
+        acc_elem in allowed_acc ||
+            throw(IRError("mma: acc dtype $acc_elem is not allowed for input dtype " *
+                          "$lhs_elem; tileiras requires acc ∈ $allowed_acc"))
         encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v)
     elseif lhs_elem <: Union{Int8, UInt8} && rhs_elem <: Union{Int8, UInt8} &&
            acc_elem === Int32
@@ -633,6 +671,11 @@ function emit_reduce!(ctx::CGCtx, args)
 
     for (k, tv) in enumerate(tile_tvs)
         etype = eltype(CC.widenconst(tv.jltype))
+        # Restricted floats (TFloat32, future FP8/FP4) lack the arithmetic
+        # support that reduce body subprograms typically require, so reject
+        # them at the SCI boundary with a clear error.
+        is_restricted_float(etype) &&
+            throw(IRError("reduce: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
@@ -806,6 +849,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
 
     for (k, tv) in enumerate(tile_tvs)
         etype = eltype(CC.widenconst(tv.jltype))
+        is_restricted_float(etype) &&
+            throw(IRError("scan: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
