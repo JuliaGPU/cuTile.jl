@@ -159,11 +159,13 @@ end
 @testset "assume — kernel-arg ptr wrap survives offset for gather/scatter" begin
     # Pure-gather/scatter kernel: no MTV consumes the kernel-arg ptr, so
     # the only path that can attach `spec.alignment` to the base pointer
-    # is the kernel-arg-entry wrap (`apply_arg_assume_predicates!`). The
-    # post-offset ptr that reaches `load_ptr_tko` / `store_ptr_tko` then
-    # carries the base-alignment fact (via the assumed `Value` flowing
-    # through `reshape` → `broadcast` → `offset`) plus a tighter local
-    # divby chain wrapped at the consumer site.
+    # is the kernel-arg-entry wrap (`apply_arg_assume_predicates!`). That
+    # base-alignment fact still flows through `reshape` → `broadcast` →
+    # `offset` to the gather/scatter consumer, but we deliberately do NOT
+    # emit a per-element divby assume on the resulting tile-of-pointers:
+    # the natural pointee alignment is vacuous for tileiras and stamping
+    # it onto the IR defeats wide-store coalescing. Mirrors cuTile
+    # Python's `PointerOffset` rule.
     spec1d = ct.ArraySpec{1}(128, true)
     @test @filecheck begin
         @check_label "entry"
@@ -177,10 +179,11 @@ end
         # Base alignment on each kernel-arg ptr (entry wrap).
         @check "assume div_by<128>"
         @check "assume div_by<128>"
-        # Local divby chain on the post-offset ptr at each consumer.
-        @check "assume div_by<"
+        # No divby assume on the post-offset tile-of-pointers — tileiras
+        # walks the offset SSA itself.
+        @check_not "assume div_by"
         @check "load_ptr_tko"
-        @check "assume div_by<"
+        @check_not "assume div_by"
         @check "store_ptr_tko"
     end
 end
@@ -190,8 +193,8 @@ end
     # the same kernel-arg ptr. The entry wrap puts one `assume div_by<128>`
     # on it; the per-`Value` cache (`ctx.assume_wrapped`) ensures the
     # MTV consumer wraps don't re-emit the same predicate on the same
-    # source. The post-offset gather ptr is a different `Value` and
-    # gets its own (looser) divby chain.
+    # source. The post-offset gather ptr is a tile-of-pointers and the
+    # `PointerOffset` divby rule deliberately suppresses any assume there.
     spec1d = ct.ArraySpec{1}(128, true)
     @test @filecheck begin
         @check_label "entry"

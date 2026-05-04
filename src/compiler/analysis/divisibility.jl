@@ -90,12 +90,26 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
     # The base may be either `Tile{Ptr{T}, ()}` (post-canonicalize tile form)
     # or raw `Ptr{T}` (the SCI annotation on `getfield(arg, :ptr)`); both
     # lower to a 0-D pointer Value at codegen.
+    #
+    # Only propagate alignment when the result is a 0-D pointer (Array.slice
+    # style). For tiles of pointers (the gather/scatter `broadcast(base) +
+    # offsets` chain), return 1 — tileiras's vectorizer walks the offset SSA
+    # itself, and a redundant `assume div_by<elem_bytes>` (the natural
+    # alignment of the pointee) defeats coalescing into wide stores.
+    # Mirrors cuTile Python's `PointerOffset` rule in
+    # `_passes/dataflow_analysis.py`.
     if func === Intrinsics.offset
         length(ops) >= 2 || return 1
         base_T = value_type(block, ops[1])
         base_T = base_T === nothing ? Any : CC.widenconst(base_T)
         elem_T = ptr_pointee(base_T)
         elem_T === nothing && return 1
+        # Result shape mirrors the offsets shape (base is 0-D by ptr_pointee
+        # above). Bail out for tile-shaped offsets — the result is a tile of
+        # pointers and divby of those is tileiras's job, not ours.
+        off_T = value_type(block, ops[2])
+        off_T = off_T === nothing ? Any : CC.widenconst(off_T)
+        is_scalar_tile_shape(off_T) || return 1
         elem_bytes = sizeof(elem_T)
         ptr_div = operand_value(a, r, ops[1])
         off_div = operand_value(a, r, ops[2])
@@ -196,6 +210,16 @@ function ptr_pointee(@nospecialize(T))
         return eltype(T)
     end
     return nothing
+end
+
+# Whether `T` represents a scalar value — either a non-`Tile` type or a `Tile`
+# with all dims `== 1` (mirrors Python's `all(x == 1 for x in shape)`, which
+# treats `()` and `(1,1,...)` interchangeably).
+function is_scalar_tile_shape(@nospecialize(T))
+    T <: Tile || return true
+    shape_T = T.parameters[2]
+    shape_T isa DataType || return false
+    return all(s -> s isa Integer && s == 1, shape_T.parameters)
 end
 
 #=============================================================================
