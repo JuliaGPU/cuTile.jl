@@ -1,3 +1,25 @@
+@testset "Constant" begin
+    # Auto-typed convenience constructor
+    @test cuTile.Constant(Int32(5)) === cuTile.Constant{Int32, Int32(5)}()
+    @test cuTile.Constant(0.5f0) === cuTile.Constant{Float32, 0.5f0}()
+    @test cuTile.Constant(Float32) === cuTile.Constant{Type{Float32}, Float32}()
+
+    # Value access via getindex
+    @test cuTile.Constant{Int32, 42}()[] === 42
+    @test cuTile.Constant{Float32, 0.25f0}()[] === 0.25f0
+
+    # Reject integer literals that don't fit the declared element type so
+    # codegen never silently truncates a bogus `Constant{Int8, 1024}`.
+    # Matches `Int8(1024)` raising InexactError.
+    @test_throws InexactError cuTile.Constant{Int8,  1024}()
+    @test_throws InexactError cuTile.Constant{UInt8, -1}()
+    @test_throws InexactError cuTile.Constant{UInt32, -5}()
+    # Boundary values must work; `[]` returns the literal as-stored.
+    @test cuTile.Constant{Int8, 127}()[] == 127
+    @test cuTile.Constant{Int8, -128}()[] == -128
+    @test cuTile.Constant{UInt8, 255}()[] == 255
+end
+
 @testset "Tile" begin
     @test eltype(ct.Tile{Float32, Tuple{16}}) == Float32
     @test eltype(ct.Tile{Float64, Tuple{32, 32}}) == Float64

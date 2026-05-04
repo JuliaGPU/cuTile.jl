@@ -332,7 +332,19 @@ end
 argtypes = Tuple{Ptr{Float32}, Constant{Int, 16}}
 ```
 """
-struct Constant{T, V} end
+struct Constant{T, V}
+    function Constant{T, V}() where {T, V}
+        # Ghost types have no runtime check on `V`, so an out-of-range integer
+        # literal would silently truncate during codegen (e.g.
+        # `Constant{Int8, 1024}` becoming `Int8(0)`). Reject mismatches up
+        # front with the same `InexactError` Julia raises for `Int8(1024)`.
+        # Floats and types-as-values are unaffected.
+        if T <: Integer && V isa Integer && !(typemin(T) <= V <= typemax(T))
+            throw(Base.InexactError(:Constant, T, V))
+        end
+        new{T, V}()
+    end
+end
 
 # Convenience constructors that infer type from value
 Constant(val::T) where {T} = Constant{T, val}()
