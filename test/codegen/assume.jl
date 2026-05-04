@@ -87,6 +87,25 @@ end
     end
 end
 
+@testset "assume — literal slice's size is a static constant" begin
+    # Source has shape_div_by[1]=16. Slicing with a literal range
+    # (e.g. `1:64`) folds the new axis size to a compile-time constant,
+    # so `make_tensor_view`'s shape operand is the literal `64` directly
+    # — no `assume bounded<0,?>` / `assume div_by<…>` wrap is needed
+    # because the literal already carries full information.
+    spec1d = ct.ArraySpec{1}(128, true, (0,), (16,))
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            sub = @view a[1:64]
+            ct.store(sub, 1, ct.load(sub, 1, (16,)))
+            return
+        end
+        @check "constant <i32: 64>"
+        @check "make_tensor_view"
+    end
+end
+
 @testset "assume — literal slice with zero offset preserves full alignment" begin
     # `a[1:64]` has start_0 == 0, so offset == 0 bytes; the dataflow
     # treats the literal `0` as ∞-divisible, so `gcd(spec.alignment, 0)`
