@@ -98,29 +98,17 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 
 | Kernel | Size | Julia | Python | Status |
 |--------|------|-------|--------|--------|
-| Vector Addition | 2^27 f32 | 842 GB/s | 846 GB/s | OK (=) |
-| Matrix Transpose | 8192² f32 | 806 GB/s | 814 GB/s | OK (-1%) |
-| Layer Norm fwd | 4096² f32 | 925 GB/s | 715 GB/s | +29%* |
-| Layer Norm bwd | 4096² f32 | 242 GB/s | 250 GB/s | OK (-3%) |
-| Matrix Multiplication | 4096³ f32 | 46.9 TFLOPS | 43.4 TFLOPS | +8%** |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.5 TFLOPS | 30.7 TFLOPS | +9%** |
-| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 628 μs | 562 μs | -12%*** |
-| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 19.1 TFLOPS | 20.1 TFLOPS | OK (-5%) |
-| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 97.3 TFLOPS | 63.1 TFLOPS | +54%**** |
-| Softmax (TMA) | 4096² f32 | 815 GB/s | 828 GB/s | OK (-2%) |
-| Softmax (Chunked) | 4096² f32 | 1609 GB/s | 1655 GB/s | OK (-3%) |
-
-\* The `pow(x, 2)` → `mulf(x, x)` strength reduction eliminates the expensive
-transcendental in the variance computation. Python still emits `pow`.
-
-\*\* Likely because Julia's `for` loop guards give `tileiras` a guarantee that the
-loop body executes at least once, enabling more aggressive warp scheduling.
-
-\*\*\* `tileiras` picks 128 threads/block for cuTile.jl vs 256 for the cuTile
-Python, despite highly similar Tile IR.
-
-\*\*\*\* Likely due to Python's compiler splitting the causal masking loop into two
-loops, duplicating the loop body. Julia emits a single loop with a conditional.
+| Vector Addition | 2^27 f32 | 845 GB/s | 846 GB/s | OK (=) |
+| Matrix Transpose | 8192² f32 | 812 GB/s | 814 GB/s | OK (=) |
+| Layer Norm fwd | 4096² f32 | 983 GB/s | 716 GB/s | +37% |
+| Layer Norm bwd | 4096² f32 | 248 GB/s | 251 GB/s | OK (-1%) |
+| Matrix Multiplication | 4096³ f32 | 47.5 TFLOPS | 43.5 TFLOPS | +9% |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 34.0 TFLOPS | 30.8 TFLOPS | +10% |
+| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 529 μs | 554 μs | +5% |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 27.0 TFLOPS | 20.1 TFLOPS | +34% |
+| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 103.6 TFLOPS | 63.4 TFLOPS | +63% |
+| Softmax (TMA) | 4096² f32 | 849 GB/s | 857 GB/s | OK (-1%) |
+| Softmax (Chunked) | 4096² f32 | 1684 GB/s | 1640 GB/s | OK (+3%) |
 
 
 ## Supported Operations
