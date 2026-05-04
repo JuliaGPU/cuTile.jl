@@ -635,6 +635,48 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "bf16 matmul uses f32 acc and downcasts" begin
+        # BFloat16 × BFloat16 should pick a Float32 accumulator (the only
+        # tileiras-allowed acc dtype for bf16) and emit a final
+        # downcast back to BFloat16. Result element type is BFloat16.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{ct.BFloat16,2,spec2d},
+                             ct.TileArray{ct.BFloat16,2,spec2d},
+                             ct.TileArray{ct.BFloat16,2,spec2d}}) do a, b, c
+                bidx = ct.bid(1)
+                bidy = ct.bid(2)
+                tile_a = ct.load(a, bidx, (32, 16))
+                tile_b = ct.load(b, bidy, (16, 32))
+                @check "constant <f32"
+                @check "mmaf"
+                @check "tile<32x32xf32>"
+                @check "ftof"
+                result = tile_a * tile_b
+                ct.store(c, (bidx, bidy), result)
+                return
+            end
+        end
+    end
+
+    @testset "mma rejects mismatched float acc dtype" begin
+        # Direct Intrinsics.mma with bf16 inputs and bf16 acc must error
+        # with the tileiras-allowed-acc message rather than producing a
+        # mmaf op tileiras would later reject.
+        @test_throws "tileiras requires acc" code_tiled(
+            Tuple{ct.TileArray{ct.BFloat16,2,spec2d},
+                  ct.TileArray{ct.BFloat16,2,spec2d},
+                  ct.TileArray{ct.BFloat16,2,spec2d}}) do a, b, c
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, bidy, (16, 32))
+            acc = zeros(ct.BFloat16, (32, 32))
+            Base.donotdelete(ct.Intrinsics.mma(tile_a, tile_b, acc))
+            return
+        end
+    end
+
     @testset "vec-mat outer product" begin
         @test @filecheck begin
             @check_label "entry"
