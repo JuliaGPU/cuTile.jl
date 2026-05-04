@@ -444,6 +444,23 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "float != is NaN-correct" begin
+        # `Base.:(!=)` overlay must emit `cmpf(NotEqual, Unordered)` so that
+        # `NaN != NaN` returns true (matching IEEE 754 / cuTile Python).
+        for T in (Float16, ct.BFloat16, Float32, Float64)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{T,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "cmpf not_equal unordered"
+                    Base.donotdelete(tile .!= tile)
+                    return
+                end
+            end
+        end
+    end
+
     @testset "mixed-type integer comparison" begin
         @test @filecheck begin
             @check_label "entry"

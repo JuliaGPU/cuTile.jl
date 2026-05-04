@@ -50,6 +50,12 @@ end
 # integer != (Julia expands to not_int(===) — 2 ops; overlay gives 1 op)
 @overlay Base.:(!=)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, ComparisonPredicate.NotEqual, Signedness.Signed)
 
+# float != with NaN-correct semantics: Julia's `!=` on IEEEFloats lowers via
+# `ne_float` (canonicalized to `cmpf(NotEqual, Unordered)`), but non-IEEEFloat
+# scalars (BFloat16, TFloat32) take detours that can lose `Unordered`. Force
+# the unordered predicate uniformly so `NaN != NaN` returns `true`.
+@overlay Base.:(!=)(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, y, ComparisonPredicate.NotEqual, ComparisonOrdering.Unordered)
+
 # shifts (Julia's << includes range checking, bitcast, branching — complex)
 @overlay Base.:<<(x::ScalarInt, y::Integer) = Intrinsics.shli(x, y)
 @overlay Base.:>>(x::Signed, y::Integer) = Intrinsics.shri(x, y, Signedness.Signed)
