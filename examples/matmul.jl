@@ -160,4 +160,6 @@ function main()
     println("\n--- All matmul examples completed ---")
 end
 
-isinteractive() || main()
+if !isinteractive() && abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

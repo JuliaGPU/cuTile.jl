@@ -19,13 +19,14 @@ if VERSION >= v"1.12"
         path = joinpath(examples_root, name * ".jl")
         readline(path) == "# EXCLUDE FROM TESTING" && continue
         dir = dirname(path)
-            testsuite["examples/$name"] = quote
+        testsuite["examples/$name"] = quote
             cd($dir) do
                 project = Base.active_project()
                 Base.set_active_project($dir)
                 try
                     redirect_stdout(devnull) do
                         $body
+                        @eval main()
                     end
                 finally
                     Base.set_active_project(project)

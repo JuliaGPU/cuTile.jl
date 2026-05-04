@@ -422,4 +422,6 @@ function main()
     println("\n--- All MoE examples completed ---")
 end
 
-isinteractive() || main()
+if !isinteractive() && abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

@@ -248,4 +248,6 @@ function main()
     println("\n--- All addition examples completed ---")
 end
 
-isinteractive() || main()
+if !isinteractive() && abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end
