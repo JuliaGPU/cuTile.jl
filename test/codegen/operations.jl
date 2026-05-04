@@ -2248,6 +2248,25 @@ end
         end
     end
 
+    @testset "format specifier widths" begin
+        for (T, spec) in [
+            (Int8,    "%d"),
+            (Int16,   "%d"),
+            (Int32,   "%d"),
+            (Int64,   "%lld"),
+            (UInt8,   "%u"),
+            (UInt16,  "%u"),
+            (UInt32,  "%u"),
+            (UInt64,  "%llu"),
+            (Float16, "%f"),
+            (Float32, "%f"),
+            (Float64, "%lf"),
+        ]
+            @test cuTile.infer_format_specifier(T) == spec
+        end
+        @test cuTile.infer_format_specifier(Bool) == "%d"
+    end
+
     @testset "print multiple tiles" begin
         @test @filecheck begin
             @check_label "entry"

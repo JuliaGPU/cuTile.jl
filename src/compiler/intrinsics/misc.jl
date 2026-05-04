@@ -80,12 +80,14 @@ end
 
 # Format specifier inference for print_tko
 function infer_format_specifier(::Type{T}) where T
-    if T <: Union{Bool, Int8, Int16, Int32, UInt8, UInt16, UInt32}
+    if T === Bool
         return "%d"
-    elseif T <: Union{Int64, UInt64}
-        return "%ld"
+    elseif T <: Signed
+        return sizeof(T) == 8 ? "%lld" : "%d"
+    elseif T <: Unsigned
+        return sizeof(T) == 8 ? "%llu" : "%u"
     elseif T <: AbstractFloat  # Float16, BFloat16, Float32, TFloat32, Float64
-        return "%f"
+        return sizeof(T) == 8 ? "%lf" : "%f"
     else
         throw(IRError("print: unsupported element type $T"))
     end
