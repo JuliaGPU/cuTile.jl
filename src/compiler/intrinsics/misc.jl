@@ -96,6 +96,50 @@ end
 # Escape literal `%` as `%%` for C printf format strings
 escape_printf(s::String) = replace(s, "%" => "%%")
 
+# Format a single argument into the running format/operands lists.
+# Tuple constants are expanded as `(a, b, c)` matching cuTile Python.
+function format_print_arg!(format_parts::Vector{String}, tile_args::Vector{Value},
+                            ctx::CGCtx, @nospecialize(arg))
+    c = get_constant(ctx, arg)
+    if c !== nothing
+        format_print_constant!(format_parts, something(c))
+    else
+        tv = emit_value!(ctx, arg)
+        tv === nothing && throw(IRError("print: cannot resolve argument"))
+        jltype = CC.widenconst(tv.jltype)
+        elem_type = jltype <: Tile ? eltype(jltype) : jltype
+        push!(format_parts, infer_format_specifier(elem_type))
+        push!(tile_args, tv.v)
+    end
+    return nothing
+end
+
+function format_print_constant!(format_parts::Vector{String}, @nospecialize(val);
+                                  in_tuple::Bool=false)
+    if val isa String
+        # Inside a tuple, Julia's `print` shows strings with surrounding
+        # quotes (it dispatches through `show` for collection elements).
+        if in_tuple
+            push!(format_parts, "\"" * escape_printf(replace(val, "\"" => "\\\"")) * "\"")
+        else
+            push!(format_parts, escape_printf(val))
+        end
+    elseif val isa Tuple
+        push!(format_parts, "(")
+        for (i, item) in enumerate(val)
+            i > 1 && push!(format_parts, ", ")
+            format_print_constant!(format_parts, item; in_tuple=true)
+        end
+        # Single-element tuples render as `(a,)` to match Julia / Python.
+        push!(format_parts, length(val) == 1 ? ",)" : ")")
+    elseif val isa Number
+        push!(format_parts, escape_printf(string(val)))
+    else
+        throw(IRError("print: unsupported constant type $(typeof(val))"))
+    end
+    return nothing
+end
+
 """
     Intrinsics.print_tko(xs...) -> Nothing
 
@@ -125,24 +169,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.print_tko), args)
     tile_args = Value[]
 
     for arg in args
-        c = get_constant(ctx, arg)
-        if c !== nothing
-            val = something(c)
-            if val isa String
-                push!(format_parts, escape_printf(val))
-            elseif val isa Number
-                push!(format_parts, escape_printf(string(val)))
-            else
-                throw(IRError("print: unsupported constant type $(typeof(val))"))
-            end
-        else
-            tv = emit_value!(ctx, arg)
-            tv === nothing && throw(IRError("print: cannot resolve argument"))
-            jltype = CC.widenconst(tv.jltype)
-            elem_type = jltype <: Tile ? eltype(jltype) : jltype
-            push!(format_parts, infer_format_specifier(elem_type))
-            push!(tile_args, tv.v)
-        end
+        format_print_arg!(format_parts, tile_args, ctx, arg)
     end
 
     format_string = join(format_parts)

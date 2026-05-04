@@ -2318,6 +2318,34 @@ end
         end
     end
 
+    @testset "print accepts tuples" begin
+        # Tuple constants (e.g. `size(tile)`) expand inline as `(a, b, c)`
+        # in the format string, mirroring cuTile Python's print behaviour.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tile = ct.load(a, (1, 1), (4, 16))
+                @check "print_tko"
+                @check "shape=(4, 16)"
+                print("shape=", size(tile))
+                ct.store(a, (1, 1), tile)
+                return
+            end
+        end
+        # 1-element tuples render `(x,)` not `(x)` (matches Julia/Python).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                @check "print_tko"
+                @check "shape=(16,)"
+                print("shape=", size(tile))
+                ct.store(a, 1, tile)
+                return
+            end
+        end
+    end
+
     @testset "format specifier widths" begin
         for (T, spec) in [
             (Int8,    "%d"),
