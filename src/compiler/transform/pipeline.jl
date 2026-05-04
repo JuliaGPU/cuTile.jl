@@ -239,10 +239,20 @@ const POWER_RULES = RewriteRule[
  Combined Rule Set
 =============================================================================#
 
-const OPTIMIZATION_RULES = RewriteRule[
+# Phase split: normalization runs to fixpoint *before* fusion sees the IR.
+#
+# The greedy worklist driver uses bottom-up traversal (MLIR's default —
+# roots popped first, matches larger patterns). When `subf(broadcast(mulf),
+# broadcast(mulf))` is popped, neither FMA rule matches because both
+# operands are still wrapped in identity broadcasts. By the time the subf
+# is retried, only one of the two broadcasts has been eliminated, so the
+# surviving FMA match is asymmetric: rule 4 (`fma(neg(x), y, z)`) fires
+# instead of rule 3 (`fma(x, y, neg(z))`, what Python's `fuse_mul_addsub`
+# produces). Running normalization to fixpoint *first* removes the identity
+# ops before fusion looks at the IR, so rule 3 fires naturally.
+const NORMALIZATION_RULES = RewriteRule[
     IDENTITY_RULES...,
     ALGEBRA_RULES...,
-    FMA_RULES...,
     COMPARISON_RULES...,
     POWER_RULES...,
 ]
@@ -267,7 +277,8 @@ function run_passes!(sci::StructuredIRCode)
     rewrite_patterns!(sci, PRINT_FUSION_RULES)
 
     constants = analyze_constants(sci)
-    rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
+    rewrite_patterns!(sci, NORMALIZATION_RULES; constants)
+    rewrite_patterns!(sci, FMA_RULES; constants)
 
     # Common-subexpression elimination. Runs after the rewrite pass so
     # algebraic equivalences (`x+c-c → x`, etc.) and FMA fusions have
