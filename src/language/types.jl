@@ -443,6 +443,23 @@ const ScalarInt = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64
 """Scalar floating-point types supported by Tile IR (f16, bf16, tf32, f32, f64)."""
 const ScalarFloat = Union{Float16, BFloat16, Float32, Float64, TFloat32}
 
+"""
+Restricted floats — types whose op coverage is intentionally limited
+(no general arithmetic, reductions, scans, …). Currently `TFloat32`;
+future FP8/FP4 dtypes will join this union. Mirrors cuTile Python's
+`NumericDTypeCategories.RestrictedFloat`.
+"""
+const RestrictedFloat = Union{TFloat32}
+
+"""
+    is_restricted_float(::Type) -> Bool
+
+True if `T` is a restricted float. Used by `reduce` / `scan` (and other
+arithmetic-requiring ops) to reject unsupported element types early
+with a clear error rather than letting tileiras fail downstream.
+"""
+@inline is_restricted_float(::Type{T}) where {T} = T <: RestrictedFloat
+
 """Integer tile types."""
 const IntTile{S} = Tile{T, S} where {T <: ScalarInt}
 

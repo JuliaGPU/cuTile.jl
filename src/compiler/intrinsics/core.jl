@@ -633,6 +633,11 @@ function emit_reduce!(ctx::CGCtx, args)
 
     for (k, tv) in enumerate(tile_tvs)
         etype = eltype(CC.widenconst(tv.jltype))
+        # Restricted floats (TFloat32, future FP8/FP4) lack the arithmetic
+        # support that reduce body subprograms typically require, so reject
+        # them at the SCI boundary with a clear error.
+        is_restricted_float(etype) &&
+            throw(IRError("reduce: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
@@ -806,6 +811,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
 
     for (k, tv) in enumerate(tile_tvs)
         etype = eltype(CC.widenconst(tv.jltype))
+        is_restricted_float(etype) &&
+            throw(IRError("scan: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
         dtype = julia_to_tile_dtype!(tt, etype)
         push!(dtypes, dtype)
