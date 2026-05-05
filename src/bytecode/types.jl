@@ -35,7 +35,8 @@ module SimpleType
     const F8E4M3FN = UInt8(0x0a)
     const F8E5M2   = UInt8(0x0b)
     const Token    = UInt8(0x11)
-    const Unknown  = UInt8(0x12)
+    const F8E8M0FNU = UInt8(0x12)  # since 13.2
+    const F4E2M1FN  = UInt8(0x13)  # since 13.3
 end
 
 # Composite type tags
@@ -72,15 +73,18 @@ end
 """
     TypeTable
 
-Table of type definitions. Maps encoded type bytes to TypeIds.
+Table of type definitions. Maps encoded type bytes to TypeIds. Carries the
+target bytecode version so version-gated type accessors (e.g. `F8E8M0FNU`)
+can validate at registration time.
 """
 mutable struct TypeTable
     types::Dict{Vector{UInt8}, TypeId}
     next_id::Int
+    version::VersionNumber
 end
 
-function TypeTable()
-    table = TypeTable(Dict{Vector{UInt8}, TypeId}(), 0)
+function TypeTable(; version::VersionNumber)
+    table = TypeTable(Dict{Vector{UInt8}, TypeId}(), 0, version)
     # Pre-register I1 and I32 at fixed positions
     _predefine!(table, [SimpleType.I1], I1_TYPE_ID)
     _predefine!(table, [SimpleType.I32], I32_TYPE_ID)
@@ -129,6 +133,16 @@ TF32(table::TypeTable) = simple_type!(table, SimpleType.TF32)
 F64(table::TypeTable) = simple_type!(table, SimpleType.F64)
 F8E4M3FN(table::TypeTable) = simple_type!(table, SimpleType.F8E4M3FN)
 F8E5M2(table::TypeTable) = simple_type!(table, SimpleType.F8E5M2)
+function F8E8M0FNU(table::TypeTable)
+    table.version >= v"13.2" ||
+        throw(ArgumentError("Float8_E8M0FNU requires Tile IR bytecode v13.2+, got v$(table.version)"))
+    simple_type!(table, SimpleType.F8E8M0FNU)
+end
+function F4E2M1FN(table::TypeTable)
+    table.version >= v"13.3" ||
+        throw(ArgumentError("Float4_E2M1FN requires Tile IR bytecode v13.3+, got v$(table.version)"))
+    simple_type!(table, SimpleType.F4E2M1FN)
+end
 Token(table::TypeTable) = simple_type!(table, SimpleType.Token)
 
 function tile_type!(table::TypeTable, dtype::TypeId, shape::TileShape)

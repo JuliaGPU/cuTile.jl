@@ -25,9 +25,11 @@ Scratch = "6c6a2e73-6563-6170-7368-637461726353"
 
 [weakdeps]
 DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
+Microfloats = "31c70f10-a750-4521-b13c-797315ae2933"
 
 [extensions]
 DLFP8TypesExt = "DLFP8Types"
+MicrofloatsExt = "Microfloats"
 
 [compat]
 Adapt = "4.4"
@@ -40,6 +42,7 @@ EnumX = "1.0"
 GPUArrays = "11"
 IRStructurizer = "0.6"
 LMDB_jll = "0.9"
+Microfloats = "0.2"
 PrecompileTools = "1"
 Preferences = "1.5"
 REPL = "1"

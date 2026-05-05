@@ -445,7 +445,7 @@ function BytecodeWriter(; version::VersionNumber)
         UInt8[],
         string_table,
         ConstantTable(),
-        TypeTable(),
+        TypeTable(; version),
         DebugAttrTable(string_table),
         Vector{Vector{DebugAttrId}}[],
         0,
