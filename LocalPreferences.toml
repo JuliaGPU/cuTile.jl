@@ -1,0 +1,9 @@
+[cuTile]
+# path to a custom `tileiras` binary, overriding the one provided by
+# CUDA_Compiler_jll. CUDA_ROOT is derived as the parent of the binary's bin/
+# directory; if your local toolkit lives elsewhere, set it via the environment.
+#tileiras = "/opt/cuda/bin/tileiras"
+
+# bytecode version to emit, overriding the auto-probe of `tileiras`'s
+# capabilities. valid values: "13.1", "13.2".
+#bytecode_version = "13.2"

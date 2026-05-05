@@ -8,6 +8,7 @@
 using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
                 AbstractBackend, AbstractKernel, kernel_convert, kernel_compile, PerDevice
 using CUDA_Compiler_jll
+using Preferences: @load_preference
 
 using Adapt: Adapt, adapt
 
@@ -123,6 +124,44 @@ TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
  Toolkit / device validation (cached: once per `(capability, cuda_version)`).
 =============================================================================#
 
+# User overrides from `LocalPreferences.toml`.
+const tileiras_override = @load_preference("tileiras", nothing)
+const bytecode_version_override = let s = @load_preference("bytecode_version", nothing)
+    s === nothing ? nothing : VersionNumber(s)
+end
+
+"""
+    tileiras_path() -> String
+
+Path to the `tileiras` binary. Honors the `tileiras` preference when set,
+otherwise falls back to `CUDA_Compiler_jll.tileiras_path`.
+"""
+tileiras_path() = something(tileiras_override, CUDA_Compiler_jll.tileiras_path)
+
+"""
+    tileiras_root() -> String
+
+CUDA toolkit root passed to `tileiras` as `CUDA_ROOT`. With the `tileiras`
+preference set, derived as the parent of the override binary's `bin/`
+directory; otherwise the JLL's `artifact_dir`.
+"""
+tileiras_root() =
+    tileiras_override === nothing ? CUDA_Compiler_jll.artifact_dir :
+                                    dirname(dirname(tileiras_override))
+
+"""
+    tileiras_cmd(args...) -> Cmd
+
+Construct a Cmd to invoke `tileiras` with `args`, with `CUDA_ROOT` set
+to [`tileiras_root`](@ref).
+"""
+function tileiras_cmd(args...)
+    cmd = tileiras_override === nothing ?
+        `$(CUDA_Compiler_jll.tileiras()) $args` :
+        Cmd([tileiras_override, args...])
+    return addenv(cmd, "CUDA_ROOT" => tileiras_root())
+end
+
 function run_and_collect(cmd)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
@@ -181,9 +220,7 @@ function toolkit_version()
         ref = toolkit_version_cache[]
         ref[] === nothing || return ref[]::String
 
-        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) --version`,
-                     "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
-        proc, log = run_and_collect(cmd)
+        proc, log = run_and_collect(tileiras_cmd("--version"))
         success(proc) ||
             error("tileiras --version failed: $(proc.exitcode), log: $log")
 
@@ -209,13 +246,21 @@ We probe rather than reading `CUDA_Compiler_jll.cuda_version` because
 users can override `tileiras` via JLL preferences, in which case the
 JLL's static `cuda_version` no longer reflects the actual binary's
 capabilities. Mirrors `_get_max_supported_bytecode_version` in cuTile
-Python's `_compile.py`.
+Python's `_compile.py`. The `bytecode_version` preference (see
+`LocalPreferences.toml`) bypasses the probe.
 """
 function max_supported_bytecode_version()
     Base.@lock max_bytecode_version_cache begin
         ref = max_bytecode_version_cache[]
         ref[] === nothing || return ref[]::VersionNumber
-        ref[] = probe_max_bytecode_version()
+        if bytecode_version_override !== nothing
+            bytecode_version_override in SUPPORTED_BYTECODE_VERSIONS ||
+                error("preference bytecode_version=v$bytecode_version_override " *
+                      "is not in $SUPPORTED_BYTECODE_VERSIONS")
+            ref[] = bytecode_version_override
+        else
+            ref[] = probe_max_bytecode_version()
+        end
         return ref[]::VersionNumber
     end
 end
@@ -230,9 +275,8 @@ function probe_max_bytecode_version()
         output_path = tempname() * ".cubin"
         try
             write(input_path, probe)
-            cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name sm_100`,
-                         "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
-            proc, log = run_and_collect(cmd)
+            proc, log = run_and_collect(tileiras_cmd(input_path, "-o", output_path,
+                                                     "--gpu-name", "sm_100"))
             success(proc) && return version
             last_log = log
         finally
@@ -254,8 +298,9 @@ provided it meets the device's minimum requirement (Blackwell ≥ v13.1,
 Ampere/Ada ≥ v13.2).
 """
 function check_tile_ir_support()
-    @static if !CUDA_Compiler_jll.is_available()
-        error("CUDA_Compiler_jll is not available; cannot compile Tile IR kernels")
+    if tileiras_override === nothing && !CUDA_Compiler_jll.is_available()
+        error("CUDA_Compiler_jll is not available and no `tileiras` preference is set; " *
+              "cannot compile Tile IR kernels")
     end
 
     dev = device()
@@ -381,8 +426,9 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     compiled = false
     try
         write(input_path, bytecode)
-        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(sm_arch)) -O$(opt_level) --lineinfo`,
-                     "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
+        cmd = tileiras_cmd(input_path, "-o", output_path,
+                           "--gpu-name", format_sm_arch(sm_arch),
+                           "-O$(opt_level)", "--lineinfo")
         proc, log = run_and_collect(cmd)
         if !success(proc)
             reason = proc.termsignal > 0 ? "tileiras received signal $(proc.termsignal)" :
@@ -670,3 +716,27 @@ Get the compute capability of the current CUDA device as a VersionNumber.
 Returns e.g. `v"12.0"` for compute capability 12.0.
 """
 default_sm_arch() = capability(device())
+
+
+#=============================================================================
+ Version reporting
+=============================================================================#
+
+"""
+    versioninfo([io::IO=stdout])
+
+Print information about the active `tileiras` toolkit, the bytecode version
+cuTile.jl will emit for it, and any user overrides set via
+`LocalPreferences.toml`.
+"""
+function versioninfo(io::IO=stdout)
+    println(io, "cuTile toolchain:")
+
+    install = tileiras_override === nothing ? "artifact installation" : "local installation"
+    println(io, "- tileiras $(toolkit_version()), $install")
+    println(io, "  $(tileiras_path())")
+
+    bv = max_supported_bytecode_version()
+    bv_src = bytecode_version_override === nothing ? "auto-detected" : "set via preference"
+    println(io, "- bytecode v$(bv.major).$(bv.minor), $bv_src")
+end
