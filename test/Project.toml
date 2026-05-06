@@ -5,11 +5,8 @@ FileCheck = "4e644321-382b-4b05-b0b6-5d23c3d944fb"
 IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-<<<<<<< tb/microfloats
 Microfloats = "31c70f10-a750-4521-b13c-797315ae2933"
-=======
 NVML = "611af6d1-644e-4c5d-bd58-854d7d1254b9"
->>>>>>> main
 ParallelTestRunner = "d3525ed8-44d0-4b2c-a655-542cee43accc"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
