@@ -87,7 +87,8 @@ include("cache.jl")
 include("launch.jl")
 
 public launch, TileBackend, DefaultBackend, Tiled, ByTarget,
-       @compiler_options, @fpmode, @.
+       @compiler_options, @fpmode, @.,
+       bytecode_version
 
 # World age captured at __init__ time. The compilation pipeline
 # (typeinf!, codegen, bytecode emission) is invoked in this world via

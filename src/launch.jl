@@ -178,8 +178,8 @@ const toolkit_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, String}
 
 # Bytecode versions cuTile.jl can emit, in ascending order. Each version listed
 # here is one we have explicit `cb.version >= v"X.Y"` handling for in
-# `bytecode/encodings.jl`. `max_supported_bytecode_version()` probes `tileiras`
-# to find the highest entry it accepts.
+# `bytecode/encodings.jl`. `bytecode_version()` probes `tileiras` to find the
+# highest entry it accepts (or returns the user's preference override).
 const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2")
 
 const max_bytecode_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, VersionNumber}}(nothing))
@@ -233,12 +233,14 @@ function toolkit_version()
 end
 
 """
-    max_supported_bytecode_version() -> VersionNumber
+    bytecode_version() -> VersionNumber
 
-Detect the highest Tile IR bytecode version that the current `tileiras`
-binary accepts. Probes by writing a minimal empty bytecode buffer at each
-entry of [`SUPPORTED_BYTECODE_VERSIONS`] (newest first) and invoking
-`tileiras` on it; returns the first version that compiles cleanly.
+The Tile IR bytecode version that `cuTile` will emit by default. Either
+the highest version the current `tileiras` binary accepts (probed by
+emitting a minimal empty bytecode buffer at each entry of
+`SUPPORTED_BYTECODE_VERSIONS` newest-first and picking the first that
+compiles cleanly), or, if the `bytecode_version` preference is set, that
+value.
 
 Result is cached for the lifetime of the process.
 
@@ -246,10 +248,9 @@ We probe rather than reading `CUDA_Compiler_jll.cuda_version` because
 users can override `tileiras` via JLL preferences, in which case the
 JLL's static `cuda_version` no longer reflects the actual binary's
 capabilities. Mirrors `_get_max_supported_bytecode_version` in cuTile
-Python's `_compile.py`. The `bytecode_version` preference (see
-`LocalPreferences.toml`) bypasses the probe.
+Python's `_compile.py`.
 """
-function max_supported_bytecode_version()
+function bytecode_version()
     Base.@lock max_bytecode_version_cache begin
         ref = max_bytecode_version_cache[]
         ref[] === nothing || return ref[]::VersionNumber
@@ -292,10 +293,9 @@ end
     check_tile_ir_support()
 
 Validate that the current `tileiras` toolkit supports Tile IR on the active
-device. Returns the bytecode version cuTile should emit for this device:
-the highest version `tileiras` accepts (per [`max_supported_bytecode_version`]),
-provided it meets the device's minimum requirement (Blackwell ≥ v13.1,
-Ampere/Ada ≥ v13.2).
+device. Returns the bytecode version cuTile should emit for this device
+(per [`bytecode_version`]), provided it meets the device's minimum
+requirement (Blackwell ≥ v13.1, Ampere/Ada ≥ v13.2).
 """
 function check_tile_ir_support()
     if tileiras_override === nothing && !CUDA_Compiler_jll.is_available()
@@ -305,21 +305,21 @@ function check_tile_ir_support()
 
     dev = device()
     ver = get!(tile_ir_support, dev) do
-        bytecode_version = max_supported_bytecode_version()
+        ver = bytecode_version()
 
         cap = capability(dev)
         sm_str = format_sm_arch(cap)
         if cap >= v"10.0"       # Blackwell
-            if bytecode_version < v"13.1"
-                @error "Tile IR on Blackwell ($sm_str) requires bytecode ≥ v13.1, detected v$bytecode_version"
+            if ver < v"13.1"
+                @error "Tile IR on Blackwell ($sm_str) requires bytecode ≥ v13.1, detected v$ver"
                 return nothing
             end
         elseif cap >= v"9.0"    # Hopper — not supported
             @error "Tile IR is not supported on Hopper ($sm_str)"
             return nothing
         elseif cap >= v"8.0"    # Ampere / Ada
-            if bytecode_version < v"13.2"
-                @error "Tile IR on Ampere/Ada ($sm_str) requires bytecode ≥ v13.2, detected v$bytecode_version"
+            if ver < v"13.2"
+                @error "Tile IR on Ampere/Ada ($sm_str) requires bytecode ≥ v13.2, detected v$ver"
                 return nothing
             end
         else
@@ -327,7 +327,7 @@ function check_tile_ir_support()
             return nothing
         end
 
-        return bytecode_version
+        return ver
     end
 
     if ver === nothing
@@ -735,7 +735,7 @@ function versioninfo(io::IO=stdout)
     install = tileiras_override === nothing ? "artifact installation" : "local installation"
     println(io, "- tileiras $(toolkit_version()), $install")
 
-    bv = max_supported_bytecode_version()
+    bv = bytecode_version()
     bv_src = bytecode_version_override === nothing ? "auto-detected" : "set via preference"
     println(io, "- bytecode v$(bv.major).$(bv.minor), $bv_src")
 end

@@ -41,10 +41,10 @@ import REPL
     # tacks `link` on top to load the CUBIN onto the GPU.
     function precompile_kernel(@nospecialize(f), @nospecialize(tt))
         argtypes, const_argtypes = unwrap_argtypes(f, tt)
-        bytecode_version = max_supported_bytecode_version()
+        bv = bytecode_version()
         for sm_arch in [v"8.0", v"8.6", v"8.7", v"8.9",
                         v"10.0", v"11.0", v"12.0", v"12.1"]
-            key = TileCacheKey(sm_arch, bytecode_version, nothing, nothing, nothing)
+            key = TileCacheKey(sm_arch, bv, nothing, nothing, nothing)
             compile(f, argtypes, const_argtypes, key)
         end
         return

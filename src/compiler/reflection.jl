@@ -120,7 +120,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     opt_level::Union{Int, Nothing}=nothing,
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
-                    bytecode_version::VersionNumber=max_supported_bytecode_version(),
+                    bytecode_version::VersionNumber=cuTile.bytecode_version(),
                     debuginfo::Bool=false,
                     world::UInt=Base.get_world_counter())
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
