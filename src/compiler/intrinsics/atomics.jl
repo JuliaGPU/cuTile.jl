@@ -75,7 +75,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     ptr_type = eltype(ptrs_type)
     elem_type = eltype(ptr_type)
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     result_tile_type = tile_type!(tt, dtype, shape)
     token_type = Token(tt)
 
@@ -132,7 +132,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     elem_type = eltype(ptr_type)
 
     # Create result type
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     result_tile_type = tile_type!(tt, dtype, shape)
     token_type = Token(tt)
 

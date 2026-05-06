@@ -627,7 +627,7 @@ function tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
 
     # Pointers -> 0-D tile of pointer type
     if T <: Ptr
-        elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
+        elem_dtype = lookup_dtype!(tt, eltype(T))
         ptr_type = pointer_type!(tt, elem_dtype)
         return tile_type!(tt, ptr_type, RowMajorShape(()))
     end
@@ -642,7 +642,7 @@ function tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         if !(shape_param isa Tuple)
             throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
-        elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
+        elem_dtype = lookup_dtype!(tt, eltype(T))
         shape = RowMajorShape(ColMajorShape(shape_param))
         return tile_type!(tt, elem_dtype, shape)
     end

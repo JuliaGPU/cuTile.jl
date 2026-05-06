@@ -41,7 +41,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     ptrs_type = CC.widenconst(ptrs_tv.jltype)
     ptr_type = eltype(ptrs_type)
     elem_type = eltype(ptr_type)
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     result_tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 

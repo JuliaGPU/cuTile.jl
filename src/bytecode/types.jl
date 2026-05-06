@@ -190,8 +190,10 @@ function function_type!(table::TypeTable,
     _get_or_create!(table, buf)
 end
 
-# Julia type to Tile type mapping
-# Note: TFloat32 is defined in cuTile.jl before this file is included
+# Julia type to Tile type mapping. Extensions add methods here for their
+# own scalar types (e.g. DLFP8TypesExt for Float8_E4M3FN, MicrofloatsExt
+# for Float8_E8M0FNU); codegen reaches these via `lookup_dtype!`.
+# Note: TFloat32 is defined in cuTile.jl before this file is included.
 function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
     if T === Bool
         I1(table)
@@ -214,9 +216,25 @@ function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
     elseif T === Float64
         F64(table)
     elseif T <: Ptr
-        elem_dtype = julia_to_tile_dtype!(table, eltype(T))
+        elem_dtype = lookup_dtype!(table, eltype(T))
         pointer_type!(table, elem_dtype)
     else
         error("Unsupported Julia type for Tile IR: $T")
     end
 end
+
+"""
+    lookup_dtype!(table, T) -> TypeId
+
+Codegen-facing wrapper around [`julia_to_tile_dtype!`](@ref) that resolves
+dispatch in the latest world. The compilation pipeline runs in the world
+frozen at `cuTile.__init__` (via `invoke_frozen`, see `cuTile.jl`); a
+direct `julia_to_tile_dtype!` call from there cannot see methods added by
+extensions loaded after init (e.g. `Float8_E4M3FN` from DLFP8Types,
+`Float8_E8M0FNU` from Microfloats). Bouncing through `Base.invokelatest`
+mirrors Julia's compiler bootstrap, where compiler infrastructure runs in
+a frozen world but user-extensible boundaries (`CompilerPlugins.typeinf`)
+hop to the latest.
+"""
+@inline lookup_dtype!(table::TypeTable, @nospecialize(T::Type)) =
+    Base.invokelatest(julia_to_tile_dtype!, table, T)::TypeId

@@ -96,7 +96,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     elem_type = eltype(pv_type)
     tile_shape = RowMajorShape(ColMajorShape(size(pv_type)))
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 
@@ -279,7 +279,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     elem_T = eltype(T)
     ndim = ndims(T)
     spec = array_spec(T)
-    dtype = julia_to_tile_dtype!(tt, elem_T)
+    dtype = lookup_dtype!(tt, elem_T)
 
     # Resolve operands. ptr is a single Value; sizes/strides expand to N values.
     ptr_tv = emit_value!(ctx, ptr_arg)
@@ -445,7 +445,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     tile_shape === nothing && throw(IRError("Cannot determine tile shape for store_partition_view()"))
 
     elem_type = eltype(CC.widenconst(tile_tv.jltype))
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
 
     # Handle 0D scalar stores by reshaping to 1D (partition views require at least 1D)
     tile_val = tile_tv.v

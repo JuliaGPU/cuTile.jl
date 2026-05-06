@@ -37,7 +37,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     source = @something emit_value!(ctx, args[1]) throw(IRError("bitcast: cannot resolve source"))
     target_type = @something get_constant(ctx, args[2]) throw(IRError("bitcast: requires compile-time target type"))
 
-    dtype = julia_to_tile_dtype!(tt, target_type)
+    dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
     src_type = CC.widenconst(source.jltype)
@@ -76,7 +76,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("exti: requires compile-time target type"))
     signedness = @something get_constant(ctx, args[3]) throw(IRError("exti: requires compile-time signedness"))
 
-    dtype = julia_to_tile_dtype!(tt, target_type)
+    dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
     result_v = encode_ExtIOp!(cb, result_type_id, source.v; signedness)
@@ -109,7 +109,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     source = @something emit_value!(ctx, args[1]) throw(IRError("ftof: cannot resolve source"))
     target_type = @something get_constant(ctx, args[2]) throw(IRError("ftof: requires compile-time target type"))
 
-    dtype = julia_to_tile_dtype!(tt, target_type)
+    dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
     result_v = encode_FToFOp!(cb, result_type_id, source.v)
@@ -142,7 +142,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("ftoi: requires compile-time target type"))
     signedness = @something get_constant(ctx, args[3]) throw(IRError("ftoi: requires compile-time signedness"))
 
-    dtype = julia_to_tile_dtype!(tt, target_type)
+    dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
     result_v = encode_FToIOp!(cb, result_type_id, source.v; signedness)
@@ -175,7 +175,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("itof: requires compile-time target type"))
     signedness = @something get_constant(ctx, args[3]) throw(IRError("itof: requires compile-time signedness"))
 
-    dtype = julia_to_tile_dtype!(tt, target_type)
+    dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
     result_v = encode_IToFOp!(cb, result_type_id, source.v; signedness)
@@ -207,7 +207,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     source = @something emit_value!(ctx, args[1]) throw(IRError("trunci: cannot resolve source"))
     target_type = @something get_constant(ctx, args[2]) throw(IRError("trunci: requires compile-time target type"))
 
-    dtype = julia_to_tile_dtype!(tt, target_type)
+    dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
     result_v = encode_TruncIOp!(cb, result_type_id, source.v)

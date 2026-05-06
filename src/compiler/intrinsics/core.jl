@@ -75,7 +75,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     end
 
     # Use the existing broadcast helper
-    dtype = julia_to_tile_dtype!(tt, source_elem)
+    dtype = lookup_dtype!(tt, source_elem)
     result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
     result_type_id = tile_type!(tt, dtype, target_shape)
 
@@ -194,7 +194,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     validate_tile_shape(collect(output_shape), "cat")
 
     # Create output tile type
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Emit CatOp (Tile IR axis)
@@ -235,7 +235,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
     tv = emit_value!(ctx, args[2])
@@ -293,7 +293,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     elem_type = eltype(CC.widenconst(source.jltype))
 
     # Create output tile type
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Create constant index values (0D i32 tiles), reversed for Tile IR order
@@ -390,7 +390,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     elem_type <: Integer ||
         throw(IRError("iota: element type must be an integer, got $elem_type"))
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
     # Emit IotaOp
@@ -528,7 +528,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     offsets_elem <: Integer ||
         throw(IRError("offset: offsets must have integer element type, got $offsets_elem"))
 
-    elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
+    elem_dtype = lookup_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
 
     # Common shape: pick the operand with more dimensions; broadcast the
@@ -538,7 +538,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     ptr_tile_type = tile_type!(tt, ptr_dtype, common_shape)
 
     base = broadcast_tile_to_shape!(cb, tt, base_tv, common_shape, ptr_dtype)
-    offset_dtype = julia_to_tile_dtype!(tt, eltype(CC.widenconst(offsets_tv.jltype)))
+    offset_dtype = lookup_dtype!(tt, eltype(CC.widenconst(offsets_tv.jltype)))
     offsets = broadcast_tile_to_shape!(cb, tt, offsets_tv, common_shape, offset_dtype)
 
     pointers = encode_OffsetOp!(cb, ptr_tile_type, base, offsets)
@@ -597,7 +597,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     elem_type = eltype(CC.widenconst(source.jltype))
 
     # Create output tile type
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     output_tile_type = tile_type!(tt, dtype, output_shape)
 
     # Emit PermuteOp with Tile IR permutation
@@ -677,7 +677,7 @@ function emit_reduce!(ctx::CGCtx, args)
         is_restricted_float(etype) &&
             throw(IRError("reduce: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
-        dtype = julia_to_tile_dtype!(tt, etype)
+        dtype = lookup_dtype!(tt, etype)
         push!(dtypes, dtype)
         push!(reduced_tile_types, tile_type!(tt, dtype, reduced_shape))
         push!(scalar_tile_types, tile_type!(tt, dtype, RowMajorShape(())))
@@ -780,7 +780,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
         "and target shape $target_shape_tuple ($tgt_n elements) must have the same number of elements"))
 
     elem_type = eltype(CC.widenconst(source.jltype))
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
 
     # Tile IR shapes are already in row-major order, so ReshapeOp's row-major element
     # ordering matches directly. No permutes needed!
@@ -852,7 +852,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         is_restricted_float(etype) &&
             throw(IRError("scan: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
-        dtype = julia_to_tile_dtype!(tt, etype)
+        dtype = lookup_dtype!(tt, etype)
         push!(dtypes, dtype)
         push!(output_tile_types, tile_type!(tt, dtype, output_shape))
         push!(scalar_tile_types, tile_type!(tt, dtype, RowMajorShape(())))

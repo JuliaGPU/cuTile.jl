@@ -7,7 +7,7 @@
 function _broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
     lhs.shape == rhs.shape && return (lhs, rhs)
     elem_type = eltype(CC.widenconst(lhs.jltype))
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     if length(lhs.shape) < length(rhs.shape)
         bv = broadcast_tile_to_shape!(cb, tt, lhs, rhs.shape, dtype)
         lhs = CGVal(bv, tile_type!(tt, dtype, rhs.shape), rhs.jltype, rhs.shape,
@@ -83,7 +83,7 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     result_shape = lhs_tv.shape
     result_jltype = lhs_tv.jltype
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     result_type_id = tile_type!(tt, dtype, result_shape)
 
     result_v = encoder(cb, result_type_id, lhs_tv.v, rhs_tv.v; kwargs...)
@@ -103,7 +103,7 @@ function emit_unop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     result_shape = source.shape
     result_jltype = source.jltype
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    dtype = lookup_dtype!(tt, elem_type)
     result_type_id = tile_type!(tt, dtype, result_shape)
 
     result_v = encoder(cb, result_type_id, source.v; kwargs...)
