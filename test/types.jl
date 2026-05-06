@@ -115,7 +115,7 @@ end
 
     # Scalar TFloat32 must resolve to a 0-D tile; `tile_type_for_julia!`
     # used to skip it, breaking any call site that fed a bare scalar to codegen.
-    let tt = cuTile.TypeTable()
+    let tt = cuTile.TypeTable(; version=cuTile.max_supported_bytecode_version())
         tid = cuTile.tile_type_for_julia!(tt, ct.TFloat32)
         @test tid !== nothing
     end
