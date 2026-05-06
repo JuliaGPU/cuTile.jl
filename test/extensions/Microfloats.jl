@@ -73,7 +73,9 @@ end
 
 end
 
+# FP8 types are Blackwell-only
 @testset "execution" begin
+if capability(device()) >= v"10"
 
 # Round-trip Float32 → microfloat → Float32 on values exactly representable
 # in the target type — result must match input bit-for-bit.
@@ -125,4 +127,5 @@ end
 # microfloat conversion on Blackwell — these formats only have meaningful
 # hardware paths as the scale/operand dtypes of block-scaled mma.
 
+end
 end

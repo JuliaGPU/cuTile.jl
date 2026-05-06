@@ -33,7 +33,9 @@ end
 
 end
 
+# FP8 types are Blackwell-only
 @testset "execution" begin
+if capability(device()) >= v"10"
 
 # Round-trip Float32 → FP8 → Float32 on values exactly representable in
 # the target FP8 type — result must match input bit-for-bit.
@@ -80,4 +82,5 @@ let av = Float32[1.0, 2.0, 0.5, 4.0, 1.5, 2.0, -1.0, -0.5, 3.0, 0.5, 1.0, 2.0, -
     @test Array(d) == av .* bv .+ cv
 end
 
+end
 end
