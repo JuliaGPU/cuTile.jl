@@ -60,7 +60,9 @@ function emit_value!(ctx::CGCtx, expr::Expr)
 end
 
 function emit_value!(ctx::CGCtx, ref::GlobalRef)
-    val = getfield(ref.mod, ref.name)
+    val = @something(IRStructurizer.const_value(ctx.sci, ref),
+                     throw(IRError("non-`const` global $ref is not supported in kernel IR " *
+                                   "(kernels cannot dynamically read mutable host globals)")))
     T = typeof(val)
     if !is_ghost_type(T)
         type_id = tile_type_for_julia!(ctx, T; throw_error=false)

@@ -656,10 +656,27 @@ end
         end
 
         @testset "unsupported function produces clear error" begin
+            # `write(::IO, ::Tile)` resolves at Julia level (matches the
+            # generic `write(::IO, ::Any)` method) but has no Tile IR
+            # overlay — codegen surfaces "Unsupported function call".
+            # `Base.devnull` is `const`, so it's usable as the IO arg
+            # without pulling in a non-`const` global like `stdout`.
             @test_throws "Unsupported function call during Tile IR compilation" begin
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                     tile = ct.load(a, ct.bid(1), (16,))
-                    # write() has no overlay — should fail as unsupported
+                    write(devnull, tile)
+                    return
+                end
+            end
+        end
+
+        @testset "non-`const` global produces clear error" begin
+            # Kernels can't dynamically read mutable host module
+            # bindings — `emit_value!(::GlobalRef)` errors strictly
+            # when the binding isn't statically known.
+            @test_throws "non-`const` global" begin
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    tile = ct.load(a, ct.bid(1), (16,))
                     write(stdout, tile)
                     return
                 end
