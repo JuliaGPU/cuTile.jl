@@ -8,17 +8,19 @@ using LinearAlgebra
 using cuTile: cuTile
 import cuTile as ct
 
-# 2D swizzle for better L2 cache locality
-# Groups blocks to access nearby memory regions together
-@inline function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
+# 2D swizzle for better L2 cache locality. Takes a 1-indexed bid and
+# returns 1-indexed (bid_m, bid_n). Modular arithmetic is done on the
+# 0-indexed bid internally; the conversion is contained in this helper.
+function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
     num_bid_m = cld(M, Int32(tm))
     num_bid_n = cld(N, Int32(tn))
     num_bid_in_group = Int32(GROUP_SIZE_M) * num_bid_n
-    group_id = fld(bid, num_bid_in_group)
+    bid0 = bid - Int32(1)
+    group_id = fld(bid0, num_bid_in_group)
     first_bid_m = group_id * Int32(GROUP_SIZE_M)
     group_size_m = min(num_bid_m - first_bid_m, Int32(GROUP_SIZE_M))
-    bid_m = first_bid_m + rem(bid, group_size_m)
-    bid_n = fld(rem(bid, num_bid_in_group), group_size_m)
+    bid_m = first_bid_m + rem(bid0, group_size_m) + Int32(1)
+    bid_n = fld(rem(bid0, num_bid_in_group), group_size_m) + Int32(1)
     return bid_m, bid_n
 end
 
@@ -31,11 +33,7 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     bid = ct.bid(1)
     M = size(A, 1)
     N = size(B, 2)
-    # swizzle_2d expects 0-indexed bid, returns 0-indexed tile coords
-    bid_m_0, bid_n_0 = swizzle_2d(M, N, tm, tn, 8, bid - Int32(1))
-    # Convert to 1-indexed tile coordinates
-    bid_m = bid_m_0 + Int32(1)
-    bid_n = bid_n_0 + Int32(1)
+    bid_m, bid_n = swizzle_2d(M, N, tm, tn, 8, bid)
 
     # Number of K tiles to iterate over
     num_k = ct.num_tiles(A, 2, (tm, tk))

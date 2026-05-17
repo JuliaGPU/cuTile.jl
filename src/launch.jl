@@ -27,12 +27,13 @@ struct KernelAdaptor end
 Adapt.adapt_storage(::KernelAdaptor, arr::AbstractArray) = TileArray(arr)
 Adapt.adapt_storage(::KernelAdaptor, t::Type) = Constant(t)
 
-# Adapt's default `adapt_structure(to, ::PermutedDimsArray)` recurses by
-# rebuilding `PermutedDimsArray(adapt(parent), perm)`. We can't follow that
+# Adapt's defaults for `PermutedDimsArray` and `SubArray` recurse by
+# rebuilding the wrapper around `adapt(parent)`. We can't follow that
 # pattern because `TileArray` isn't `<:AbstractArray` — strided-wrapper
 # state is absorbed into its `sizes`/`strides` fields directly. Short-circuit
 # the recursion so the whole wrapper becomes a single TileArray.
 Adapt.adapt_structure(::KernelAdaptor, arr::PermutedDimsArray) = TileArray(arr)
+Adapt.adapt_structure(::KernelAdaptor, arr::SubArray) = TileArray(arr)
 
 """
     cuTileconvert(x)

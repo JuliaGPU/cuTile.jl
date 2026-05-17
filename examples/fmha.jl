@@ -28,13 +28,15 @@ function fmha_kernel(Q::ct.TileArray{T, 4}, K::ct.TileArray{T, 4},
                      CAUSAL::Bool, EVEN_K::Bool) where {T}
     ct.@compiler_options occupancy=2
 
-    # Map block IDs to batch and head indices
-    # Julia: bid(1) = x (seq tiles), bid(2) = y (batch * heads)
+    # Map block IDs to batch and head indices.
+    # Julia: bid(1) = x (seq tiles), bid(2) = y (batch * heads).
+    # `cld`/`mod1` give 1-indexed batch/head/kv-head straight from the
+    # 1-indexed bid_y, with no 0-indexed detour.
     bid_x = ct.bid(1)
-    bid_y = ct.bid(2) - Int32(1)  # 0-indexed for div/mod arithmetic
-    batch_idx = fld(bid_y, Int32(H)) + Int32(1)
-    head_idx = rem(bid_y, Int32(H)) + Int32(1)
-    off_kv_h = fld(head_idx - Int32(1), Int32(QUERY_GROUP_SIZE)) + Int32(1)
+    bid_y = ct.bid(2)
+    batch_idx = cld(bid_y, Int32(H))
+    head_idx = mod1(bid_y, Int32(H))
+    off_kv_h = cld(head_idx, Int32(QUERY_GROUP_SIZE))
 
     # Adjust qk_scale for exp2
     qk_scale = qk_scale * INV_LOG_2

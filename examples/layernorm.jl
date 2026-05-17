@@ -71,20 +71,14 @@ end
 #=============================================================================
  LayerNorm Backward Kernels
 
- Backward pass: computes gradients for LayerNorm.
- The full backward pass has two kernels:
- 1. layer_norm_bwd_dx - Computes dX (gradient with respect to input)
- 2. layer_norm_bwd_dwdb - Computes dW and dB (requires atomic accumulation)
-
- For now, we implement a simplified backward that just computes dX.
+ Backward pass: computes gradients for LayerNorm via two kernels:
+  1. layer_norm_bwd_dx_partial_dwdb - dX + per-group partial dW/dB (atomic).
+  2. layer_norm_bwd_dwdb            - final reduction of partial dW/dB.
 =============================================================================#
 
-"""
-Helper function for backward pass - loads data and computes common terms.
-This gets inlined by Julia's compiler.
-bid_m and j are 1-indexed (block ID and tile index).
-"""
-@inline function bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
+# Helper function for backward pass - loads data and computes common terms.
+# bid_m and j are 1-indexed (block ID and tile index).
+function bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
     tx = ct.load(X; index=(j, bid_m), shape=(TILE_N, 1), padding_mode=ct.PaddingMode.Zero)
     tw = reshape(ct.load(W; index=j, shape=(TILE_N,), padding_mode=ct.PaddingMode.Zero), (TILE_N, 1))
     tdy = ct.load(DY; index=(j, bid_m), shape=(TILE_N, 1), padding_mode=ct.PaddingMode.Zero)
@@ -101,53 +95,6 @@ bid_m and j are 1-indexed (block ID and tile index).
     wdy_masked = ifelse.(mask, wdy, 0.0f0)
 
     return tdy, xhat_masked, wdy_masked
-end
-
-"""
-    layer_norm_bwd_dx(DX, DY, X, W, Mean, Rstd, TILE_N)
-
-Backward pass: computes gradient with respect to input X.
-
-Args:
-    DX: Output gradient with respect to X (N, M).
-    DY: Input gradient with respect to Y (N, M).
-    X: Input tensor (N, M).
-    W: Weight tensor (N,).
-    Mean: Mean tensor (M,).
-    Rstd: Reciprocal standard deviation tensor (M,).
-    TILE_N: Tile size along N dimension.
-"""
-function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float32, 2},
-                           X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1},
-                           Mean::ct.TileArray{Float32, 1}, Rstd::ct.TileArray{Float32, 1},
-                           TILE_N::Int)
-    bid_m = ct.bid(1)
-    num_tiles = ct.num_tiles(X, 1, (TILE_N, 1))
-    N = size(X, 1)
-
-    # Load mean and rstd for this row
-    mean = ct.load(Mean; index=bid_m, shape=(1,), padding_mode=ct.PaddingMode.Zero)
-    rstd = ct.load(Rstd; index=bid_m, shape=(1,), padding_mode=ct.PaddingMode.Zero)
-
-    # First pass: compute c1 and c2 reduction terms
-    c1 = zeros(Float32, (TILE_N, 1))
-    c2 = zeros(Float32, (TILE_N, 1))
-    for j in Int32(1):num_tiles
-        _, xhat, wdy = bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
-        c1 = c1 .+ (xhat .* wdy)
-        c2 = c2 .+ wdy
-    end
-    c1 = sum(c1; dims=1) / N
-    c2 = sum(c2; dims=1) / N
-
-    # Second pass: compute dX
-    for j in Int32(1):num_tiles
-        _, xhat, wdy = bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
-        tdx = (wdy .- (xhat .* c1 .+ c2)) .* rstd
-        ct.store(DX; index=(j, bid_m), tile=tdx)
-    end
-
-    return
 end
 
 """

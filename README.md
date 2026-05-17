@@ -98,17 +98,17 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 
 | Kernel | Size | Julia | Python | Status |
 |--------|------|-------|--------|--------|
-| Vector Addition | 2^27 f32 | 845 GB/s | 846 GB/s | OK (=) |
+| Vector Addition | 2^27 f32 | 844 GB/s | 845 GB/s | OK (=) |
 | Matrix Transpose | 8192² f32 | 812 GB/s | 814 GB/s | OK (=) |
-| Layer Norm fwd | 4096² f32 | 983 GB/s | 716 GB/s | +37% |
-| Layer Norm bwd | 4096² f32 | 248 GB/s | 251 GB/s | OK (-1%) |
-| Matrix Multiplication | 4096³ f32 | 47.5 TFLOPS | 43.5 TFLOPS | +9% |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 34.0 TFLOPS | 30.8 TFLOPS | +10% |
-| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 529 μs | 554 μs | +5% |
-| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 27.0 TFLOPS | 20.1 TFLOPS | +34% |
-| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 103.6 TFLOPS | 63.4 TFLOPS | +63% |
-| Softmax (TMA) | 4096² f32 | 849 GB/s | 857 GB/s | OK (-1%) |
-| Softmax (Chunked) | 4096² f32 | 1684 GB/s | 1640 GB/s | OK (+3%) |
+| Layer Norm fwd | 4096² f32 | 986 GB/s | 716 GB/s | +38% |
+| Layer Norm bwd | 4096² f32 | 246 GB/s | 251 GB/s | OK (-2%) |
+| Matrix Multiplication | 4096³ f32 | 47.4 TFLOPS | 43.5 TFLOPS | +9% |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 34.2 TFLOPS | 30.9 TFLOPS | +11% |
+| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 545 μs | 550 μs | OK (+1%) |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 27.7 TFLOPS | 20.3 TFLOPS | +36% |
+| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 102.7 TFLOPS | 63.3 TFLOPS | +62% |
+| Softmax (TMA) | 4096² f32 | 838 GB/s | 843 GB/s | OK (-1%) |
+| Softmax (Chunked) | 4096² f32 | 1672 GB/s | 1636 GB/s | OK (+2%) |
 
 
 ## Supported Operations
