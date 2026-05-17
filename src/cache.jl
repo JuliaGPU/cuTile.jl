@@ -404,7 +404,7 @@ function put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
           "mdb_txn_begin (write)")
     txn = txn_ref[]
 
-    committed = false
+    handed_off = false
     try
         key_val = Ref(MDB_val(Csize_t(length(key)),    pointer(key)))
         val_val = Ref(MDB_val(Csize_t(length(framed)), pointer(framed)))
@@ -415,11 +415,14 @@ function put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
             txn, cache.dbi, key_val, val_val, Cuint(0))  # plain overwrite
         check(ret, "mdb_put")
 
-        check(ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn),
-              "mdb_txn_commit (write)")
-        committed = true
+        # mdb_txn_commit frees the txn handle on both success and failure
+        # (per lmdb.h). Mark as handed off *before* check() can throw, so
+        # the finally block doesn't abort an already-freed pointer.
+        ret = ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn)
+        handed_off = true
+        check(ret, "mdb_txn_commit (write)")
     finally
-        committed || ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
+        handed_off || ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
     return
 end
@@ -547,7 +550,7 @@ function delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
     txn = txn_ref[]
 
     deleted = 0
-    committed = false
+    handed_off = false
     try
         for key in keys
             key_val = Ref(MDB_val(Csize_t(length(key)), pointer(key)))
@@ -563,11 +566,14 @@ function delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
             end
         end
 
-        check(ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn),
-              "mdb_txn_commit (evict)")
-        committed = true
+        # mdb_txn_commit frees the txn handle on both success and failure
+        # (per lmdb.h). Mark as handed off *before* check() can throw, so
+        # the finally block doesn't abort an already-freed pointer.
+        ret = ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn)
+        handed_off = true
+        check(ret, "mdb_txn_commit (evict)")
     finally
-        committed || ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
+        handed_off || ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
     return deleted
 end
