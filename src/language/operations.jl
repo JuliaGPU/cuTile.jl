@@ -443,7 +443,7 @@ behavior is undefined.
 # Dimension Ordering
 - `order`: Optional tuple specifying the logical-to-physical dimension mapping (1-indexed).
   Must match the `order` used in the corresponding `load` for permuted arrays.
-  `index[i]` and `shape[i]` describe tile dim `i`, which maps to source dim `order[i]`.
+  `index[i]` and `shape[i]` describe tile dim `i`, which maps to destination dim `order[i]`.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Optimization Hints
