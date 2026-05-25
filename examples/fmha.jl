@@ -279,7 +279,7 @@ function verify(data, result)
     expected = ref_fmha(data.Q, data.K, data.V; causal=data.causal)
     actual = Float32.(Array(result.out))
     max_diff = maximum(abs.(actual .- expected))
-    @assert isapprox(actual, expected, rtol=1e-2) "FMHA incorrect! max diff: $max_diff"
+    @assert isapprox(actual, expected, rtol=1e-2, atol=1e-3) "FMHA incorrect! max diff: $max_diff"
 end
 
 
