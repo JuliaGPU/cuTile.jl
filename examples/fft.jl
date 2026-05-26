@@ -261,15 +261,16 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     (; input, batch, N) = data
     results = Dict{String, Vector{Float64}}()
 
+    plan = cuFFT.plan_fft!(input, 1)
     CUDACore.@sync for _ in 1:warmup
-        cuFFT.fft!(copy(input), 1)
+        plan * copy(input)
     end
     times_cufft = Float64[]
     NVTX.@range "cuFFT" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
                 input_copy = copy(input)
-                t = CUDACore.@elapsed cuFFT.fft!(input_copy, 1)
+                t = CUDACore.@elapsed plan * input_copy
                 push!(times_cufft, t * 1000)
             end
         end
