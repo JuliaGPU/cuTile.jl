@@ -115,9 +115,9 @@ def fft_make_twiddles(factors, precision, device):
 def prepare(*, benchmark: bool = False, batch: int = None, factors: tuple = None, atom_packing_dim: int = None):
     """Allocate and initialize data for FFT."""
     if batch is None:
-        batch = 1024 if benchmark else 2
+        batch = 256 if benchmark else 2
     if factors is None:
-        factors = (8, 8, 8) if benchmark else (2, 2, 2)
+        factors = (16, 16, 16) if benchmark else (2, 2, 2)
     F0, F1, F2 = factors
     N = F0 * F1 * F2
     D = min(64, N * 2) if atom_packing_dim is None else atom_packing_dim

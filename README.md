@@ -104,7 +104,7 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 | Layer Norm bwd | 4096² f32 | 246 GB/s | 251 GB/s | OK (-2%) |
 | Matrix Multiplication | 4096³ f32 | 47.4 TFLOPS | 43.5 TFLOPS | +9% |
 | Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 34.2 TFLOPS | 30.9 TFLOPS | +11% |
-| FFT (3-stage Cooley-Tukey) | 512-pt ×1024 c64 | 28 μs | 27 μs | OK (-3%) |
+| FFT (3-stage Cooley-Tukey) | 4096-pt ×256 c64 | 209 μs | 204 μs | OK (-2%) |
 | Mixture of Experts | 256tok 1024h 32e 2048i f16 | 27.7 TFLOPS | 20.3 TFLOPS | +36% |
 | Attention (FMHA) | 8×16×1024² ×64 f16 causal | 102.7 TFLOPS | 63.3 TFLOPS | +62% |
 | Softmax (TMA) | 4096² f32 | 838 GB/s | 843 GB/s | OK (-1%) |

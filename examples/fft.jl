@@ -182,8 +182,8 @@ end
 =============================================================================#
 
 function prepare(; benchmark::Bool=false,
-                  batch::Int=benchmark ? 1024 : 2,
-                  factors::NTuple{3,Int}=benchmark ? (8, 8, 8) : (2, 2, 2),
+                  batch::Int=benchmark ? 256 : 2,
+                  factors::NTuple{3,Int}=benchmark ? (16, 16, 16) : (2, 2, 2),
                   atom_packing_dim::Int=min(64, 2 * prod(factors)))
     N = prod(factors)
     @assert 2N % atom_packing_dim == 0 "2 * N must be divisible by atom_packing_dim"
