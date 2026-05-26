@@ -52,5 +52,6 @@ function Base.iterate(space::CartesianSpace{names}, state=nothing) where names
 end
 
 include("autotune.jl")
+include("autotune_macro.jl")
 
 end
