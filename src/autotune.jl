@@ -181,11 +181,19 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
 
     trials = Any[collect(space)...]
 
-    trials, precompile_error = precompile_candidates(f, trials, args_fn;
-        sm_arch, opt_level, workers=tuning.precompile_workers)
-
-    record, first_error = measure_candidates(f, trials, grid_fn, args_fn;
-        sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps, verify=checker, reset)
+    # Share the inference cache across all per-cfg const-seeded compiles.
+    # Each cfg differs only in `Constant{T,V}` values, so the generic
+    # inference graph is identical — without sharing, kernels with slow
+    # inference paths (e.g. `ct.load(..., order=…)`) pay that cost N times.
+    trials, precompile_error, record, first_error =
+        with(_SCOPED_INF_CACHE => _fresh_inf_cache()) do
+            t, pe = precompile_candidates(f, trials, args_fn;
+                sm_arch, opt_level, workers=tuning.precompile_workers)
+            r, fe = measure_candidates(f, t, grid_fn, args_fn;
+                sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps,
+                verify=checker, reset)
+            (t, pe, r, fe)
+        end
 
     if isempty(record)
         err_info = first_error !== nothing ? first_error : precompile_error
