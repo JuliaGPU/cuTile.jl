@@ -123,4 +123,6 @@ end
 
 include("precompile.jl")
 
+include("Experimental.jl")
+
 end # module cuTile
