@@ -345,6 +345,7 @@ Index is 1-indexed. Shape must be compile-time constant.
 - `order`: Optional tuple specifying the logical-to-physical dimension mapping (1-indexed).
   For example, `order=(2, 1)` indicates dimension 2 is contiguous in memory,
   enabling coalesced loads from transposed/permuted arrays.
+  `index[i]` and `shape[i]` describe tile dim `i`, which maps to source dim `order[i]`.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Padding Modes
@@ -366,10 +367,10 @@ outside the array, the behavior is undefined regardless of `padding_mode`.
 
 # Example
 ```julia
-tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero, latency=3)
+tile = ct.load(arr, (bid,), (TILE_N,); padding_mode=ct.PaddingMode.Zero, latency=3)
 
 # Load from a transposed array with coalesced access
-tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
+tile = ct.load(arr, (bidy, bidx), (TN, TM); order=(2, 1))
 ```
 """
 @inline function load(arr::TileArray, index, shape::NTuple{<:Any, Int};
@@ -442,6 +443,7 @@ behavior is undefined.
 # Dimension Ordering
 - `order`: Optional tuple specifying the logical-to-physical dimension mapping (1-indexed).
   Must match the `order` used in the corresponding `load` for permuted arrays.
+  `index[i]` and `shape[i]` describe tile dim `i`, which maps to destination dim `order[i]`.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Optimization Hints

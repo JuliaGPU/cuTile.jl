@@ -81,7 +81,7 @@ function fmha_kernel(Q::ct.TileArray{T, 4}, K::ct.TileArray{T, 4},
         # QK product
         # K is (D_k, SeqLen_KV, KVH, Batch)
         # Load (TILE_N, TILE_D, 1, 1) with order=(2,1,3,4) to transpose D and N
-        k = reshape(ct.load(K; index=(Int32(1), j + Int32(1), off_kv_h, batch_idx),
+        k = reshape(ct.load(K; index=(j + Int32(1), Int32(1), off_kv_h, batch_idx),
                             shape=(TILE_N, TILE_D, 1, 1), order=(2, 1, 3, 4),
                             latency=2),
                     (TILE_N, TILE_D))  # (TILE_N, TILE_D)
@@ -279,7 +279,7 @@ function verify(data, result)
     expected = ref_fmha(data.Q, data.K, data.V; causal=data.causal)
     actual = Float32.(Array(result.out))
     max_diff = maximum(abs.(actual .- expected))
-    @assert max_diff < 1e-2 "FMHA incorrect! max diff: $max_diff"
+    @assert isapprox(actual, expected, rtol=1e-2, atol=1e-3) "FMHA incorrect! max diff: $max_diff"
 end
 
 

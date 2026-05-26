@@ -263,7 +263,7 @@ def verify(data, result):
     expected = ref_fmha(data["Q"], data["K"], data["V"],
                         causal=data["causal"])
     actual = cp.asnumpy(result["out"]).astype(np.float32)
-    assert np.allclose(actual, expected, rtol=1e-2, atol=1e-2), \
+    assert np.allclose(actual, expected, rtol=1e-2, atol=1e-3), \
         f"FMHA incorrect! max diff: {np.max(np.abs(actual - expected))}"
 
 
