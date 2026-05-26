@@ -241,7 +241,10 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     _, best_idx = findmin(last, record)
     candidate = (; best_config=record[best_idx][1], tuning_record=record)
 
-    entry, _ = lock(AUTOTUNE_LOCK) do
+    # Race: another thread may have populated the cache while we were
+    # tuning. If so, return their result and report `cache_hit=true` so
+    # the caller's accounting stays accurate.
+    entry, cache_hit = lock(AUTOTUNE_LOCK) do
         per_kernel = get!(Dict{Any,Any}, AUTOTUNE_CACHE, kernel_key)
         if !tuning.force && haskey(per_kernel, arg_key)
             per_kernel[arg_key], true
@@ -250,7 +253,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
             candidate, false
         end
     end
-    return entry, false, reset
+    return entry, cache_hit, reset
 end
 
 """
