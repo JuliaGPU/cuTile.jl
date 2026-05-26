@@ -404,6 +404,16 @@ end
  Compilation: bytecode → CUBIN → CuFunction.
 =============================================================================#
 
+# Serializes the Julia-side codegen pipeline (inference, structured IR,
+# tile-IR emission). `emit_tile!` and everything it calls into mutates shared
+# state: `CacheView` entries, `CuTileResults` fields, the inference cache,
+# and CompilerCaching's per-CI const_entries vector. None of that is
+# thread-safe. We hold the lock only across `emit_tile!`; the tileiras
+# subprocess below runs unlocked so concurrent `cufunction` calls (e.g.
+# from autotuning's precompile fan-out) can still overlap their tileiras
+# shell-outs.
+const EMIT_TILE_LOCK = ReentrantLock()
+
 """
     emit_binary!(cache, mi, ci, res; const_argtypes=nothing) -> Vector{UInt8}
 
@@ -415,7 +425,7 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     # Recurse first — emit_structured! at the bottom of the chain fires
     # `compile_hook` for `@device_code_*` reflection, which must run on every
     # launch even when downstream artifacts are fully cached.
-    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
+    bytecode = Base.@lock EMIT_TILE_LOCK emit_tile!(cache, mi, ci, res; const_argtypes)
 
     res.cuda_bin !== nothing && return res.cuda_bin
 
@@ -595,7 +605,12 @@ function compile(@nospecialize(f), @nospecialize(argtypes),
     # underlying `CodeInstance` via CompilerCaching; the `TileKernel` wrapper
     # rides along in the same `CuTileResults`, so kernel-instance lifecycle
     # follows the CI's instead of needing a separate global Dict.
-    ci, res = ensure_compiled(cache, mi, const_argtypes)
+    #
+    # Held under EMIT_TILE_LOCK so concurrent compiles (e.g. autotuning's
+    # precompile fan-out) don't race on inference / CompilerCaching state.
+    # The lock-protected region also includes the lookup fast path; that
+    # path is just a hashtable read, so brief contention here is fine.
+    ci, res = Base.@lock EMIT_TILE_LOCK ensure_compiled(cache, mi, const_argtypes)
 
     # Always walk the emit chain (each phase short-circuits on its own cached
     # field, but `emit_structured!` also fires `compile_hook` for reflection,
