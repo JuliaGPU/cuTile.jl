@@ -182,7 +182,7 @@ end
 =============================================================================#
 
 function prepare(; benchmark::Bool=false,
-                  batch::Int=benchmark ? 64 : 2,
+                  batch::Int=benchmark ? 1024 : 2,
                   factors::NTuple{3,Int}=benchmark ? (8, 8, 8) : (2, 2, 2),
                   atom_packing_dim::Int=min(64, 2 * prod(factors)))
     N = prod(factors)
