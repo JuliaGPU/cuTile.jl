@@ -163,6 +163,119 @@ function measure_candidates(@nospecialize(f), configs::Vector{Any},
     return record, first_error
 end
 
+"""
+    pipelined_tune(f, configs, grid_fn, args_fn; ...) -> (record, precompile_error, first_error)
+
+Overlap parallel compile with sequential measure. Compile workers (`Threads.@spawn`)
+push each finished cfg onto a `Channel`; the master task pulls them off in
+arrival order and runs `eval_cfg` on each. Net wall time is roughly
+`max(parallel_compile_time, total_measure_time + first_compile)` instead of
+the all-compile-then-all-measure sum.
+
+The master task is the consumer by design: it inherits the CUDA context from
+the caller, which the timed `eval_cfg` needs (CUDA state is task-local).
+`workers=0` skips parallel compile entirely and falls back to a
+compile-then-measure cycle on the master.
+
+`record` is in completion order, not trial order — callers that care about
+deterministic ordering should sort the result.
+"""
+function pipelined_tune(@nospecialize(f), configs::Vector{Any},
+                        grid_fn::Function, args_fn::Function;
+                        sm_arch::VersionNumber, opt_level::Int,
+                        warmup::Int, reps::Int, workers::Int,
+                        static_num_ctas=nothing, static_occupancy=nothing,
+                        verify::Union{Nothing, Function}=nothing,
+                        reset::Union{Nothing, Function}=nothing)
+    record = Tuple{Any, Float32}[]
+    if isempty(configs)
+        return record, nothing, nothing
+    end
+
+    # Serial fallback: avoids channel + extra task overhead when there's
+    # nothing to overlap (workers=0) or only one cfg to evaluate.
+    if iszero(workers) || length(configs) == 1
+        rec, ferr = measure_candidates(f, configs, grid_fn, args_fn;
+            sm_arch, opt_level, warmup, reps,
+            static_num_ctas, static_occupancy, verify, reset)
+        return rec, nothing, ferr
+    end
+
+    workers = min(workers, Threads.nthreads(), length(configs))
+    cancelled = Threads.Atomic{Bool}(false)
+    sem = Base.Semaphore(workers)
+    precompile_error = Ref{Any}(nothing)
+    err_lock = ReentrantLock()
+
+    # Buffer == n: producers never block on put!. Channel carries
+    # (trial_index, cfg) pairs; the index is preserved so callers that want
+    # trial-order can recover it.
+    ch = Channel{Tuple{Int, Any}}(length(configs))
+
+    # Producer driver: runs in its own task so the master can start consuming
+    # the moment the first cfg lands. `@sync` inside ensures we don't close
+    # the channel until every spawned compiler has either pushed or recorded
+    # an error.
+    producer = Threads.@spawn begin
+        try
+            @sync for (i, cfg) in enumerate(configs)
+                cancelled[] && break
+                Threads.@spawn begin
+                    cancelled[] && return
+                    Base.acquire(sem) do
+                        cancelled[] && return
+                        try
+                            precompile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+                                           static_num_ctas, static_occupancy)
+                            cancelled[] || put!(ch, (i, cfg))
+                        catch err
+                            lock(err_lock) do
+                                precompile_error[] === nothing &&
+                                    (precompile_error[] = (cfg, err))
+                            end
+                        end
+                    end
+                end
+            end
+        finally
+            close(ch)
+        end
+    end
+
+    # Master consumes (and times) on this task — keeps the CUDA context for
+    # `eval_cfg` consistent with the caller's.
+    first_error = nothing
+    try
+        for (_, cfg) in ch
+            ms = try
+                eval_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level, warmup, reps,
+                         static_num_ctas, static_occupancy, verify, reset)
+            catch err
+                if err isa InterruptException
+                    @warn "Benchmarking interrupted after $(length(record)) configs"
+                    cancelled[] = true
+                    break
+                end
+                err isa VerificationError &&
+                    @warn "Config $cfg failed verification, skipping"
+                first_error === nothing && (first_error = (cfg, err))
+                continue
+            end
+            push!(record, (cfg, ms))
+        end
+    catch err
+        cancelled[] = true
+        # Drain any items already in the channel so producers don't block on
+        # put! while we wait for them to notice the cancel flag.
+        while isready(ch); take!(ch); end
+        wait(producer)
+        rethrow()
+    end
+
+    wait(producer)
+    return record, precompile_error[], first_error
+end
+
 function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::AbstractRNG,
                       grid_fn::Function, args_fn::Function, tuning;
                       sm_arch::VersionNumber, opt_level::Int, kernel_key, arg_key,
@@ -204,16 +317,18 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     # Each cfg differs only in `Constant{T,V}` values, so the generic
     # inference graph is identical — without sharing, kernels with slow
     # inference paths (e.g. `ct.load(..., order=…)`) pay that cost N times.
-    trials, precompile_error, record, first_error =
+    #
+    # `pipelined_tune` overlaps the parallel compile fan-out with sequential
+    # GPU measurement: as soon as the first compiler finishes, the master
+    # starts timing while the remaining compilers continue in the background.
+    record, precompile_error, first_error =
         with(_SCOPED_INF_CACHE => _fresh_inf_cache()) do
-            t, pe = precompile_candidates(f, trials, args_fn;
-                sm_arch, opt_level, workers=tuning.precompile_workers,
-                static_num_ctas, static_occupancy)
-            r, fe = measure_candidates(f, t, grid_fn, args_fn;
-                sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps,
+            pipelined_tune(f, trials, grid_fn, args_fn;
+                sm_arch, opt_level,
+                warmup=tuning.warmup, reps=tuning.reps,
+                workers=tuning.precompile_workers,
                 static_num_ctas, static_occupancy,
                 verify=checker, reset)
-            (t, pe, r, fe)
         end
 
     if isempty(record)
