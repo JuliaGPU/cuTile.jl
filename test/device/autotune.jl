@@ -231,4 +231,110 @@ const Exp = ct.Experimental
         @test call_count[] == 2
         @test Array(c) ≈ fill(3f0, n)
     end
+
+    @testset "static num_ctas / occupancy as kwargs" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        # `space` has no num_ctas/occupancy axes — they're static kwargs.
+        result = Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16), (; tile=32)],
+            cfg -> cld(n, cfg.tile),
+            cfg -> (a, b, c, ct.Constant(cfg.tile));
+            key=(:static_hints, n),
+            occupancy=2,
+            tuning=(preset=:fast, refine_topk=0))
+        @test !result.cache_hit
+        @test Array(c) ≈ fill(3f0, n)
+    end
+
+    @testset "conflict: static + space axis" begin
+        Exp.clear_autotune_cache()
+        # Run-time path (opaque space): autotune_launch should reject.
+        @test_throws ArgumentError Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16, occupancy=2)],
+            cfg -> cld(n, cfg.tile),
+            cfg -> (a, b, c, ct.Constant(cfg.tile));
+            key=(:conflict, n),
+            occupancy=4,
+            tuning=(preset=:fast, refine_topk=0))
+    end
+
+    @testset "@autotune macro: NT space" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        result = Exp.@autotune(
+            key = (:macro_nt, n),
+            space = (tile=(16, 32, 64),),
+            blocks = cld(n, $tile),
+            tuning = (preset=:fast, refine_topk=0),
+            vadd_kernel(a, b, c, ct.Constant($tile)),
+        )
+        @test !result.cache_hit
+        @test result.tuned_config.tile in (16, 32, 64)
+        @test Array(c) ≈ fill(3f0, n)
+    end
+
+    @testset "@autotune macro: vector space" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        result = Exp.@autotune(
+            key = (:macro_vec, n),
+            space = [(; tile=16), (; tile=32)],
+            blocks = cld(n, $tile),
+            tuning = (preset=:fast, refine_topk=0),
+            vadd_kernel(a, b, c, ct.Constant($tile)),
+        )
+        @test !result.cache_hit
+        @test result.tuned_config.tile in (16, 32)
+        @test Array(c) ≈ fill(3f0, n)
+    end
+
+    @testset "@autotune macro: tuple blocks + 2D \$interp" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        # Use a 1D kernel but pass a Tuple blocks=(N, 1) to exercise the
+        # tuple-grid + $X-interp-in-blocks path.
+        result = Exp.@autotune(
+            key = (:macro_tuple, n),
+            space = (tile=(16, 32),),
+            blocks = (cld(n, $tile), 1),
+            tuning = (preset=:fast, refine_topk=0),
+            vadd_kernel(a, b, c, ct.Constant($tile)),
+        )
+        @test result.grid == (cld(n, result.tuned_config.tile), 1)
+        @test Array(c) ≈ fill(3f0, n)
+    end
+
+    @testset "@autotune macro: static num_ctas as kwarg" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        result = Exp.@autotune(
+            key = (:macro_static, n),
+            space = (tile=(16, 32),),
+            blocks = cld(n, $tile),
+            occupancy = 2,
+            tuning = (preset=:fast, refine_topk=0),
+            vadd_kernel(a, b, c, ct.Constant($tile)),
+        )
+        @test !result.cache_hit
+        @test Array(c) ≈ fill(3f0, n)
+    end
+
+    @testset "@autotune macro: macro-time conflict error" begin
+        # Should error at macro expansion (not run time).
+        @test_throws LoadError @eval Exp.@autotune(
+            space = (tile=(16,), num_ctas=(1, 2)),
+            blocks = 1,
+            num_ctas = 4,
+            kernel(a),
+        )
+    end
+
+    @testset "@autotune macro: required kwargs" begin
+        @test_throws LoadError @eval Exp.@autotune(blocks = 1, kernel(a))
+        @test_throws LoadError @eval Exp.@autotune(space = (tile=(16,),), kernel(a))
+        @test_throws LoadError @eval Exp.@autotune(space = (tile=(16,),), blocks = 1)
+    end
 end
