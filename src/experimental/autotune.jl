@@ -1,43 +1,140 @@
-const AUTOTUNE_LOCK = ReentrantLock()
-const AUTOTUNE_CACHE = Dict{Any, Dict{Any, Any}}()
+public autotune_launch, clear_autotune_cache
+
+const AUTOTUNE_CACHE = Base.Lockable(Dict{Any, Dict{Any, Any}}())
 
 struct VerificationError <: Exception
     msg::String
 end
 
+Base.showerror(io::IO, err::VerificationError) =
+    print(io, "VerificationError: ", err.msg)
+
 const TUNING_PRESETS = (
-    fast     = (warmup=1, reps=3,  refine_topk=0, refine_reps=2),
-    default  = (warmup=2, reps=5,  refine_topk=2, refine_reps=4),
-    thorough = (warmup=2, reps=7,  refine_topk=4, refine_reps=6),
+    fast     = (warmup=1, reps=3, refine_topk=0, refine_reps=2),
+    default  = (warmup=2, reps=5, refine_topk=2, refine_reps=4),
+    thorough = (warmup=2, reps=7, refine_topk=4, refine_reps=6),
 )
 
+const TUNING_KEYS = (
+    :warmup, :reps, :refine_topk, :refine_reps,
+    :seed, :force, :precompile_workers,
+)
+
+struct TuningOptions
+    warmup::Int
+    reps::Int
+    refine_topk::Int
+    refine_reps::Int
+    seed::Union{Nothing, Int}
+    force::Bool
+    precompile_workers::Int
+end
+
+_tuning_defaults() = (
+    seed=nothing,
+    force=false,
+    precompile_workers=Threads.nthreads(),
+)
+
+function _check_int(name::Symbol, value; min::Int)
+    (value isa Integer && !(value isa Bool)) ||
+        throw(ArgumentError("tuning.$name must be an integer, got $(typeof(value))"))
+    value >= min ||
+        throw(ArgumentError("tuning.$name must be >= $min, got $value"))
+    return Int(value)
+end
+
+function _check_seed(seed)
+    seed === nothing && return nothing
+    (seed isa Integer && !(seed isa Bool)) ||
+        throw(ArgumentError("tuning.seed must be an integer or nothing, got $(typeof(seed))"))
+    return Int(seed)
+end
+
+function _check_bool(name::Symbol, value)
+    value isa Bool ||
+        throw(ArgumentError("tuning.$name must be a Bool, got $(typeof(value))"))
+    return value
+end
+
 function normalize_tuning(tuning::NamedTuple)
+    valid_keys = (:preset, TUNING_KEYS...)
+    unknown = setdiff(collect(keys(tuning)), collect(valid_keys))
+    isempty(unknown) ||
+        throw(ArgumentError("Unknown tuning option(s): $(join(unknown, ", "))"))
+
     preset = get(tuning, :preset, :default)
     preset isa Symbol || throw(ArgumentError("tuning.preset must be a Symbol"))
     hasproperty(TUNING_PRESETS, preset) ||
-        throw(ArgumentError("Unknown preset `$preset`; use :fast, :default, or :thorough"))
-
-    base = merge(getproperty(TUNING_PRESETS, preset),
-        (seed=nothing, force=false, precompile_workers=Threads.nthreads()))
+        throw(ArgumentError("Unknown tuning preset `$preset`; use :fast, :default, or :thorough"))
 
     overrides = NamedTuple(k => v for (k, v) in pairs(tuning) if k !== :preset)
-    return merge(base, overrides)
+    values = merge(_tuning_defaults(), getproperty(TUNING_PRESETS, preset), overrides)
+
+    return TuningOptions(
+        _check_int(:warmup, values.warmup; min=0),
+        _check_int(:reps, values.reps; min=1),
+        _check_int(:refine_topk, values.refine_topk; min=0),
+        _check_int(:refine_reps, values.refine_reps; min=1),
+        _check_seed(values.seed),
+        _check_bool(:force, values.force),
+        _check_int(:precompile_workers, values.precompile_workers; min=0),
+    )
 end
 
-# Extract hint fields (num_ctas, occupancy) from a config, falling back to
-# the static defaults supplied by the caller. cfg takes precedence; the
-# caller is expected to have rejected the both-supplied case upstream
-# (see `autotune_launch`).
+@inline _hint_from_cfg(cfg, name::Symbol, fallback) =
+    hasproperty(cfg, name) ? getproperty(cfg, name) : fallback
+
 function hints_from_cfg(cfg; static_num_ctas=nothing, static_occupancy=nothing)
-    n = hasproperty(cfg, :num_ctas) ? cfg.num_ctas : static_num_ctas
-    o = hasproperty(cfg, :occupancy) ? cfg.occupancy : static_occupancy
-    return (num_ctas=n, occupancy=o)
+    return (
+        num_ctas=_hint_from_cfg(cfg, :num_ctas, static_num_ctas),
+        occupancy=_hint_from_cfg(cfg, :occupancy, static_occupancy),
+    )
 end
 
-function time_ms(run_once, get_args;
-                 warmup::Int, reps::Int, verify=nothing, reset=nothing)
+function _check_static_hint_conflict(configs, hint::Symbol, static_value)
+    static_value === nothing && return nothing
+    for cfg in configs
+        if hasproperty(cfg, hint)
+            throw(ArgumentError(
+                "`$hint` is both a static kwarg and an axis in the search space. " *
+                "Pick one."))
+        end
+    end
+    return nothing
+end
+
+function _check_static_hint_conflicts(configs; static_num_ctas=nothing,
+                                      static_occupancy=nothing)
+    _check_static_hint_conflict(configs, :num_ctas, static_num_ctas)
+    _check_static_hint_conflict(configs, :occupancy, static_occupancy)
+    return nothing
+end
+
+function _collect_trials(space::AbstractSearchSpace, seed)
+    trials = Any[cfg for cfg in space]
+    if seed !== nothing && length(trials) > 1
+        shuffle!(MersenneTwister(seed), trials)
+    end
+    return trials
+end
+
+@inline _grid_dims(grid) = grid isa Integer ? (grid,) : grid
+@inline _converted_args(args_fn, cfg) = map(cuTileconvert, args_fn(cfg))
+@inline _argtypes(args) = Tuple{map(Core.Typeof, args)...}
+
+function _compile_cfg(@nospecialize(f), cfg, args_fn;
+                      sm_arch::VersionNumber, opt_level::Int,
+                      static_num_ctas=nothing, static_occupancy=nothing)
+    converted = _converted_args(args_fn, cfg)
+    return cufunction(f, _argtypes(converted); sm_arch, opt_level,
+                      hints_from_cfg(cfg; static_num_ctas, static_occupancy)...)
+end
+
+function _time_ms(run_once, get_args;
+                  warmup::Int, reps::Int, verify=nothing, reset=nothing)
     CUDACore.synchronize()
-    for _ in 1:max(warmup, verify !== nothing ? 1 : 0)
+    for _ in 1:max(warmup, verify === nothing ? 0 : 1)
         reset !== nothing && reset()
         run_once(get_args())
     end
@@ -63,256 +160,212 @@ function eval_cfg(@nospecialize(f), cfg, grid_fn, args_fn;
                   sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
                   static_num_ctas=nothing, static_occupancy=nothing,
                   verify=nothing, reset=nothing)
-    grid = grid_fn(cfg)
-    grid_dims = grid isa Integer ? (grid,) : grid
+    grid = _grid_dims(grid_fn(cfg))
+    kernel = _compile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+                          static_num_ctas, static_occupancy)
 
-    # Compile once, then convert + call each rep. We `cufunction` outside the
-    # timed loop so JIT cost doesn't pollute the measurement.
-    sample_converted = map(cuTileconvert, args_fn(cfg))
-    tt = Tuple{map(Core.Typeof, sample_converted)...}
-    kernel = cufunction(f, tt; sm_arch, opt_level,
-                        hints_from_cfg(cfg; static_num_ctas, static_occupancy)...)
-
-    run_once = converted -> kernel(converted...; blocks=grid_dims)
-    get_args = () -> map(cuTileconvert, args_fn(cfg))
-    return time_ms(run_once, get_args; warmup, reps, verify, reset)
+    run_once = converted -> kernel(converted...; blocks=grid)
+    get_args = () -> _converted_args(args_fn, cfg)
+    return _time_ms(run_once, get_args; warmup, reps, verify, reset)
 end
 
 function precompile_cfg(@nospecialize(f), cfg, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
                         static_num_ctas=nothing, static_occupancy=nothing)
-    converted = map(cuTileconvert, args_fn(cfg))
-    tt = Tuple{map(Core.Typeof, converted)...}
-    cufunction(f, tt; sm_arch, opt_level,
-               hints_from_cfg(cfg; static_num_ctas, static_occupancy)...)
+    _compile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+                 static_num_ctas, static_occupancy)
     return nothing
 end
 
-function precompile_candidates(@nospecialize(f), configs::Vector{Any}, args_fn;
-                               sm_arch::VersionNumber, opt_level::Int, workers::Int,
-                               static_num_ctas=nothing, static_occupancy=nothing)
-    isempty(configs) && return configs, nothing
-    iszero(workers) && return configs, nothing
+const TimingRecord = Tuple{Any, Float32}
 
-    workers = min(workers, Threads.nthreads(), length(configs))
-    compiled = fill(true, length(configs))
-    errors = Vector{Any}(nothing, length(configs))
-    sem = Base.Semaphore(workers)
-    cancelled = Threads.Atomic{Bool}(false)
-
-    try
-        @sync for (i, cfg) in enumerate(configs)
-            Threads.@spawn begin
-                cancelled[] && return
-                Base.acquire(sem) do
-                    cancelled[] && return
-                    try
-                        precompile_cfg(f, cfg, args_fn; sm_arch, opt_level,
-                                       static_num_ctas, static_occupancy)
-                    catch err
-                        compiled[i] = false
-                        errors[i] = (cfg, err)
-                    end
-                end
-            end
+function _measure_cfg!(record::Vector{TimingRecord}, first_error::Base.RefValue,
+                       @nospecialize(f), cfg, grid_fn, args_fn; kwargs...)
+    ms = try
+        eval_cfg(f, cfg, grid_fn, args_fn; kwargs...)
+    catch err
+        err isa InterruptException && rethrow()
+        if err isa VerificationError
+            @warn "Config failed verification; skipping" cfg
+        else
+            bt = catch_backtrace()
+            @debug "Config failed during autotuning; skipping" cfg exception=(err, bt)
         end
-    catch e
-        cancelled[] = true
-        e isa InterruptException || rethrow()
-        @warn "Precompilation interrupted, waiting for in-flight workers…"
-        rethrow()
+        first_error[] === nothing && (first_error[] = (cfg, err))
+        return nothing
     end
-
-    first_err = nothing
-    for e in errors
-        if e !== nothing
-            first_err = e
-            break
-        end
-    end
-
-    return configs[compiled], first_err
+    push!(record, (cfg, ms))
+    return nothing
 end
 
 function measure_candidates(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
-                            sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
+                            sm_arch::VersionNumber, opt_level::Int,
+                            warmup::Int, reps::Int,
                             static_num_ctas=nothing, static_occupancy=nothing,
                             verify=nothing, reset=nothing)
-    record = Tuple{Any, Float32}[]
-    first_error = nothing
+    record = TimingRecord[]
+    first_error = Ref{Any}(nothing)
     for cfg in configs
-        ms = try
-            eval_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level, warmup, reps,
-                     static_num_ctas, static_occupancy, verify, reset)
-        catch err
-            if err isa InterruptException
-                @warn "Benchmarking interrupted after $(length(record)) configs"
-                break
-            end
-            err isa VerificationError && @warn "Config $cfg failed verification, skipping"
-            first_error === nothing && (first_error = (cfg, err))
-            continue
-        end
-        push!(record, (cfg, ms))
+        _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn;
+                      sm_arch, opt_level, warmup, reps,
+                      static_num_ctas, static_occupancy, verify, reset)
     end
-    return record, first_error
+    return record, first_error[]
 end
 
 """
     pipelined_tune(f, configs, grid_fn, args_fn; ...) -> (record, precompile_error, first_error)
 
-Overlap parallel compile with sequential measure. Compile workers (`Threads.@spawn`)
-push each finished cfg onto a `Channel`; the master task pulls them off in
-arrival order and runs `eval_cfg` on each. Net wall time is roughly
-`max(parallel_compile_time, total_measure_time + first_compile)` instead of
-the all-compile-then-all-measure sum.
-
-The master task is the consumer by design: it inherits the CUDA context from
-the caller, which the timed `eval_cfg` needs (CUDA state is task-local).
-`workers=0` skips parallel compile entirely and falls back to a
-compile-then-measure cycle on the master.
-
-`record` is in completion order, not trial order — callers that care about
-deterministic ordering should sort the result.
+Compile candidate configurations on worker tasks while the caller task measures
+completed candidates. Measurement stays on the caller task because CUDA state is
+task-local; workers only run the untimed `cufunction` precompile path.
 """
 function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
                         warmup::Int, reps::Int, workers::Int,
                         static_num_ctas=nothing, static_occupancy=nothing,
                         verify=nothing, reset=nothing)
-    record = Tuple{Any, Float32}[]
-    if isempty(configs)
-        return record, nothing, nothing
-    end
+    isempty(configs) && return TimingRecord[], nothing, nothing
 
-    # Serial fallback: avoids channel + extra task overhead when there's
-    # nothing to overlap (workers=0) or only one cfg to evaluate.
     if iszero(workers) || length(configs) == 1
-        rec, ferr = measure_candidates(f, configs, grid_fn, args_fn;
+        record, first_error = measure_candidates(f, configs, grid_fn, args_fn;
             sm_arch, opt_level, warmup, reps,
             static_num_ctas, static_occupancy, verify, reset)
-        return rec, nothing, ferr
+        return record, nothing, first_error
     end
 
     workers = min(workers, Threads.nthreads(), length(configs))
+    ready = Channel{Any}(length(configs))
+    jobs = Channel{Any}(length(configs))
+    foreach(cfg -> put!(jobs, cfg), configs)
+    close(jobs)
+
     cancelled = Threads.Atomic{Bool}(false)
-    sem = Base.Semaphore(workers)
     precompile_error = Ref{Any}(nothing)
-    err_lock = ReentrantLock()
+    error_lock = ReentrantLock()
 
-    # Buffer == n: producers never block on put!. Channel carries
-    # (trial_index, cfg) pairs; the index is preserved so callers that want
-    # trial-order can recover it.
-    ch = Channel{Tuple{Int, Any}}(length(configs))
-
-    # Producer driver: runs in its own task so the master can start consuming
-    # the moment the first cfg lands. `@sync` inside ensures we don't close
-    # the channel until every spawned compiler has either pushed or recorded
-    # an error.
-    producer = Threads.@spawn begin
-        try
-            @sync for (i, cfg) in enumerate(configs)
+    producer = Threads.@spawn try
+        @sync for _ in 1:workers
+            Threads.@spawn for cfg in jobs
                 cancelled[] && break
-                Threads.@spawn begin
-                    cancelled[] && return
-                    Base.acquire(sem) do
-                        cancelled[] && return
-                        try
-                            precompile_cfg(f, cfg, args_fn; sm_arch, opt_level,
-                                           static_num_ctas, static_occupancy)
-                            cancelled[] || put!(ch, (i, cfg))
-                        catch err
-                            lock(err_lock) do
-                                precompile_error[] === nothing &&
-                                    (precompile_error[] = (cfg, err))
-                            end
-                        end
+                try
+                    precompile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+                                    static_num_ctas, static_occupancy)
+                    cancelled[] || put!(ready, cfg)
+                catch err
+                    if err isa InterruptException
+                        cancelled[] = true
+                        rethrow()
+                    end
+                    lock(error_lock) do
+                        precompile_error[] === nothing &&
+                            (precompile_error[] = (cfg, err))
                     end
                 end
             end
-        finally
-            close(ch)
         end
+    finally
+        close(ready)
     end
 
-    # Master consumes (and times) on this task — keeps the CUDA context for
-    # `eval_cfg` consistent with the caller's.
-    first_error = nothing
+    record = TimingRecord[]
+    first_error = Ref{Any}(nothing)
     try
-        for (_, cfg) in ch
-            ms = try
-                eval_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level, warmup, reps,
-                         static_num_ctas, static_occupancy, verify, reset)
-            catch err
-                if err isa InterruptException
-                    @warn "Benchmarking interrupted after $(length(record)) configs"
-                    cancelled[] = true
-                    break
-                end
-                err isa VerificationError &&
-                    @warn "Config $cfg failed verification, skipping"
-                first_error === nothing && (first_error = (cfg, err))
-                continue
-            end
-            push!(record, (cfg, ms))
+        for cfg in ready
+            _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn;
+                          sm_arch, opt_level, warmup, reps,
+                          static_num_ctas, static_occupancy, verify, reset)
         end
-    catch err
-        cancelled[] = true
-        # Drain any items already in the channel so producers don't block on
-        # put! while we wait for them to notice the cancel flag.
-        while isready(ch); take!(ch); end
         wait(producer)
+    catch
+        cancelled[] = true
+        while isready(ready)
+            take!(ready)
+        end
+        try
+            wait(producer)
+        catch
+        end
         rethrow()
     end
 
-    wait(producer)
-    return record, precompile_error[], first_error
+    return record, precompile_error[], first_error[]
 end
 
-function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::AbstractRNG,
-                      grid_fn, args_fn, tuning;
+@inline _entry_in_trials(entry, trials) =
+    any(cfg -> cfg == entry.best_config, trials)
+
+function _cached_entry(kernel_key, arg_key, trials)
+    entry = Base.@lock AUTOTUNE_CACHE begin
+        per_kernel = get(AUTOTUNE_CACHE[], kernel_key, nothing)
+        per_kernel === nothing ? nothing : get(per_kernel, arg_key, nothing)
+    end
+    entry !== nothing && _entry_in_trials(entry, trials) ? entry : nothing
+end
+
+function _cache_candidate!(candidate, kernel_key, arg_key, trials; force::Bool)
+    Base.@lock AUTOTUNE_CACHE begin
+        per_kernel = get!(AUTOTUNE_CACHE[], kernel_key) do
+            Dict{Any, Any}()
+        end
+        if !force
+            entry = get(per_kernel, arg_key, nothing)
+            if entry !== nothing && _entry_in_trials(entry, trials)
+                return entry, true
+            end
+        end
+        per_kernel[arg_key] = candidate
+        return candidate, false
+    end
+end
+
+function _no_valid_config_error(first_error, precompile_error)
+    err_info = first_error !== nothing ? first_error : precompile_error
+    if err_info === nothing
+        throw(ArgumentError("No valid config found in search space"))
+    end
+
+    cfg, err = err_info
+    throw(ArgumentError(
+        "No valid config found. First failure for cfg=$cfg: $(sprint(showerror, err))"))
+end
+
+function _refine_record(@nospecialize(f), record::Vector{TimingRecord}, tuning::TuningOptions,
+                        grid_fn, args_fn; sm_arch::VersionNumber, opt_level::Int,
+                        static_num_ctas=nothing, static_occupancy=nothing,
+                        verify=nothing, reset=nothing)
+    (tuning.refine_topk > 0 && length(record) > 1) || return record
+
+    sort!(record, by=last)
+    top = Any[first(r) for r in record[1:min(tuning.refine_topk, length(record))]]
+    refined, _ = measure_candidates(f, top, grid_fn, args_fn;
+        sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.refine_reps,
+        static_num_ctas, static_occupancy, verify, reset)
+    return isempty(refined) ? record : refined
+end
+
+function _best_candidate(record::Vector{TimingRecord})
+    _, best_idx = findmin(last, record)
+    return (; best_config=record[best_idx][1], tuning_record=record)
+end
+
+function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
+                      grid_fn, args_fn, tuning::TuningOptions;
                       sm_arch::VersionNumber, opt_level::Int, kernel_key, arg_key,
                       static_num_ctas=nothing, static_occupancy=nothing,
                       verify=nothing, setup=nothing)
+    trials = _collect_trials(space, tuning.seed)
+    isempty(trials) && throw(ArgumentError("No valid config found in search space"))
+    _check_static_hint_conflicts(trials; static_num_ctas, static_occupancy)
+
     if !tuning.force
-        entry = lock(AUTOTUNE_LOCK) do
-            per_kernel = get(AUTOTUNE_CACHE, kernel_key, nothing)
-            per_kernel !== nothing ? get(per_kernel, arg_key, nothing) : nothing
-        end
+        entry = _cached_entry(kernel_key, arg_key, trials)
         entry !== nothing && return entry, true, nothing
     end
 
     checker = verify !== nothing ? verify() : nothing
     reset = setup !== nothing ? setup() : nothing
 
-    trials = Any[collect(space)...]
-
-    # Conflict check: if the cfg carries a `num_ctas`/`occupancy` field AND
-    # the caller also provided a static value, error rather than silently
-    # ignoring one. (Handles the case where `space` is opaque to the macro
-    # — a user-built `CartesianSpace(...)` or `FixedSpace([(...),...])`.)
-    if !isempty(trials)
-        sample = first(trials)
-        if static_num_ctas !== nothing && hasproperty(sample, :num_ctas)
-            throw(ArgumentError(
-                "`num_ctas` is both a static kwarg and an axis in the search space. " *
-                "Pick one."))
-        end
-        if static_occupancy !== nothing && hasproperty(sample, :occupancy)
-            throw(ArgumentError(
-                "`occupancy` is both a static kwarg and an axis in the search space. " *
-                "Pick one."))
-        end
-    end
-
-    # Share the inference cache across all per-cfg const-seeded compiles.
-    # Each cfg differs only in `Constant{T,V}` values, so the generic
-    # inference graph is identical — without sharing, kernels with slow
-    # inference paths (e.g. `ct.load(..., order=…)`) pay that cost N times.
-    #
-    # `pipelined_tune` overlaps the parallel compile fan-out with sequential
-    # GPU measurement: as soon as the first compiler finishes, the master
-    # starts timing while the remaining compilers continue in the background.
     record, precompile_error, first_error =
         with(_SCOPED_INF_CACHE => _fresh_inf_cache()) do
             pipelined_tune(f, trials, grid_fn, args_fn;
@@ -323,50 +376,19 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
                 verify=checker, reset)
         end
 
-    if isempty(record)
-        err_info = first_error !== nothing ? first_error : precompile_error
-        if err_info === nothing
-            throw(ArgumentError("No valid config found in search space"))
-        else
-            cfg, err = err_info
-            throw(ArgumentError(
-                "No valid config found. First failure for cfg=$cfg: $(sprint(showerror, err))"))
-        end
-    end
+    isempty(record) && _no_valid_config_error(first_error, precompile_error)
 
-    if tuning.refine_topk > 0 && length(record) > 1
-        sort!(record, by=last)
-        top_configs = Any[first(r) for r in record[1:min(tuning.refine_topk, length(record))]]
-        refined, _ = measure_candidates(f, top_configs, grid_fn, args_fn;
-            sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.refine_reps,
-            static_num_ctas, static_occupancy, reset)
-        if !isempty(refined)
-            record = refined
-        end
-    end
+    record = _refine_record(f, record, tuning, grid_fn, args_fn;
+        sm_arch, opt_level,
+        static_num_ctas, static_occupancy,
+        verify=checker, reset)
 
-    _, best_idx = findmin(last, record)
-    candidate = (; best_config=record[best_idx][1], tuning_record=record)
-
-    # Race: another thread may have populated the cache while we were
-    # tuning. If so, return their result and report `cache_hit=true` so
-    # the caller's accounting stays accurate.
-    entry, cache_hit = lock(AUTOTUNE_LOCK) do
-        per_kernel = get!(Dict{Any,Any}, AUTOTUNE_CACHE, kernel_key)
-        if !tuning.force && haskey(per_kernel, arg_key)
-            per_kernel[arg_key], true
-        else
-            per_kernel[arg_key] = candidate
-            candidate, false
-        end
-    end
+    candidate = _best_candidate(record)
+    entry, cache_hit = _cache_candidate!(candidate, kernel_key, arg_key, trials;
+                                         force=tuning.force)
     return entry, cache_hit, reset
 end
 
-# Normalize `grid`/`args` to a callable. A `Function` is used as-is; any
-# other value is wrapped in `Returns(...)`. Lets `autotune_launch` accept
-# `blocks = 1024` or `args = (a, b, c)` directly instead of forcing the
-# caller to write `cfg -> 1024` for grids that don't depend on the cfg.
 @inline _as_cfg_fn(f::Function) = f
 @inline _as_cfg_fn(x) = Returns(x)
 
@@ -375,20 +397,12 @@ end
                     tuning, sm_arch, opt_level,
                     num_ctas=nothing, occupancy=nothing)
 
-Tune `f` over `space` (an [`AbstractSearchSpace`](@ref) or a `Vector`/`NamedTuple`
-shorthand) and launch the best config.
+Tune `f` over `space` and launch the fastest valid config.
 
-`grid` and `args` are either functions of the form `cfg -> grid` /
-`cfg -> args_tuple` (for grids/args that depend on the cfg), or plain
-values (for grids/args that don't). Internally both are normalized to
-callables. `launch_args` follows the same convention; defaults to `args`.
-
-Results are cached per `(f, sm_arch, opt_level, num_ctas, occupancy) ⇒ key`.
-
-`num_ctas` and `occupancy` may be supplied as **static** kwargs (applied
-uniformly to every cfg — useful for `ByTarget(...)`-style per-arch dispatch)
-OR as **axes** inside `space` (tuned per cfg), but not both. Specifying
-both throws an `ArgumentError`.
+`space` can be an `AbstractSearchSpace`, a `NamedTuple` of cartesian axes, or
+an iterable of `NamedTuple` configs. `grid`, `args`, and `launch_args` can be
+plain values or `cfg -> value` functions. Results are cached per
+`(f, sm_arch, opt_level, num_ctas, occupancy)` and user `key`.
 """
 function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          grid, args;
@@ -402,15 +416,13 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          num_ctas=nothing,
                          occupancy=nothing)
     tuning = normalize_tuning(tuning)
-    rng = tuning.seed !== nothing ? MersenneTwister(tuning.seed) : Random.default_rng()
 
     grid_fn = _as_cfg_fn(grid)
     args_fn = _as_cfg_fn(args)
     launch_args_fn = launch_args === nothing ? args_fn : _as_cfg_fn(launch_args)
 
     kernel_key = (f, sm_arch, opt_level, num_ctas, occupancy)
-
-    entry, cache_hit, reset = find_or_tune(f, space, rng, grid_fn, args_fn, tuning;
+    entry, cache_hit, reset = find_or_tune(f, space, grid_fn, args_fn, tuning;
         sm_arch, opt_level, kernel_key, arg_key=key,
         static_num_ctas=num_ctas, static_occupancy=occupancy,
         verify, setup)
@@ -434,19 +446,20 @@ function autotune_launch(@nospecialize(f), configs, grid, args; kwargs...)
 end
 
 function clear_autotune_cache(; kernel=nothing, key=nothing)
-    lock(AUTOTUNE_LOCK) do
+    Base.@lock AUTOTUNE_CACHE begin
+        cache = AUTOTUNE_CACHE[]
         if kernel === nothing
             key === nothing || throw(ArgumentError("`key` requires `kernel`"))
-            empty!(AUTOTUNE_CACHE)
+            empty!(cache)
             return nothing
         end
 
-        for kernel_key in collect(keys(AUTOTUNE_CACHE))
+        for kernel_key in collect(keys(cache))
             kernel_key isa Tuple || continue
             kernel_key[1] === kernel || continue
-            per_kernel = AUTOTUNE_CACHE[kernel_key]
+            per_kernel = cache[kernel_key]
             key === nothing ? empty!(per_kernel) : pop!(per_kernel, key, nothing)
-            isempty(per_kernel) && delete!(AUTOTUNE_CACHE, kernel_key)
+            isempty(per_kernel) && delete!(cache, kernel_key)
         end
     end
     return nothing
