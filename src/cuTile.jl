@@ -106,9 +106,6 @@ since the macro expands to a fully-qualified reference to the actual
 ```
 """
 macro cutile(args...)
-    # Interpolate the actual module values rather than the symbols so the
-    # caller doesn't need `CUDACore`/`cuTile` in scope — the expanded form
-    # references the module objects directly.
     esc(:($CUDACore.@cuda backend=$cuTile $(args...)))
 end
 
@@ -144,6 +141,6 @@ end
 
 include("precompile.jl")
 
-include("Experimental.jl")
+include("experimental/Experimental.jl")
 
 end # module cuTile
