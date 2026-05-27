@@ -1,4 +1,6 @@
-# `@autotune` — surface syntax for `autotune_launch`.
+public @autotune
+
+# `@autotune`: surface syntax for `autotune_launch`.
 #
 # Desugars
 #
@@ -67,24 +69,24 @@ and the kernel-call args, `\$X` interpolates `cfg.X` (where `cfg` is the
 tuning configuration being evaluated).
 
 # Required kwargs
-- `space` — a `NamedTuple` like `(A=(...), B=(...))` (becomes a
+- `space` - a `NamedTuple` like `(A=(...), B=(...))` (becomes a
   `CartesianSpace`), a `Vector` of `NamedTuple`s (becomes a `FixedSpace`),
-  or any `AbstractSearchSpace` (passed through — useful for
+  or any `AbstractSearchSpace` (passed through; useful for
   `CartesianSpace(constraint; ...)`).
-- `blocks` — grid dimensions, an `Int` or `Tuple`. May reference `\$X`.
+- `blocks` - grid dimensions, an `Int` or `Tuple`. May reference `\$X`.
 
 # Optional kwargs
-- `key`         — cache key (any value)
-- `tuning`      — `NamedTuple` of tuning knobs (`preset`, `force`, etc.)
-- `verify`      — `() -> (() -> Bool)` factory; the returned checker is
+- `key`         - cache key (any value)
+- `tuning`      - `NamedTuple` of tuning knobs (`preset`, `force`, etc.)
+- `verify`      - `() -> (() -> Bool)` factory; the returned checker is
                   called after each warmup pass to reject incorrect cfgs
-- `setup`       — `() -> (() -> Nothing)` factory; reset between reps
-- `launch_args` — final-launch args (or `cfg -> args` if it should differ
+- `setup`       - `() -> (() -> Nothing)` factory; reset between reps
+- `launch_args` - final-launch args (or `cfg -> args` if it should differ
                   from the kernel-call args). Use this when the timed args
                   are throwaway copies (in-place kernels) and the final
                   launch should hit the real buffers
-- `sm_arch`, `opt_level` — forwarded to `cufunction`
-- `num_ctas`, `occupancy` — **static** hints applied uniformly to every
+- `sm_arch`, `opt_level` - forwarded to `cufunction`
+- `num_ctas`, `occupancy` - **static** hints applied uniformly to every
                   cfg. May not coexist with same-named axes in `space`
                   (the macro flags the conflict at expansion time when
                   `space` is a literal NT; otherwise `autotune_launch`
@@ -116,7 +118,7 @@ macro autotune(args...)
             call === nothing || error("@autotune: only one kernel call allowed")
             call = arg
         else
-            error("@autotune: unexpected argument `$arg` — expected `kwarg=val` or a kernel call")
+            error("@autotune: unexpected argument `$arg`; expected `kwarg=val` or a kernel call")
         end
     end
 
@@ -140,7 +142,7 @@ macro autotune(args...)
         end
     end
 
-    # Extract the kernel call (positional only — no kernel kwargs).
+    # Extract the kernel call (positional only; no kernel kwargs).
     Meta.isexpr(call, :call) ||
         error("@autotune: kernel must be a function-call expression")
     f_expr = call.args[1]
@@ -166,7 +168,6 @@ macro autotune(args...)
                       :launch_args, :num_ctas, :occupancy)
     kw_exprs = [Expr(:kw, k, kwargs[k]) for k in forwarded_keys if haskey(kwargs, k)]
 
-    return esc(quote
-        $autotune_launch($f_expr, $space_expr, $grid_fn, $args_fn; $(kw_exprs...))
-    end)
+    launch = GlobalRef(@__MODULE__, :autotune_launch)
+    return esc(:($launch($f_expr, $space_expr, $grid_fn, $args_fn; $(kw_exprs...))))
 end
