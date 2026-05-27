@@ -28,10 +28,14 @@ const Exp = ct.Experimental
     b = CUDA.fill(2f0, n)
     c = CUDA.zeros(Float32, n)
 
+    # cfg 1's `occupancy=nothing, num_ctas=nothing` slots are present for
+    # `FixedSpace` shape uniformity — cfgs 2 and 3 carry real hint values,
+    # and `FixedSpace{names, NT<:NamedTuple{names}}` requires every element
+    # to share the same `names` set.
     configs = [
         (; tile=16, occupancy=nothing, num_ctas=nothing),
-        (; tile=32, occupancy=2, num_ctas=nothing),
-        (; tile=64, occupancy=4, num_ctas=2),
+        (; tile=32, occupancy=2,       num_ctas=nothing),
+        (; tile=64, occupancy=4,       num_ctas=2),
     ]
     args_fn = cfg -> (a, b, c, ct.Constant(cfg.tile))
     grid_fn = cfg -> cld(n, cfg.tile)
@@ -74,8 +78,12 @@ const Exp = ct.Experimental
     @testset "CartesianSpace" begin
         Exp.clear_autotune_cache()
         fill!(c, 0f0)
+        # Keep `occupancy=(nothing, 2)` — legitimately tunes between
+        # "no hint" and 2. Single-value `nothing` axes are noise (see
+        # other testsets); a 2-value axis with `nothing` as one option
+        # is meaningful.
         space = Exp.CartesianSpace(;
-            tile=(16, 32), occupancy=(nothing, 2), num_ctas=(nothing,))
+            tile=(16, 32), occupancy=(nothing, 2))
         result = Exp.autotune_launch(
             vadd_kernel, space, grid_fn, args_fn;
             key=(:cartesian, n),
@@ -91,7 +99,7 @@ const Exp = ct.Experimental
         fill!(c, 0f0)
         space = Exp.CartesianSpace(
             cfg -> cfg.tile == 16;
-            tile=(16, 32, 64), occupancy=(nothing,), num_ctas=(nothing,))
+            tile=(16, 32, 64))
         result = Exp.autotune_launch(
             vadd_kernel, space, grid_fn, args_fn;
             key=(:constrained, n),
@@ -106,7 +114,7 @@ const Exp = ct.Experimental
         fill!(c, 0f0)
         result = Exp.autotune_launch(
             vadd_kernel,
-            (tile=(16, 32), occupancy=(nothing,), num_ctas=(nothing,)),
+            (tile=(16, 32),),
             grid_fn, args_fn;
             key=(:nt_convenience, n),
             tuning=(preset=:fast, refine_topk=0),
