@@ -307,7 +307,7 @@ function emit_tile!(cache::CacheView, mi::Core.MethodInstance,
 
     # Compute bytecode via driver
     sci, rettype, kernel_meta = ir_result
-    key = cache.owner::TileCacheKey
+    key = tile_cache_key(cache.owner)
     opts = CGOpts((sm_arch=unpack_version(key.sm_arch),
                    opt_level=unpack_hint(key.opt_level),
                    num_ctas=unpack_hint(key.num_ctas),
