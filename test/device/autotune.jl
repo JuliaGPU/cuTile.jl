@@ -115,7 +115,7 @@ const Exp = ct.Experimental
         @test Array(c) ≈ fill(3f0, n)
     end
 
-    @testset "launch_args_fn (inplace kernel)" begin
+    @testset "launch_args (inplace kernel)" begin
         x = CUDA.zeros(Float32, n)
         original_x = Array(x)
         Exp.clear_autotune_cache()
@@ -124,7 +124,7 @@ const Exp = ct.Experimental
             [(; tile=16), (; tile=32)],
             grid_fn,
             cfg -> (copy(x), ct.Constant(cfg.tile));
-            launch_args_fn=cfg -> (x, ct.Constant(cfg.tile)),
+            launch_args=cfg -> (x, ct.Constant(cfg.tile)),
             key=(:inplace, n),
             tuning=(preset=:fast, refine_topk=0),
         )
@@ -211,24 +211,21 @@ const Exp = ct.Experimental
         @test Array(c2) ≈ fill(3f0, n2)
     end
 
-    @testset "key_fn" begin
+    @testset "literal grid/args (no closure)" begin
         Exp.clear_autotune_cache()
-        call_count = Ref(0)
-        my_key_fn = () -> begin
-            call_count[] += 1
-            return (:dynamic, Float32)
-        end
-
         fill!(c, 0f0)
-        r1 = Exp.autotune_launch(
-            vadd_kernel, configs, grid_fn, args_fn;
-            key_fn=my_key_fn, tuning=(preset=:fast, refine_topk=0))
-        r2 = Exp.autotune_launch(
-            vadd_kernel, configs, grid_fn, args_fn;
-            key_fn=my_key_fn, tuning=(preset=:fast, refine_topk=0))
-        @test !r1.cache_hit
-        @test r2.cache_hit
-        @test call_count[] == 2
+        # Pass `grid` and `args` as values rather than `cfg -> …` closures.
+        # cfg-independent grid: cld(n, tile) == cld(512, 16) for every cfg
+        # so the literal `32` happens to be valid here.
+        result = Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16)],
+            cld(n, 16),                                # literal grid
+            (a, b, c, ct.Constant(16));                # literal args
+            key=(:literal, n),
+            tuning=(preset=:fast, refine_topk=0))
+        @test !result.cache_hit
+        @test result.grid == cld(n, 16)
         @test Array(c) ≈ fill(3f0, n)
     end
 
