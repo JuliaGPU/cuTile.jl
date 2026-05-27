@@ -109,6 +109,11 @@ const Exp = ct.Experimental
         @test Array(c) ≈ fill(3f0, n)
     end
 
+    @testset "CartesianSpace range axis" begin
+        @test collect(Exp.CartesianSpace(tile=16:16:32)) ==
+              [(; tile=16), (; tile=32)]
+    end
+
     @testset "NamedTuple convenience → CartesianSpace" begin
         Exp.clear_autotune_cache()
         fill!(c, 0f0)
@@ -264,6 +269,58 @@ const Exp = ct.Experimental
             key=(:conflict, n),
             occupancy=4,
             tuning=(preset=:fast, refine_topk=0))
+    end
+
+    @testset "conflict scans every config" begin
+        space = Exp.FixedSpace(Any[(; tile=16), (; tile=32, occupancy=2)])
+        @test_throws ArgumentError Exp.autotune_launch(
+            vadd_kernel,
+            space,
+            cfg -> cld(n, cfg.tile),
+            cfg -> (a, b, c, ct.Constant(cfg.tile));
+            key=(:conflict_late, n),
+            occupancy=4,
+            tuning=(preset=:fast, refine_topk=0))
+    end
+
+    @testset "tuning validation" begin
+        @test_throws ArgumentError Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16)],
+            grid_fn, args_fn;
+            key=(:bad_reps, n),
+            tuning=(preset=:fast, reps=0))
+
+        @test_throws ArgumentError Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16)],
+            grid_fn, args_fn;
+            key=(:bad_key, n),
+            tuning=(preset=:fast, typo=1))
+    end
+
+    @testset "cached config must belong to current space" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        r1 = Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16)],
+            grid_fn, args_fn;
+            key=(:space_sensitive, n),
+            tuning=(preset=:fast, refine_topk=0))
+        @test !r1.cache_hit
+        @test r1.tuned_config.tile == 16
+
+        fill!(c, 0f0)
+        r2 = Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=32)],
+            grid_fn, args_fn;
+            key=(:space_sensitive, n),
+            tuning=(preset=:fast, refine_topk=0))
+        @test !r2.cache_hit
+        @test r2.tuned_config.tile == 32
+        @test Array(c) ≈ fill(3f0, n)
     end
 
     @testset "@autotune macro: NT space" begin
