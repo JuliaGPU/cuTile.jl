@@ -1,7 +1,8 @@
 module Experimental
 
 using ..cuTile
-using ..cuTile: cuTileconvert, cufunction, default_sm_arch, _SCOPED_INF_CACHE
+using ..cuTile: cuTileconvert, default_sm_arch, temporary_cufunction,
+                _SCOPED_INF_CACHE
 
 using CUDACore: CUDACore
 
