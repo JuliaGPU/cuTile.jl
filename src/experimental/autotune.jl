@@ -30,6 +30,15 @@ struct TuningOptions
     precompile_workers::Int
 end
 
+struct TuningSession
+    id::UInt
+end
+
+const NEXT_TUNING_SESSION_ID = Threads.Atomic{UInt}(0)
+
+TuningSession() =
+    TuningSession(Threads.atomic_add!(NEXT_TUNING_SESSION_ID, UInt(1)) + UInt(1))
+
 _tuning_defaults() = (
     seed=nothing,
     force=false,
@@ -123,12 +132,13 @@ end
 @inline _converted_args(args_fn, cfg) = map(cuTileconvert, args_fn(cfg))
 @inline _argtypes(args) = Tuple{map(Core.Typeof, args)...}
 
-function _compile_cfg(@nospecialize(f), cfg, args_fn;
+function _compile_cfg(@nospecialize(f), cfg, args_fn, session::TuningSession;
                       sm_arch::VersionNumber, opt_level::Int,
                       static_num_ctas=nothing, static_occupancy=nothing)
     converted = _converted_args(args_fn, cfg)
-    return cufunction(f, _argtypes(converted); sm_arch, opt_level,
-                      hints_from_cfg(cfg; static_num_ctas, static_occupancy)...)
+    return temporary_cufunction(f, _argtypes(converted), session.id;
+        sm_arch, opt_level,
+        hints_from_cfg(cfg; static_num_ctas, static_occupancy)...)
 end
 
 function _time_ms(run_once, get_args;
@@ -156,12 +166,12 @@ function _time_ms(run_once, get_args;
     return best_ms
 end
 
-function eval_cfg(@nospecialize(f), cfg, grid_fn, args_fn;
+function eval_cfg(@nospecialize(f), cfg, grid_fn, args_fn, session::TuningSession;
                   sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
                   static_num_ctas=nothing, static_occupancy=nothing,
                   verify=nothing, reset=nothing)
     grid = _grid_dims(grid_fn(cfg))
-    kernel = _compile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+    kernel = _compile_cfg(f, cfg, args_fn, session; sm_arch, opt_level,
                           static_num_ctas, static_occupancy)
 
     run_once = converted -> kernel(converted...; blocks=grid)
@@ -169,10 +179,10 @@ function eval_cfg(@nospecialize(f), cfg, grid_fn, args_fn;
     return _time_ms(run_once, get_args; warmup, reps, verify, reset)
 end
 
-function precompile_cfg(@nospecialize(f), cfg, args_fn;
+function precompile_cfg(@nospecialize(f), cfg, args_fn, session::TuningSession;
                         sm_arch::VersionNumber, opt_level::Int,
                         static_num_ctas=nothing, static_occupancy=nothing)
-    _compile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+    _compile_cfg(f, cfg, args_fn, session; sm_arch, opt_level,
                  static_num_ctas, static_occupancy)
     return nothing
 end
@@ -180,9 +190,10 @@ end
 const TimingRecord = Tuple{Any, Float32}
 
 function _measure_cfg!(record::Vector{TimingRecord}, first_error::Base.RefValue,
-                       @nospecialize(f), cfg, grid_fn, args_fn; kwargs...)
+                       @nospecialize(f), cfg, grid_fn, args_fn,
+                       session::TuningSession; kwargs...)
     ms = try
-        eval_cfg(f, cfg, grid_fn, args_fn; kwargs...)
+        eval_cfg(f, cfg, grid_fn, args_fn, session; kwargs...)
     catch err
         err isa InterruptException && rethrow()
         if err isa VerificationError
@@ -198,7 +209,8 @@ function _measure_cfg!(record::Vector{TimingRecord}, first_error::Base.RefValue,
     return nothing
 end
 
-function measure_candidates(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
+function measure_candidates(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn,
+                            session::TuningSession;
                             sm_arch::VersionNumber, opt_level::Int,
                             warmup::Int, reps::Int,
                             static_num_ctas=nothing, static_occupancy=nothing,
@@ -206,7 +218,7 @@ function measure_candidates(@nospecialize(f), configs::Vector{Any}, grid_fn, arg
     record = TimingRecord[]
     first_error = Ref{Any}(nothing)
     for cfg in configs
-        _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn;
+        _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn, session;
                       sm_arch, opt_level, warmup, reps,
                       static_num_ctas, static_occupancy, verify, reset)
     end
@@ -218,9 +230,10 @@ end
 
 Compile candidate configurations on worker tasks while the caller task measures
 completed candidates. Measurement stays on the caller task because CUDA state is
-task-local; workers only run the untimed `cufunction` precompile path.
+task-local; workers only run the untimed temporary compile path.
 """
-function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
+function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn,
+                        session::TuningSession;
                         sm_arch::VersionNumber, opt_level::Int,
                         warmup::Int, reps::Int, workers::Int,
                         static_num_ctas=nothing, static_occupancy=nothing,
@@ -228,7 +241,7 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn
     isempty(configs) && return TimingRecord[], nothing, nothing
 
     if iszero(workers) || length(configs) == 1
-        record, first_error = measure_candidates(f, configs, grid_fn, args_fn;
+        record, first_error = measure_candidates(f, configs, grid_fn, args_fn, session;
             sm_arch, opt_level, warmup, reps,
             static_num_ctas, static_occupancy, verify, reset)
         return record, nothing, first_error
@@ -249,7 +262,7 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn
             Threads.@spawn for cfg in jobs
                 cancelled[] && break
                 try
-                    precompile_cfg(f, cfg, args_fn; sm_arch, opt_level,
+                    precompile_cfg(f, cfg, args_fn, session; sm_arch, opt_level,
                                     static_num_ctas, static_occupancy)
                     cancelled[] || put!(ready, cfg)
                 catch err
@@ -272,7 +285,7 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn
     first_error = Ref{Any}(nothing)
     try
         for cfg in ready
-            _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn;
+            _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn, session;
                           sm_arch, opt_level, warmup, reps,
                           static_num_ctas, static_occupancy, verify, reset)
         end
@@ -331,14 +344,15 @@ function _no_valid_config_error(first_error, precompile_error)
 end
 
 function _refine_record(@nospecialize(f), record::Vector{TimingRecord}, tuning::TuningOptions,
-                        grid_fn, args_fn; sm_arch::VersionNumber, opt_level::Int,
+                        grid_fn, args_fn, session::TuningSession;
+                        sm_arch::VersionNumber, opt_level::Int,
                         static_num_ctas=nothing, static_occupancy=nothing,
                         verify=nothing, reset=nothing)
     (tuning.refine_topk > 0 && length(record) > 1) || return record
 
     sort!(record, by=last)
     top = Any[first(r) for r in record[1:min(tuning.refine_topk, length(record))]]
-    refined, _ = measure_candidates(f, top, grid_fn, args_fn;
+    refined, _ = measure_candidates(f, top, grid_fn, args_fn, session;
         sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.refine_reps,
         static_num_ctas, static_occupancy, verify, reset)
     return isempty(refined) ? record : refined
@@ -365,10 +379,11 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
 
     checker = verify !== nothing ? verify() : nothing
     reset = setup !== nothing ? setup() : nothing
+    session = TuningSession()
 
     record, precompile_error, first_error =
         with(_SCOPED_INF_CACHE => _fresh_inf_cache()) do
-            pipelined_tune(f, trials, grid_fn, args_fn;
+            pipelined_tune(f, trials, grid_fn, args_fn, session;
                 sm_arch, opt_level,
                 warmup=tuning.warmup, reps=tuning.reps,
                 workers=tuning.precompile_workers,
@@ -378,7 +393,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
 
     isempty(record) && _no_valid_config_error(first_error, precompile_error)
 
-    record = _refine_record(f, record, tuning, grid_fn, args_fn;
+    record = _refine_record(f, record, tuning, grid_fn, args_fn, session;
         sm_arch, opt_level,
         static_num_ctas, static_occupancy,
         verify=checker, reset)

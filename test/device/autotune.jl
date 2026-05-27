@@ -9,8 +9,8 @@ const Exp = ct.Experimental
                          c::ct.TileArray{Float32,1},
                          tile::Int)
         pid = ct.bid(1)
-        ta = ct.load(a, pid, (tile[],))
-        tb = ct.load(b, pid, (tile[],))
+        ta = ct.load(a, pid, (tile,))
+        tb = ct.load(b, pid, (tile,))
         ct.store(c, pid, ta + tb)
         return nothing
     end
@@ -18,9 +18,41 @@ const Exp = ct.Experimental
     function inplace_add_kernel(x::ct.TileArray{Float32,1},
                                 tile::Int)
         pid = ct.bid(1)
-        tx = ct.load(x, pid, (tile[],))
+        tx = ct.load(x, pid, (tile,))
         ct.store(x, pid, tx .+ 1f0)
         return nothing
+    end
+
+    function cache_probe_kernel(a::ct.TileArray{Float32,1},
+                                b::ct.TileArray{Float32,1},
+                                c::ct.TileArray{Float32,1},
+                                tile::Int)
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (tile,))
+        tb = ct.load(b, pid, (tile,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    function normal_const_entry_count(f, args)
+        converted = map(ct.cuTileconvert, args)
+        tt = Tuple{map(Core.Typeof, converted)...}
+        argtypes, _ = ct.unwrap_argtypes(f, tt)
+
+        world = Base.get_world_counter()
+        key = ct.TileCacheKey(ct.default_sm_arch(), ct.bytecode_version(),
+                              3, nothing, nothing)
+        cache = ct.CompilerCaching.CacheView{ct.CuTileResults}(key, world)
+        mi = ct.CompilerCaching.method_instance(f, argtypes; world)
+        ci = get(cache, mi, nothing)
+        ci === nothing && return 0
+
+        cached = ct.CC.traverse_analysis_results(ci) do result
+            result isa ct.CompilerCaching.CachedResult{ct.CuTileResults} ?
+                result : nothing
+        end
+        cached === nothing && return 0
+        return length(cached.const_entries)
     end
 
     n = 512
@@ -321,6 +353,26 @@ const Exp = ct.Experimental
         @test !r2.cache_hit
         @test r2.tuned_config.tile == 32
         @test Array(c) ≈ fill(3f0, n)
+    end
+
+    @testset "only winner enters normal compiler cache" begin
+        Exp.clear_autotune_cache()
+        probe_c = CUDA.zeros(Float32, n)
+        probe_configs = [(; tile=16), (; tile=32), (; tile=64)]
+        probe_args = cfg -> (a, b, probe_c, ct.Constant(cfg.tile))
+        @test normal_const_entry_count(cache_probe_kernel, probe_args(probe_configs[1])) == 0
+
+        result = Exp.autotune_launch(
+            cache_probe_kernel,
+            probe_configs,
+            cfg -> cld(n, cfg.tile),
+            probe_args;
+            key=(:temporary_candidates, n),
+            tuning=(preset=:fast, refine_topk=0))
+
+        @test result.tuned_config in probe_configs
+        @test normal_const_entry_count(cache_probe_kernel, probe_args(probe_configs[1])) == 1
+        @test Array(probe_c) ≈ fill(3f0, n)
     end
 
     @testset "@autotune macro: NT space" begin
