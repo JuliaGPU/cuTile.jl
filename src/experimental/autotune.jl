@@ -34,9 +34,8 @@ function hints_from_cfg(cfg; static_num_ctas=nothing, static_occupancy=nothing)
     return (num_ctas=n, occupancy=o)
 end
 
-function time_ms(run_once::Function, get_args::Function;
-                 warmup::Int, reps::Int, verify::Union{Nothing, Function}=nothing,
-                 reset::Union{Nothing, Function}=nothing)
+function time_ms(run_once, get_args;
+                 warmup::Int, reps::Int, verify=nothing, reset=nothing)
     CUDACore.synchronize()
     for _ in 1:max(warmup, verify !== nothing ? 1 : 0)
         reset !== nothing && reset()
@@ -60,11 +59,10 @@ function time_ms(run_once::Function, get_args::Function;
     return best_ms
 end
 
-function eval_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
+function eval_cfg(@nospecialize(f), cfg, grid_fn, args_fn;
                   sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
                   static_num_ctas=nothing, static_occupancy=nothing,
-                  verify::Union{Nothing, Function}=nothing,
-                  reset::Union{Nothing, Function}=nothing)
+                  verify=nothing, reset=nothing)
     grid = grid_fn(cfg)
     grid_dims = grid isa Integer ? (grid,) : grid
 
@@ -80,7 +78,7 @@ function eval_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
     return time_ms(run_once, get_args; warmup, reps, verify, reset)
 end
 
-function precompile_cfg(@nospecialize(f), cfg, args_fn::Function;
+function precompile_cfg(@nospecialize(f), cfg, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
                         static_num_ctas=nothing, static_occupancy=nothing)
     converted = map(cuTileconvert, args_fn(cfg))
@@ -90,8 +88,7 @@ function precompile_cfg(@nospecialize(f), cfg, args_fn::Function;
     return nothing
 end
 
-function precompile_candidates(@nospecialize(f), configs::Vector{Any},
-                               args_fn::Function;
+function precompile_candidates(@nospecialize(f), configs::Vector{Any}, args_fn;
                                sm_arch::VersionNumber, opt_level::Int, workers::Int,
                                static_num_ctas=nothing, static_occupancy=nothing)
     isempty(configs) && return configs, nothing
@@ -137,12 +134,10 @@ function precompile_candidates(@nospecialize(f), configs::Vector{Any},
     return configs[compiled], first_err
 end
 
-function measure_candidates(@nospecialize(f), configs::Vector{Any},
-                            grid_fn::Function, args_fn::Function;
+function measure_candidates(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
                             sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
                             static_num_ctas=nothing, static_occupancy=nothing,
-                            verify::Union{Nothing, Function}=nothing,
-                            reset::Union{Nothing, Function}=nothing)
+                            verify=nothing, reset=nothing)
     record = Tuple{Any, Float32}[]
     first_error = nothing
     for cfg in configs
@@ -180,13 +175,11 @@ compile-then-measure cycle on the master.
 `record` is in completion order, not trial order — callers that care about
 deterministic ordering should sort the result.
 """
-function pipelined_tune(@nospecialize(f), configs::Vector{Any},
-                        grid_fn::Function, args_fn::Function;
+function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
                         warmup::Int, reps::Int, workers::Int,
                         static_num_ctas=nothing, static_occupancy=nothing,
-                        verify::Union{Nothing, Function}=nothing,
-                        reset::Union{Nothing, Function}=nothing)
+                        verify=nothing, reset=nothing)
     record = Tuple{Any, Float32}[]
     if isempty(configs)
         return record, nothing, nothing
@@ -277,11 +270,10 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any},
 end
 
 function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::AbstractRNG,
-                      grid_fn::Function, args_fn::Function, tuning;
+                      grid_fn, args_fn, tuning;
                       sm_arch::VersionNumber, opt_level::Int, kernel_key, arg_key,
                       static_num_ctas=nothing, static_occupancy=nothing,
-                      verify::Union{Nothing, Function}=nothing,
-                      setup::Union{Nothing, Function}=nothing)
+                      verify=nothing, setup=nothing)
     if !tuning.force
         entry = lock(AUTOTUNE_LOCK) do
             per_kernel = get(AUTOTUNE_CACHE, kernel_key, nothing)
@@ -371,15 +363,27 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     return entry, cache_hit, reset
 end
 
+# Normalize `grid`/`args` to a callable. A `Function` is used as-is; any
+# other value is wrapped in `Returns(...)`. Lets `autotune_launch` accept
+# `blocks = 1024` or `args = (a, b, c)` directly instead of forcing the
+# caller to write `cfg -> 1024` for grids that don't depend on the cfg.
+@inline _as_cfg_fn(f::Function) = f
+@inline _as_cfg_fn(x) = Returns(x)
+
 """
-    autotune_launch(f, space, grid_fn, args_fn; key, key_fn, launch_args_fn,
-                    verify, setup, tuning, sm_arch, opt_level,
+    autotune_launch(f, space, grid, args; key, launch_args, verify, setup,
+                    tuning, sm_arch, opt_level,
                     num_ctas=nothing, occupancy=nothing)
 
 Tune `f` over `space` (an [`AbstractSearchSpace`](@ref) or a `Vector`/`NamedTuple`
-shorthand) and launch the best config. `grid_fn(cfg)` returns the launch
-grid; `args_fn(cfg)` returns the argument tuple. Results are cached per
-`(f, sm_arch, opt_level) ⇒ key`.
+shorthand) and launch the best config.
+
+`grid` and `args` are either functions of the form `cfg -> grid` /
+`cfg -> args_tuple` (for grids/args that depend on the cfg), or plain
+values (for grids/args that don't). Internally both are normalized to
+callables. `launch_args` follows the same convention; defaults to `args`.
+
+Results are cached per `(f, sm_arch, opt_level, num_ctas, occupancy) ⇒ key`.
 
 `num_ctas` and `occupancy` may be supplied as **static** kwargs (applied
 uniformly to every cfg — useful for `ByTarget(...)`-style per-arch dispatch)
@@ -387,12 +391,11 @@ OR as **axes** inside `space` (tuned per cfg), but not both. Specifying
 both throws an `ArgumentError`.
 """
 function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
-                         grid_fn::Function, args_fn::Function;
+                         grid, args;
                          key=nothing,
-                         key_fn::Union{Nothing, Function}=nothing,
-                         launch_args_fn::Union{Nothing, Function}=nothing,
-                         verify::Union{Nothing, Function}=nothing,
-                         setup::Union{Nothing, Function}=nothing,
+                         launch_args=nothing,
+                         verify=nothing,
+                         setup=nothing,
                          tuning::NamedTuple=NamedTuple(),
                          sm_arch::VersionNumber=default_sm_arch(),
                          opt_level::Int=3,
@@ -401,30 +404,33 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
     tuning = normalize_tuning(tuning)
     rng = tuning.seed !== nothing ? MersenneTwister(tuning.seed) : Random.default_rng()
 
+    grid_fn = _as_cfg_fn(grid)
+    args_fn = _as_cfg_fn(args)
+    launch_args_fn = launch_args === nothing ? args_fn : _as_cfg_fn(launch_args)
+
     kernel_key = (f, sm_arch, opt_level, num_ctas, occupancy)
-    arg_key = key !== nothing ? key : (key_fn !== nothing ? key_fn() : nothing)
 
     entry, cache_hit, reset = find_or_tune(f, space, rng, grid_fn, args_fn, tuning;
-        sm_arch, opt_level, kernel_key, arg_key,
+        sm_arch, opt_level, kernel_key, arg_key=key,
         static_num_ctas=num_ctas, static_occupancy=occupancy,
         verify, setup)
 
     cfg = entry.best_config
     grid = grid_fn(cfg)
-    args = launch_args_fn !== nothing ? launch_args_fn(cfg) : args_fn(cfg)
+    launched_args = launch_args_fn(cfg)
 
     reset !== nothing && reset()
 
-    cuTile.launch(f, grid, args...; sm_arch, opt_level,
+    cuTile.launch(f, grid, launched_args...; sm_arch, opt_level,
                   hints_from_cfg(cfg; static_num_ctas=num_ctas,
                                       static_occupancy=occupancy)...)
 
     return (; tuned_config=cfg, grid, tuning_record=copy(entry.tuning_record), cache_hit)
 end
 
-function autotune_launch(@nospecialize(f), configs, grid_fn::Function, args_fn::Function; kwargs...)
+function autotune_launch(@nospecialize(f), configs, grid, args; kwargs...)
     space = configs isa NamedTuple ? CartesianSpace(configs) : FixedSpace(configs)
-    return autotune_launch(f, space, grid_fn, args_fn; kwargs...)
+    return autotune_launch(f, space, grid, args; kwargs...)
 end
 
 function clear_autotune_cache(; kernel=nothing, key=nothing)
