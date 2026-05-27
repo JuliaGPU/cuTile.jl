@@ -56,7 +56,7 @@ function _autotune_space_axes(space_expr)
 end
 
 const _AUTOTUNE_KWARGS = (:key, :space, :blocks, :tuning, :verify, :setup,
-                          :sm_arch, :opt_level, :key_fn, :launch_args_fn,
+                          :sm_arch, :opt_level, :launch_args,
                           :num_ctas, :occupancy)
 
 """
@@ -74,22 +74,21 @@ tuning configuration being evaluated).
 - `blocks` — grid dimensions, an `Int` or `Tuple`. May reference `\$X`.
 
 # Optional kwargs
-- `key`            — eager cache key (any value)
-- `key_fn`         — lazy alternative to `key`
-- `tuning`         — `NamedTuple` of tuning knobs (`preset`, `force`, etc.)
-- `verify`         — `() -> (() -> Bool)` factory; the returned checker is
-                     called after each warmup pass to reject incorrect cfgs
-- `setup`          — `() -> (() -> Nothing)` factory; reset between reps
-- `launch_args_fn` — final-launch arg builder (defaults to the kernel-call
-                     args); use this when the timed args are throwaway
-                     copies (in-place kernels) and the final launch should
-                     hit the real buffers
+- `key`         — cache key (any value)
+- `tuning`      — `NamedTuple` of tuning knobs (`preset`, `force`, etc.)
+- `verify`      — `() -> (() -> Bool)` factory; the returned checker is
+                  called after each warmup pass to reject incorrect cfgs
+- `setup`       — `() -> (() -> Nothing)` factory; reset between reps
+- `launch_args` — final-launch args (or `cfg -> args` if it should differ
+                  from the kernel-call args). Use this when the timed args
+                  are throwaway copies (in-place kernels) and the final
+                  launch should hit the real buffers
 - `sm_arch`, `opt_level` — forwarded to `cufunction`
 - `num_ctas`, `occupancy` — **static** hints applied uniformly to every
-                     cfg. May not coexist with same-named axes in `space`
-                     (the macro flags the conflict at expansion time when
-                     `space` is a literal NT; otherwise `autotune_launch`
-                     catches it at run time)
+                  cfg. May not coexist with same-named axes in `space`
+                  (the macro flags the conflict at expansion time when
+                  `space` is a literal NT; otherwise `autotune_launch`
+                  catches it at run time)
 
 # Example
 
@@ -164,7 +163,7 @@ macro autotune(args...)
     # Forward all macro kwargs (except space/blocks, which are positional
     # / lifted into the closures) to `autotune_launch`.
     forwarded_keys = (:key, :tuning, :verify, :setup, :sm_arch, :opt_level,
-                      :key_fn, :launch_args_fn, :num_ctas, :occupancy)
+                      :launch_args, :num_ctas, :occupancy)
     kw_exprs = [Expr(:kw, k, kwargs[k]) for k in forwarded_keys if haskey(kwargs, k)]
 
     return esc(quote
