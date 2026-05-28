@@ -227,15 +227,14 @@ mutable struct RewriteDriver
 end
 
 #=============================================================================
- Rewriter listener — driver-side bookkeeping reacts to IR mutations
+ Rewriter listener: driver-side bookkeeping reacts to IR mutations
 =============================================================================#
 
-# The driver maintains its own auxiliary state (a `defs` map keyed by func,
-# a worklist, and a `modified` set for cascading propagation) on top of the
-# Rewriter's IR-level state. The Rewriter calls these `notify_*` hooks at
-# every mutation; the driver uses them to keep its state in sync without
-# having to wrap each mutation site itself. Mirrors MLIR's Listener pattern
-# (`RewriterBase::Listener::notifyOperation{Inserted,Modified,Erased}`).
+# The driver has its own state on top of the Rewriter's index: a `defs` map
+# keyed by func, the `worklist`, and a `modified` set for cascading. These
+# `notify_*` hooks let the Rewriter keep that state in sync, so the driver
+# doesn't need to wrap every mutation callsite. Same pattern as MLIR's
+# `RewriterBase::Listener::notifyOperation{Inserted,Modified,Erased}`.
 
 function notify_inserted!(d::RewriteDriver, block::Block, inst::Instruction)
     stmt = inst[:stmt]
@@ -249,21 +248,20 @@ end
 
 function notify_modified!(d::RewriteDriver, block::Block, val::SSAValue,
                           @nospecialize(old_stmt), @nospecialize(new_stmt))
-    # Func may have changed (substitution rewrites); refresh the def entry
-    # so the next worklist visit sees the new func for rule dispatch.
+    # Refresh the def entry so worklist dispatch picks the new func.
     call = resolve_call(block, new_stmt)
     if call !== nothing
         func, _ = call
         d.defs[val] = DefEntry(block, val, func)
     end
-    # No worklist cascade here — callers (`apply_rewrite!`,
-    # `apply_inplace_rewrite!`, `commute_arith_transparent`) handle re-seeding
-    # of `val` + its users explicitly after the mutation returns.
+    # Worklist cascading is done by the callers (`apply_rewrite!`,
+    # `apply_inplace_rewrite!`, `commute_arith_transparent`), which re-seed
+    # `val` and its users themselves.
 end
 
 function notify_erased!(d::RewriteDriver, ::Block, val::SSAValue,
                         @nospecialize(old_stmt))
-    # Operand-defs of the erased op may now be dead — cascade to worklist.
+    # Operand-defs may now be dead; cascade them to the worklist.
     if old_stmt isa Expr
         for_expr_operands(old_stmt) do op
             op isa SSAValue || return
@@ -454,8 +452,7 @@ function resolve_inplace_rhs(driver, bindings, op::RCall, lhs_op::PCall)
                   for (sub_rhs, sub_lhs) in zip(op.operands, lhs_op.operands)]
     # Sub-call func is enforced equal to the matched lhs func above
     # (`op.func === lhs_op.func`), so the flag is still valid — only operands
-    # changed. The rewriter's `replace_stmt!` preserves type and flag via
-    # partial-NamedTuple setindex.
+    # changed.
     replace_stmt!(driver.rewriter, entry.block, matched_ssa, Expr(:call, op.func, new_ops...))
     push!(driver.worklist, matched_ssa)
     return matched_ssa
@@ -597,8 +594,6 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
     rewriter = Rewriter(sci)
     driver = RewriteDriver(rewriter, defs, dispatch, wl, constants, Set{SSAValue}(),
                            max_rewrites)
-    # Wire the driver as the rewriter's listener so its `notify_*` methods
-    # fire on every IR mutation.
     rewriter.listener = driver
 
     num_rewrites = 0
