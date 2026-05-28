@@ -223,12 +223,173 @@ mutable struct RewriteDriver
     worklist::Worklist
     constants::Union{Nothing, ConstantInfo}
     modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
+    users::Dict{SSAValue, Vector{SSAValue}} # val -> SSAs whose stmts reference it
+    extra_uses::Dict{SSAValue, Int}         # val -> count of uses inside block terminators
     max_rewrites::Int
 end
 
-"""Compute fresh use count for an SSA value."""
+"""Users (by SSA) of `val`, or an empty list if `val` has none recorded."""
+users_of(driver::RewriteDriver, val::SSAValue) =
+    get(driver.users, val, SSAValue[])
+users_of(::RewriteDriver, ::Any) = SSAValue[]
+
+"""Total use count for `val`, including terminator uses."""
 use_count(driver::RewriteDriver, val::SSAValue) =
-    length(uses(driver.sci.entry, val))
+    length(users_of(driver, val)) + get(driver.extra_uses, val, 0)
+
+# Iterate the SSA-positional operands of an Expr (skipping head/callee slot).
+function for_expr_operands(f, expr::Expr)
+    start = expr.head === :invoke ? 3 : 2
+    for i in start:length(expr.args)
+        f(expr.args[i])
+    end
+end
+
+function add_use!(driver::RewriteDriver, @nospecialize(operand), user::SSAValue)
+    operand isa SSAValue || return
+    push!(get!(Vector{SSAValue}, driver.users, operand), user)
+end
+
+function remove_use!(driver::RewriteDriver, @nospecialize(operand), user::SSAValue)
+    operand isa SSAValue || return
+    users = get(driver.users, operand, nothing)
+    users === nothing && return
+    i = findfirst(==(user), users)
+    i === nothing && return
+    deleteat!(users, i)
+    isempty(users) && delete!(driver.users, operand)
+end
+
+# Register/unregister operand uses for a stmt owned by `val`. The rewriter
+# only ever creates or replaces `Expr` stmts (CF ops and terminators are
+# untouched), so we only need the Expr path here. Initial-build populates the
+# other stmt kinds in `build_use_index!`.
+function register_stmt_uses!(driver::RewriteDriver, val::SSAValue, @nospecialize(stmt))
+    stmt isa Expr || return
+    for_expr_operands(stmt) do op
+        add_use!(driver, op, val)
+    end
+end
+
+function unregister_stmt_uses!(driver::RewriteDriver, val::SSAValue, @nospecialize(stmt))
+    stmt isa Expr || return
+    for_expr_operands(stmt) do op
+        remove_use!(driver, op, val)
+    end
+end
+
+"""
+Replace the stmt at `val` with `new_stmt`, updating the use-index. If `flag`
+is given, also update the IR_FLAG_* bitmask; otherwise the existing flag and
+type are preserved (matches the existing partial-NamedTuple `block[val.id] =`
+idiom). Called by every driver-side mutation that swaps an Expr in place.
+"""
+function update_stmt!(driver::RewriteDriver, block::Block, val::SSAValue,
+                      new_stmt; flag::Union{UInt32, Nothing}=nothing)
+    haskey(block, val.id) || return
+    old_stmt = block[val.id][:stmt]
+    unregister_stmt_uses!(driver, val, old_stmt)
+    if flag === nothing
+        block[val.id] = (stmt=new_stmt,)
+    else
+        block[val.id] = (stmt=new_stmt, flag=flag)
+    end
+    register_stmt_uses!(driver, val, new_stmt)
+end
+
+# Build the initial use-index by walking the entire SCI once. Mirrors the
+# dispatch in `IRStructurizer.walk_uses!(::Block)` so every operand kind that
+# the IR could reference is captured: Expr args, control-flow op fields,
+# ReturnNode/PiNode/value-like stmt operands, and block terminators.
+function build_use_index!(driver::RewriteDriver)
+    for block in eachblock(driver.sci)
+        for i in 1:length(block.body.ssa_idxes)
+            owner = SSAValue(block.body.ssa_idxes[i])
+            register_owned_stmt_uses!(driver, owner, block.body.stmts[i])
+        end
+        register_terminator_uses!(driver, block.terminator)
+    end
+end
+
+function register_owned_stmt_uses!(driver::RewriteDriver, owner::SSAValue, @nospecialize(stmt))
+    if stmt isa Expr
+        for_expr_operands(stmt) do op
+            add_use!(driver, op, owner)
+        end
+    elseif stmt isa Core.ReturnNode
+        isdefined(stmt, :val) && add_use!(driver, stmt.val, owner)
+    elseif stmt isa Core.PiNode
+        add_use!(driver, stmt.val, owner)
+    elseif stmt isa SSAValue
+        # Alias/forwarding stmt: the stmt slot itself IS the operand.
+        add_use!(driver, stmt, owner)
+    elseif stmt isa ControlFlowOp
+        register_cf_op_uses!(driver, owner, stmt)
+    end
+end
+
+function register_cf_op_uses!(driver::RewriteDriver, owner::SSAValue, op::IfOp)
+    add_use!(driver, op.condition, owner)
+end
+
+function register_cf_op_uses!(driver::RewriteDriver, owner::SSAValue, op::ForOp)
+    add_use!(driver, op.lower, owner)
+    add_use!(driver, op.upper, owner)
+    add_use!(driver, op.step, owner)
+    for iv in op.init_values
+        add_use!(driver, iv, owner)
+    end
+end
+
+function register_cf_op_uses!(driver::RewriteDriver, owner::SSAValue,
+                              op::Union{WhileOp, LoopOp})
+    for iv in op.init_values
+        add_use!(driver, iv, owner)
+    end
+end
+
+# Terminator operands have no SSA owner; record them as anonymous counts so
+# `use_count` reflects them (needed for the dead-op elim shortcut).
+function register_terminator_uses!(driver::RewriteDriver, term)
+    if term isa Core.ReturnNode
+        isdefined(term, :val) && bump_extra_use!(driver, term.val)
+    elseif term isa ConditionOp
+        bump_extra_use!(driver, term.condition)
+        for arg in term.args
+            bump_extra_use!(driver, arg)
+        end
+    elseif term isa Union{ContinueOp, BreakOp, YieldOp}
+        for v in term.values
+            bump_extra_use!(driver, v)
+        end
+    end
+end
+
+function bump_extra_use!(driver::RewriteDriver, @nospecialize(val))
+    val isa SSAValue || return
+    driver.extra_uses[val] = get(driver.extra_uses, val, 0) + 1
+end
+
+# Transfer index entries from `old` to `new_val` after a RAUW. The IR-level
+# `replace_uses!` has already rewritten the user stmts; we just move the
+# bookkeeping so subsequent queries find users under `new_val`.
+function transfer_uses!(driver::RewriteDriver, old::SSAValue, @nospecialize(new_val))
+    old_users = get(driver.users, old, nothing)
+    if old_users !== nothing
+        if new_val isa SSAValue
+            dest = get!(Vector{SSAValue}, driver.users, new_val)
+            append!(dest, old_users)
+        end
+        delete!(driver.users, old)
+    end
+    old_extra = get(driver.extra_uses, old, 0)
+    if old_extra > 0
+        if new_val isa SSAValue
+            driver.extra_uses[new_val] = get(driver.extra_uses, new_val, 0) + old_extra
+        end
+        delete!(driver.extra_uses, old)
+    end
+end
 
 #=============================================================================
  Notifications
@@ -244,25 +405,40 @@ end
 
 """Add instructions that use `val` to the worklist (their operand changed)."""
 function add_users_to_worklist!(driver::RewriteDriver, val::SSAValue)
-    for inst in users(driver.sci.entry, val)
-        push!(driver.worklist, SSAValue(inst))
+    for u in users_of(driver, val)
+        push!(driver.worklist, u)
     end
 end
 
 """Erase an instruction and notify the worklist."""
 function erase_op!(driver::RewriteDriver, entry::DefEntry)
-    add_operands_to_worklist!(driver, entry)
-    if haskey(entry.block, entry.val.id)
-        delete!(entry.block, entry.val.id)
+    val = entry.val
+    if haskey(entry.block, val.id)
+        old_stmt = entry.block[val.id][:stmt]
+        # Deregister this op's operand uses AND enqueue operand-defs (their
+        # use count just dropped — may enable further dead-op elim).
+        if old_stmt isa Expr
+            for_expr_operands(old_stmt) do op
+                op isa SSAValue || return
+                remove_use!(driver, op, val)
+                haskey(driver.defs, op) && push!(driver.worklist, op)
+            end
+        end
+        delete!(entry.block, val.id)
     end
-    delete!(driver.defs, entry.val)
-    remove!(driver.worklist, entry.val)
+    # Drop val's own entries; any leftover claims would now be stale.
+    delete!(driver.users, val)
+    delete!(driver.extra_uses, val)
+    delete!(driver.defs, val)
+    remove!(driver.worklist, val)
 end
 
 """Register a newly inserted instruction."""
 function notify_insert!(driver::RewriteDriver, block::Block, inst::Instruction)
     val = SSAValue(inst)
-    call = resolve_call(block, inst)
+    stmt = inst[:stmt]
+    register_stmt_uses!(driver, val, stmt)
+    call = resolve_call(block, stmt)
     call === nothing && return
     func, _ = call
     driver.defs[val] = DefEntry(block, val, func)
@@ -406,11 +582,8 @@ function apply_inplace_rewrite!(driver::RewriteDriver, block, val::SSAValue, rul
     # the flag from the new func's declared effects (`efunc` overrides),
     # mirroring inference's `flags_for_effects` — the inferred bits on the
     # old call describe the OLD op and don't carry over.
-    if rule.rhs.func === driver.defs[val].func
-        block[val.id] = (stmt=new_stmt,)
-    else
-        block[val.id] = (stmt=new_stmt, flag=inferred_flags(rule.rhs.func))
-    end
+    flag = rule.rhs.func === driver.defs[val].func ? nothing : inferred_flags(rule.rhs.func)
+    update_stmt!(driver, block, val, new_stmt; flag)
     driver.defs[val] = DefEntry(block, val, rule.rhs.func)
     push!(driver.worklist, val)
     add_users_to_worklist!(driver, val)
@@ -438,8 +611,9 @@ function resolve_inplace_rhs(driver, bindings, op::RCall, lhs_op::PCall)
                   for (sub_rhs, sub_lhs) in zip(op.operands, lhs_op.operands)]
     # Sub-call func is enforced equal to the matched lhs func above
     # (`op.func === lhs_op.func`), so the flag is still valid — only operands
-    # changed. Partial-NamedTuple setindex preserves type and flag.
-    entry.block[matched_ssa.id] = (stmt=Expr(:call, op.func, new_ops...),)
+    # changed. `update_stmt!` preserves type and flag via partial-NamedTuple
+    # setindex and keeps the use-index in sync.
+    update_stmt!(driver, entry.block, matched_ssa, Expr(:call, op.func, new_ops...))
     push!(driver.worklist, matched_ssa)
     return matched_ssa
 end
@@ -454,25 +628,22 @@ The matched_ssas in MatchResult are ordered root-first, but we need to find
 the specific SSA for a sub-pattern. We do this by looking up the first operand's
 binding and finding the op that defines it."""
 function find_matched_ssa(driver, pat::PCall, bindings)
-    entry = driver.sci.entry
     for sub in pat.operands
         if sub isa PBind
             bound = get(bindings, sub.name, nothing)
             bound isa SSAValue || continue
-            for inst in users(entry, bound)
-                call = resolve_call(entry, inst)
-                call === nothing && continue
-                func, _ = call
-                func === pat.func && return SSAValue(inst)
+            for u in users_of(driver, bound)
+                def_entry = get(driver.defs, u, nothing)
+                def_entry === nothing && continue
+                def_entry.func === pat.func && return u
             end
         elseif sub isa PCall
             inner_ssa = find_matched_ssa(driver, sub, bindings)
             if inner_ssa !== nothing
-                for inst in users(entry, inner_ssa)
-                    call = resolve_call(entry, inst)
-                    call === nothing && continue
-                    func, _ = call
-                    func === pat.func && return SSAValue(inst)
+                for u in users_of(driver, inner_ssa)
+                    def_entry = get(driver.defs, u, nothing)
+                    def_entry === nothing && continue
+                    def_entry.func === pat.func && return u
                 end
             end
         end
@@ -499,11 +670,16 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         # When these are later popped from the worklist without a match, the
         # driver propagates to THEIR users (see modified check in main loop).
         # This gives MLIR-style notifyOperationModified cascading.
-        for inst in users(driver.sci.entry, val)
-            push!(driver.modified, SSAValue(inst))
+        new_val = match.bindings[rule.rhs.name]
+        for u in users_of(driver, val)
+            push!(driver.modified, u)
+            push!(driver.worklist, u)
         end
-        add_users_to_worklist!(driver, val)
-        replace_uses!(driver.sci.entry, val, match.bindings[rule.rhs.name])
+        # IR-level RAUW walks the SCI and rewrites every use-site; the
+        # use-index is then updated to reflect that those user stmts now
+        # reference `new_val` instead.
+        replace_uses!(driver.sci.entry, val, new_val)
+        transfer_uses!(driver, val, new_val)
         erase_op!(driver, entry)
     else
         # Substitution: replace root in-place, clean up dead intermediates.
@@ -531,11 +707,8 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         # describe the OLD op; recompute from the new func's `efunc` effects
         # so downstream gates (CSE, LICM) see fresh, correct information.
         new_stmt = Expr(:call, rule.rhs.func, operands...)
-        if rule.rhs.func === driver.defs[val].func
-            block[val.id] = (stmt=new_stmt,)
-        else
-            block[val.id] = (stmt=new_stmt, flag=inferred_flags(rule.rhs.func))
-        end
+        flag = rule.rhs.func === driver.defs[val].func ? nothing : inferred_flags(rule.rhs.func)
+        update_stmt!(driver, block, val, new_stmt; flag)
         # Update defs, re-add self and users to worklist (statement changed)
         driver.defs[val] = DefEntry(block, val, rule.rhs.func)
         push!(driver.worklist, val)
@@ -584,7 +757,10 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         end
     end
 
-    driver = RewriteDriver(sci, defs, dispatch, wl, constants, Set{SSAValue}(), max_rewrites)
+    driver = RewriteDriver(sci, defs, dispatch, wl, constants, Set{SSAValue}(),
+                           Dict{SSAValue, Vector{SSAValue}}(), Dict{SSAValue, Int}(),
+                           max_rewrites)
+    build_use_index!(driver)
 
     num_rewrites = 0
     while !isempty(driver.worklist) && num_rewrites < driver.max_rewrites
@@ -634,10 +810,9 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         # cascade continues through the fixpoint.
         if !matched && val in driver.modified
             delete!(driver.modified, val)
-            for inst in users(driver.sci.entry, val)
-                uv = SSAValue(inst)
-                push!(driver.modified, uv)
-                haskey(driver.defs, uv) && push!(driver.worklist, uv)
+            for u in users_of(driver, val)
+                push!(driver.modified, u)
+                haskey(driver.defs, u) && push!(driver.worklist, u)
             end
         end
     end

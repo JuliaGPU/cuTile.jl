@@ -111,8 +111,9 @@ function commute_arith_transparent(sci, block, inst, match, driver)
     # Replace root with transparent_op(op_result, s). Func changes
     # (subi/addi → reshape/broadcast), so recompute the flag from the new
     # func's declared effects — the inferred bits describe the OLD op.
-    block[val.id] = (stmt=Expr(:call, transparent_func, SSAValue(op), match.bindings[:s]),
-                     flag=inferred_flags(transparent_func))
+    update_stmt!(driver, block, val,
+                 Expr(:call, transparent_func, SSAValue(op), match.bindings[:s]);
+                 flag=inferred_flags(transparent_func))
     driver.defs[val] = DefEntry(block, val, transparent_func)
     push!(driver.worklist, val)
     add_users_to_worklist!(driver, val)
