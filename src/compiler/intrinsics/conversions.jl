@@ -86,14 +86,29 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
 end
 
 """
+    ftof_rounding_mode(::Type) -> RoundingMode.T
+
+Rounding mode used by [`Intrinsics.ftof`](@ref) when converting *to* this
+target type. Defaults to `NearestEven`; extensions override for types
+whose tileiras verifier rejects nearest-even (e.g. `Float8_E8M0FNU`,
+which only accepts `Zero` or `PositiveInf`). Codegen reaches this via
+[`lookup_ftof_rounding_mode`](@ref) so extension methods land in the
+latest world.
+"""
+ftof_rounding_mode(::Type) = RoundingMode.NearestEven
+
+@inline lookup_ftof_rounding_mode(@nospecialize(T::Type)) =
+    Base.invokelatest(ftof_rounding_mode, T)::RoundingMode.T
+
+"""
     Intrinsics.ftof(x::Tile{<:AbstractFloat}, ::Type{F2}) -> Tile{F2}     where {F2<:AbstractFloat}
 
 Element-wise floating-point to floating-point conversion; lowers to
 `cuda_tile.ftof`.
 
 Also invocable with a scalar, promoted to a 0-D tile before codegen. `F2`
-must be a compile-time constant. The current emit does not pass a
-`rounding_mode` and so uses Tile IR's default.
+must be a compile-time constant. The rounding mode is picked from
+[`ftof_rounding_mode`](@ref); the default is `NearestEven`.
 """
 @intrinsic ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type))
@@ -112,7 +127,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
-    result_v = encode_FToFOp!(cb, result_type_id, source.v)
+    rounding_mode = lookup_ftof_rounding_mode(target_type)
+    result_v = encode_FToFOp!(cb, result_type_id, source.v; rounding_mode)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
     CGVal(result_v, result_type_id, result_jltype, source.shape)

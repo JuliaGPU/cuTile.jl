@@ -753,6 +753,16 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     validate_hint(:num_ctas, hints.num_ctas)
     validate_hint(:occupancy, hints.occupancy)
 
+    # CTA clusters (num_cta_in_cga > 1) are a Blackwell feature. Older tileiras
+    # versions rejected the bytecode for non-Blackwell targets; tileiras 13.3
+    # silently accepts and ignores the hint, so emit our own clear error.
+    if hints.num_ctas !== nothing && hints.num_ctas > 1 &&
+       sm_arch !== nothing && sm_arch < v"10"
+        throw(ArgumentError(
+            "num_cta_in_cga > 1 requires Blackwell (sm_100+), but target is " *
+            "$(format_sm_arch(sm_arch))"))
+    end
+
     # Build items list (only non-nothing values)
     items = Tuple{String, Int}[]
     isnothing(hints.num_ctas) || push!(items, ("num_cta_in_cga", hints.num_ctas))
