@@ -70,6 +70,19 @@ function encode_padding_value!(buf::Vector{UInt8}, pv::PaddingValue.T)
     end
 end
 
+# v13.3 unified-bitfield view types encode optional fields via a leading
+# `optional_flags` varint plus bare value bytes at the tail. Bit 0 marks a
+# present padding value.
+function encode_optional_flags!(buf::Vector{UInt8}, pv::PaddingValue.T)
+    flags = pv == PaddingValue.Missing ? 0 : (1 << 0)
+    encode_varint!(buf, flags)
+end
+
+function encode_optional_padding_byte!(buf::Vector{UInt8}, pv::PaddingValue.T)
+    pv == PaddingValue.Missing && return
+    push!(buf, UInt8(Int(pv) - 1))
+end
+
 """
     TypeTable
 
@@ -174,10 +187,20 @@ function partition_view_type!(table::TypeTable,
                               dim_map::AbstractVector{<:Integer},
                               padding_value::PaddingValue.T)
     buf = UInt8[CompositeType.PartitionView]
-    encode_int_list!(buf, collect(tile_shape), 4)  # 4-byte integers
-    encode_varint!(buf, tensor_view.id)
-    encode_int_list!(buf, dim_map, 4)
-    encode_padding_value!(buf, padding_value)
+    if table.version >= v"13.3"
+        # Unified bitfield encoding: an `optional_flags` varint up front
+        # gates a bare padding byte at the tail (no separate present flag).
+        encode_optional_flags!(buf, padding_value)
+        encode_int_list!(buf, collect(tile_shape), 4)  # 4-byte integers
+        encode_varint!(buf, tensor_view.id)
+        encode_int_list!(buf, dim_map, 4)
+        encode_optional_padding_byte!(buf, padding_value)
+    else
+        encode_int_list!(buf, collect(tile_shape), 4)  # 4-byte integers
+        encode_varint!(buf, tensor_view.id)
+        encode_int_list!(buf, dim_map, 4)
+        encode_padding_value!(buf, padding_value)
+    end
     _get_or_create!(table, buf)
 end
 

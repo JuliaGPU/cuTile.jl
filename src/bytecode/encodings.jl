@@ -936,9 +936,18 @@ end
 Natural exponential (e^x) operation.
 Opcode: 23
 """
-function encode_ExpOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+function encode_ExpOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                       rounding_mode::RoundingMode.T=RoundingMode.Full)
     encode_varint!(cb.buf, Opcode.ExpOp)
     encode_typeid!(cb.buf, result_type)
+    # v13.3 added a `rounding_mode` attribute (approx/full). Prior versions
+    # only support `full`, so refuse to silently downgrade `approx`.
+    if cb.version >= v"13.3"
+        encode_enum!(cb.buf, rounding_mode)
+    else
+        rounding_mode == RoundingMode.Full ||
+            throw(IRError("ExpOp rounding_mode != Full requires Tile IR v13.3+, got v$(cb.version)"))
+    end
     encode_operand!(cb.buf, source)
     return new_op!(cb)
 end
@@ -1260,9 +1269,17 @@ end
 Float matrix multiply-accumulate: result = lhs @ rhs + acc.
 Opcode: 73
 """
-function encode_MmaFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value, acc::Value)
+function encode_MmaFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value, acc::Value;
+                        fast_acc::Bool=false)
     encode_varint!(cb.buf, Opcode.MmaFOp)
     encode_typeid!(cb.buf, result_type)
+    # v13.3 added `fast_acc` flag (Hopper FP8 fast accumulation hint),
+    # encoded as a varint flags field between the result type and operands.
+    if cb.version >= v"13.3"
+        encode_varint!(cb.buf, fast_acc ? 1 : 0)
+    else
+        fast_acc && throw(IRError("MmaFOp fast_acc requires Tile IR v13.3+, got v$(cb.version)"))
+    end
     encode_operand!(cb.buf, lhs)
     encode_operand!(cb.buf, rhs)
     encode_operand!(cb.buf, acc)
