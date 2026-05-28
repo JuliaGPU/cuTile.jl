@@ -5,7 +5,7 @@ using IRStructurizer: Block, ControlFlowOp, BlockArgument,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
                       IfOp, ForOp, WhileOp, LoopOp, Undef,
                       SourceLocation
-import IRStructurizer: operands
+import IRStructurizer: operands, replace_uses!, insert_before!
 
 using Base: compilerbarrier, donotdelete
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
@@ -51,6 +51,7 @@ include("compiler/analysis/effects.jl")
 include("compiler/analysis/divisibility.jl")
 include("compiler/analysis/bounds.jl")
 include("compiler/analysis/assume.jl")
+include("compiler/transform/rewriter.jl")
 include("compiler/transform/rewrite.jl")
 include("compiler/transform/canonicalize.jl")
 include("compiler/transform/control_flow.jl")
