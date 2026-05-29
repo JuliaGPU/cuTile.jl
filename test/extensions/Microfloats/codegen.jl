@@ -145,8 +145,47 @@ end
     end
 end
 
+@testset "fast_acc" begin
+    # `fast_acc=true` on f8 operands still lowers to `mmaf` (the hint rides on
+    # the op as a flag); requires bytecode 13.3.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
+                         ct.TileArray{Float32,2,spec2d}};
+                   bytecode_version=v"13.3") do a, b, c
+            ta = ct.load(a, (1, 1), (16, 16))
+            tb = ct.load(b, (1, 1), (16, 16))
+            @check "mmaf"
+            ct.store(c, (1, 1), muladd(ta, tb, zeros(Float32, (16, 16)); fast_acc=true))
+            return
+        end
+    end
+
+    # `fast_acc` is an FP8-only hint: requesting it for f16 inputs is rejected.
+    @test_throws "only supported for fp8" code_tiled(
+        Tuple{ct.TileArray{Float16,2,spec2d}, ct.TileArray{Float16,2,spec2d},
+              ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a, b, c
+        ta = ct.load(a, (1, 1), (16, 16))
+        tb = ct.load(b, (1, 1), (16, 16))
+        ct.store(c, (1, 1), muladd(ta, tb, zeros(Float32, (16, 16)); fast_acc=true))
+        return
+    end
+
+    # `fast_acc` requires bytecode 13.3 — rejected at 13.2 with a clear error.
+    let kernel = (a, b, c) -> begin
+            ta = ct.load(a, (1, 1), (16, 16))
+            tb = ct.load(b, (1, 1), (16, 16))
+            ct.store(c, (1, 1), muladd(ta, tb, zeros(Float32, (16, 16)); fast_acc=true))
+            return
+        end
+        @test_throws "13.3" code_tiled(devnull, kernel,
+            Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
+                  ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.2")
+    end
+end
+
 @testset "mma_scaled" begin
-    # f8 operands (M,K)/(K,N) with f8e8m0fnu block scales (M,K_s)/(K_s,N)
+    # MXFP8: f8 operands (M,K)/(K,N) with f8e8m0fnu block scales (M,K_s)/(K_s,N)
     # accumulate into f32. Block size B = K ÷ K_s = 64 ÷ 2 = 32.
     @test @filecheck begin
         @check_label "entry"
@@ -165,8 +204,8 @@ end
         end
     end
 
-    # f4e2m1fn operands are accepted by `mmaf_scaled` too (here with f8e4m3fn
-    # scales, B = 16). Operands enter as unpacked FP4 tiles.
+    # NVFP4: f4e2m1fn operands with f8e4m3fn scales, B = 16. Operands enter as
+    # unpacked FP4 tiles; `mmaf_scaled` accepts them too.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},

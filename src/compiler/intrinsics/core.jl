@@ -415,6 +415,17 @@ mma_allowed_acc_dtypes(::Type{TFloat32}) = (Float32,)
 mma_allowed_acc_dtypes(::Type{Float64})  = (Float64,)
 mma_allowed_acc_dtypes(@nospecialize(::Type)) = nothing
 
+"""
+    mma_supports_fast_acc(input_T) -> Bool
+
+Whether `mma`'s `fast_acc` hint (lower-precision accumulation for throughput)
+is valid for operand element type `input_T`. Only the FP8 dtypes qualify;
+extensions (Microfloats/DLFP8Types) register them by overloading this, like
+[`mma_allowed_acc_dtypes`](@ref). Mirrors cuTile Python's
+`use_fast_acc is only supported for fp8 input dtypes` check.
+"""
+mma_supports_fast_acc(@nospecialize(::Type)) = false
+
 # First (preferred) accumulator dtype for a given input dtype. Used by
 # matmul to pick `acc = zeros(first_allowed_acc(T), …)` so that the input
 # dtype constraint and tileiras's acc-dtype constraint stay consistent
@@ -425,7 +436,7 @@ first_allowed_acc_dtype(::Type{T}) where {T} =
     end
 
 """
-    Intrinsics.mma(a::Tile, b::Tile, acc::Tile) -> typeof(acc)
+    Intrinsics.mma(a::Tile, b::Tile, acc::Tile, fast_acc::Bool=false) -> typeof(acc)
 
 Matrix-multiply-accumulate computing `a*b + acc`. Dispatches at codegen
 based on element types:
@@ -436,15 +447,23 @@ based on element types:
 - `i8` `a`/`b` with `i32` `acc` lower to `cuda_tile.mmai`. Per-input
   signedness is derived from the Julia type (`Int8` → signed,
   `UInt8` → unsigned); `acc` and the result are always signed `i32`.
+
+`fast_acc` enables fast accumulation (trading accumulator precision for
+throughput). It is only valid for FP8 inputs (see
+[`mma_supports_fast_acc`](@ref)) and requires Tile IR v13.3+.
 """
-@intrinsic mma(a::Tile, b::Tile, acc::Tile)
-tfunc(𝕃, ::typeof(Intrinsics.mma), @nospecialize(a), @nospecialize(b), @nospecialize(acc)) = CC.widenconst(acc)
+@intrinsic mma(a::Tile, b::Tile, acc::Tile, fast_acc::Bool=false)
+tfunc(𝕃, ::typeof(Intrinsics.mma), @nospecialize(a), @nospecialize(b), @nospecialize(acc),
+      @nospecialize(rest...)) = CC.widenconst(acc)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     cb = ctx.cb
 
     lhs = emit_value!(ctx, args[1])
     rhs = emit_value!(ctx, args[2])
     acc = emit_value!(ctx, args[3])
+    fast_acc = length(args) >= 4 ?
+        (@something get_constant(ctx, args[4]) throw(IRError("mma: fast_acc must be a compile-time constant"))) :
+        false
 
     (lhs === nothing || rhs === nothing || acc === nothing) && throw(IRError("Cannot resolve operands for mma()"))
 
@@ -467,9 +486,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
         acc_elem in allowed_acc ||
             throw(IRError("mma: acc dtype $acc_elem is not allowed for input dtype " *
                           "$lhs_elem; tileiras requires acc ∈ $allowed_acc"))
-        encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v)
+        # fast_acc is an FP8-only throughput hint; reject it elsewhere with a
+        # clear error rather than emitting IR tileiras would reject.
+        fast_acc && !Base.invokelatest(mma_supports_fast_acc, lhs_elem) &&
+            throw(IRError("mma: fast_acc is only supported for fp8 input dtypes " *
+                          "(f8e4m3fn, f8e5m2), got $lhs_elem"))
+        encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v; fast_acc)
     elseif lhs_elem <: Union{Int8, UInt8} && rhs_elem <: Union{Int8, UInt8} &&
            acc_elem === Int32
+        fast_acc && throw(IRError("mma: fast_acc is not supported for integer (mmai) inputs"))
         s_lhs = lhs_elem <: Signed ? Signedness.Signed : Signedness.Unsigned
         s_rhs = rhs_elem <: Signed ? Signedness.Signed : Signedness.Unsigned
         encode_MmaIOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v;

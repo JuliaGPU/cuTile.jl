@@ -18,6 +18,10 @@ end
 ct.mma_allowed_acc_dtypes(::Type{Float8_E4M3FN}) = (Float16, Float32)
 ct.mma_allowed_acc_dtypes(::Type{Float8_E5M2})   = (Float16, Float32)
 
+# `fast_acc` (lower-precision MMA accumulation) is an FP8-only throughput hint.
+ct.mma_supports_fast_acc(::Type{Float8_E4M3FN}) = true
+ct.mma_supports_fast_acc(::Type{Float8_E5M2})   = true
+
 # Float ↔ FP8 scalar constructor overlays (for map/convert dispatch)
 const FP8Types = (Float8_E4M3FN, Float8_E5M2)
 const StandardFloats = (Float16, ct.BFloat16, Float32, ct.TFloat32, Float64)

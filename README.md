@@ -197,7 +197,23 @@ Tile IR operations.
 | Operation | Description |
 |-----------|-------------|
 | `a * b` | Matrix multiplication: `a @ b` |
-| `muladd(a, b, acc)` | Matrix multiply-accumulate: `a * b + acc` |
+| `muladd(a, b, acc; fast_acc=false)` | Matrix multiply-accumulate: `a * b + acc` |
+| `ct.muladd_scaled(a, a_scale, b, b_scale, acc)` | Block-scaled multiply-accumulate |
+
+Each operation follows `Base.:*` / `Base.muladd`'s shape rules, with the addition of allowing trailing batch dimensions.
+
+`fast_acc=true` enables fast accumulation for FP8 inputs, and has an effect only on Hopper (sm_90; silently ignored on other
+architectures), and requires Tile IR v13.3+.
+
+`ct.muladd_scaled` multiplies each operand by a low-precision block scale before the matmul:
+each scale element covers a contiguous block of `B = K ÷ K_s` elements along the K dimension.
+Requires Blackwell. The supported operand/scale/accumulator dtypes and block sizes are:
+
+| Input (`a`/`b`) | Scale | Acc/Output | B |
+|-----------------|-------|------------|--------|
+| `Float8_E4M3FN`, `Float8_E5M2` | `Float8_E8M0FNU` | `Float32` | 32 |
+| `Float4_E2M1FN` | `Float8_E8M0FNU` | `Float32` | 16, 32 |
+| `Float4_E2M1FN` | `Float8_E4M3FN` | `Float32` | 16 |
 
 ### Higher-Order Functions
 | Operation | Description |

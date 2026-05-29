@@ -1296,7 +1296,7 @@ end
 =============================================================================#
 
 """
-    muladd(a::Tile, b::Tile, acc::Tile) -> Tile
+    muladd(a::Tile, b::Tile, acc::Tile; fast_acc::Bool=false) -> Tile
 
 Matrix multiply-accumulate `a * b + acc` over tiles, lowering to
 `cuda_tile.mmaf` (float) or `cuda_tile.mmai` (`i8 × i8 → i32`).
@@ -1306,45 +1306,49 @@ promoted (vec-mat / mat-vec) and any trailing dimensions (≥3-D) are treated as
 broadcast batch dims, lifting `Base.muladd`'s shape rules to tiles. `acc`
 carries the result dtype, which must be one tileiras allows for the input dtype
 (f16/f32 for f16 and f8; f32 for bf16/tf32; f64 for f64; i32 for i8).
+
+`fast_acc` enables fast accumulation (lower accumulator precision for
+throughput); it is valid only for FP8 inputs and requires Tile IR v13.3+.
 """
-@inline function Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
+@inline function Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC};
+                             fast_acc::Bool=false) where {T1, T2, T3, SA, SB, SC}
     # SA, SB, SC type parameters avoid ambiguity with the scalar `muladd`
     # methods during codegen.
-    _muladd(a, b, acc, Val(ndims(a)), Val(ndims(b)))
+    _muladd(a, b, acc, Val(ndims(a)), Val(ndims(b)), fast_acc)
 end
 
 # 2D × 2D: MmaFOp with swapped operands for row-major Tile IR
 # Julia (M,K)*(K,N) → TileIR (K,M)*(N,K) → mmaf(b,a,acc) → TileIR (N,M) → Julia (M,N)
-@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{2})
-    Intrinsics.mma(b, a, acc)
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{2}, fast_acc::Bool)
+    Intrinsics.mma(b, a, acc, fast_acc)
 end
 
 # Vec-mat (1D × 2D): reshape (M,) → (M, 1), MmaFOp, acc is already (M, N)
-@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{1}, ::Val{2})
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{1}, ::Val{2}, fast_acc::Bool)
     a2d = reshape(a, (size(a, 1), 1))
-    _muladd(a2d, b, acc, Val(2), Val(2))
+    _muladd(a2d, b, acc, Val(2), Val(2), fast_acc)
 end
 
 # Mat-vec (2D × 1D): reshape b (K,) → (K, 1), acc (M,) → (M, 1), MmaFOp, squeeze back
-@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{1})
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{1}, fast_acc::Bool)
     M, K = size(a, 1), size(b, 1)
     b2d = reshape(b, (K, 1))
     acc2d = reshape(acc, (M, 1))
-    result = _muladd(a, b2d, acc2d, Val(2), Val(2))
+    result = _muladd(a, b2d, acc2d, Val(2), Val(2), fast_acc)
     reshape(result, (M,))
 end
 
 # Vec-vec (1D × 1D): not supported
-@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{1})
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{1}, ::Bool)
     return :(throw(ArgumentError("Vector-vector multiply-accumulate is not supported.")))
 end
 
 # Batched mat-vec / vec-mat (≥3D × 1D or 1D × ≥3D): not supported, unsqueeze manually
-@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{NB}) where {NB}
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{NB}, ::Bool) where {NB}
     NB >= 3 || return :(throw(ArgumentError("unreachable")))
     return :(throw(ArgumentError("Batched vec-mat is not supported. Reshape the 1D operand to 2D first.")))
 end
-@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{NA}, ::Val{1}) where {NA}
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{NA}, ::Val{1}, ::Bool) where {NA}
     NA >= 3 || return :(throw(ArgumentError("unreachable")))
     return :(throw(ArgumentError("Batched mat-vec is not supported. Reshape the 1D operand to 2D first.")))
 end
@@ -1357,7 +1361,7 @@ end
 #   3. MmaFOp with swapped operands: mmaf(b, a, acc)
 #   4. Unflatten batch dims via reshape
 @generated function _muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC},
-                            ::Val{NA}, ::Val{NB}) where {T1, T2, T3, SA, SB, SC, NA, NB}
+                            ::Val{NA}, ::Val{NB}, fast_acc::Bool) where {T1, T2, T3, SA, SB, SC, NA, NB}
     sa = Tuple(SA.parameters)
     sb = Tuple(SB.parameters)
 
@@ -1384,7 +1388,7 @@ end
         b_3d = reshape(b_bc, $((K, N, B_flat)))
         acc_3d = reshape(acc_bc, $((M, N, B_flat)))
         # MmaFOp with swapped operands for row-major convention
-        result_3d = Intrinsics.mma(b_3d, a_3d, acc_3d)
+        result_3d = Intrinsics.mma(b_3d, a_3d, acc_3d, fast_acc)
         # Unflatten batch dims
         reshape(result_3d, $((M, N, batch_shape...)))
     end
