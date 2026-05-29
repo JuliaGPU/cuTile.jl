@@ -1,11 +1,8 @@
 [deps]
-CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 NVTX = "5da4648a-3479-48b8-97b9-01cb529c0a1f"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-cuBLAS = "182d3088-87b7-4494-8cad-fc6afaa545bc"
-cuFFT = "533571aa-0936-420e-b4be-9c66f5f626ca"
-cuRAND = "20fd9a0b-12d5-4c2f-a8af-7c34e9e60431"
 cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"
 
 [sources]

@@ -3,7 +3,7 @@
 # Generic benchmark runner for cuTile.jl examples
 # Discovers and benchmarks all examples in the examples/ directory
 
-using CUDACore
+using CUDA
 
 #=============================================================================
  Configuration
@@ -140,7 +140,7 @@ function main(args...)
     println()
     println("Configuration:")
     println("  Runs: $NRUNS (+ $WARMUP warmup)")
-    println("  GPU: ", CUDACore.name(CUDACore.device()))
+    println("  GPU: ", CUDA.name(CUDA.device()))
 
     for name in discover_benchmarks(args...)
         println("\nBenchmarking $name...")

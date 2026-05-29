@@ -7,8 +7,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDACore, NVTX
-import cuRAND
+using CUDA, NVTX
 using cuTile: cuTile
 import cuTile as ct
 
@@ -142,7 +141,7 @@ function run(data; tile_tma::Int=next_power_of_2(data.N),
     end
 
     # Warmup
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         run_tma()
         run_chunked()
     end
@@ -152,7 +151,7 @@ function run(data; tile_tma::Int=next_power_of_2(data.N),
     NVTX.@range "cuTile TMA" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed run_tma()
+                t = CUDA.@elapsed run_tma()
                 push!(times_tma, t * 1000)
             end
         end
@@ -163,7 +162,7 @@ function run(data; tile_tma::Int=next_power_of_2(data.N),
     NVTX.@range "cuTile Chunked" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed run_chunked()
+                t = CUDA.@elapsed run_chunked()
                 push!(times_chunked, t * 1000)
             end
         end
@@ -215,14 +214,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         out .= exps ./ sum(exps; dims=1)
     end
 
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         gpu_softmax!()
     end
     times = Float64[]
     NVTX.@range "GPUArrays" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed gpu_softmax!()
+                t = CUDA.@elapsed gpu_softmax!()
                 push!(times, t * 1000)
             end
         end

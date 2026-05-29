@@ -5,8 +5,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDACore, NVTX
-import cuRAND
+using CUDA, NVTX
 using cuTile: cuTile
 import cuTile as ct
 
@@ -252,7 +251,7 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
     end
 
     # Warmup
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         run_fwd()
         run_bwd()
     end
@@ -262,7 +261,7 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
     NVTX.@range "cuTile Fwd" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed run_fwd()
+                t = CUDA.@elapsed run_fwd()
                 push!(times_fwd, t * 1000)  # ms
             end
         end
@@ -273,7 +272,7 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
     NVTX.@range "cuTile Bwd" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed run_bwd()
+                t = CUDA.@elapsed run_bwd()
                 push!(times_bwd, t * 1000)  # ms
             end
         end

@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDACore, NVTX
-import cuRAND
+using CUDA, NVTX
 using cuTile: cuTile
 import cuTile as ct
 
@@ -39,7 +38,7 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     (; x, y, m, n) = data
     grid = (cld(m, tm), cld(n, tn))
 
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
     end
 
@@ -47,7 +46,7 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
+                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
                 push!(times, t * 1000)  # ms
             end
         end
@@ -88,14 +87,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     y_simt = similar(x, n, m)
 
     # GPUArrays (permutedims)
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         permutedims!(y_gpuarrays, x, (2, 1))
     end
     times_gpuarrays = Float64[]
     NVTX.@range "GPUArrays" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
+                t = CUDA.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
                 push!(times_gpuarrays, t * 1000)
             end
         end
@@ -105,14 +104,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     # SIMT naive kernel
     threads = (16, 16)
     blocks = (cld(m, threads[1]), cld(n, threads[2]))
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
     end
     times_simt = Float64[]
     NVTX.@range "SIMT naive" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
+                t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
                 push!(times_simt, t * 1000)
             end
         end

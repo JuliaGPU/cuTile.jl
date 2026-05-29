@@ -8,8 +8,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDACore, NVTX
-import cuRAND, cuFFT
+using CUDA, NVTX
 using cuTile: cuTile
 import cuTile as ct
 using Test
@@ -220,7 +219,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     BS = 1
     grid = (batch ÷ BS, 1, 1)
 
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(N), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(BS), ct.Constant(D))
     end
 
@@ -228,7 +227,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(N), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(BS), ct.Constant(D))
+                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(N), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(BS), ct.Constant(D))
                 push!(times, t * 1000)  # ms
             end
         end
@@ -262,7 +261,7 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     results = Dict{String, Vector{Float64}}()
 
     plan = cuFFT.plan_fft!(input, 1)
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         plan * copy(input)
     end
     times_cufft = Float64[]
@@ -270,7 +269,7 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         for i in 1:nruns
             NVTX.@range "run $i" begin
                 input_copy = copy(input)
-                t = CUDACore.@elapsed plan * input_copy
+                t = CUDA.@elapsed plan * input_copy
                 push!(times_cufft, t * 1000)
             end
         end

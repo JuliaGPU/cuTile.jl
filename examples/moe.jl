@@ -8,8 +8,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDACore, NVTX
-import cuRAND
+using CUDA, NVTX
 using Random: randperm
 using cuTile: cuTile
 import cuTile as ct
@@ -226,9 +225,9 @@ function cutile_moe(hidden_states::CuArray{T}, w1, w2, topk_weights, topk_ids,
 
     # Intermediate caches: reversed from Python for column-major
     # Python (num_tokens, topk, dim) → Julia (dim, topk, num_tokens)
-    cache1 = CUDACore.zeros(T, intermediate_size * 2, topk, num_tokens)
-    cache2 = CUDACore.zeros(T, intermediate_size, total_tokens)
-    cache3 = CUDACore.zeros(T, hidden_size, topk, num_tokens)
+    cache1 = CUDA.zeros(T, intermediate_size * 2, topk, num_tokens)
+    cache2 = CUDA.zeros(T, intermediate_size, total_tokens)
+    cache3 = CUDA.zeros(T, hidden_size, topk, num_tokens)
 
     sorted_token_ids, sorted_expert_ids = moe_align_tile_size(
         Array(topk_ids), tile_m, num_experts)
@@ -346,7 +345,7 @@ end
 function run(data; nruns::Int=1, warmup::Int=0)
     (; hidden_states, w1, w2, topk_weights, topk_ids, tile_m, tile_n, tile_k) = data
 
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         cutile_moe(hidden_states, w1, w2, topk_weights, topk_ids, tile_m, tile_n, tile_k)
     end
 
@@ -355,7 +354,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed begin
+                t = CUDA.@elapsed begin
                     out = cutile_moe(hidden_states, w1, w2, topk_weights, topk_ids,
                                      tile_m, tile_n, tile_k)
                 end

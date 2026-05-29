@@ -24,7 +24,7 @@ Pkg.precompile()
 testsuite = find_tests(@__DIR__)
 delete!(testsuite, "setup")
 
-# Add examples to the test suite (requires workspaces, a Julia 1.12+ feature)
+# Add examples to the test suite (only on Julia 1.12+, where they're supported)
 examples_root = joinpath(@__DIR__, "..", "examples")
 if VERSION >= v"1.12"
     for (name, body) in find_tests(examples_root)
@@ -33,15 +33,9 @@ if VERSION >= v"1.12"
         dir = dirname(path)
         testsuite["examples/$name"] = quote
             cd($dir) do
-                project = Base.active_project()
-                Base.set_active_project($dir)
-                try
-                    redirect_stdout(devnull) do
-                        $body
-                        @eval main()
-                    end
-                finally
-                    Base.set_active_project(project)
+                redirect_stdout(devnull) do
+                    $body
+                    @eval main()
                 end
             end
         end

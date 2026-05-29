@@ -11,8 +11,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDACore, NVTX
-import cuRAND
+using CUDA, NVTX
 using cuTile: cuTile
 import cuTile as ct
 
@@ -254,7 +253,7 @@ end
 function run(data; nruns::Int=1, warmup::Int=0)
     (; Q, K, V, causal, tile_m, tile_n, query_group_size) = data
 
-    CUDACore.@sync for _ in 1:warmup
+    CUDA.@sync for _ in 1:warmup
         cutile_fmha(Q, K, V; tile_m, tile_n, query_group_size, causal)
     end
 
@@ -263,7 +262,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDACore.@elapsed begin
+                t = CUDA.@elapsed begin
                     out = cutile_fmha(Q, K, V; tile_m, tile_n, query_group_size, causal)
                 end
                 push!(times, t * 1000)  # ms
