@@ -74,7 +74,8 @@ function tfunc(𝕃, ::typeof(Intrinsics.pack), @nospecialize(x))
     length(dims) == 1 || return nothing
     n = dims[1]::Int
     bs = lookup_bitwidth(S)
-    return Tile{UInt8, Tuple{fld(n * bs, 8)}}
+    (n * bs) % 8 == 0 || return nothing
+    return Tile{UInt8, Tuple{(n * bs) ÷ 8}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
     cb = ctx.cb
@@ -122,7 +123,8 @@ function tfunc(𝕃, ::typeof(Intrinsics.unpack), @nospecialize(x), @nospecializ
     length(dims) == 1 || return nothing
     n = dims[1]::Int
     bt = lookup_bitwidth(T)
-    return Tile{T, Tuple{fld(n * 8, bt)}}
+    (n * 8) % bt == 0 || return nothing
+    return Tile{T, Tuple{(n * 8) ÷ bt}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
     cb = ctx.cb
