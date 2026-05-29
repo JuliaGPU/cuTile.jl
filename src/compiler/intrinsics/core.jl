@@ -458,7 +458,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
         # the table in cuTile Python's mma implementation.
         lhs_elem === rhs_elem ||
             throw(IRError("mma: float lhs and rhs must share dtype, got lhs=$lhs_elem, rhs=$rhs_elem"))
-        allowed_acc = mma_allowed_acc_dtypes(lhs_elem)
+        # `invokelatest` so extension-defined acc-dtype tables (e.g. FP8 via the
+        # Microfloats/DLFP8Types exts) are visible from codegen's world age,
+        # mirroring `lookup_bitwidth`.
+        allowed_acc = Base.invokelatest(mma_allowed_acc_dtypes, lhs_elem)
         allowed_acc === nothing &&
             throw(IRError("mma: unsupported float input dtype $lhs_elem"))
         acc_elem in allowed_acc ||
@@ -477,6 +480,57 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
                       "matching float (mmaf) or i8 × i8 → i32 (mmai)"))
     end
 
+    CGVal(result, acc.type_id, acc.jltype, acc.shape)
+end
+
+"""
+    Intrinsics.mma_scaled(lhs, lhs_scale, rhs, rhs_scale, acc) -> typeof(acc)
+
+Block-scaled matrix-multiply-accumulate computing `(lhs ⊙ lhs_scale) * (rhs ⊙
+rhs_scale) + acc`, where each scale element multiplies a contiguous block of
+`lhs`/`rhs` elements along the K dimension. Lowers to `cuda_tile.mmaf_scaled`
+(Tile IR v13.3+).
+
+`lhs`/`rhs` are low-precision floats (`f8e4m3fn`, `f8e5m2`, or `f4e2m1fn`),
+`lhs_scale`/`rhs_scale` are `f8e8m0fnu` or `f8e4m3fn`, and `acc`/result are
+`f32`. The block size `K ÷ K_s` and the exact (operand, scale) dtype pairing are
+validated by tileiras (see its `mmaf_scaled` verifier for the supported table).
+"""
+@intrinsic mma_scaled(lhs, lhs_scale, rhs, rhs_scale, acc)
+tfunc(𝕃, ::typeof(Intrinsics.mma_scaled), @nospecialize(lhs), @nospecialize(lhs_scale),
+      @nospecialize(rhs), @nospecialize(rhs_scale), @nospecialize(acc)) = CC.widenconst(acc)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma_scaled), args)
+    cb = ctx.cb
+
+    lhs       = emit_value!(ctx, args[1])
+    lhs_scale = emit_value!(ctx, args[2])
+    rhs       = emit_value!(ctx, args[3])
+    rhs_scale = emit_value!(ctx, args[4])
+    acc       = emit_value!(ctx, args[5])
+
+    (lhs === nothing || lhs_scale === nothing || rhs === nothing ||
+     rhs_scale === nothing || acc === nothing) &&
+        throw(IRError("Cannot resolve operands for mma_scaled()"))
+
+    lhs_elem       = eltype(CC.widenconst(lhs.jltype))
+    rhs_elem       = eltype(CC.widenconst(rhs.jltype))
+    lhs_scale_elem = eltype(CC.widenconst(lhs_scale.jltype))
+    rhs_scale_elem = eltype(CC.widenconst(rhs_scale.jltype))
+    acc_elem       = eltype(CC.widenconst(acc.jltype))
+
+    # Structural invariants (cheap, with clear errors); the operand/scale dtype
+    # pairing and block-size constraints are checked by the tileiras verifier,
+    # whose messages are already precise.
+    lhs_elem === rhs_elem ||
+        throw(IRError("mma_scaled: lhs and rhs must share dtype, got lhs=$lhs_elem, rhs=$rhs_elem"))
+    lhs_scale_elem === rhs_scale_elem ||
+        throw(IRError("mma_scaled: lhs_scale and rhs_scale must share dtype, " *
+                      "got $lhs_scale_elem and $rhs_scale_elem"))
+    acc_elem === Float32 ||
+        throw(IRError("mma_scaled: acc must be Float32, got $acc_elem"))
+
+    result = encode_MmaFScaledOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v,
+                                  lhs_scale.v, rhs_scale.v)
     CGVal(result, acc.type_id, acc.jltype, acc.shape)
 end
 

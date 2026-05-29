@@ -1295,10 +1295,21 @@ end
  Matrix multiplication
 =============================================================================#
 
-# Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
-# Handles 1D promotion, type promotion, and batched dims (≥3D).
-# Note: SA, SB, SC type parameters required to avoid ambiguity with scalar methods during codegen
+"""
+    muladd(a::Tile, b::Tile, acc::Tile) -> Tile
+
+Matrix multiply-accumulate `a * b + acc` over tiles, lowering to
+`cuda_tile.mmaf` (float) or `cuda_tile.mmai` (`i8 × i8 → i32`).
+
+`a`/`b` are 2-D matrices `(M, K)` × `(K, N)` → `(M, N)`; a 1-D operand is
+promoted (vec-mat / mat-vec) and any trailing dimensions (≥3-D) are treated as
+broadcast batch dims, lifting `Base.muladd`'s shape rules to tiles. `acc`
+carries the result dtype, which must be one tileiras allows for the input dtype
+(f16/f32 for f16 and f8; f32 for bf16/tf32; f64 for f64; i32 for i8).
+"""
 @inline function Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
+    # SA, SB, SC type parameters avoid ambiguity with the scalar `muladd`
+    # methods during codegen.
     _muladd(a, b, acc, Val(ndims(a)), Val(ndims(b)))
 end
 
@@ -1375,6 +1386,117 @@ end
         # MmaFOp with swapped operands for row-major convention
         result_3d = Intrinsics.mma(b_3d, a_3d, acc_3d)
         # Unflatten batch dims
+        reshape(result_3d, $((M, N, batch_shape...)))
+    end
+end
+
+#=============================================================================
+ Block-scaled matrix multiply-accumulate
+=============================================================================#
+
+"""
+    muladd_scaled(a, a_scale, b, b_scale, acc) -> Tile
+
+Block-scaled matrix multiply-accumulate `(a ⊙ a_scale) * (b ⊙ b_scale) + acc`,
+lowering to `cuda_tile.mmaf_scaled` (Tile IR v13.3+, Blackwell). Each scale
+element multiplies a contiguous block of `B = K ÷ K_s` elements along the K
+dimension of its operand, so `a_scale`/`b_scale` match `a`/`b` in every
+dimension except K, where they have `K_s ≤ K` entries.
+
+`a`/`b` are low-precision floats (`f8e4m3fn`, `f8e5m2`, or `f4e2m1fn`),
+`a_scale`/`b_scale` are `f8e8m0fnu` or `f8e4m3fn`, and `acc` is `f32`. Shapes
+follow [`muladd`](@ref): 2-D `(M, K)` × `(K, N)`, mat-vec, and trailing batch
+dims; vec-mat is unsupported (it would collapse K, leaving nothing to scale).
+"""
+@inline function muladd_scaled(a::Tile{Ta, SA}, a_scale::Tile, b::Tile{Tb, SB}, b_scale::Tile,
+                               acc::Tile) where {Ta, Tb, SA, SB}
+    _muladd_scaled(a, a_scale, b, b_scale, acc, Val(ndims(a)), Val(ndims(b)))
+end
+
+# 2D × 2D: swap operands (and their scales) for row-major Tile IR, exactly as
+# `_muladd` swaps for `mma`.
+@inline function _muladd_scaled(a::Tile, a_scale::Tile, b::Tile, b_scale::Tile, acc::Tile,
+                                ::Val{2}, ::Val{2})
+    Intrinsics.mma_scaled(b, b_scale, a, a_scale, acc)
+end
+
+# Mat-vec (2D × 1D): the K-vector `b` (and its scale) gain a trailing N=1 dim;
+# `acc` becomes (M, 1); then squeeze back to (M,). K — the scaled dimension —
+# is preserved, so block scaling is well-defined.
+@inline function _muladd_scaled(a::Tile, a_scale::Tile, b::Tile, b_scale::Tile, acc::Tile,
+                                ::Val{2}, ::Val{1})
+    M, K, Ks = size(a, 1), size(b, 1), size(b_scale, 1)
+    b2d = reshape(b, (K, 1))
+    b_scale2d = reshape(b_scale, (Ks, 1))
+    acc2d = reshape(acc, (M, 1))
+    result = _muladd_scaled(a, a_scale, b2d, b_scale2d, acc2d, Val(2), Val(2))
+    reshape(result, (M,))
+end
+
+# Vec-mat (1D × 2D): promoting `a` to (M, 1) collapses K to 1, leaving no K
+# dimension to block-scale. Unsupported — reshape to 2D and supply a matching
+# K_s scale instead.
+@generated function _muladd_scaled(::Tile, ::Tile, ::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{2})
+    return :(throw(ArgumentError("Scaled vec-mat is not supported (the K dimension collapses to 1, which cannot be block-scaled).")))
+end
+
+# Vec-vec (1D × 1D): not supported.
+@generated function _muladd_scaled(::Tile, ::Tile, ::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{1})
+    return :(throw(ArgumentError("Scaled vector-vector multiply-accumulate is not supported.")))
+end
+
+# Batched mat-vec / vec-mat (≥3D × 1D or 1D × ≥3D): not supported.
+@generated function _muladd_scaled(::Tile, ::Tile, ::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{NB}) where {NB}
+    return :(throw(ArgumentError("Batched scaled vec-mat is not supported.")))
+end
+@generated function _muladd_scaled(::Tile, ::Tile, ::Tile, ::Tile, ::Tile, ::Val{NA}, ::Val{1}) where {NA}
+    return :(throw(ArgumentError("Batched scaled mat-vec is not supported.")))
+end
+
+# Batched (≥3D × ≥3D): trailing batch dims with broadcast, mirroring `_muladd`.
+# Scales carry the same batch dims as their operands; a_scale's batch must match
+# a's batch (likewise b_scale/b), then both broadcast to the common batch shape.
+@generated function _muladd_scaled(a::Tile{Ta, SA}, a_scale::Tile{Tas, SAS},
+                                   b::Tile{Tb, SB}, b_scale::Tile{Tbs, SBS},
+                                   acc::Tile{Tc, SC},
+                                   ::Val{NA}, ::Val{NB}) where {Ta, Tas, Tb, Tbs, Tc,
+                                                                SA, SAS, SB, SBS, SC, NA, NB}
+    sa = Tuple(SA.parameters);  sas = Tuple(SAS.parameters)
+    sb = Tuple(SB.parameters);  sbs = Tuple(SBS.parameters)
+
+    # Matrix dims are first two; batch dims are trailing.
+    M = sa[1]; K = sa[2]; N = sb[2]
+    Ksa = sas[2]   # a_scale K_s (a_scale is (M, K_s, batch...))
+    Ksb = sbs[1]   # b_scale K_s (b_scale is (K_s, N, batch...))
+    a_batch  = sa[3:end];  b_batch  = sb[3:end]
+    as_batch = sas[3:end]; bs_batch = sbs[3:end]
+
+    # Broadcast batch dims (pad shorter with trailing 1s, then broadcast).
+    n_batch = max(length(a_batch), length(b_batch))
+    a_batch_padded  = (a_batch...,  ntuple(Returns(1), n_batch - length(a_batch))...)
+    b_batch_padded  = (b_batch...,  ntuple(Returns(1), n_batch - length(b_batch))...)
+    as_batch_padded = (as_batch..., ntuple(Returns(1), n_batch - length(as_batch))...)
+    bs_batch_padded = (bs_batch..., ntuple(Returns(1), n_batch - length(bs_batch))...)
+    batch_shape = map(max, a_batch_padded, b_batch_padded)
+    B_flat = prod(batch_shape)
+
+    quote
+        # Reshape + broadcast to align batch dims (still trailing).
+        a_bc  = broadcast_to(reshape(a,       $((M, K, a_batch_padded...))),  $((M, K, batch_shape...)))
+        b_bc  = broadcast_to(reshape(b,       $((K, N, b_batch_padded...))),  $((K, N, batch_shape...)))
+        as_bc = broadcast_to(reshape(a_scale, $((M, Ksa, as_batch_padded...))), $((M, Ksa, batch_shape...)))
+        bs_bc = broadcast_to(reshape(b_scale, $((Ksb, N, bs_batch_padded...))), $((Ksb, N, batch_shape...)))
+        acc_bc = broadcast_to(acc, $((M, N, batch_shape...)))
+        # Flatten batch dims to one — no permute needed since row-major Tile IR
+        # already has batch as the leading (slowest) dimension.
+        a_3d  = reshape(a_bc,  $((M, K, B_flat)))
+        b_3d  = reshape(b_bc,  $((K, N, B_flat)))
+        as_3d = reshape(as_bc, $((M, Ksa, B_flat)))
+        bs_3d = reshape(bs_bc, $((Ksb, N, B_flat)))
+        acc_3d = reshape(acc_bc, $((M, N, B_flat)))
+        # mmaf_scaled with swapped operands for row-major convention.
+        result_3d = Intrinsics.mma_scaled(b_3d, bs_3d, a_3d, as_3d, acc_3d)
+        # Unflatten batch dims.
         reshape(result_3d, $((M, N, batch_shape...)))
     end
 end

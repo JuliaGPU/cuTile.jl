@@ -98,6 +98,8 @@ module Opcode
     const Atan2Op = 110  # since 13.2
     const PackOp = 111   # since 13.3
     const UnpackOp = 112 # since 13.3
+    # 113 (AllocaOp) not implemented
+    const MmaFScaledOp = 114 # since 13.3
 end
 
 # Enums for operation attributes
@@ -1307,6 +1309,30 @@ function encode_MmaIOp!(cb::CodeBuilder, result_type::TypeId,
     encode_operand!(cb.buf, lhs)
     encode_operand!(cb.buf, rhs)
     encode_operand!(cb.buf, acc)
+    return new_op!(cb)
+end
+
+"""
+    encode_MmaFScaledOp!(cb, result_type, lhs, rhs, acc, lhs_scale, rhs_scale) -> Value
+
+Block-scaled float matrix multiply-accumulate (`acc + (lhs ⊙ lhs_scale) @
+(rhs ⊙ rhs_scale)`) for low-precision (f8/f4) inputs. Each scale element scales
+a contiguous block of K-dimension elements in its operand. Requires Tile IR
+v13.3+.
+Opcode: 114
+"""
+function encode_MmaFScaledOp!(cb::CodeBuilder, result_type::TypeId,
+                              lhs::Value, rhs::Value, acc::Value,
+                              lhs_scale::Value, rhs_scale::Value)
+    cb.version >= v"13.3" ||
+        throw(IRError("MmaFScaledOp requires Tile IR v13.3+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.MmaFScaledOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    encode_operand!(cb.buf, acc)
+    encode_operand!(cb.buf, lhs_scale)
+    encode_operand!(cb.buf, rhs_scale)
     return new_op!(cb)
 end
 

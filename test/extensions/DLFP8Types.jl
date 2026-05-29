@@ -2,6 +2,7 @@ using CUDA
 using DLFP8Types: Float8_E4M3FN, Float8_E5M2
 
 spec1d = ct.ArraySpec{1}(16, true)
+spec2d = ct.ArraySpec{2}(16, true)
 
 @testset "codegen" begin
 
@@ -31,11 +32,24 @@ end
     end
 end
 
+# Non-scaled f8 matmul lowers to `mmaf` (f8 operands, f32 accumulator).
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
+                     ct.TileArray{Float32,2,spec2d}}) do a, b, c
+        ta = ct.load(a, (1, 1), (16, 16))
+        tb = ct.load(b, (1, 1), (16, 16))
+        @check "mmaf"
+        ct.store(c, (1, 1), muladd(ta, tb, zeros(Float32, (16, 16))))
+        return
+    end
 end
 
-# FP8 types are Blackwell-only
+end
+
+# FP8 (e4m3/e5m2) conversions and matmul need Hopper (sm_90+).
 @testset "execution" begin
-if capability(device()) >= v"10"
+if capability(device()) >= v"9"
 
 # Round-trip Float32 → FP8 → Float32 on values exactly representable in
 # the target FP8 type — result must match input bit-for-bit.
@@ -80,6 +94,30 @@ let av = Float32[1.0, 2.0, 0.5, 4.0, 1.5, 2.0, -1.0, -0.5, 3.0, 0.5, 1.0, 2.0, -
     d = CUDA.zeros(Float32, length(av))
     @cuda backend=cuTile blocks=1 fma_e4m3(a, b, c, d)
     @test Array(d) == av .* bv .+ cv
+end
+
+# Non-scaled FP8 matmul with both allowed accumulator dtypes (f16 and f32).
+function mma_dl_f32(A::ct.TileArray{Float8_E4M3FN,2}, B::ct.TileArray{Float8_E4M3FN,2},
+                    C::ct.TileArray{Float32,2}, D::ct.TileArray{Float32,2})
+    a = ct.load(A, (1, 1), (16, 16)); b = ct.load(B, (1, 1), (16, 16)); c = ct.load(C, (1, 1), (16, 16))
+    ct.store(D, (1, 1), convert(ct.Tile{Float32}, muladd(a, b, c)))
+    return
+end
+function mma_dl_f16(A::ct.TileArray{Float8_E4M3FN,2}, B::ct.TileArray{Float8_E4M3FN,2},
+                    C::ct.TileArray{Float16,2}, D::ct.TileArray{Float32,2})
+    a = ct.load(A, (1, 1), (16, 16)); b = ct.load(B, (1, 1), (16, 16)); c = ct.load(C, (1, 1), (16, 16))
+    ct.store(D, (1, 1), convert(ct.Tile{Float32}, muladd(a, b, c)))
+    return
+end
+@testset "mma → $Tacc acc" for (Tacc, kern) in ((Float32, mma_dl_f32), (Float16, mma_dl_f16))
+    M = 16
+    ah = Float8_E4M3FN.(Float32.(rand(0:2, M, M)) ./ 2)
+    bh = Float8_E4M3FN.(Float32.(rand(0:2, M, M)) ./ 2)
+    ch = Tacc.(Float32.(rand(0:2, M, M)))
+    ref = Float32.(ah) * Float32.(bh) .+ Float32.(ch)
+    D = CUDA.zeros(Float32, M, M)
+    @cuda backend=cuTile blocks=1 kern(CuArray(ah), CuArray(bh), CuArray(ch), D)
+    @test Array(D) == ref
 end
 
 end
