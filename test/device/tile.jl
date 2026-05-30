@@ -1240,8 +1240,8 @@ end
             ct.store(b, pid, reinterpret(UInt8, ct.load(a, pid, (2, 4))))
             return
         end
-        let M = reshape(UInt16[0x0102, 0x0304, 0x0506, 0x0708,
-                            0x090a, 0x0b0c, 0x0d0e, 0x0f10], 2, 4)
+        let M = reshape(UInt16[0x0201, 0x0403, 0x0605, 0x0807,
+                            0x0a09, 0x0c0b, 0x0e0d, 0x100f], 2, 4)
             a = CuArray(M)
             b = CUDA.zeros(UInt8, 4, 4)
             @cuda backend=cuTile blocks=1 u16_to_u8(a, b)
