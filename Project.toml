@@ -1,6 +1,6 @@
 name = "cuTile"
 uuid = "0dea8319-8c4a-4662-a73d-20234d115b9a"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Tim Besard <tim.besard@gmail.com>"]
 
 [workspace]
@@ -32,7 +32,7 @@ DLFP8TypesExt = "DLFP8Types"
 Adapt = "4.4"
 BFloat16s = "0.6"
 CUDACore = "6.1"
-CUDA_Compiler_jll = "0.4"
+CUDA_Compiler_jll = "0.4 - 0.4.3"
 CUDA_Tile_jll = "13.1"
 CompilerCaching = "0.2.4"
 EnumX = "1.0"
