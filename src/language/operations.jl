@@ -787,6 +787,80 @@ end
 @inline Base.reshape(tile::Tile{T}, dims::Int...) where {T} = reshape(tile, dims)
 
 """
+    repeat(tile::Tile, counts::Integer...) -> Tile
+
+Repeat a tile along each dimension (outer repetition), matching `Base.repeat`.
+`counts[i]` is the number of times to tile the whole tile along dimension `i`;
+dimensions beyond `length(counts)` are repeated once, and counts beyond
+`ndims(tile)` introduce new trailing dimensions.
+
+`counts` must be compile-time constants, and every resulting dimension
+`size(tile, i) * counts[i]` (as well as the new repeat dimensions) must be a
+power of two.
+
+# Example
+```julia
+tile = ct.load(arr, (1, 1), (4, 8))  # Shape (4, 8)
+tiled = repeat(tile, 2, 2)           # Shape (8, 16)
+```
+"""
+@inline Base.repeat(tile::Tile, counts::Integer...) =
+    _repeat(tile, Val(:outer), Val(counts))
+
+"""
+    repeat(tile::Tile; inner=nothing, outer=nothing) -> Tile
+
+Keyword form of `repeat`, matching `Base.repeat`. `inner[i]` repeats each element
+`inner[i]` times along dimension `i` (inner repetition), while `outer[i]` tiles the
+whole tile `outer[i]` times along dimension `i` (outer repetition). When both are
+given, the inner repetition is applied first. Each of `inner`/`outer` may be an
+`Integer` or a tuple, and must be a compile-time constant.
+
+# Example
+```julia
+tile = ct.load(arr, (1, 1), (2, 4))     # Shape (2, 4)
+repeat(tile; inner=(2, 1), outer=(1, 2)) # Shape (4, 8)
+```
+"""
+@inline function Base.repeat(tile::Tile; inner = nothing, outer = nothing)
+    t = inner === nothing ? tile :
+        _repeat(tile, Val(:inner), Val(inner isa Integer ? (inner,) : Tuple(inner)))
+    return outer === nothing ? t :
+           _repeat(t, Val(:outer), Val(outer isa Integer ? (outer,) : Tuple(outer)))
+end
+
+@generated function _repeat(tile::Tile, ::Val{Mode}, ::Val{Counts}) where {Mode, Counts}
+    sz = size(tile)
+    N = ndims(tile)
+    counts = Int.(Counts)
+    M = length(counts)
+    P = max(N, M)
+    szp = ntuple(i -> i <= N ? sz[i] : 1, P)
+    cntp = ntuple(i -> i <= M ? counts[i] : 1, P)
+    final = ntuple(i -> szp[i] * cntp[i], P)
+
+    # Nothing to repeat and no new dimensions: identity.
+    all(==(1), cntp) && P == N && return :(tile)
+
+    data_first = Mode === :outer
+    is_data(lo) = (lo == 0) == data_first
+    interleaved = ntuple(2P) do j
+        pair, lo = divrem(j - 1, 2)
+        is_data(lo) ? szp[pair + 1] : 1
+    end
+    target = ntuple(2P) do j
+        pair, lo = divrem(j - 1, 2)
+        is_data(lo) ? szp[pair + 1] : cntp[pair + 1]
+    end
+
+    return quote
+        t = reshape(tile, $interleaved)
+        t = broadcast_to(t, $target)
+        reshape(t, $final)
+    end
+end
+
+"""
     permutedims(tile::Tile{T, S}, perm) -> Tile{T, permuted_shape}
 
 Permute the dimensions of a tile according to the given permutation.

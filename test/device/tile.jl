@@ -473,6 +473,75 @@ end
     end
 end
 
+@testset "repeat" begin
+    @testset "1D outer repeat matches Base.repeat" begin
+        function repeat_1d_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,1})
+            bid = ct.bid(1)
+            tile = ct.load(x, bid, (8,))
+            ct.store(y, bid, repeat(tile, 4))  # (8,) -> (32,)
+            return
+        end
+
+        x = CuArray(Float32.(1:8))
+        y = CUDA.zeros(Float32, 32)
+
+        @cuda backend=cuTile repeat_1d_kernel(x, y)
+
+        @test Array(y) ≈ repeat(Float32.(1:8), 4)
+    end
+
+    @testset "2D outer repeat matches Base.repeat" begin
+        function repeat_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (2, 4))
+            ct.store(y, (bid, 1), repeat(tile, 2, 2))  # (2, 4) -> (4, 8)
+            return
+        end
+
+        src = Float32.(reshape(1:8, 2, 4))
+        x = CuArray(src)
+        y = CUDA.zeros(Float32, 4, 8)
+
+        @cuda backend=cuTile repeat_2d_kernel(x, y)
+
+        @test Array(y) ≈ repeat(src, 2, 2)
+    end
+
+    @testset "2D inner repeat matches Base.repeat" begin
+        function repeat_inner_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (2, 4))
+            ct.store(y, (bid, 1), repeat(tile; inner=(2, 1)))  # (2, 4) -> (4, 4)
+            return
+        end
+
+        src = Float32.(reshape(1:8, 2, 4))
+        x = CuArray(src)
+        y = CUDA.zeros(Float32, 4, 4)
+
+        @cuda backend=cuTile repeat_inner_kernel(x, y)
+
+        @test Array(y) ≈ repeat(src; inner=(2, 1))
+    end
+
+    @testset "2D combined inner+outer repeat matches Base.repeat" begin
+        function repeat_inner_outer_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (2, 4))
+            ct.store(y, (bid, 1), repeat(tile; inner=(2, 1), outer=(1, 2)))  # (2, 4) -> (4, 8)
+            return
+        end
+
+        src = Float32.(reshape(1:8, 2, 4))
+        x = CuArray(src)
+        y = CUDA.zeros(Float32, 4, 8)
+
+        @cuda backend=cuTile repeat_inner_outer_kernel(x, y)
+
+        @test Array(y) ≈ repeat(src; inner=(2, 1), outer=(1, 2))
+    end
+end
+
 @testset "permutedims" begin
     @testset "2D permutedims (transpose-like)" begin
         function permute_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
