@@ -765,9 +765,6 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
             "$(format_sm_arch(sm_arch))"))
     end
 
-    # The worker-warp count is serialized as `num_worker_warps_per_cta`, a hint
-    # introduced in tileiras 13.3. Older versions reject the unknown key, so emit
-    # a clear error rather than producing bytecode they would refuse.
     if hints.num_worker_warps !== nothing && writer.version < v"13.3"
         throw(ArgumentError(
             "num_worker_warps requires Tile IR bytecode v13.3+, got v$(writer.version)"))
