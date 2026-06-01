@@ -804,8 +804,7 @@ tile = ct.load(arr, (1, 1), (4, 8))  # Shape (4, 8)
 tiled = repeat(tile, 2, 2)           # Shape (8, 16)
 ```
 """
-@inline Base.repeat(tile::Tile, counts::Integer...) =
-    _repeat(tile, Val(:outer), Val(counts))
+Base.repeat(tile::Tile, counts::Integer...) = repeat(tile; outer = counts)
 
 """
     repeat(tile::Tile; inner=nothing, outer=nothing) -> Tile
@@ -822,42 +821,44 @@ tile = ct.load(arr, (1, 1), (2, 4))     # Shape (2, 4)
 repeat(tile; inner=(2, 1), outer=(1, 2)) # Shape (4, 8)
 ```
 """
-@inline function Base.repeat(tile::Tile; inner = nothing, outer = nothing)
+function Base.repeat(tile::Tile; inner = nothing, outer = nothing)
     t = inner === nothing ? tile :
-        _repeat(tile, Val(:inner), Val(inner isa Integer ? (inner,) : Tuple(inner)))
+        _repeat(tile, :inner, inner isa Integer ? (inner,) : Tuple(inner))
     return outer === nothing ? t :
-           _repeat(t, Val(:outer), Val(outer isa Integer ? (outer,) : Tuple(outer)))
+           _repeat(t, :outer, outer isa Integer ? (outer,) : Tuple(outer))
 end
 
-@generated function _repeat(tile::Tile, ::Val{Mode}, ::Val{Counts}) where {Mode, Counts}
+# Implements both inner and outer repetition by reshaping the tile to interleave
+# a singleton dimension next to each data dimension, broadcasting that singleton
+# up to the repeat count, then collapsing each pair back together. For outer
+# repetition the data dimension is the fast (inner) one within each pair; for
+# inner repetition the repeat count is. Shapes derive from the tile type and the
+# (constant) counts, so const-prop folds them away.
+function _repeat(tile::Tile, mode::Symbol, counts::Tuple{Vararg{Integer}})
     sz = size(tile)
     N = ndims(tile)
-    counts = Int.(Counts)
     M = length(counts)
     P = max(N, M)
     szp = ntuple(i -> i <= N ? sz[i] : 1, P)
-    cntp = ntuple(i -> i <= M ? counts[i] : 1, P)
-    final = ntuple(i -> szp[i] * cntp[i], P)
+    cntp = ntuple(i -> i <= M ? Int(counts[i]) : 1, P)
 
     # Nothing to repeat and no new dimensions: identity.
-    all(==(1), cntp) && P == N && return :(tile)
+    (all(==(1), cntp) && P == N) && return tile
 
-    data_first = Mode === :outer
-    is_data(lo) = (lo == 0) == data_first
+    data_first = mode === :outer
     interleaved = ntuple(2P) do j
         pair, lo = divrem(j - 1, 2)
-        is_data(lo) ? szp[pair + 1] : 1
+        (lo == 0) == data_first ? szp[pair + 1] : 1
     end
     target = ntuple(2P) do j
         pair, lo = divrem(j - 1, 2)
-        is_data(lo) ? szp[pair + 1] : cntp[pair + 1]
+        (lo == 0) == data_first ? szp[pair + 1] : cntp[pair + 1]
     end
+    final = ntuple(i -> szp[i] * cntp[i], P)
 
-    return quote
-        t = reshape(tile, $interleaved)
-        t = broadcast_to(t, $target)
-        reshape(t, $final)
-    end
+    t = reshape(tile, interleaved)
+    t = broadcast_to(t, target)
+    return reshape(t, final)
 end
 
 """
