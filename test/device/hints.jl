@@ -71,6 +71,33 @@ end
     end
 end
 
+@testset "launch with num_worker_warps" begin
+    function vadd_kernel_worker_warps(a::ct.TileArray{Float32,1},
+                        b::ct.TileArray{Float32,1},
+                        c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta + tb)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.ones(Float32, n)
+    b = CUDA.ones(Float32, n) .* 2
+    c = CUDA.zeros(Float32, n)
+
+    if cuTile.bytecode_version() >= v"13.3"
+        @cuda backend=cuTile blocks=64 num_worker_warps=8 vadd_kernel_worker_warps(a, b, c)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    else
+        @test_throws "num_worker_warps requires" @cuda backend=cuTile blocks=64 num_worker_warps=8 vadd_kernel_worker_warps(a, b, c)
+    end
+
+    # Invalid value rejected before compilation.
+    @test_throws "num_worker_warps must be either 4 or 8" @cuda backend=cuTile blocks=64 num_worker_warps=3 vadd_kernel_worker_warps(a, b, c)
+end
+
 end
 
 @testset "Load / Store Optimization Hints" begin

@@ -44,7 +44,7 @@ import REPL
         bv = bytecode_version()
         for sm_arch in [v"8.0", v"8.6", v"8.7", v"8.9",
                         v"10.0", v"11.0", v"12.0", v"12.1"]
-            key = TileCacheKey(sm_arch, bv, nothing, nothing, nothing)
+            key = TileCacheKey(sm_arch, bv, nothing, nothing, nothing, nothing)
             compile(f, argtypes, const_argtypes, key)
         end
         return

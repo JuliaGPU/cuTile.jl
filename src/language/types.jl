@@ -561,6 +561,7 @@ Validate a kernel optimization hint value. Throws `ArgumentError` for invalid va
 - `num_ctas`: power of 2 in [1, 16]
 - `occupancy`: integer in [1, 32]
 - `opt_level`: integer in [0, 3]
+- `num_worker_warps`: either 4 or 8
 """
 function validate_hint(key::Symbol, val)
     val === nothing && return
@@ -574,6 +575,9 @@ function validate_hint(key::Symbol, val)
     elseif key === :opt_level
         val isa Integer || throw(ArgumentError("opt_level must be an integer, got $(typeof(val))"))
         0 <= val <= 3 || throw(ArgumentError("opt_level must be between 0 and 3, got $val"))
+    elseif key === :num_worker_warps
+        val isa Integer || throw(ArgumentError("num_worker_warps must be an integer, got $(typeof(val))"))
+        val in (4, 8) || throw(ArgumentError("num_worker_warps must be either 4 or 8, got $val"))
     else
         throw(ArgumentError("unknown hint key: $key"))
     end

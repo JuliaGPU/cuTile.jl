@@ -1441,7 +1441,7 @@ end
  @compiler_options macro
 =============================================================================#
 
-const _COMPILER_OPTION_NAMES = Set([:num_ctas, :occupancy, :opt_level])
+const _COMPILER_OPTION_NAMES = Set([:num_ctas, :occupancy, :opt_level, :num_worker_warps])
 
 """
     @compiler_options key=val...
@@ -1450,7 +1450,7 @@ Specify per-architecture optimization hints inside a kernel function body.
 Hints are embedded as `:meta` nodes and resolved at compile time based on
 the target `sm_arch`.
 
-Supported options: `num_ctas`, `occupancy`, `opt_level`.
+Supported options: `num_ctas`, `occupancy`, `opt_level`, `num_worker_warps`.
 
 Values can be plain scalars or `ByTarget(...)` for per-architecture dispatch.
 

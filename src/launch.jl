@@ -3,7 +3,7 @@
 # Compiles a Julia function with `TileArray` arguments to Tile IR bytecode,
 # runs `tileiras` to lower bytecode → CUBIN, loads the cubin into the active
 # CUDA context, and launches it via `cudacall`. Compilation is cached per
-# `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, bytecode_version)`.
+# `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, bytecode_version)`.
 
 using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
                 AbstractBackend, AbstractKernel, kernel_convert, kernel_compile, PerDevice
@@ -88,7 +88,8 @@ CUDACore.kernel_compile(::TileBackend, f::F, tt::TT=Tuple{}; kwargs...) where {F
 @inline unpack_version(x::UInt16) = VersionNumber(Int(x >> 8), Int(x & 0xff))
 
 # isbits sentinel codec for `Union{Int, Nothing}` hint fields (`opt_level`,
-# `num_ctas`, `occupancy`). `-1` is unused as a value, so we use it for `nothing`.
+# `num_ctas`, `occupancy`, `num_worker_warps`). `-1` is unused as a value, so we
+# use it for `nothing`.
 const _UNSET = -1
 @inline pack_hint(x::Union{Int, Nothing}) = x === nothing ? _UNSET : x
 @inline unpack_hint(x::Int) = x == _UNSET ? nothing : x
@@ -113,12 +114,14 @@ struct TileCacheKey
     opt_level::Int
     num_ctas::Int
     occupancy::Int
+    num_worker_warps::Int
 end
 TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
              opt_level::Union{Int, Nothing}, num_ctas::Union{Int, Nothing},
-             occupancy::Union{Int, Nothing}) =
+             occupancy::Union{Int, Nothing}, num_worker_warps::Union{Int, Nothing}) =
     TileCacheKey(pack_version(sm_arch), pack_version(bytecode_version),
-                 pack_hint(opt_level), pack_hint(num_ctas), pack_hint(occupancy))
+                 pack_hint(opt_level), pack_hint(num_ctas), pack_hint(occupancy),
+                 pack_hint(num_worker_warps))
 
 
 #=============================================================================
@@ -409,7 +412,7 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     sm_arch = unpack_version(cache.owner.sm_arch)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
-    # num_ctas/occupancy are resolved in emit_tile because they're encoded in bytecode.
+    # num_ctas/occupancy/num_worker_warps are resolved in emit_tile because they're encoded in bytecode.
     _, _, kernel_meta = res.julia_ir
     opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
@@ -516,7 +519,8 @@ end
 
 """
     cuTile.cufunction(f, tt=Tuple{}; sm_arch=nothing, opt_level=nothing,
-                      num_ctas=nothing, occupancy=nothing, name=nothing) -> TileKernel
+                      num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing,
+                      name=nothing) -> TileKernel
 
 Compile `f` for the cuTile backend. `tt` is the tuple of *converted*
 argument types (i.e. after `cuTileconvert`/`Adapt.adapt(KernelAdaptor(), …)`).
@@ -533,11 +537,13 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                     opt_level::Union{Int, Nothing}=nothing,
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
+                    num_worker_warps::Union{Int, Nothing}=nothing,
                     name::Union{String, Nothing}=nothing)
     bytecode_version = check_tile_ir_support()
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
 
-    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy)
+    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
+                       num_worker_warps)
 
     # Single pass over `tt.parameters`: build the unwrapped argtypes tuple
     # (Constant{T,V} → T for MI lookup) and the const_argtypes vector
@@ -685,7 +691,7 @@ end
 
 """
     launch(f, grid, args...; sm_arch=nothing, opt_level=nothing,
-           num_ctas=nothing, occupancy=nothing, name=nothing)
+           num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing, name=nothing)
 
 Compile and launch a Tile IR kernel. `args` are converted via
 `cuTileconvert` (CuArray → TileArray, Type → Constant). Equivalent to
@@ -715,10 +721,11 @@ function launch(@nospecialize(f), grid, args...;
                 opt_level::Union{Int, Nothing}=nothing,
                 num_ctas::Union{Int, Nothing}=nothing,
                 occupancy::Union{Int, Nothing}=nothing,
+                num_worker_warps::Union{Int, Nothing}=nothing,
                 name::Union{String, Nothing}=nothing)
     converted = map(cuTileconvert, args)
     tt = Tuple{map(Core.Typeof, converted)...}
-    kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, name)
+    kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name)
     kernel(converted...; blocks=grid)
     return nothing
 end

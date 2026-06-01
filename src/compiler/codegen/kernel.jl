@@ -1,7 +1,7 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing, const_argtypes=nothing)
+    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing, const_argtypes=nothing)
 
 Compile a StructuredIRCode to Tile IR bytecode.
 
@@ -17,6 +17,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing,
+                      num_worker_warps::Union{Int, Nothing} = nothing,
                       cache::CacheView,
                       const_argtypes::Union{Vector{Any}, Nothing} = nothing)
     tt = writer.type_table
@@ -82,7 +83,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # Create entry hints if provided
-    entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy))
+    entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy, num_worker_warps))
 
     # Create function-level debug attribute
     func_debug_attr = make_func_debug_attr(debug_emitter, sci; linkage_name=name)

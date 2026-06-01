@@ -361,6 +361,7 @@ end
 | `num_ctas` | Number of CTAs in a CGA | Powers of 2 |
 | `occupancy` | Target concurrent CTAs per SM | 1–32 |
 | `opt_level` | Optimization level | 0–3 |
+| `num_worker_warps` | Worker warps per CTA in a warp-specialized kernel | 4 or 8 |
 
 Values can be plain scalars or `ct.ByTarget(...)` for per-architecture dispatch.
 `ByTarget` maps compute capabilities to values, with an optional default:

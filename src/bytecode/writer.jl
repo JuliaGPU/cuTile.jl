@@ -741,17 +741,19 @@ function encode_load_store_hints_dict!(cb::CodeBuilder, hints::LoadStoreHints)
 end
 
 """
-Kernel-level compilation hints (num_ctas, occupancy).
+Kernel-level compilation hints (num_ctas, occupancy, num_worker_warps).
 Encoded as a dictionary attribute in bytecode.
 """
 @kwdef struct EntryHints
-    num_ctas::Union{Int, Nothing} = nothing    # 1, 2, 4, 8, 16
-    occupancy::Union{Int, Nothing} = nothing   # 1-32
+    num_ctas::Union{Int, Nothing} = nothing           # 1, 2, 4, 8, 16
+    occupancy::Union{Int, Nothing} = nothing          # 1-32
+    num_worker_warps::Union{Int, Nothing} = nothing   # 4 or 8
 end
 
 function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber, Nothing}, hints::EntryHints)
     validate_hint(:num_ctas, hints.num_ctas)
     validate_hint(:occupancy, hints.occupancy)
+    validate_hint(:num_worker_warps, hints.num_worker_warps)
 
     # CTA clusters (num_cta_in_cga > 1) are a Blackwell feature. Older tileiras
     # versions rejected the bytecode for non-Blackwell targets; tileiras 13.3
@@ -763,10 +765,19 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
             "$(format_sm_arch(sm_arch))"))
     end
 
+    # The worker-warp count is serialized as `num_worker_warps_per_cta`, a hint
+    # introduced in tileiras 13.3. Older versions reject the unknown key, so emit
+    # a clear error rather than producing bytecode they would refuse.
+    if hints.num_worker_warps !== nothing && writer.version < v"13.3"
+        throw(ArgumentError(
+            "num_worker_warps requires Tile IR bytecode v13.3+, got v$(writer.version)"))
+    end
+
     # Build items list (only non-nothing values)
     items = Tuple{String, Int}[]
     isnothing(hints.num_ctas) || push!(items, ("num_cta_in_cga", hints.num_ctas))
     isnothing(hints.occupancy) || push!(items, ("occupancy", hints.occupancy))
+    isnothing(hints.num_worker_warps) || push!(items, ("num_worker_warps_per_cta", hints.num_worker_warps))
 
     # Always emit optimization hints when sm_arch is specified, even with an empty
     # dict. Python cuTile emits `optimization_hints=<sm_NNN = {}>` unconditionally

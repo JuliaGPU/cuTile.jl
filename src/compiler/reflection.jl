@@ -109,7 +109,7 @@ constant_eltype(::Type{Constant{T,V}}) where {T,V} = T
 constant_value(::Type{Constant{T,V}}) where {T,V} = V
 
 """
-    code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy)
+    code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps)
 
 Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
 Analogous to `code_llvm`/`code_native`. Calls the driver directly without
@@ -120,6 +120,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     opt_level::Union{Int, Nothing}=nothing,
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
+                    num_worker_warps::Union{Int, Nothing}=nothing,
                     bytecode_version::VersionNumber=cuTile.bytecode_version(),
                     debuginfo::Bool=false,
                     world::UInt=Base.get_world_counter())
@@ -127,7 +128,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     mi = lookup_method_instance(f, stripped; world)
 
     opts = CGOpts((sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
-                    bytecode_version=bytecode_version))
+                    num_worker_warps=num_worker_warps, bytecode_version=bytecode_version))
     cache = CacheView{CuTileResults}(:cuTile, world)
     ir, rettype = emit_julia(cache, mi; const_argtypes)
     sci, rettype, kernel_meta = emit_structured(ir, rettype)

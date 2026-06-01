@@ -7,13 +7,15 @@ const compile_hook = Ref{Union{Nothing,Function}}(nothing)
 =============================================================================#
 
 # Compilation options for cache sharding.
-# Hint fields (opt_level, num_ctas, occupancy) represent explicit overrides only;
-# `nothing` means "consult @compiler_options meta nodes in the IR during compilation."
+# Hint fields (opt_level, num_ctas, occupancy, num_worker_warps) represent explicit
+# overrides only; `nothing` means "consult @compiler_options meta nodes in the IR
+# during compilation."
 const CGOpts = @NamedTuple{
     sm_arch::Union{VersionNumber, Nothing},
     opt_level::Union{Int, Nothing},
     num_ctas::Union{Int, Nothing},
     occupancy::Union{Int, Nothing},
+    num_worker_warps::Union{Int, Nothing},
     bytecode_version::VersionNumber
 }
 
@@ -168,6 +170,8 @@ function emit_tile(sci::StructuredIRCode, rettype, kernel_meta::Dict{Symbol,Any}
     # Resolve hints: launch()/code_tiled() kwargs > @compiler_options meta > defaults
     resolved_num_ctas = resolve_hint(opts.num_ctas, kernel_meta, :num_ctas, opts.sm_arch)
     resolved_occupancy = resolve_hint(opts.occupancy, kernel_meta, :occupancy, opts.sm_arch)
+    resolved_num_worker_warps = resolve_hint(opts.num_worker_warps, kernel_meta,
+                                             :num_worker_warps, opts.sm_arch)
 
     # Generate Tile IR bytecode
     bytecode = write_bytecode!(1; version=opts.bytecode_version) do writer, func_buf
@@ -176,6 +180,7 @@ function emit_tile(sci::StructuredIRCode, rettype, kernel_meta::Dict{Symbol,Any}
             sm_arch = opts.sm_arch,
             num_ctas = resolved_num_ctas,
             occupancy = resolved_occupancy,
+            num_worker_warps = resolved_num_worker_warps,
             cache,
             const_argtypes
         )
@@ -307,6 +312,7 @@ function emit_tile!(cache::CacheView, mi::Core.MethodInstance,
                    opt_level=unpack_hint(key.opt_level),
                    num_ctas=unpack_hint(key.num_ctas),
                    occupancy=unpack_hint(key.occupancy),
+                   num_worker_warps=unpack_hint(key.num_worker_warps),
                    bytecode_version=unpack_version(key.bytecode_version)))
     bytecode = emit_tile(sci, rettype, kernel_meta;
                          name=sanitize_name(string(mi.def.name)),
