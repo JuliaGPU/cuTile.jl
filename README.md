@@ -184,12 +184,13 @@ Tile IR operations.
 ### Shape
 | Operation | Description |
 |-----------|-------------|
-| `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
-| `transpose(tile)` | Transpose 2D tile |
 | `reshape(tile, shape)` | Reshape (same element count) |
+| `transpose(tile)` | Transpose 2D tile |
 | `permutedims(tile, perm)` | Permute dimensions |
+| `repeat(tile, counts...)` `repeat(tile; inner, outer)` | Repeat values along dimensions |
 | `ct.extract(tile, index, shape)` | Extract sub-tile |
 | `ct.cat((a, b), axis)` | Concatenate tiles |
+| `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
 | `dropdims(tile; dims)` | Remove singleton dimensions |
 
 ### Matrix
