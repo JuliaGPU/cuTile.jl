@@ -587,10 +587,12 @@ function temporary_cufunction(@nospecialize(f), tt::Type{<:Tuple}, session_id::U
                               sm_arch::Union{VersionNumber, Nothing}=nothing,
                               opt_level::Union{Int, Nothing}=nothing,
                               num_ctas::Union{Int, Nothing}=nothing,
-                              occupancy::Union{Int, Nothing}=nothing)
+                              occupancy::Union{Int, Nothing}=nothing,
+                              num_worker_warps::Union{Int, Nothing}=nothing)
     bytecode_version = check_tile_ir_support()
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
-    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy)
+    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
+                       num_worker_warps)
     owner = TemporaryTileCacheKey(key, session_id)
     argtypes, const_argtypes = unwrap_argtypes(f, tt)
     return invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes,
