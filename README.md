@@ -126,7 +126,7 @@ uses standard Julia syntax and is overlaid on `Base`.
 
 \* `cuTile.TFloat32` is a public 32-bit floating-point numeric type with truncated mantissa (10 bits), made for tensor core operations.
 
-\*\* [Microscaling (MX)](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) numeric types, exported by [Microfloats.jl](https://github.com/MurrellGroup/Microfloats.jl). `Float8_E4M3FN` and `Float8_E5M2` (FP8) are also exported by [DLFP8Types.jl](https://github.com/JuliaGPU/DLFP8Types.jl).
+\*\* [Microscaling (MX)](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) numeric types, exported by [Microfloats.jl](https://github.com/MurrellGroup/Microfloats.jl). `Float8_E4M3FN` and `Float8_E5M2` (FP8) are also exported by [DLFP8Types.jl](https://github.com/chengchingwen/DLFP8Types.jl).
 
 ### Memory
 | Operation | Description |
