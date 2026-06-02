@@ -41,7 +41,7 @@ const Exp = ct.Experimental
 
         world = Base.get_world_counter()
         key = ct.TileCacheKey(ct.default_sm_arch(), ct.bytecode_version(),
-                              3, nothing, nothing)
+                              3, nothing, nothing, nothing)
         cache = ct.CompilerCaching.CacheView{ct.CuTileResults}(key, world)
         mi = ct.CompilerCaching.method_instance(f, argtypes; world)
         ci = get(cache, mi, nothing)
