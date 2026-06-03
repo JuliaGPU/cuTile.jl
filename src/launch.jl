@@ -126,12 +126,13 @@ TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
 
 struct TemporaryTileCacheKey
     key::TileCacheKey
-    session_id::UInt
 end
 
-# Autotune candidates use this owner so they can share work within one tuning
-# pass without becoming visible to the normal `cufunction` cache keyed by
-# `TileCacheKey`. The winning config is promoted by the final normal launch.
+# Autotune candidates compile under this owner so they share inference/codegen
+# work without becoming visible to (or polluting) the normal `cufunction` cache
+# keyed by `TileCacheKey`. It's a plain marker wrapper: candidate CIs are keyed
+# by content, so the cached set is bounded by the search space, not by how many
+# times you tune. The winning config is promoted by the final normal launch.
 @inline tile_cache_key(key::TileCacheKey) = key
 @inline tile_cache_key(key::TemporaryTileCacheKey) = key.key
 
@@ -594,7 +595,7 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                   key, true)::TileKernel{Core.Typeof(f), tt}
 end
 
-function temporary_cufunction(@nospecialize(f), tt::Type{<:Tuple}, session_id::UInt;
+function temporary_cufunction(@nospecialize(f), tt::Type{<:Tuple};
                               sm_arch::Union{VersionNumber, Nothing}=nothing,
                               opt_level::Union{Int, Nothing}=nothing,
                               num_ctas::Union{Int, Nothing}=nothing,
@@ -604,7 +605,7 @@ function temporary_cufunction(@nospecialize(f), tt::Type{<:Tuple}, session_id::U
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
     key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
                        num_worker_warps)
-    owner = TemporaryTileCacheKey(key, session_id)
+    owner = TemporaryTileCacheKey(key)
     argtypes, const_argtypes = unwrap_argtypes(f, tt)
     return invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes,
                          owner, false)::TileKernel{Core.Typeof(f), tt}
