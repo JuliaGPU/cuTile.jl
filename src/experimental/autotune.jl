@@ -252,27 +252,31 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn
     jobs = Channel{Any}(length(configs))
     foreach(cfg -> put!(jobs, cfg), configs)
     close(jobs)
-
+    
     cancelled = Threads.Atomic{Bool}(false)
     precompile_error = Ref{Any}(nothing)
-    error_lock = ReentrantLock()
+    error_lock = ReentrantLock()    
+    ctx = CUDACore.context()
 
     producer = Threads.@spawn try
         @sync for _ in 1:workers
-            Threads.@spawn for cfg in jobs
-                cancelled[] && break
-                try
-                    precompile_cfg(f, cfg, args_fn, session; sm_arch, opt_level,
-                                    static_num_ctas, static_occupancy)
-                    cancelled[] || put!(ready, cfg)
-                catch err
-                    if err isa InterruptException
-                        cancelled[] = true
-                        rethrow()
-                    end
-                    lock(error_lock) do
-                        precompile_error[] === nothing &&
-                            (precompile_error[] = (cfg, err))
+            Threads.@spawn begin
+                CUDACore.context!(ctx)
+                for cfg in jobs
+                    cancelled[] && break
+                    try
+                        precompile_cfg(f, cfg, args_fn, session; sm_arch, opt_level,
+                                        static_num_ctas, static_occupancy)
+                        cancelled[] || put!(ready, cfg)
+                    catch err
+                        if err isa InterruptException
+                            cancelled[] = true
+                            rethrow()
+                        end
+                        lock(error_lock) do
+                            precompile_error[] === nothing &&
+                                (precompile_error[] = (cfg, err))
+                        end
                     end
                 end
             end
