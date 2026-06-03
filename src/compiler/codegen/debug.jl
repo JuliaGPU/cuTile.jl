@@ -116,23 +116,47 @@ function resolve_debug_attr!(emitter::DebugInfoEmitter, sci::StructuredIRCode,
 end
 
 """
+    first_located_instruction(sci, block) -> Union{Instruction, Nothing}
+
+Depth-first search for the first instruction in `block` or its nested
+control-flow regions that carries a source location. Returns `nothing` if none do.
+"""
+function first_located_instruction(sci::StructuredIRCode, block::Block)
+    for inst in instructions(block)
+        isempty(source_location(sci, inst)) || return inst
+        s = inst[:stmt]
+        if s isa ControlFlowOp
+            for nested in blocks(s)
+                found = first_located_instruction(sci, nested)
+                found === nothing || return found
+            end
+        end
+    end
+    return nothing
+end
+
+"""
     make_func_debug_attr(emitter, sci; linkage_name) -> DebugAttrId
 
 Create a function-level debug attribute (DILoc scoped to DISubprogram) for a kernel.
+
+The kernel's subprogram is the outermost frame of *any* located instruction —
+every body op is inlined into the kernel, so they all share that frame. We scan
+the whole region tree rather than just the entry block: when all the work lives
+inside nested control flow (e.g. everything under an `if`), the entry block holds
+only synthesized control flow with no source location, and an entry-only scan
+would leave the function without a debug scope while its nested ops have one —
+which the Tile IR verifier rejects.
 """
 function make_func_debug_attr(emitter::DebugInfoEmitter, sci::StructuredIRCode;
                               linkage_name::String)
-    # Find the kernel function from the first instruction with debug info
-    for inst in instructions(sci.entry)
-        stack = source_location(sci, inst)
-        isempty(stack) && continue
-        outer = stack[1]
-        sp = get_subprogram!(emitter, outer; linkage_name)
-        m = outer.method
-        m isa MethodInstance && (m = m.def)
-        file = m isa Method ? m.file : outer.file
-        line = m isa Method ? Int(m.line) : Int(outer.line)
-        return loc!(emitter.debug_attrs, sp, string(file), line, 0)
-    end
-    return DebugAttrId(0)
+    inst = first_located_instruction(sci, sci.entry)
+    inst === nothing && return DebugAttrId(0)
+    outer = source_location(sci, inst)[1]
+    sp = get_subprogram!(emitter, outer; linkage_name)
+    m = outer.method
+    m isa MethodInstance && (m = m.def)
+    file = m isa Method ? m.file : outer.file
+    line = m isa Method ? Int(m.line) : Int(outer.line)
+    return loc!(emitter.debug_attrs, sp, string(file), line, 0)
 end
