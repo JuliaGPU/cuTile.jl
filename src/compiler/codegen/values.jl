@@ -6,6 +6,9 @@
 Emit/resolve a value reference to a CGVal using multiple dispatch.
 """
 function emit_value!(ctx::CGCtx, ssa::SSAValue)
+    # Reading a poisoned result marks the current statement as a cascade, so its
+    # (derived) failure is suppressed in favour of the root cause.
+    ssa.id in ctx.poisoned && (ctx.touched_poison = true)
     tv = ctx[ssa]
     tv !== nothing || throw(IRError("SSAValue %$(ssa.id) not found in context"))
     return tv

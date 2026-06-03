@@ -615,7 +615,7 @@ end
         @testset "binary op type mismatch errors in Julia" begin
             # addi with mismatched types (Int32 + Int64) should fail if the
             # result is used. Dead code is removed by DCE before codegen.
-            @test_throws ct.IRError code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+            @test_throws ct.CodegenErrors code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                 pid = ct.bid(1)  # Int32
                 # Force type mismatch by calling addi with different types
                 result = ct.Intrinsics.addi(pid, Int64(1))

@@ -194,6 +194,10 @@ function promote_scalar_type(@nospecialize(T))
     T <: Number && return Tile{T, Tuple{}}
     if T <: Tuple
         params = T.parameters
+        # A `Vararg` tail (`Tuple{Vararg{…}}`) has a non-`Type` parameter that
+        # `widenconst` chokes on; such tuples are never concrete tiles anyway,
+        # so leave them for the codegen-side diagnostic to reject cleanly.
+        any(Base.isvarargtype, params) && return nothing
         any_promoted = false
         new_params = map(params) do P
             P = CC.widenconst(P)

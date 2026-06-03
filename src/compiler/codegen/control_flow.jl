@@ -23,10 +23,26 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
                     ctx.debug_emitter, ctx.sci, inst.ssa_idx; linkage_name=ln)
             end
             s = inst[:stmt]
-            if s isa ControlFlowOp
-                emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)
-            else
-                emit_statement!(ctx, s, inst.ssa_idx, value_type(inst))
+            # Per-statement diagnostic boundary: an `IRError` from anywhere in
+            # this statement's emission is recorded (with its kernel-side stack)
+            # and the result poisoned, so emission continues and one compile can
+            # report every problem. See compiler/codegen/errors.jl.
+            ctx.current_ssa_idx = inst.ssa_idx
+            ctx.touched_poison = false
+            try
+                if s isa ControlFlowOp
+                    emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)
+                else
+                    emit_statement!(ctx, s, inst.ssa_idx, value_type(inst))
+                end
+            catch e
+                e isa IRError || rethrow()
+                ctx.current_ssa_idx = inst.ssa_idx
+                # Suppress errors derived purely from an already-poisoned input;
+                # keep only root causes.
+                ctx.touched_poison || record_error!(ctx, e.msg)
+                push!(ctx.poisoned, inst.ssa_idx)
+                ctx.values[inst.ssa_idx] = poison_value(ctx)
             end
         end
         if !skip_terminator && terminator(block) !== nothing
@@ -62,16 +78,19 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
 
     # Determine result types from parent_result_type (token_order_pass! already
-    # updated the type to include any token carries via inst[:type] = …)
+    # updated the type to include any token carries via inst[:type] = …).
+    #
+    # A non-representable result (typically `Any`/`Union{}` left when inference
+    # could not pin a branch's tile down) is recorded but does NOT abort: we
+    # substitute a poison type and still emit both regions, so the root cause
+    # inside the branch (e.g. a non-constant tile shape) surfaces too. The IfOp
+    # result is then marked poison to suppress the cascade at its consumers.
     result_types = TypeId[]
+    result_poisoned = false
     if parent_result_type !== Nothing
-        if parent_result_type <: Tuple
-            for T in parent_result_type.parameters
-                push!(result_types, tile_type_for_julia!(ctx, T))
-            end
-        else
-            push!(result_types, tile_type_for_julia!(ctx, parent_result_type))
-        end
+        Ts = parent_result_type <: Tuple ? collect(parent_result_type.parameters) :
+                                            Any[parent_result_type]
+        result_types, result_poisoned = collect_result_types!(ctx, Ts; context="`if`/`else` result")
     end
 
     then_body = function(_)
@@ -89,6 +108,7 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
+    result_poisoned && push!(ctx.poisoned, ssa_idx)
 end
 
 #=============================================================================
@@ -120,9 +140,12 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
         push!(init_values, tv.v)
     end
 
-    # Build result types uniformly from block args
+    # Build result types uniformly from block args. A non-representable carry
+    # (typically `Any`/`Union{}`) is recorded but does not abort: poison it and
+    # still emit the body so the root cause inside the loop surfaces too.
     n_carries = length(body_blk.args)
-    result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in body_blk.args]
+    result_types, result_poisoned =
+        collect_result_types!(ctx, (arg.type for arg in body_blk.args); context="loop carry")
 
     body_builder = function(block_args)
         saved = copy(ctx.block_args)
@@ -146,6 +169,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
                              lower_tv.v, upper_tv.v, step_tv.v, init_values)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
+    result_poisoned && push!(ctx.poisoned, ssa_idx)
 end
 
 #=============================================================================
@@ -164,7 +188,8 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     end
 
     n_carries = length(body_blk.args)
-    result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in body_blk.args]
+    result_types, result_poisoned =
+        collect_result_types!(ctx, (arg.type for arg in body_blk.args); context="loop carry")
 
     body_builder = function(block_args)
         saved = copy(ctx.block_args)
@@ -188,6 +213,7 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
+    result_poisoned && push!(ctx.poisoned, ssa_idx)
 end
 
 #=============================================================================
@@ -212,7 +238,8 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     end
 
     n_carries = length(before_blk.args)
-    result_types = TypeId[tile_type_for_julia!(ctx, arg.type) for arg in before_blk.args]
+    result_types, result_poisoned =
+        collect_result_types!(ctx, (arg.type for arg in before_blk.args); context="loop carry")
 
     body_builder = function(block_args)
         saved = copy(ctx.block_args)
@@ -301,6 +328,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
+    result_poisoned && push!(ctx.poisoned, ssa_idx)
 end
 
 #=============================================================================
