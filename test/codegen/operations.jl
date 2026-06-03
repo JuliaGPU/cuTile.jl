@@ -767,7 +767,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "vec-vec throws error" begin
-        @test_throws cuTile.IRError begin
+        @test_throws cuTile.CodegenErrors begin
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (16,))
@@ -1220,7 +1220,7 @@ end
 
         # pack/unpack require v13.3 — older bytecode rejects with a clear error.
         # (`literal` since the `+` in the message is a regex metachar to FileCheck.)
-        @test @filecheck throws=ct.IRError begin
+        @test @filecheck throws=ct.CodegenErrors begin
             @check literal=true "v13.3+"
             code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}};
                        bytecode_version=v"13.2") do a, b
@@ -1232,7 +1232,7 @@ end
         end
 
         # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
-        @test @filecheck throws=ct.IRError begin
+        @test @filecheck throws=ct.CodegenErrors begin
             @check "do not evenly divide"
             code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
                 pid = ct.bid(1)
@@ -1242,7 +1242,7 @@ end
         end
 
         # reshape-widen: leading dim must equal the ratio (2); 1 fails the final reshape.
-        @test @filecheck throws=ct.IRError begin
+        @test @filecheck throws=ct.CodegenErrors begin
             @check "same number of elements"
             code_tiled(Tuple{ct.TileArray{UInt8,2,spec2d}, ct.TileArray{UInt16,2,spec2d}}) do a, b
                 pid = ct.bid(1)
