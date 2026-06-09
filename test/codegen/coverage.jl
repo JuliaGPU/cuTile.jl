@@ -41,11 +41,15 @@
             # launching the kernel, so this needs no GPU execution of the body.
             ct.code_tiled(devnull, cov_kernel, cov_tt)
 
-            # Flush coverage in-process and assert the device-only helper was marked.
+            # Flush coverage in-process. Both the inlined device-only helper and the
+            # kernel entry must show covered lines, even though neither ran on the host.
             tracefile = joinpath(dir, "coverage.info")
             ccall(:jl_write_coverage_data, Cvoid, (Cstring,), tracefile)
 
-            @test lcov_any_covered(tracefile, @__FILE__, m.line, m.line + 4)
+            for f in (cov_only_scale, cov_kernel)
+                m = only(methods(f))
+                @test lcov_any_covered(tracefile, string(m.file), m.line, m.line + 4)
+            end
         end
     end
 end
