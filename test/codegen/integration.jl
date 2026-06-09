@@ -1349,6 +1349,26 @@ end
             code_tiled(_ghost_op_kernel, Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, typeof(+)})
         end
     end
+
+    @testset "Type{T} struct fields" begin
+        # `Type{T}` fields inside a struct argument are ghost types (no kernel
+        # parameter), just like `Val{N}` fields, and their value (the type `T`)
+        # must be resolvable in the kernel body.
+        struct TypeWrapper{T}
+            type::Type{T}
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            @check "store_view_tko"
+            function _type_field_kernel(a, typewrapper)
+                pid = ct.bid(1)
+                ct.store(a, pid, zeros(typewrapper.type, (16,)))
+                return
+            end
+            code_tiled(_type_field_kernel,
+                       Tuple{ct.TileArray{Float32,1,spec}, TypeWrapper{Float32}})
+        end
+    end
 end
 
 #=============================================================================

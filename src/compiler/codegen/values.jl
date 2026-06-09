@@ -86,6 +86,8 @@ end
 
 emit_value!(ctx::CGCtx, ::Nothing) = ghost_value(Nothing, nothing)
 
+type_singleton_value(@nospecialize(T)) = T.parameters[1]
+
 """
     get_constant(ctx, ref) -> Union{Some, Nothing}
 
@@ -110,6 +112,9 @@ function get_constant(ctx::CGCtx, @nospecialize(ref))
     end
     # Any ghost singleton can be reconstructed from its type
     T = CC.widenconst(tv.jltype)
+    # A concrete `Type{X}` kind (e.g. a `::Type{Float32}` field accessed via a
+    # lazy arg_ref) has no `.instance`; its sole inhabitant is `X` itself.
+    is_type_singleton(T) && return Some(type_singleton_value(T))
     is_ghost_type(T) && isdefined(T, :instance) && return Some(T.instance)
     return nothing
 end
