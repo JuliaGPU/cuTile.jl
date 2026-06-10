@@ -1340,7 +1340,7 @@ end
     end
 
     @testset "Type broadcasting" begin
-        # convert.(Float16, tile) — Type arg via TypeRef
+        # convert.(Float16, tile) — Type arg via Ref{Type{Float16}}
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float16,1,spec1d}}) do a, b

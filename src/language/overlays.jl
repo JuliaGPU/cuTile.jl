@@ -32,14 +32,6 @@ end
 
 
 #=============================================================================
- Broadcasting
-=============================================================================#
-
-# Route Type values through TypeRef instead of RefValue (which can't be constructed in Tile IR).
-@overlay Base.Broadcast.broadcastable(::Type{T}) where T = TypeRef{T}()
-
-
-#=============================================================================
  Type Conversions
 =============================================================================#
 
