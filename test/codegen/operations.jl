@@ -481,6 +481,28 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "tuple comparison" begin
+        # Tuple equality and lexicographic comparison work via the Base
+        # recursive definitions, lowering to scalar cmpi chains (the
+        # equivalent of cuTile Python ebaa570's tuple compare support).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, n
+                x = (ct.bid(1), Int32(2))
+                y = (n, Int32(2))
+                @check "cmpi"
+                if x == y
+                    ct.store(a, 1, ct.load(a, 1, (16,)) .+ 1f0)
+                end
+                @check "cmpi"
+                if x < y
+                    ct.store(a, 1, ct.load(a, 1, (16,)) .* 2f0)
+                end
+                return
+            end
+        end
+    end
+
     @testset "u16 + u64 promotes to u64" begin
         # Pin promote_type(UInt16, UInt64) == UInt64 so the narrower operand
         # is widened with `exti` (zero-extend) before `addi` rather than
