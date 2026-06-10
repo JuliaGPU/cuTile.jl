@@ -72,6 +72,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assume), args)
     pred = pred_c.value
     pred isa AssumePredicate ||
         throw(IRError("assume: predicate must be an AssumePredicate, got $(typeof(pred))"))
+    pred isa DivBy && pred.divisor < 1 &&
+        throw(IRError("assume: DivBy requires a positive divisor, got $(pred.divisor)"))
     new_val = encode_AssumeOp!(ctx.cb, x.type_id, x.v, pred)
     return CGVal(new_val, x.type_id, x.jltype, x.shape)
 end

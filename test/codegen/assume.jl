@@ -211,3 +211,27 @@ end
         @check_not "assume div_by<128>"
     end
 end
+
+@testset "assume — user assume_divisible_by" begin
+    spec1d = ct.ArraySpec{1}(16, true)
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            n = ct.bid(1) * Int32(128)
+            n = ct.assume_divisible_by(n, 128)
+            @check "muli"
+            @check "assume div_by<128>"
+            ct.store(a, n, ct.load(a, n, (64,)))
+            return
+        end
+    end
+
+    # Non-positive divisor is rejected
+    @test_throws "assume: DivBy requires a positive divisor, got 0" begin
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            n = ct.assume_divisible_by(ct.bid(1), 0)
+            ct.store(a, n, ct.load(a, n, (64,)))
+            return
+        end
+    end
+end

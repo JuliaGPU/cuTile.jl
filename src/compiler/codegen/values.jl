@@ -102,6 +102,10 @@ function get_constant(ctx::CGCtx, @nospecialize(ref))
          ref isa Expr || ref isa GlobalRef || ref isa QuoteNode)
         return Some(ref)
     end
+    # QuoteNodes are compile-time constants by definition; unwrap directly
+    # rather than via emit_value!, which would emit a dead ConstantOp (or
+    # fail outright for non-Tile types like AssumePredicate).
+    ref isa QuoteNode && return Some(ref.value)
     # IR references - extract constant through emit_value!
     tv = emit_value!(ctx, ref)
     tv === nothing && return nothing
