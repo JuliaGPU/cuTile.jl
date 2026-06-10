@@ -750,6 +750,24 @@ end
                        Tuple{ct.TileArray{Float32,1,spec}})
         end
 
+        @testset "extract index out of bounds rejected" begin
+            @test_throws "extract: slice index 3 out of bounds in dimension 2" begin
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    tile = ct.load(a, (ct.bid(1), 1), (4, 8))
+                    ct.extract(tile, (2, 3), (2, 4))
+                end
+            end
+        end
+
+        @testset "extract shape not dividing input rejected" begin
+            @test_throws "extract: input shape (4, 8) is not divisible by extract shape (4, 16)" begin
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    tile = ct.load(a, (ct.bid(1), 1), (4, 8))
+                    ct.extract(tile, (1, 1), (4, 16))
+                end
+            end
+        end
+
         @testset "multi-dim: all dimensions must be pow2" begin
             @test_throws "load: tile dimension 2 must be a power of 2, got 3" begin
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a

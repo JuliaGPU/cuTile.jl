@@ -289,6 +289,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     validate_tile_shape(collect(Int, shape_tuple), "extract")
     output_shape = RowMajorShape(ColMajorShape(shape_tuple))
 
+    # Validate index and shape against the input tile (Julia order, 0-based index)
+    input_shape = Tuple(ColMajorShape(source.shape).dims)
+    length(shape_tuple) == length(input_shape) ||
+        throw(IRError("extract() shape has $(length(shape_tuple)) dimensions, but input tile has $(length(input_shape))"))
+    length(index_tuple) == length(input_shape) ||
+        throw(IRError("extract() index has $(length(index_tuple)) dimensions, but input tile has $(length(input_shape))"))
+    for (i, (s1, s2, idx)) in enumerate(zip(input_shape, shape_tuple, index_tuple))
+        s1 % s2 == 0 ||
+            throw(IRError("extract: input shape $input_shape is not divisible by extract shape $shape_tuple in dimension $i"))
+        n_slices = s1 ÷ s2
+        0 <= idx < n_slices ||
+            throw(IRError("extract: slice index $(idx + 1) out of bounds in dimension $i: " *
+                          "input shape $input_shape divides into $n_slices slices of shape $shape_tuple, " *
+                          "so valid indices are 1:$n_slices"))
+    end
+
     # Get element type
     elem_type = eltype(CC.widenconst(source.jltype))
 

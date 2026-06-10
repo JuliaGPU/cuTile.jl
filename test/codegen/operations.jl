@@ -288,8 +288,8 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "extract"
-                # Extract 2x4 slice starting at (2, 3) (1-indexed)
-                extracted = ct.extract(tile, (2, 3), (2, 4))
+                # Extract slice (2, 2) of the 2x2 slice grid (1-indexed)
+                extracted = ct.extract(tile, (2, 2), (2, 4))
                 ct.store(b, pid, extracted)
                 return
             end
