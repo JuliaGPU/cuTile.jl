@@ -115,20 +115,27 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
 
     C_gpuarrays = similar(A, size(A, 1), size(B, 2))
 
-    # GPUArrays (uses cuBLAS under the hood via LinearAlgebra.mul!)
-    CUDA.@sync for _ in 1:warmup
-        mul!(C_gpuarrays, A, B)
-    end
-    times_gpuarrays = Float64[]
-    NVTX.@range "cuBLAS" begin
-        for i in 1:nruns
-            NVTX.@range "run $i" begin
-                t = CUDA.@elapsed mul!(C_gpuarrays, A, B)
-                push!(times_gpuarrays, t * 1000)
+    # GPUArrays (uses cuBLAS under the hood via LinearAlgebra.mul!).
+    # The cuTile kernel downcasts Float32 inputs to TF32 for tensor cores,
+    # so let cuBLAS do the same to keep the comparison fair.
+    CUDA.math_mode!(CUDA.FAST_MATH; precision=:TensorFloat32)
+    try
+        CUDA.@sync for _ in 1:warmup
+            mul!(C_gpuarrays, A, B)
+        end
+        times_gpuarrays = Float64[]
+        NVTX.@range "cuBLAS" begin
+            for i in 1:nruns
+                NVTX.@range "run $i" begin
+                    t = CUDA.@elapsed mul!(C_gpuarrays, A, B)
+                    push!(times_gpuarrays, t * 1000)
+                end
             end
         end
+        results["cuBLAS"] = times_gpuarrays
+    finally
+        CUDA.math_mode!(CUDA.DEFAULT_MATH)
     end
-    results["cuBLAS"] = times_gpuarrays
 
     return results
 end
