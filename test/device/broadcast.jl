@@ -12,6 +12,10 @@ for (name, kernel_expr, cpu_expr) in [
     ("scalar .- tile",  :(5.0f0 .- tile),    :(5.0f0 .- Array(a))),
     ("tile * scalar",   :(tile * 2.5f0),     :(Array(a) .* 2.5f0)),
     ("scalar * tile",   :(3.0f0 * tile),     :(3.0f0 .* Array(a))),
+    ("tile .^ 2",       :(tile .^ 2),        :(Array(a) .^ 2)),
+    ("tile .^ 3",       :(tile .^ 3),        :(Array(a) .^ 3)),
+    ("tile .^ scalar",  :(tile .^ 2.0f0),    :(Array(a) .^ 2.0f0)),
+    ("tile .+ Ref",     :(tile .+ Ref(1.5f0)), :(Array(a) .+ 1.5f0)),
 ]
     sym = Symbol("scalar_tile_", replace(name, r"[^a-zA-Z0-9]" => "_"))
     @eval @testset $name begin
