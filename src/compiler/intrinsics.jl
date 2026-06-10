@@ -68,7 +68,7 @@ function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, all
     isnothing(latency) && allow_tma && return nothing
     isnothing(latency) || 1 <= latency <= 10 || throw(ArgumentError("latency must be between 1 and 10, got $latency"))
     hints = LoadStoreHints(; latency, allow_tma)
-    return make_load_store_hints(ctx.sm_arch, hints)
+    return make_load_store_hints(ctx.sm_arch, ctx.cb.version, hints)
 end
 
 # Check if an intrinsic argument is a mask (Tile{Bool}) or nothing.
