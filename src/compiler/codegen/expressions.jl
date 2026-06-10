@@ -29,7 +29,7 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         val = sptyp isa CC.Const ? sptyp.val : CC.widenconst(sptyp)
         return emit_value!(ctx, val)
     elseif expr.head === :code_coverage_effect
-        return nothing
+        return record_coverage!(ctx)
     else
         @warn "Unhandled expression head" expr.head expr
         return nothing
@@ -210,4 +210,18 @@ Get the Julia type of an IR value.
 function argextype(ctx::CGCtx, @nospecialize(x))
     tv = emit_value!(ctx, x)
     tv === nothing ? Any : CC.widenconst(tv.jltype)
+end
+
+function record_coverage!(ctx::CGCtx)
+    Base.JLOptions().code_coverage == 0 && return nothing
+    stack = source_location(ctx.sci, ctx.current_ssa_idx)
+    isempty(stack) && return nothing
+    loc = stack[end]                      # innermost (post-inlining) source line
+    line = Int(loc.line)
+    line > 0 || return nothing
+    file = string(loc.file)
+    isempty(file) && return nothing
+    ccall(:jl_coverage_visit_line, Cvoid, (Cstring, Csize_t, Cint),
+          file, ncodeunits(file), line)
+    return nothing
 end
