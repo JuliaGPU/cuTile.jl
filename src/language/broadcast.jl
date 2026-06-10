@@ -34,6 +34,13 @@ struct TypeRef{T} end
 Base.Broadcast.BroadcastStyle(::Type{<:TypeRef}) = Base.Broadcast.DefaultArrayStyle{0}()
 Base.Broadcast.broadcastable(a::TypeRef) = a
 
+# Scalar-carrying broadcast arguments without a tile shape: TypeRef, plus
+# Base.RefValue from Julia's `broadcastable` fallback (e.g. `x .^ 2` lowers to
+# `broadcasted(literal_pow, ^, x, Val(2))`, wrapping `^` and `Val(2)` in Ref).
+# The Ref never reaches codegen: with all uses inlined and non-escaping, SROA
+# eliminates the mutable allocation.
+const ScalarRef = Union{TypeRef, Base.RefValue}
+
 
 #=============================================================================
  Broadcast materialization via copy
@@ -75,46 +82,43 @@ end
 # using its own type (e.g., 0.0f0 → Tile(Float32(0.0))), preserving the
 # type that Julia's broadcast promotion chose. This avoids the pitfall of
 # using the first Tile's eltype (which could be Bool for ifelse conditions).
-# TypeRef arguments pass through unchanged — they carry no tile shape.
+# ScalarRef arguments pass through unchanged — they carry no tile shape.
 @inline _promote_to_tiles() = ()
 @inline _promote_to_tiles(a::Tile, rest...) = (a, _promote_to_tiles(rest...)...)
 @inline _promote_to_tiles(a::T, rest...) where {T <: Number} =
     (Tile(a), _promote_to_tiles(rest...)...)
-@inline _promote_to_tiles(a::TypeRef, rest...) = (a, _promote_to_tiles(rest...)...)
+@inline _promote_to_tiles(a::ScalarRef, rest...) = (a, _promote_to_tiles(rest...)...)
 
 # Compute combined broadcast shape across all Tile arguments via tuple peeling.
 # Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for broadcast_shape.
-# TypeRef arguments are skipped — they have no shape.
+# ScalarRef arguments are skipped — they have no shape.
 @inline _tile_shape(t::Tile) = size(t)
 @inline _broadcast_shapes(t::Tile) = _tile_shape(t)
 @inline _broadcast_shapes(t::Tile, rest...) =
     broadcast_shape(_tile_shape(t), _broadcast_shapes(rest...))
-@inline _broadcast_shapes(::TypeRef, rest...) = _broadcast_shapes(rest...)
-@inline _broadcast_shapes(::TypeRef) = ()
+@inline _broadcast_shapes(::ScalarRef, rest...) = _broadcast_shapes(rest...)
+@inline _broadcast_shapes(::ScalarRef) = ()
 
 # Broadcast all tiles to shape S via tuple peeling.
-# TypeRef arguments pass through unchanged.
+# ScalarRef arguments pass through unchanged.
 @inline _broadcast_all(S::Tuple) = ()
 @inline _broadcast_all(S::Tuple, a::Tile, rest...) =
     (broadcast_to(a, S), _broadcast_all(S, rest...)...)
-@inline _broadcast_all(S::Tuple, a::TypeRef, rest...) =
+@inline _broadcast_all(S::Tuple, a::ScalarRef, rest...) =
     (a, _broadcast_all(S, rest...)...)
 
 # Convert args to scalars, apply f, wrap result back into a Tile.
 @inline function _apply_broadcast(f, args...)
-    scalar_args, S = _to_scalars(args...)
-    Intrinsics.from_scalar(f(scalar_args...), S)
+    Intrinsics.from_scalar(f(map(_to_scalar, args)...), _result_shape(args...))
 end
 
-# Reinterpret Tile arguments as scalars for broadcast application.
-# Skip and extract TypeRef arguments.
-# Returns (scalar_args_tuple, S) where S is the shape from the first Tile.
-@inline _to_scalars(t::Tile{<:Any,S}) where S = ((Intrinsics.to_scalar(t),), S)
-@inline function _to_scalars(t::Tile{<:Any,S}, rest...) where S
-    rest_scalars, _ = _to_scalars(rest...)
-    ((Intrinsics.to_scalar(t), rest_scalars...), S)
-end
-@inline function _to_scalars(::TypeRef{T}, rest...) where T
-    rest_scalars, S = _to_scalars(rest...)
-    ((T, rest_scalars...), S)
-end
+# Reinterpret arguments as scalars for broadcast application: Tiles via
+# to_scalar, TypeRefs via their type parameter, Refs via their contents.
+@inline _to_scalar(t::Tile) = Intrinsics.to_scalar(t)
+@inline _to_scalar(::TypeRef{T}) where T = T
+@inline _to_scalar(r::Base.RefValue) = r[]
+
+# Result shape comes from the first Tile argument; after _broadcast_all,
+# every Tile already has the common shape.
+@inline _result_shape(t::Tile{<:Any,S}, rest...) where S = S
+@inline _result_shape(::ScalarRef, rest...) = _result_shape(rest...)

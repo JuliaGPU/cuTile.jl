@@ -412,6 +412,22 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "literal pow" begin
+        # `x .^ 2` lowers through Base.literal_pow with `^` and `Val(2)` in
+        # Ref-wrapped argument position (broadcastable fallback); the Refs
+        # must vanish before codegen and the pow reduce to a multiply.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "mulf"
+                ct.store(b, pid, tile .^ 2)
+                return
+            end
+        end
+    end
+
     @testset "cmpf" begin
         @test @filecheck begin
             @check_label "entry"
