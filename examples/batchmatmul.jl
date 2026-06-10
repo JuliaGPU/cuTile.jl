@@ -120,20 +120,27 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
 
     C_cublas = similar(A, M, N, Batch)
 
-    # cuBLAS batched gemm via CUBLAS.gemm_strided_batched!
-    CUDA.@sync for _ in 1:warmup
-        cuBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
-    end
-    times_cublas = Float64[]
-    NVTX.@range "cuBLAS batched" begin
-        for i in 1:nruns
-            NVTX.@range "run $i" begin
-                t = CUDA.@elapsed cuBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
-                push!(times_cublas, t * 1000)
+    # cuBLAS batched gemm via CUBLAS.gemm_strided_batched!.
+    # The cuTile kernel downcasts Float32 inputs to TF32 for tensor cores,
+    # so let cuBLAS do the same to keep the comparison fair.
+    CUDA.math_mode!(CUDA.FAST_MATH; precision=:TensorFloat32)
+    try
+        CUDA.@sync for _ in 1:warmup
+            cuBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+        end
+        times_cublas = Float64[]
+        NVTX.@range "cuBLAS batched" begin
+            for i in 1:nruns
+                NVTX.@range "run $i" begin
+                    t = CUDA.@elapsed cuBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+                    push!(times_cublas, t * 1000)
+                end
             end
         end
+        results["cuBLAS batched"] = times_cublas
+    finally
+        CUDA.math_mode!(CUDA.DEFAULT_MATH)
     end
-    results["cuBLAS batched"] = times_cublas
 
     return results
 end
