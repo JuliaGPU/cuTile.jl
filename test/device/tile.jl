@@ -664,13 +664,13 @@ end
 end
 
 @testset "extract" begin
-    @testset "extract identity (0,0) full shape" begin
+    @testset "extract identity full shape" begin
         function extract_identity_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             # Load 4x8 tile
             tile = ct.load(x, (bid, 1), (4, 8))
-            # Extract the full tile starting at (0, 0)
-            extracted = ct.extract(tile, (2, 2), (4, 8))
+            # Extract the full tile: a single slice, index (1, 1)
+            extracted = ct.extract(tile, (1, 1), (4, 8))
             ct.store(y, (bid, 1), extracted)
             return
         end

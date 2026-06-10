@@ -708,7 +708,10 @@ function format_sm_arch(cap::VersionNumber)
     "sm_$(cap.major)$(cap.minor)$(suffix)"
 end
 
-function make_load_store_hints(sm_arch::Union{VersionNumber, Nothing}, hints::LoadStoreHints)
+function make_load_store_hints(sm_arch::Union{VersionNumber, Nothing}, version::VersionNumber,
+                               hints::LoadStoreHints)
+    # v13.3+ keys hints under "default", applying them to every architecture
+    version >= v"13.3" && return OptimizationHints([("default", hints)])
     isnothing(sm_arch) && throw(ArgumentError("sm_arch must be explicitly passed when load/store hints are present"))
     OptimizationHints([(format_sm_arch(sm_arch), hints)])
 end
@@ -778,10 +781,15 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
 
     # Always emit optimization hints when sm_arch is specified, even with an empty
     # dict. Python cuTile emits `optimization_hints=<sm_NNN = {}>` unconditionally
-    # so the CUBIN compiler knows the target architecture.
+    # so the CUBIN compiler knows the target architecture. On v13.3+ the hints
+    # are keyed under "default" instead, applying them to every architecture.
     sm_arch === nothing && isempty(items) && return nothing
-    arch_ver = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
-    arch = format_sm_arch(arch_ver)
+    arch = if writer.version >= v"13.3"
+        "default"
+    else
+        arch_ver = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
+        format_sm_arch(arch_ver)
+    end
 
     buf = UInt8[]
 

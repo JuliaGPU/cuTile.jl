@@ -288,8 +288,8 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "extract"
-                # Extract 2x4 slice starting at (2, 3) (1-indexed)
-                extracted = ct.extract(tile, (2, 3), (2, 4))
+                # Extract slice (2, 2) of the 2x2 slice grid (1-indexed)
+                extracted = ct.extract(tile, (2, 2), (2, 4))
                 ct.store(b, pid, extracted)
                 return
             end
@@ -476,6 +476,28 @@ spec4d = ct.ArraySpec{4}(16, true)
                 b_promoted = convert(ct.Tile{Int64}, b)
                 selected = ifelse.(result, a, b_promoted)
                 ct.store(out, Int32(0), selected)
+                return
+            end
+        end
+    end
+
+    @testset "tuple comparison" begin
+        # Tuple equality and lexicographic comparison work via the Base
+        # recursive definitions, lowering to scalar cmpi chains (the
+        # equivalent of cuTile Python ebaa570's tuple compare support).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, n
+                x = (ct.bid(1), Int32(2))
+                y = (n, Int32(2))
+                @check "cmpi"
+                if x == y
+                    ct.store(a, 1, ct.load(a, 1, (16,)) .+ 1f0)
+                end
+                @check "cmpi"
+                if x < y
+                    ct.store(a, 1, ct.load(a, 1, (16,)) .* 2f0)
+                end
                 return
             end
         end

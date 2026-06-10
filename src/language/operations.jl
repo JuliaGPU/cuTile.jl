@@ -1608,6 +1608,33 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
     Intrinsics.extract(tile, map(i -> i - 1, Index), Shape)
 
 #=============================================================================
+ Assume
+=============================================================================#
+
+public assume_divisible_by
+
+"""
+    assume_divisible_by(x::Integer, divisor::Integer) -> typeof(x)
+
+Declare that `x` is divisible by `divisor`, a compiler hint that propagates
+through arithmetic and can e.g. prove alignment for derived indices and
+pointer offsets, enabling wider memory operations.
+
+The caller is responsible for the correctness of the claim; behavior is
+undefined if `x` is not actually divisible by `divisor` at runtime.
+
+`divisor` must be a positive integer constant.
+
+# Examples
+```julia
+n = ct.assume_divisible_by(n, 128)
+ptr_offset = base + n  # compiler knows this is 128-divisible
+```
+"""
+@inline assume_divisible_by(x::Integer, divisor::Integer) =
+    Intrinsics.assume(x, DivBy(Int(divisor)))
+
+#=============================================================================
  Assert
 =============================================================================#
 

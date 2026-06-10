@@ -750,6 +750,24 @@ end
                        Tuple{ct.TileArray{Float32,1,spec}})
         end
 
+        @testset "extract index out of bounds rejected" begin
+            @test_throws "extract: slice index 3 out of bounds in dimension 2" begin
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    tile = ct.load(a, (ct.bid(1), 1), (4, 8))
+                    ct.extract(tile, (2, 3), (2, 4))
+                end
+            end
+        end
+
+        @testset "extract shape not dividing input rejected" begin
+            @test_throws "extract: input shape (4, 8) is not divisible by extract shape (4, 16)" begin
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    tile = ct.load(a, (ct.bid(1), 1), (4, 8))
+                    ct.extract(tile, (1, 1), (4, 16))
+                end
+            end
+        end
+
         @testset "multi-dim: all dimensions must be pow2" begin
             @test_throws "load: tile dimension 2 must be a power of 2, got 3" begin
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
@@ -945,7 +963,7 @@ end
 
     @testset "num_ctas only" begin
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 4}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", num_ctas=4) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -957,7 +975,7 @@ end
 
     @testset "occupancy only" begin
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {occupancy = 8}>"
+            @check "optimization_hints=<default = {occupancy = 8}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0", occupancy=8) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -969,7 +987,7 @@ end
 
     @testset "both hints" begin
         @test @filecheck begin
-            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 2, occupancy = 4}"
+            @check "optimization_hints=<default = {num_cta_in_cga = 2, occupancy = 4}"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0", num_ctas=2, occupancy=4) do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -983,7 +1001,7 @@ end
         # sm_arch without hints still emits optimization_hints with an empty dict
         # (matching Python cuTile, which always emits the target architecture).
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {}>"
+            @check "optimization_hints=<default = {}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -993,12 +1011,27 @@ end
         end
     end
 
-    @testset "architecture parameter" begin
+    @testset "legacy arch keying on v13.2" begin
+        # Pre-13.3 bytecode keys hints by the resolved target architecture
+        # instead of "default".
         @test @filecheck begin
             @check "optimization_hints=<sm_120 = {num_cta_in_cga = 4}>"
-            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0", num_ctas=4) do a
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0",
+                          num_ctas=4, bytecode_version=v"13.2") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
+                ct.store(a, pid, t)
+                return nothing
+            end
+        end
+
+        @test @filecheck begin
+            @check "load_view_tko"
+            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0",
+                          bytecode_version=v"13.2") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,); latency=5)
                 ct.store(a, pid, t)
                 return nothing
             end
@@ -1071,27 +1104,27 @@ end
 
         # Matching arch: both ByTarget hints resolve
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4, occupancy = 16}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 4, occupancy = 16}>"
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0")
         end
 
         # Non-matching arch: num_ctas falls back to default=2, occupancy absent (no default)
         @test @filecheck begin
-            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 2}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 2}>"
             @check_not "occupancy"
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"12.0")
         end
 
         # Explicit kwarg overrides @compiler_options meta
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 8, occupancy = 16}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 8, occupancy = 16}>"
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0", num_ctas=8)
         end
 
         # Repeating an earlier call exercises cache reuse — if the cache returned
         # stale results from a different shard, FileCheck would catch the mismatch.
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4, occupancy = 16}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 4, occupancy = 16}>"
             ct.code_tiled(_kernel_hints, argtypes; sm_arch=v"10.0")
         end
 
@@ -1105,13 +1138,13 @@ end
         end
 
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {num_cta_in_cga = 4}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 4}>"
             ct.code_tiled(_kernel_plain_hint, argtypes; sm_arch=v"10.0")
         end
 
         # Plain scalar resolves the same on any arch
         @test @filecheck begin
-            @check "optimization_hints=<sm_120 = {num_cta_in_cga = 4}>"
+            @check "optimization_hints=<default = {num_cta_in_cga = 4}>"
             ct.code_tiled(_kernel_plain_hint, argtypes; sm_arch=v"12.0")
         end
 
@@ -1125,12 +1158,12 @@ end
         end
 
         @test @filecheck begin
-            @check "optimization_hints=<sm_100 = {occupancy = 12}>"
+            @check "optimization_hints=<default = {occupancy = 12}>"
             ct.code_tiled(_kernel_default_only, argtypes; sm_arch=v"10.0")
         end
 
         @test @filecheck begin
-            @check "optimization_hints=<sm_120 = {occupancy = 12}>"
+            @check "optimization_hints=<default = {occupancy = 12}>"
             ct.code_tiled(_kernel_default_only, argtypes; sm_arch=v"12.0")
         end
     end
@@ -1147,7 +1180,7 @@ end
     @testset "latency only on load" begin
         @test @filecheck begin
             @check "load_view_tko"
-            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            @check "optimization_hints = <default = {latency = 5}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); latency=5)
@@ -1160,7 +1193,7 @@ end
     @testset "allow_tma=false only on load" begin
         @test @filecheck begin
             @check "load_view_tko"
-            @check "optimization_hints = <sm_120 = {allow_tma = false}>"
+            @check "optimization_hints = <default = {allow_tma = false}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); allow_tma=false)
@@ -1173,7 +1206,7 @@ end
     @testset "both hints on load" begin
         @test @filecheck begin
             @check "load_view_tko"
-            @check "optimization_hints = <sm_120 = {allow_tma = false, latency = 7}>"
+            @check "optimization_hints = <default = {allow_tma = false, latency = 7}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); latency=7, allow_tma=false)
@@ -1186,7 +1219,7 @@ end
     @testset "latency only on store" begin
         @test @filecheck begin
             @check "store_view_tko"
-            @check "optimization_hints = <sm_120 = {latency = 3}>"
+            @check "optimization_hints = <default = {latency = 3}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -1199,7 +1232,7 @@ end
     @testset "allow_tma=false only on store" begin
         @test @filecheck begin
             @check "store_view_tko"
-            @check "optimization_hints = <sm_120 = {allow_tma = false}>"
+            @check "optimization_hints = <default = {allow_tma = false}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -1212,7 +1245,7 @@ end
     @testset "both hints on store" begin
         @test @filecheck begin
             @check "store_view_tko"
-            @check "optimization_hints = <sm_120 = {allow_tma = false, latency = 2}>"
+            @check "optimization_hints = <default = {allow_tma = false, latency = 2}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -1231,7 +1264,7 @@ end
         end
 
         @test @filecheck begin
-            @check "optimization_hints = <sm_120 = {latency = 8}>"
+            @check "optimization_hints = <default = {latency = 8}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,); latency=8)
@@ -1245,10 +1278,10 @@ end
         @test @filecheck begin
             # First load with latency
             @check "load_view_tko"
-            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            @check "optimization_hints = <default = {latency = 5}>"
             # Second load with allow_tma=false
             @check "load_view_tko"
-            @check "optimization_hints = <sm_120 = {allow_tma = false}>"
+            @check "optimization_hints = <default = {allow_tma = false}>"
             # Third load with no hints
             @check "load_view_tko"
             @check_not "optimization_hints"
@@ -1270,7 +1303,7 @@ end
     @testset "gather with latency hint" begin
         @test @filecheck begin
             @check "load_ptr_tko"
-            @check "optimization_hints = <sm_120 = {latency = 3}>"
+            @check "optimization_hints = <default = {latency = 3}>"
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 indices = ct.arange(16)
@@ -1284,7 +1317,7 @@ end
     @testset "scatter with latency hint" begin
         @test @filecheck begin
             @check "store_ptr_tko"
-            @check "optimization_hints = <sm_120 = {latency = 5}>"
+            @check "optimization_hints = <default = {latency = 5}>"
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
