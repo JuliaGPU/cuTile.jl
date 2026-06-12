@@ -10,8 +10,7 @@ steps:
         commands: |
           unset LD_LIBRARY_PATH
         agents:
-          queue: "juliagpu"
-          cuda: "*"
+          queue: "cuda"
           gpu: "a100"
         timeout_in_minutes: 15
         matrix:
