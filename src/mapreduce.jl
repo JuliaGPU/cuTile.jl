@@ -11,7 +11,7 @@ _atomic_op(::typeof(&), ::Type{<:Integer}) = atomic_and
 _atomic_op(_, ::Type) = nothing
 
 @generated function mapreduce_kernel(
-    dest::TileArray{TD, N}, src::TileArray{TS, N},
+    dest::AbstractTileArray{TD, N}, src::AbstractTileArray{TS, N},
     f, op, tile_size, reduce_dims, overflow_grids, init_val, pad_mode,
     reduce_stride, atomic_op
 ) where {TD, TS, N}
@@ -65,7 +65,7 @@ end
 
 function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::Tuple; init)
     N = ndims(A)
-    src_ta = TileArray(A)
+    src_ta = cuTileconvert(A)
 
     # Reduced dims first (larger tiles => better hardware reduction)
     dim_order = (filter(d -> d in reduce_dims, 1:N)..., filter(d -> !(d in reduce_dims), 1:N)...)
@@ -103,19 +103,19 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
 
         if atomic_op !== nothing
             fill!(R, init)
-            _launch_mapreduce!(grid, TileArray(R), src_ta, f, op, ts, reduce_dims,
+            _launch_mapreduce!(grid, cuTileconvert(R), src_ta, f, op, ts, reduce_dims,
                                init, pad_mode, reduce_stride, atomic_op)
         else
             # Two-pass: parallelize along par_dim, then reduce partials
             tmp = similar(A, eltype(R), ntuple(_dim_size, N))
-            _launch_mapreduce!(grid, TileArray(tmp), src_ta, f, op, ts, reduce_dims,
+            _launch_mapreduce!(grid, cuTileconvert(tmp), src_ta, f, op, ts, reduce_dims,
                                init, pad_mode, reduce_stride, nothing)
             _mapreducedim!(identity, op, R, tmp, (par_dim,); init)
         end
     else
         grid = ntuple(d -> d in reduce_dims ? 1 : cld(size(A, d), ts[d]), N)
         reduce_stride = ntuple(d -> Int32(1), N)
-        _launch_mapreduce!(grid, TileArray(R), src_ta, f, op, ts, reduce_dims,
+        _launch_mapreduce!(grid, cuTileconvert(R), src_ta, f, op, ts, reduce_dims,
                            init, pad_mode, reduce_stride, nothing)
     end
 end
