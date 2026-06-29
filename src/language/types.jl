@@ -1,6 +1,19 @@
-public TileArray, Tile, Constant, TFloat32, similar_type,
+public AbstractTileArray, TileArray, Tile, Constant, TFloat32, similar_type,
        ScalarInt, ScalarFloat, IntTile, FloatTile, TileOrInt, TileOrFloat,
        TileOrScalar
+
+"""
+    AbstractTileArray{T, N}
+
+Supertype for N-dimensional kernel array arguments with element type `T`.
+"""
+abstract type AbstractTileArray{T, N} end
+
+Base.eltype(::Type{<:AbstractTileArray{T}}) where T = T
+Base.ndims(::Type{<:AbstractTileArray{<:Any,N}}) where N = N
+Base.eltype(arr::AbstractTileArray) = eltype(arr)
+Base.ndims(arr::AbstractTileArray) = ndims(arr)
+
 
 """
     ArraySpec{N}
@@ -167,17 +180,11 @@ specializations (e.g., aligned vs unaligned) produce different cubins.
 - `sizes::NTuple{N, Int32}`: Size in each dimension
 - `strides::NTuple{N, Int32}`: Stride in each dimension (in elements)
 """
-struct TileArray{T, N, S}
+struct TileArray{T, N, S} <: AbstractTileArray{T, N}
     ptr::Ptr{T}
     sizes::NTuple{N, Int32}
     strides::NTuple{N, Int32}
 end
-
-# Type accessors for TileArray
-Base.eltype(::Type{<:TileArray{T}}) where {T} = T
-Base.eltype(::TileArray{T}) where {T} = T
-Base.ndims(::Type{<:TileArray{<:Any, N}}) where {N} = N
-Base.ndims(::TileArray{<:Any, N}) where {N} = N
 Base.size(arr::TileArray) = arr.sizes
 function Base.size(arr::TileArray{<:Any, N}, d::Integer) where N
     d < 1 && error("arraysize: dimension out of range") # from Array method

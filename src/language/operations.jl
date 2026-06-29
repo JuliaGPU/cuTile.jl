@@ -313,6 +313,10 @@ Axis is 1-indexed. Equivalent to cld(size(arr, axis), shape[axis]).
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
 end
 
+@inline function num_tiles(arr::AbstractTileArray, axis::Integer, shape::NTuple{<:Any, Int})
+    Int32(cld(size(arr, axis), shape[axis]))
+end
+
 # Match a shape tuple to a target rank N by padding trailing 1s or squeezing trailing singletons.
 @generated function _match_shape(::Val{Shape}, ::Val{N}) where {Shape, N}
     M = length(Shape)

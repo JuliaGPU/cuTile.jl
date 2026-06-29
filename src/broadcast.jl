@@ -17,8 +17,9 @@ BroadcastStyle(::TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = TiledStyle{max(
 ## broadcast interface
 
 function Base.Broadcast.materialize!(dest::Tiled, bc::Broadcasted)
-    _tiled_broadcast!(parent(dest), bc)
-    return dest
+    arr = parent(dest)
+    _tiled_broadcast!(arr, bc)
+    return arr
 end
 
 function Base.copy(bc::Broadcasted{TiledStyle{N}}) where N
@@ -43,8 +44,8 @@ end
 
 ## kernel wrapper
 
-_to_tiled_bc(t::Tiled) = TileArray(parent(t))
-_to_tiled_bc(arr::AbstractArray) = TileArray(arr)
+_to_tiled_bc(arr::AbstractArray) = cuTileconvert(arr)
+_to_tiled_bc(t::Tiled) = _to_tiled_bc(parent(t))
 _to_tiled_bc(x::Number) = x
 _to_tiled_bc(x) = x  # fallback for other types
 function _to_tiled_bc(bc::Broadcasted)
@@ -53,7 +54,7 @@ function _to_tiled_bc(bc::Broadcasted)
 end
 
 function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
-    dest_ta = TileArray(dest)
+    dest_ta = _to_tiled_bc(dest)
     tiled_bc = _to_tiled_bc(bc)
 
     ts = _compute_tile_sizes(size(dest))
@@ -67,21 +68,24 @@ end
 
 ## kernel
 
-@inline _eval_bc(arr::TileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
+@inline _eval_bc(arr::AbstractTileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
 @inline _eval_bc(x::Number, bid, tile_size) = x
+
+@inline _bc_func(f) = f
+@inline _bc_func(::Constant{Type{T}, T}) where {T} = T
 
 @inline function _eval_bc(bc::Broadcasted, bid, tile_size)
     args = _eval_bc_args(bc.args, bid, tile_size)
     # Use broadcast to get element-wise semantics (not direct call, which
     # would dispatch to e.g. matmul for * on tiles)
-    broadcast(bc.f, args...)
+    broadcast(_bc_func(bc.f), args...)
 end
 
 @inline _eval_bc_args(::Tuple{}, bid, tile_size) = ()
 @inline _eval_bc_args(args::Tuple, bid, tile_size) =
     (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
 
-@generated function broadcast_kernel(dest::TileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
+@generated function broadcast_kernel(dest::AbstractTileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
     quote
         bids = _unflatten_bids(Val{$N}(), overflow_grids)
         result = _eval_bc(bc, bids, tile_size)
