@@ -11,8 +11,8 @@ abstract type AbstractTileArray{T, N} end
 
 Base.eltype(::Type{<:AbstractTileArray{T}}) where T = T
 Base.ndims(::Type{<:AbstractTileArray{<:Any,N}}) where N = N
-Base.eltype(arr::AbstractTileArray) = eltype(arr)
-Base.ndims(arr::AbstractTileArray) = ndims(arr)
+Base.eltype(arr::AbstractTileArray) = eltype(typeof(arr))
+Base.ndims(arr::AbstractTileArray) = ndims(typeof(arr))
 
 
 """
