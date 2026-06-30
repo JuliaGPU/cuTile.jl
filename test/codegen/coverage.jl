@@ -33,6 +33,22 @@
         return false
     end
 
+    # Execution count recorded for an exact line, or `nothing` if not instrumented.
+    function lcov_line_count(tracefile, file, line)
+        in_block = false
+        for l in eachline(tracefile)
+            if startswith(l, "SF:")
+                in_block = (l == "SF:" * file)
+            elseif l == "end_of_record"
+                in_block = false
+            elseif in_block && startswith(l, "DA:")
+                ln, cnt = parse.(Int, split(l[4:end], ","))
+                ln == line && return cnt
+            end
+        end
+        return nothing
+    end
+
     if Base.JLOptions().code_coverage == 0
         @test_skip "requires --code-coverage"
     else
@@ -50,6 +66,15 @@
                 m = only(methods(f))
                 @test lcov_any_covered(tracefile, string(m.file), m.line, m.line + 4)
             end
+
+            # The kernel entry's definition (signature) line specifically must be
+            # covered — the per-statement coverage effects only mark body lines, so
+            # without the prologue visit the header shows as missed (red). Use the
+            # compiled entry `cov_kernel`, not the `@inline`d `cov_only_scale` whose
+            # signature line is intentionally not marked (Julia doesn't mark it either).
+            m = only(methods(cov_kernel))
+            @test lcov_line_count(tracefile, string(m.file), m.line) !== nothing
+            @test something(lcov_line_count(tracefile, string(m.file), m.line), 0) >= 1
         end
     end
 end

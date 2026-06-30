@@ -223,5 +223,29 @@ function record_coverage!(ctx::CGCtx)
     isempty(file) && return nothing
     ccall(:jl_coverage_visit_line, Cvoid, (Cstring, Csize_t, Cint),
           file, ncodeunits(file), line)
+    ctx.recorded_coverage = true
+    return nothing
+end
+
+# The per-statement `:code_coverage_effect`s only cover body lines. Julia's codegen
+# visits the function-definition (signature) line separately at the prologue
+# (`toplineno`); mirror that here, or the signature is reported as missed while the
+# body is hit. Only for tracked kernels (body carried coverage effects), to avoid
+# reporting signatures of untracked code.
+function record_definition_coverage!(ctx::CGCtx)
+    Base.JLOptions().code_coverage == 0 && return nothing
+    ctx.recorded_coverage || return nothing
+    inst = first_located_instruction(ctx.sci, ctx.sci.entry)
+    inst === nothing && return nothing
+    stack = source_location(ctx.sci, inst)
+    isempty(stack) && return nothing
+    outer = stack[1]                       # outermost frame = the kernel itself
+    m = outer.method
+    m isa MethodInstance && (m = m.def)
+    file = string(m isa Method ? m.file : outer.file)
+    line = Int(m isa Method ? m.line : outer.line)
+    (isempty(file) || line <= 0) && return nothing
+    ccall(:jl_coverage_visit_line, Cvoid, (Cstring, Csize_t, Cint),
+          file, ncodeunits(file), line)
     return nothing
 end
