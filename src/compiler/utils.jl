@@ -671,12 +671,19 @@ end
  Struct destructuring helpers
 =============================================================================#
 
+is_type_singleton(@nospecialize(T)) =
+    isa(T, DataType) && T <: Type && length(T.parameters) == 1 &&
+    !(T.parameters[1] isa TypeVar)
+
 """
     is_ghost_type(T) -> Bool
 
-Check if a type is a ghost type (zero-size singleton).
+Check if a type is a ghost type (zero-size singleton). Includes concrete
+`Type{X}` kinds (see [`is_type_singleton`](@ref)), which carry compile-time
+type information but no runtime data.
 """
 function is_ghost_type(@nospecialize(T))
+    is_type_singleton(T) && return true
     try
         isbitstype(T) && sizeof(T) == 0
     catch
