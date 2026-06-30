@@ -188,6 +188,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, ctx.sci.entry)
 
+    # Cover the function-definition line (Julia's codegen does this at the
+    # prologue; the per-statement coverage effects only cover body lines).
+    record_definition_coverage!(ctx)
+
     finalize_function!(func_buf, cb, writer.debug_info)
 end
 

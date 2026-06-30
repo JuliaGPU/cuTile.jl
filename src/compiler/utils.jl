@@ -322,6 +322,11 @@ mutable struct CGCtx
     # `tuple_element_source` and other parent-walking queries can start
     # from the right scope. `nothing` when no block has been entered yet.
     current_block::Any
+
+    # Set by `record_coverage!` when at least one `:code_coverage_effect` was
+    # marked for this kernel. Gates the function-definition-line coverage visit
+    # in `emit_kernel!` so untracked kernels aren't reported.
+    recorded_coverage::Bool
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
@@ -354,6 +359,7 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         nothing,                         # bounds_info — set by run_passes!
         Dict{Value, Value}(),            # assume_wrapped
         nothing,                         # current_block — set by emit_block!
+        false,                           # recorded_coverage — set by record_coverage!
     )
 end
 
