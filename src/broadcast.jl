@@ -43,18 +43,41 @@ end
 
 ## kernel wrapper
 
-_to_tiled_bc(t::Tiled) = TileArray(parent(t))
-_to_tiled_bc(arr::AbstractArray) = TileArray(arr)
-_to_tiled_bc(x::Number) = x
-_to_tiled_bc(x) = x  # fallback for other types
-function _to_tiled_bc(bc::Broadcasted)
-    new_args = map(_to_tiled_bc, bc.args)
+"""
+    BroadcastLeaf{P}(arr::TileArray)
+
+Kernel-side wrapper for an array leaf whose shape differs from the broadcast
+destination's. `P` is an `NTuple{N,Bool}` over the destination dims, flagging
+dims where the leaf is size 1 (or absent) and must be loaded 1-wide at index 1,
+to be expanded to the full tile shape by the device-side tile broadcast.
+"""
+struct BroadcastLeaf{P, A}
+    arr::A
+end
+BroadcastLeaf{P}(arr::A) where {P, A} = BroadcastLeaf{P, A}(arr)
+
+_to_tiled_bc(t::Tiled, dsize) = _to_tiled_bc(parent(t), dsize)
+function _to_tiled_bc(arr::AbstractArray, dsize::Dims{N}) where N
+    ta = TileArray(arr)
+    ndims(arr) == N && size(arr) == dsize && return ta
+    P = ntuple(d -> size(arr, d) == 1 && dsize[d] > 1, N)
+    return BroadcastLeaf{P}(ta)
+end
+_to_tiled_bc(x::Number, dsize) = x
+_to_tiled_bc(x, dsize) = x  # fallback for other types
+function _to_tiled_bc(bc::Broadcasted, dsize)
+    new_args = map(arg -> _to_tiled_bc(arg, dsize), bc.args)
     Broadcasted{Nothing}(bc.f, new_args, nothing)
 end
 
 function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
+    # Reject shapes Base broadcasting would reject (throws DimensionMismatch);
+    # size-1 dims are legal and expanded per-leaf in the kernel.
+    Base.Broadcast.check_broadcast_axes(axes(dest), bc.args...)
+    isempty(dest) && return
+
     dest_ta = TileArray(dest)
-    tiled_bc = _to_tiled_bc(bc)
+    tiled_bc = _to_tiled_bc(bc, size(dest))
 
     ts = _compute_tile_sizes(size(dest))
     grid = ntuple(i -> cld(size(dest, i), ts[i]), N)
@@ -70,6 +93,18 @@ end
 @inline _eval_bc(arr::TileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
 @inline _eval_bc(x::Number, bid, tile_size) = x
 
+# Shape-mismatched leaf: dims flagged in P load a 1-wide slice at index 1;
+# the tile-level broadcast in `broadcast(bc.f, ...)` expands them to the
+# common tile shape. The leaf's rank M may differ from the destination rank
+# (trailing dims); `load` pads/squeezes trailing singleton dims to match.
+@generated function _eval_bc(leaf::BroadcastLeaf{P}, bid, tile_size) where P
+    A = fieldtype(leaf, :arr)
+    M, N = ndims(A), length(P)
+    shape = [P[d] ? 1 : :(tile_size[$d]) for d in 1:N]
+    index = [(d > N || P[d]) ? :(Int32(1)) : :(bid[$d]) for d in 1:M]
+    return :(cuTile.load(leaf.arr, ($(index...),), ($(shape...),)))
+end
+
 @inline function _eval_bc(bc::Broadcasted, bid, tile_size)
     args = _eval_bc_args(bc.args, bid, tile_size)
     # Use broadcast to get element-wise semantics (not direct call, which
@@ -81,11 +116,19 @@ end
 @inline _eval_bc_args(args::Tuple, bid, tile_size) =
     (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
 
+# Convert the broadcast result to a dest-eltype, dest-shaped tile. A `Number`
+# result comes from a scalar-only RHS (e.g. `Tiled(C) .= 0`); a smaller tile
+# arises when every leaf is size-1 in some dim.
+@inline _bc_result(x::Number, ::Type{T}, tile_size) where {T} =
+    broadcast_to(Tile(T(x)), tile_size)
+@inline _bc_result(t::Tile, ::Type{T}, tile_size) where {T} =
+    broadcast_to(convert(Tile{T}, t), tile_size)
+
 @generated function broadcast_kernel(dest::TileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
     quote
         bids = _unflatten_bids(Val{$N}(), overflow_grids)
         result = _eval_bc(bc, bids, tile_size)
-        store(dest, bids, convert(Tile{$T}, result))
+        store(dest, bids, _bc_result(result, $T, tile_size))
         return
     end
 end
@@ -118,7 +161,20 @@ the broadcast through cuTile kernels.
     using cuTile; const ct = cuTile
     ct.@. C = A + sin(B)
     # equivalent to: Tiled(C) .= Tiled(A) .+ sin.(Tiled(B))
+
+For in-place assignment, the expression evaluates to the original destination
+array (`C` above), not its `Tiled` wrapper.
 """
 macro __dot__(ex)
-    esc(_wrap_tiled(Base.Broadcast.__dot__(ex)))
+    wrapped = _wrap_tiled(Base.Broadcast.__dot__(ex))
+    if Meta.isexpr(wrapped, :.=) && Meta.isexpr(wrapped.args[1], :call) &&
+       wrapped.args[1].args[1] === Tiled
+        dest = wrapped.args[1].args[2]
+        tmp = gensym(:dest)
+        wrapped = Expr(:block,
+            :($tmp = $dest),
+            Expr(:.=, :($Tiled($tmp)), wrapped.args[2]),
+            tmp)
+    end
+    esc(wrapped)
 end

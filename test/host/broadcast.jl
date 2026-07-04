@@ -120,4 +120,89 @@ using CUDA
         ct.Tiled(C) .= ct.Tiled(A) .+ ct.Tiled(B)
         @test Array(C) ≈ Array(A) .+ Array(B)
     end
+
+    @testset "shape mismatch throws" begin
+        A = CUDA.rand(Float32, 11)
+        C = CUDA.zeros(Float32, 10)
+        @test_throws DimensionMismatch ct.Tiled(C) .= ct.Tiled(A)
+        @test_throws DimensionMismatch ct.Tiled(C) .= ct.Tiled(C) .+ ct.Tiled(A)
+
+        A2 = CUDA.rand(Float32, 8, 16)
+        C2 = CUDA.zeros(Float32, 8, 8)
+        @test_throws DimensionMismatch ct.Tiled(C2) .= ct.Tiled(A2) .* 2.0f0
+    end
+
+    @testset "size-1 dim expansion (row)" begin
+        m, n = 64, 128
+        A = CUDA.rand(Float32, 1, n)
+        B = CUDA.rand(Float32, m, n)
+        C = CUDA.zeros(Float32, m, n)
+        ct.Tiled(C) .= ct.Tiled(A) .+ ct.Tiled(B)
+        @test Array(C) ≈ Array(A) .+ Array(B)
+    end
+
+    @testset "size-1 dim expansion (column)" begin
+        m, n = 64, 128
+        A = CUDA.rand(Float32, m, 1)
+        B = CUDA.rand(Float32, m, n)
+        C = CUDA.zeros(Float32, m, n)
+        ct.Tiled(C) .= ct.Tiled(A) .* ct.Tiled(B)
+        @test Array(C) ≈ Array(A) .* Array(B)
+    end
+
+    @testset "size-1 expansion only" begin
+        m, n = 32, 512
+        A = CUDA.rand(Float32, 1, n)
+        C = CUDA.zeros(Float32, m, n)
+        ct.Tiled(C) .= ct.Tiled(A) .+ 1.0f0
+        @test Array(C) ≈ repeat(Array(A) .+ 1.0f0, m, 1)
+    end
+
+    @testset "rank expansion (vector + matrix)" begin
+        m, n = 64, 128
+        A = CUDA.rand(Float32, m)
+        B = CUDA.rand(Float32, m, n)
+        C = CUDA.zeros(Float32, m, n)
+        ct.Tiled(C) .= ct.Tiled(A) .+ ct.Tiled(B)
+        @test Array(C) ≈ Array(A) .+ Array(B)
+    end
+
+    @testset "allocating with expansion" begin
+        m, n = 64, 128
+        A = CUDA.rand(Float32, 1, n)
+        B = CUDA.rand(Float32, m, 1)
+        C = ct.Tiled(A) .+ ct.Tiled(B)
+        @test size(C) == (m, n)
+        @test Array(C) ≈ Array(A) .+ Array(B)
+    end
+
+    @testset "scalar RHS fill" begin
+        C = CUDA.rand(Float32, 1000)
+        ct.Tiled(C) .= 0
+        @test all(iszero, Array(C))
+
+        D = CUDA.zeros(Float32, 33, 65)
+        ct.Tiled(D) .= 2.5f0
+        @test all(==(2.5f0), Array(D))
+    end
+
+    @testset "empty array no-op" begin
+        C = CUDA.zeros(Float32, 0)
+        ct.Tiled(C) .= ct.Tiled(C) .+ 1.0f0  # must not launch a 0-block grid
+        @test isempty(Array(C))
+
+        D = CUDA.zeros(Float32, 4, 0)
+        ct.Tiled(D) .= 1.0f0
+        @test isempty(Array(D))
+    end
+
+    @testset "ct.@. returns destination array" begin
+        n = 256
+        A = CUDA.rand(Float32, n)
+        B = CUDA.rand(Float32, n)
+        C = CUDA.zeros(Float32, n)
+        ret = ct.@. C = A + B
+        @test ret === C
+        @test Array(C) ≈ Array(A) .+ Array(B)
+    end
 end
