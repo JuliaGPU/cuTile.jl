@@ -131,13 +131,14 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
     end
 
     # `Intrinsics.assume(x, predicate)` — refines when the predicate is
-    # `DivBy`, otherwise passes through. The predicate is an embedded
-    # `AssumePredicate` value (constructed at pass time), so it lives in
-    # the operand list directly rather than being wrapped in a QuoteNode.
+    # `DivBy`, otherwise passes through. The predicate is resolved
+    # through `constant_operand`: pass-constructed assumes embed the
+    # `AssumePredicate` value directly in the operand list, user-written
+    # ones arrive as a `QuoteNode` or const-inferred SSAValue.
     if func === Intrinsics.assume
         length(ops) >= 2 || return 1
         x_div = operand_value(a, r, ops[1])
-        pred = ops[2]
+        pred = constant_operand(block, ops[2])
         if pred isa DivBy
             d = pred.divisor
             return d > 0 ? lcm(max(x_div, 1), d) : x_div
@@ -151,12 +152,27 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
         return operand_value(a, r, ops[1])
     end
 
-    # Integer casts: `bitcast`/`exti` preserve the value (and so the
-    # divisor); `trunci` reduces to mod 2^bitwidth (matches Python's
-    # `TileAsType` rule on integer→integer).
-    if func === Intrinsics.bitcast || func === Intrinsics.exti
+    # Integer casts: `bitcast` preserves the value (and so the divisor);
+    # `trunci` reduces to mod 2^bitwidth (matches Python's `TileAsType`
+    # rule on integer→integer).
+    if func === Intrinsics.bitcast
         length(ops) >= 1 || return 1
         return operand_value(a, r, ops[1])
+    end
+    # `exti` preserves the value for sign-extension. Zero-extension of a
+    # negative adds 2^src_bits (`zext(x) = x mod 2^w`), so only divisors
+    # of both `x` and `2^w` survive: reduce to `gcd(x_div, 2^w)`.
+    if func === Intrinsics.exti
+        length(ops) >= 3 || return 1
+        x_div = operand_value(a, r, ops[1])
+        s = constant_operand(block, ops[3])
+        s === Signedness.Signed && return x_div
+        src_T = value_type(block, ops[1])
+        src_T = src_T === nothing ? Any : CC.widenconst(src_T)
+        src_T <: Tile && (src_T = eltype(src_T))
+        src_T isa DataType && src_T <: Base.BitInteger && sizeof(src_T) < 8 ||
+            return 1
+        return gcd(x_div, 1 << (sizeof(src_T) * 8))
     end
     if func === Intrinsics.trunci
         length(ops) >= 2 || return 1

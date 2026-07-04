@@ -6,11 +6,11 @@
 # intrinsic IR exercises `IfOp` / `ForOp` / `WhileOp` paths with shape
 # that we can assert against.
 
-using Core: SSAValue, Argument, ReturnNode
+using Core: SSAValue, Argument, ReturnNode, PiNode, GlobalRef
 using IRStructurizer
 using IRStructurizer: code_structured, Block, BlockArgument, ForOp, LoopOp,
-                      ContinueOp, ControlFlowOp, StructuredIRCode, blocks,
-                      instructions
+                      IfOp, YieldOp, ContinueOp, ControlFlowOp,
+                      StructuredIRCode, blocks, instructions
 
 using cuTile: ForwardAnalysis, DataflowResult, analyze, record!, has_value, LatticeAnchor
 import cuTile: bottom, top, tmerge, transfer, max_iters, operand_value
@@ -150,6 +150,109 @@ end
 
     @test r[a_out] === 100      # outer carry preserved; inner didn't leak in
     @test r[a_in]  === CTOP     # inner carry: 200 ⊔ 999 → ⊤
+end
+
+
+# ── soundness: ⊥ must never act as best-info at a join ──────────────────
+
+@testset "PiNode passes through; unmodeled statements record ⊤" begin
+    entry = Block()
+    push!(entry, 1, Expr(:call, Core.Intrinsics.add_int, 2, 3), Int)
+    push!(entry, 2, PiNode(SSAValue(1), Int), Int)
+    push!(entry, 3, GlobalRef(Base, :pi), Any)
+    entry.terminator = ReturnNode(SSAValue(2))
+    sci = StructuredIRCode(Any[Any], Any[], entry, 3)
+    r = analyze(ConstInt(), sci)
+
+    @test r[SSAValue(2)] === 5      # PiNode forwards its operand's fact
+    @test r[SSAValue(3)] === CTOP   # no transfer rule — never lingers at ⊥
+end
+
+@testset "PiNode-fed loop carry does not keep the init value's fact" begin
+    # Loop carry: init 16, ContinueOp yields a PiNode of an unanalysed
+    # argument. The PiNode's SSA used to linger at ⊥ (walk! skipped
+    # non-Expr statements), and ⊥ is the merge identity — so the carry
+    # incorrectly kept "divisible by 16" across iterations that replace
+    # it with an arbitrary value.
+    carry = BlockArgument(1, Int)
+    body = Block()
+    push!(body.args, carry)
+    push!(body, 1, PiNode(Argument(2), Int), Int)
+    body.terminator = ContinueOp(Any[SSAValue(1)])
+    loop = LoopOp(body, Any[16])
+    entry = Block()
+    push!(entry, 2, loop, Nothing)
+    entry.terminator = ReturnNode(nothing)
+    sci = StructuredIRCode(Any[Any, Int], Any[], entry, 2)
+
+    r = cuTile.analyze_divisibility(sci)
+    @test cuTile.div_by(r, carry) == 1
+end
+
+@testset "ForOp merges continues nested behind IfOp branches" begin
+    # A ContinueOp may sit inside a nested IfOp branch rather than as
+    # the direct body terminator. Its values must be merged into the
+    # loop carries like the direct back-edge's.
+    iv = BlockArgument(1, Int)
+    carry = BlockArgument(2, Int)
+    then_r = Block()
+    then_r.terminator = ContinueOp(Any[999])
+    else_r = Block()
+    else_r.terminator = YieldOp(Any[])
+    body = Block()
+    push!(body.args, carry)
+    push!(body, 1, IfOp(true, then_r, else_r), Nothing)
+    body.terminator = ContinueOp(Any[carry])
+    fop = ForOp(0, 10, 1, iv, body, Any[100])
+    entry = Block()
+    push!(entry, 2, fop, Nothing)
+    entry.terminator = ReturnNode(nothing)
+    sci = StructuredIRCode(Any[Any], Any[], entry, 2)
+
+    r = analyze(ConstInt(), sci)
+    @test r[carry] === CTOP     # 100 ⊔ 999 → ⊤, not 100
+end
+
+
+# ── user-written Intrinsics.assume ───────────────────────────────────────
+
+@testset "assume(DivBy) refines through a QuoteNode predicate" begin
+    # Pass-constructed assumes embed the predicate value directly; user-
+    # written kernels arrive with it const-folded into a QuoteNode. Both
+    # must refine.
+    entry = Block()
+    push!(entry, 1, Expr(:call, cuTile.Intrinsics.assume, Argument(2),
+                         QuoteNode(cuTile.DivBy(16))), Int)
+    entry.terminator = ReturnNode(SSAValue(1))
+    sci = StructuredIRCode(Any[Any, Int], Any[], entry, 1)
+
+    r = cuTile.analyze_divisibility(sci)
+    @test cuTile.div_by(r, SSAValue(1)) == 16
+end
+
+
+# ── exti signedness (divisibility) ───────────────────────────────────────
+
+@testset "zero-extension reduces divisibility mod 2^srcbits" begin
+    mk_exti(s) = begin
+        entry = Block()
+        push!(entry, 1, Expr(:call, cuTile.Intrinsics.constant,
+                             QuoteNode(()), -6, Int8), Int8)
+        push!(entry, 2, Expr(:call, cuTile.Intrinsics.exti,
+                             SSAValue(1), Int32, QuoteNode(s)), Int32)
+        entry.terminator = ReturnNode(SSAValue(2))
+        sci = StructuredIRCode(Any[Any], Any[], entry, 2)
+        cuTile.analyze_divisibility(sci)
+    end
+
+    # Sign-extension preserves the value, and so the divisor.
+    r = mk_exti(cuTile.Signedness.Signed)
+    @test cuTile.div_by(r, SSAValue(2)) == 6
+
+    # Zero-extension of Int8(-6) yields 250 = -6 + 2^8, which is not a
+    # multiple of 6; only divisors of gcd(6, 2^8) = 2 survive.
+    r = mk_exti(cuTile.Signedness.Unsigned)
+    @test cuTile.div_by(r, SSAValue(2)) == 2
 end
 
 

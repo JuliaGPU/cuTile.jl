@@ -143,13 +143,37 @@ Base.values(r::DataflowResult) = values(r.values)
 
 Lattice value for an operand as used *inside a transfer function*. The
 default handles `LatticeAnchor`s (via dict lookup) and treats everything
-else (integer/float literals, QuoteNodes, GlobalRefs, …) as `bottom`.
-Analyses override this to recognise raw literals when those are
-meaningful lattice inputs — e.g. a constant analysis returns
-the integer itself for a raw `Int` operand.
+else (integer/float literals, QuoteNodes, GlobalRefs, …) as `top` — an
+unrecognised literal is "no information", never ⊥. Bottom is the merge
+identity, so returning it for a live operand would let the other side of
+a join keep facts this operand doesn't share. Analyses override this to
+recognise raw literals when those are meaningful lattice inputs — e.g. a
+constant analysis returns the integer itself for a raw `Int` operand.
 """
 operand_value(a::ForwardAnalysis, r::DataflowResult, @nospecialize(op)) =
-    op isa LatticeAnchor ? r[op] : bottom(a)
+    op isa LatticeAnchor ? r[op] : top(a)
+
+"""
+    constant_operand(block::Block, op) -> value or nothing
+
+Resolve an operand to its compile-time constant value, mirroring what
+codegen's `get_constant` sees: raw embedded values are returned as-is,
+`QuoteNode`s are unwrapped, and anchors (SSAValues etc.) are chased
+through their inferred type via `singleton_type`. Returns `nothing` for
+operands with no known constant. Used by transfer rules that key on a
+constant operand — e.g. the `Intrinsics.assume` predicate, which is
+embedded directly when a pass constructs the call but arrives as a
+`QuoteNode` (or const-inferred SSAValue) from user-written kernels.
+"""
+function constant_operand(block::Block, @nospecialize(op))
+    op isa QuoteNode && return op.value
+    if op isa LatticeAnchor
+        T = value_type(block, op)
+        T === nothing && return nothing
+        return CC.singleton_type(T)
+    end
+    return op
+end
 
 """
     lookup_def_call(block::Block, val::SSAValue) -> Union{Tuple, Nothing}
@@ -234,6 +258,18 @@ function walk!(analysis::ForwardAnalysis, result::DataflowResult, block::Block, 
             transfer_cf!(analysis, result, s, SSAValue(inst.ssa_idx), block, tracker)
         elseif s isa Expr
             transfer_call!(analysis, result, block, inst, tracker)
+        elseif s isa PiNode
+            # Type-narrowing assertion on the same runtime value —
+            # pass the operand's lattice element through.
+            record!(analysis, result, SSAValue(inst.ssa_idx),
+                    operand_value(analysis, result, s.val), tracker)
+        else
+            # Statement kinds no transfer rule models (GlobalRefs, raw
+            # literals, …). Record ⊤ so the SSA never lingers at ⊥:
+            # bottom is the merge identity, and a ⊥ operand at a join
+            # would let the other side's facts survive unrefuted.
+            record!(analysis, result, SSAValue(inst.ssa_idx),
+                    top(analysis), tracker)
         end
     end
 end
@@ -241,7 +277,12 @@ end
 function transfer_call!(analysis::ForwardAnalysis, result::DataflowResult,
                         block::Block, inst::Instruction, tracker::ChangeTracker)
     call = resolve_call(block, inst)
-    call === nothing && return
+    if call === nothing
+        # Unresolvable callee — same ⊥-lingering hazard as unmodeled
+        # statement kinds above.
+        record!(analysis, result, SSAValue(inst.ssa_idx), top(analysis), tracker)
+        return
+    end
     func, ops = call
     new_val = transfer(analysis, result, func, ops, block, inst)
     record!(analysis, result, SSAValue(inst.ssa_idx), new_val, tracker)
@@ -309,8 +350,12 @@ function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
 
     tt = op.then_region.terminator
     et = op.else_region.terminator
-    (tt isa YieldOp && et isa YieldOp) || return
-    (isempty(tt.values) || isempty(et.values)) && return
+    if !(tt isa YieldOp && et isa YieldOp) || isempty(tt.values) || isempty(et.values)
+        # Shape we don't model (loop-exiting branch, no yields) — the
+        # IfOp's SSA must still leave ⊥.
+        record!(analysis, result, ssa, top(analysis), tracker)
+        return
+    end
 
     merged = bottom(analysis)
     n = min(length(tt.values), length(et.values))
@@ -324,25 +369,29 @@ end
 # ForOp — body.args receives loop-carried values: join(init_values, ContinueOp
 # yields). The IV lives in `op.iv_arg` (not in `body.args`), so init/continue
 # values line up positionally with `body.args` without skipping slot 1.
-# The IV is seeded to `top` (unknown at compile time).
+# The IV is seeded to `top` (unknown at compile time). Back-edges are
+# collected via `reachable_terminators` — a ContinueOp may sit behind a
+# nested IfOp branch, not only as the direct body terminator (same
+# scoping rule as the LoopOp handler below).
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::ForOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+                      op::ForOp, ssa::SSAValue, ::Block, tracker::ChangeTracker)
     record!(analysis, result, op.iv_arg, top(analysis), tracker)
     for (arg, v) in zip(op.body.args, op.init_values)
         record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
     end
     walk!(analysis, result, op.body, tracker)
-    term = op.body.terminator
-    if term isa ContinueOp
-        for (arg, v) in zip(op.body.args, term.values)
+    for t in reachable_terminators(op.body)
+        t isa ContinueOp || continue
+        for (arg, v) in zip(op.body.args, t.values)
             record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
         end
     end
+    record!(analysis, result, ssa, top(analysis), tracker)
 end
 
 # WhileOp — before.args ← init ⊔ after yields; after.args ← before's ConditionOp args.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::WhileOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+                      op::WhileOp, ssa::SSAValue, ::Block, tracker::ChangeTracker)
     for (arg, v) in zip(op.before.args, op.init_values)
         record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
     end
@@ -360,6 +409,7 @@ function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
             record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
         end
     end
+    record!(analysis, result, ssa, top(analysis), tracker)
 end
 
 # LoopOp — body.args ← init ⊔ ContinueOp values ⊔ BreakOp values. ContinueOp /
@@ -368,7 +418,7 @@ end
 # own scope and their terminators target *themselves*, not this outer LoopOp.
 # `reachable_terminators` encodes that scoping rule.
 function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
-                      op::LoopOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+                      op::LoopOp, ssa::SSAValue, ::Block, tracker::ChangeTracker)
     for (arg, v) in zip(op.body.args, op.init_values)
         record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
     end
@@ -380,4 +430,5 @@ function transfer_cf!(analysis::ForwardAnalysis, result::DataflowResult,
             end
         end
     end
+    record!(analysis, result, ssa, top(analysis), tracker)
 end
