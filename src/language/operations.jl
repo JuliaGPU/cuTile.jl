@@ -54,7 +54,8 @@ function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray}))
     elem_T = eltype(SrcT)
     N = ndims(SrcT)
     spec === nothing && return TileArray{elem_T, N}
-    new_spec = ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, ntuple(_ -> 0, N)}()
+    new_spec = ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, ntuple(_ -> 0, N),
+                         spec.may_alias_internally}()
     return TileArray{elem_T, N, new_spec}
 end
 
@@ -136,7 +137,8 @@ function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     new_stride_div_by = ntuple(i -> spec.stride_div_by[Perm[i]], Val(N))
     new_shape_div_by  = ntuple(i -> spec.shape_div_by[Perm[i]],  Val(N))
     new_spec = ArraySpec{N, spec.alignment, new_contiguous,
-                         new_stride_div_by, new_shape_div_by}()
+                         new_stride_div_by, new_shape_div_by,
+                         spec.may_alias_internally}()
     return TileArray{elem_T, N, new_spec}
 end
 
@@ -164,11 +166,13 @@ function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     elem_T = eltype(SrcT)
     M = length(NewShape)
     new_shape_div_by = ntuple(i -> NewShape[i], Val(M))
+    # Reshape recomputes dense column-major strides, so the result layout is
+    # injective regardless of the source's internal-aliasing flag.
     if spec === nothing
-        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by}()
+        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
     else
         new_spec = ArraySpec{M, spec.alignment, true,
-                             ntuple(_ -> 0, Val(M)), new_shape_div_by}()
+                             ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
     end
     return TileArray{elem_T, M, new_spec}
 end

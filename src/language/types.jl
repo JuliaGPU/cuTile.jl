@@ -26,6 +26,11 @@ parameter to enable kernel specialization based on array properties.
 - `contiguous::Bool`: Whether stride[1] == 1 (contiguous in first dimension)
 - `stride_div_by::NTuple{N,Int}`: Per-dimension stride divisibility (0 = unknown)
 - `shape_div_by::NTuple{N,Int}`: Per-dimension shape divisibility (0 = unknown)
+- `may_alias_internally::Bool`: Whether two distinct in-bounds indices may
+  refer to the same memory location (e.g. a zero or repeated stride).
+  `false` asserts the layout is internally non-overlapping, which enables
+  optimizations such as loop-parallel stores; `compute_array_spec` derives
+  it exactly from the runtime sizes/strides.
 
 Common alignment values:
 - 0: Unknown/unaligned
@@ -36,33 +41,36 @@ Divisibility values enable optimizations:
 - stride_div_by[i] = 4 means stride[i] is divisible by 4 (enables vectorized access)
 - shape_div_by[i] = 16 means shape[i] is divisible by 16 (no tile boundary handling needed)
 """
-struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}
+struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
     # Validate invariants once per concrete spec type (this struct is a
     # singleton, so the inner constructor runs on every instantiation but
     # the result is then cached as a type parameter). Catches synthetic
     # specs that combine `contiguous=true` with a `stride_div_by[1]` that
     # contradicts `stride[1] == 1` — `1 % d == 0` only for `d ∈ {0, 1}`.
-    function ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}() where
-            {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}
+    function ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}() where
+            {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
         if Contiguous && N >= 1
             sdb1 = StrideDivBy[1]
             (sdb1 == 0 || sdb1 == 1) || throw(ArgumentError(
                 "ArraySpec: contiguous=true requires stride_div_by[1] ∈ {0, 1} " *
                 "(stride[1]=1, and 1 % d == 0 only for d ∈ {0, 1}); got $sdb1"))
         end
-        new{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}()
+        MayAliasInternally isa Bool || throw(ArgumentError(
+            "ArraySpec: MayAliasInternally must be a Bool; got $MayAliasInternally"))
+        new{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}()
     end
 end
 
 # Constructors
 function ArraySpec{N}(alignment::Int, contiguous::Bool,
-                      stride_div_by::NTuple{N,Int}, shape_div_by::NTuple{N,Int}) where N
-    ArraySpec{N, alignment, contiguous, stride_div_by, shape_div_by}()
+                      stride_div_by::NTuple{N,Int}, shape_div_by::NTuple{N,Int},
+                      may_alias_internally::Bool=false) where N
+    ArraySpec{N, alignment, contiguous, stride_div_by, shape_div_by, may_alias_internally}()
 end
 
 function ArraySpec(alignment::Int, contiguous::Bool)
     # 0-dimensional fallback (scalar pointers)
-    ArraySpec{0, alignment, contiguous, (), ()}()
+    ArraySpec{0, alignment, contiguous, (), (), false}()
 end
 
 function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
@@ -71,16 +79,18 @@ function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
 end
 
 # Property access — preserves existing dot-syntax (spec.alignment, etc.)
-function Base.getproperty(spec::ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy},
-                          s::Symbol) where {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}
-    s === :alignment     && return Alignment
-    s === :contiguous    && return Contiguous
-    s === :stride_div_by && return StrideDivBy
-    s === :shape_div_by  && return ShapeDivBy
+function Base.getproperty(spec::ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally},
+                          s::Symbol) where {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
+    s === :alignment            && return Alignment
+    s === :contiguous           && return Contiguous
+    s === :stride_div_by        && return StrideDivBy
+    s === :shape_div_by         && return ShapeDivBy
+    s === :may_alias_internally && return MayAliasInternally
     getfield(spec, s)
 end
 
-Base.propertynames(::ArraySpec) = (:alignment, :contiguous, :stride_div_by, :shape_div_by)
+Base.propertynames(::ArraySpec) = (:alignment, :contiguous, :stride_div_by, :shape_div_by,
+                                   :may_alias_internally)
 Base.ndims(::ArraySpec{N}) where N = N
 
 """
@@ -112,6 +122,30 @@ function compute_divisibility(value::Integer, max_divisor::Int=16)
         divisor *= 2
     end
     return divisor >= 2 ? divisor : 0  # Only return if at least divisible by 2
+end
+
+"""
+    layout_may_alias_internally(sizes, strides) -> Bool
+
+Whether two distinct in-bounds index tuples may map to the same linear
+offset. Returns `false` only when the strided layout is provably injective:
+sorting the dimensions with extent > 1 by |stride|, each stride must exceed
+the total span of all smaller-strided dimensions (the standard
+non-overlapping strided layout criterion, which C-/Fortran-contiguous and
+sliced layouts all satisfy). Zero strides on a dimension with extent > 1,
+and layouts that fail the (sufficient, not necessary) criterion, report
+`true` — conservative for consumers that require non-overlap.
+"""
+function layout_may_alias_internally(sizes::NTuple{N, <:Integer},
+                                     strides::NTuple{N, <:Integer}) where N
+    dims = [(abs(Int(strides[i])), Int(sizes[i])) for i in 1:N if sizes[i] > 1]
+    sort!(dims)
+    span = 0  # highest offset reachable from the dimensions checked so far
+    for (stride, size) in dims
+        stride > span || return true  # includes stride == 0
+        span += (size - 1) * stride
+    end
+    return false
 end
 
 """
@@ -159,7 +193,8 @@ function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTupl
         compute_divisibility(sizes[i], 16)
     end
 
-    ArraySpec{N}(alignment, contiguous, stride_div_by, shape_div_by)
+    ArraySpec{N}(alignment, contiguous, stride_div_by, shape_div_by,
+                 layout_may_alias_internally(sizes, strides))
 end
 
 

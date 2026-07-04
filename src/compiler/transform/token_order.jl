@@ -210,7 +210,31 @@ struct LoopParallelInfo
 end
 
 """
-    get_parallel_stores(op::ForOp, alias_info, effects_cache) -> Set{Int}
+    stored_array_may_alias_internally(alias_set, argtypes) -> Bool
+
+Whether the array behind `alias_set` may map two distinct in-bounds indices
+to the same memory location (e.g. a zero stride). Mirrors the
+`may_alias_internally` predicate Python's `_filter_by_store_index` consults
+(token_order.py:522-538); here the fact lives in the `ArraySpec` type
+parameter of the `TileArray` argument the alias set roots at. Anything that
+isn't a single `TileArray` argument with a spec answers `true` — conservative
+callers must then keep iteration-ordering tokens.
+"""
+function stored_array_may_alias_internally(alias_set::AliasSet, argtypes::Vector{Any})
+    alias_set isa AliasUniverse && return true
+    length(alias_set) == 1 || return true
+    root = only(alias_set)
+    root isa Argument || return true
+    checkbounds(Bool, argtypes, root.n) || return true
+    T = CC.widenconst(argtypes[root.n])
+    T isa DataType && T <: TileArray || return true
+    spec = array_spec(T)
+    spec === nothing && return true
+    return spec.may_alias_internally
+end
+
+"""
+    get_parallel_stores(op::ForOp, alias_info, argtypes, effects_cache) -> Set{Int}
 
 Identify stores in a ForOp body that can use the parent's token instead of a
 loop-carried token. A store is eligible when:
@@ -219,12 +243,15 @@ loop-carried token. A store is eligible when:
 2. Exactly one memory op on its alias set in the loop body (direct stmts only)
 3. That op is `store_partition_view`
 4. No nested CF ops have effects on that alias set
-5. Store's index tuple derives from the loop's induction variable
+5. The stored array cannot alias itself internally (distinct indices →
+   distinct memory)
+6. Store's index tuple contains a provably injective affine function of the
+   loop's induction variable
 
-Matches Python's `_get_parallel_stores` (token_order.py:428-473) and
-`_filter_by_store_index` (token_order.py:487-496).
+Matches Python's `_get_parallel_stores` (token_order.py:462-508) and
+`_filter_by_store_index` (token_order.py:522-538).
 """
-function get_parallel_stores(op::ForOp, alias_info::AliasInfo,
+function get_parallel_stores(op::ForOp, alias_info::AliasInfo, argtypes::Vector{Any},
                               effects_cache::Dict{UInt64, MemoryEffects})
     body = op.body
     body_effects = get(effects_cache, objectid(body), EMPTY_MEMORY_EFFECTS)
@@ -260,20 +287,69 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo,
         push!(ops, (inst.ssa_idx, resolved_func, operands))
     end
 
-    # Check if a value is the induction variable or derived from it through
-    # simple arithmetic (e.g., iv - 1 for 1-based indexing) or a tuple
-    # containing such a derivation.
-    function is_iv_derived(val, iv::BlockArgument, depth::Int=0)
+    # A value is invariant across iterations of this loop when it is a
+    # compile-time constant or defined before the loop body. Loop-carried
+    # block arguments and values computed inside the body are rejected —
+    # conservative, since anything invariant-but-in-body merely keeps the
+    # token carry.
+    function is_loop_invariant(val)
+        val isa SSAValue && return !haskey(body.body, val.id)
+        val isa BlockArgument && return false
+        val isa Argument && return true
+        val isa QuoteNode && return val.value isa Integer
+        return val isa Integer
+    end
+
+    is_nonzero_constant(val) =
+        (val isa Integer && !iszero(val)) ||
+        (val isa QuoteNode && val.value isa Integer && !iszero(val.value))
+
+    # Check if a value is a provably injective affine function of the loop's
+    # induction variable: the IV itself, `x ± invariant`, `invariant - x`,
+    # `x * c` with `c` a nonzero constant, or an integer extension of such a
+    # value (Julia's 1-based `store` always lowers the index through
+    # `iv - 1`, so the bare-identity check Python uses would never fire
+    # here). Non-injective derivations (`iv ÷ 2`, `iv % k`, `min(iv, c)`, …)
+    # must NOT qualify: two iterations would hit the same tile and the
+    # parallel store would drop the WAW ordering between them.
+    function is_injective_iv_affine(val, iv::BlockArgument, depth::Int=0)
         depth > 10 && return false
         val === iv && return true
         val isa SSAValue || return false
         entry = get(body.body, val.id, nothing)
         entry === nothing && return false
-        s = entry.stmt
-        s isa Expr || return false
-        (s.head === :call || s.head === :invoke) || return false
-        call_args = s.head === :call ? @view(s.args[2:end]) : @view(s.args[3:end])
-        return any(a -> is_iv_derived(a, iv, depth + 1), call_args)
+        call = resolve_call(body, entry.stmt)
+        call === nothing && return false
+        func, args = call
+        if func === Intrinsics.addi || func === Intrinsics.subi
+            length(args) >= 2 || return false
+            a, b = args[1], args[2]
+            return (is_injective_iv_affine(a, iv, depth + 1) && is_loop_invariant(b)) ||
+                   (is_loop_invariant(a) && is_injective_iv_affine(b, iv, depth + 1))
+        elseif func === Intrinsics.muli
+            length(args) >= 2 || return false
+            a, b = args[1], args[2]
+            return (is_injective_iv_affine(a, iv, depth + 1) && is_nonzero_constant(b)) ||
+                   (is_nonzero_constant(a) && is_injective_iv_affine(b, iv, depth + 1))
+        elseif func === Intrinsics.exti
+            length(args) >= 1 || return false
+            return is_injective_iv_affine(args[1], iv, depth + 1)
+        end
+        return false
+    end
+
+    # The indices tuple qualifies when at least one element is an injective
+    # affine function of the IV: iterations then differ in that coordinate,
+    # and — given the array cannot alias internally — write disjoint memory.
+    function is_injective_iv_index(indices_tuple, iv::BlockArgument)
+        indices_tuple isa SSAValue || return false
+        entry = get(body.body, indices_tuple.id, nothing)
+        entry === nothing && return false
+        call = resolve_call(body, entry.stmt)
+        call === nothing && return false
+        func, args = call
+        func === Core.tuple || return false
+        return any(a -> is_injective_iv_affine(a, iv), args)
     end
 
     parallel = Set{Int}()
@@ -285,10 +361,14 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo,
         resolved_func === Intrinsics.store_partition_view || continue
         # No nested effects on this alias set
         get(nested_effects.effects, alias_set, MEM_NONE) != MEM_NONE && continue
-        # Injective index: the indices tuple contains the induction variable
+        # Distinct indices must mean distinct memory (Python's
+        # `may_alias_internally` guard)
+        stored_array_may_alias_internally(alias_set, argtypes) && continue
+        # Injective index: the indices tuple contains an injective affine
+        # function of the induction variable
         # store_partition_view(pv, tile, latency, allow_tma, indices_tuple)
         indices_tuple = length(operands) >= 5 ? operands[5] : nothing
-        indices_tuple !== nothing && is_iv_derived(indices_tuple, iv) || continue
+        indices_tuple !== nothing && is_injective_iv_index(indices_tuple, iv) || continue
         push!(parallel, ssa_idx)
     end
     return parallel
@@ -318,7 +398,7 @@ function token_order_pass!(sci::StructuredIRCode, alias_info::AliasInfo)
     end
     token_map[ACQUIRE_TOKEN_KEY] = root_token
 
-    transform_block!(sci.entry, alias_info, token_map, effects_cache,
+    transform_block!(sci.entry, alias_info, sci.argtypes, token_map, effects_cache,
                       nothing, nothing, nothing, nothing)
     return nothing
 end
@@ -329,6 +409,7 @@ end
 
 function transform_block!(block::Block,
                            alias_info::AliasInfo,
+                           argtypes::Vector{Any},
                            token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            loop_effects::Union{MemoryEffects, Nothing},
@@ -342,7 +423,8 @@ function transform_block!(block::Block,
         s = inst[:stmt]
         if s isa ControlFlowOp
             transform_control_flow!(block, inst, s,
-                                     alias_info, token_map, effects_cache, loop_effects, token_carries)
+                                     alias_info, argtypes, token_map, effects_cache,
+                                     loop_effects, token_carries)
         else
             transform_statement!(block, inst, alias_info, token_map, parallel_info)
         end
@@ -487,21 +569,21 @@ end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::ForOp,
-                                  alias_info, token_map, effects_cache,
+                                  alias_info, argtypes, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     # Compute parallel stores for ForOps (only ForOps have induction variables)
-    pstores = get_parallel_stores(op, alias_info, effects_cache)
+    pstores = get_parallel_stores(op, alias_info, argtypes, effects_cache)
     parallel_info = isempty(pstores) ? nothing :
         LoopParallelInfo(pstores, copy(token_map))
-    transform_loop!(parent_block, inst, op, alias_info,
+    transform_loop!(parent_block, inst, op, alias_info, argtypes,
                      token_map, effects_cache, parallel_info)
 end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::LoopOp,
-                                  alias_info, token_map, effects_cache,
+                                  alias_info, argtypes, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
-    transform_loop!(parent_block, inst, op, alias_info,
+    transform_loop!(parent_block, inst, op, alias_info, argtypes,
                      token_map, effects_cache, nothing)
 end
 
@@ -610,6 +692,7 @@ Add per-alias-set token carries to a ForOp/LoopOp.
 function transform_loop!(parent_block::Block, inst::Instruction,
                            op::Union{ForOp, LoopOp},
                            alias_info::AliasInfo,
+                           argtypes::Vector{Any},
                            token_map::Dict{TokenKey, Any},
                            effects_cache::Dict{UInt64, MemoryEffects},
                            parallel_info::Union{LoopParallelInfo, Nothing}=nothing)
@@ -625,7 +708,7 @@ function transform_loop!(parent_block::Block, inst::Instruction,
 
     # Recurse — pass token_carry_refs so transform_terminator! can overwrite
     # per-terminator carry values; pass parallel_info for ForOp parallel stores
-    transform_block!(body, alias_info, body_token_map, effects_cache,
+    transform_block!(body, alias_info, argtypes, body_token_map, effects_cache,
                       body_effects, nothing, token_carry_refs, parallel_info)
 
     insert_token_result_getfields!(parent_block, inst, body.args,
@@ -639,7 +722,7 @@ end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::WhileOp,
-                                  alias_info, token_map, effects_cache,
+                                  alias_info, argtypes, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     before_effects = get(effects_cache, objectid(op.before), EMPTY_MEMORY_EFFECTS)
     after_effects = get(effects_cache, objectid(op.after), EMPTY_MEMORY_EFFECTS)
@@ -659,7 +742,7 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     end
 
     # Transform before region — pass token_carry_refs for ConditionOp overwrite
-    transform_block!(op.before, alias_info, body_token_map, effects_cache,
+    transform_block!(op.before, alias_info, argtypes, body_token_map, effects_cache,
                       loop_effects, nothing, token_carry_refs)
 
     # Propagate before's final token state to after_token_map.
@@ -670,7 +753,7 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     end
 
     # Transform after region — also pass token_carry_refs for terminator overwrite
-    transform_block!(op.after, alias_info, after_token_map, effects_cache,
+    transform_block!(op.after, alias_info, argtypes, after_token_map, effects_cache,
                       loop_effects, nothing, token_carry_refs)
 
     insert_token_result_getfields!(parent_block, inst, op.before.args,
@@ -683,7 +766,7 @@ end
 
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::IfOp,
-                                  alias_info, token_map, effects_cache,
+                                  alias_info, argtypes, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
     then_effects = get(effects_cache, objectid(op.then_region), EMPTY_MEMORY_EFFECTS)
     else_effects = get(effects_cache, objectid(op.else_region), EMPTY_MEMORY_EFFECTS)
@@ -693,10 +776,10 @@ function transform_control_flow!(parent_block::Block, inst::Instruction,
     # ContinueOp/BreakOp inside branches (common for LoopOp→IfOp patterns) get
     # token exit values overwritten correctly.
     then_map = copy(token_map)
-    transform_block!(op.then_region, alias_info, then_map, effects_cache,
+    transform_block!(op.then_region, alias_info, argtypes, then_map, effects_cache,
                       parent_loop_effects, merged_effects, parent_token_carries)
     else_map = copy(token_map)
-    transform_block!(op.else_region, alias_info, else_map, effects_cache,
+    transform_block!(op.else_region, alias_info, argtypes, else_map, effects_cache,
                       parent_loop_effects, merged_effects, parent_token_carries)
 
     # Count token results for type update
@@ -719,6 +802,6 @@ end
 # Fallback
 function transform_control_flow!(parent_block::Block, inst::Instruction,
                                   op::ControlFlowOp,
-                                  alias_info, token_map, effects_cache,
+                                  alias_info, argtypes, token_map, effects_cache,
                                   parent_loop_effects=nothing, parent_token_carries=nothing)
 end
