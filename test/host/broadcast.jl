@@ -196,6 +196,24 @@ using CUDA
         @test isempty(Array(D))
     end
 
+    @testset "0-dim arrays" begin
+        C = CUDA.zeros(Float32)
+        ct.Tiled(C) .= 1.0f0
+        @test Array(C)[] == 1.0f0
+
+        A = CUDA.fill(2.0f0)
+        ct.Tiled(C) .= ct.Tiled(A) .+ 1.0f0
+        @test Array(C)[] == 3.0f0
+    end
+
+    @testset "host-side leaves rejected" begin
+        C = CUDA.zeros(Float32, 16)
+        A_cpu = rand(Float32, 16)
+        @test_throws ArgumentError ct.Tiled(C) .= ct.Tiled(A_cpu) .* 2.0f0
+        @test_throws ArgumentError ct.Tiled(C) .= ct.Tiled(C) .+ (1:16)
+        @test_throws ArgumentError ct.Tiled(A_cpu) .= 0  # CPU destination
+    end
+
     @testset "ct.@. returns destination array" begin
         n = 256
         A = CUDA.rand(Float32, n)

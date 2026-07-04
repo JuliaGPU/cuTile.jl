@@ -57,8 +57,24 @@ struct BroadcastLeaf{P, A}
 end
 BroadcastLeaf{P}(arr::A) where {P, A} = BroadcastLeaf{P, A}(arr)
 
+# Reject leaves the kernel cannot address: a host Array would compile fine but
+# dereference a CPU pointer on device (illegal memory access, poisoning the
+# CUDA context), and ranges have no pointer at all.
+function _check_device_leaf(arr::AbstractArray)
+    root = arr
+    while (p = parent(root)) !== root
+        root = p
+    end
+    if root isa Array || root isa AbstractRange
+        throw(ArgumentError("cuTile broadcast requires device arrays, got $(typeof(arr))"))
+    end
+end
+
 _to_tiled_bc(t::Tiled, dsize) = _to_tiled_bc(parent(t), dsize)
+# 0-dim leaves become 1-element vectors; the kernel path assumes rank >= 1.
+_to_tiled_bc(arr::AbstractArray{<:Any,0}, dsize::Dims) = _to_tiled_bc(reshape(arr, 1), dsize)
 function _to_tiled_bc(arr::AbstractArray, dsize::Dims{N}) where N
+    _check_device_leaf(arr)
     ta = cuTileconvert(arr)
     ndims(arr) == N && size(arr) == dsize && return ta
     P = ntuple(d -> size(arr, d) == 1 && dsize[d] > 1, N)
@@ -71,12 +87,20 @@ function _to_tiled_bc(bc::Broadcasted, dsize)
     Broadcasted{Nothing}(bc.f, new_args, nothing)
 end
 
+# 0-dim destinations: the kernel path needs at least one dimension, so run as
+# a 1-element 1-D broadcast (0-dim leaves load rank-0 tiles and expand).
+function _tiled_broadcast!(dest::AbstractArray{T,0}, bc::Broadcasted) where T
+    Base.Broadcast.check_broadcast_axes(axes(dest), bc.args...)
+    _tiled_broadcast!(reshape(dest, 1), bc)
+end
+
 function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
     # Reject shapes Base broadcasting would reject (throws DimensionMismatch);
     # size-1 dims are legal and expanded per-leaf in the kernel.
     Base.Broadcast.check_broadcast_axes(axes(dest), bc.args...)
     isempty(dest) && return
 
+    _check_device_leaf(dest)
     dest_ta = cuTileconvert(dest)
     tiled_bc = _to_tiled_bc(bc, size(dest))
 
