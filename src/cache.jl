@@ -417,7 +417,13 @@ function try_init()
         # @get_scratch! resolves to cuTile's package UUID via moduleroot,
         # so the path is $DEPOT/scratchspaces/<cuTile-UUID>/disk_cache/.
         root = @get_scratch!("disk_cache")
-        return open(root)
+        try
+            return open(root)
+        catch err
+            @debug "cuTile disk cache failed to open; wiping" path=root exception=(err, catch_backtrace())
+            rm(root; recursive=true, force=true)
+            return open(root)
+        end
     catch err
         @debug "cuTile disk cache disabled" exception=(err, catch_backtrace())
         return nothing
