@@ -6,7 +6,8 @@ const DC = cuTile.DiskCache
     @testset "compute_key" begin
         bc = collect(b"some bytecode bytes")
         k = DC.compute_key(bc, v"12.0", 3, "13.1")
-        @test length(k) == sizeof(UInt64)
+        @test length(k) == 32
+        @test bytes2hex(k) == "fd117ab2268ddfc8e0dccaad206b80557fa4239ea12f2d83293bcfa95f9d485e"
         @test DC.compute_key(bc, v"12.0", 3, "13.1") == k
         @test DC.compute_key(bc, v"12.0", 3, "13.2") != k
         @test DC.compute_key(bc, v"12.0", 2, "13.1") != k

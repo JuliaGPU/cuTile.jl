@@ -13,7 +13,7 @@ entirely.
 - A single LMDB env at `\$(scratchspace)/disk_cache/`. The directory
   contains `data.mdb` + `lock.mdb`; wiping the cache means `rm -rf` of
   that directory or `Scratch.delete_scratch!`.
-- Keys: `hash(SCHEMA_VERSION ‖ toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)`.
+- Keys: `sha256(SCHEMA_VERSION || toolkit_version || sm_arch || opt_level || bytecode)`.
   Any input change produces a fresh key, so old-toolkit entries never
   match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate every
   existing entry on the next access (e.g. after a value-framing change).
@@ -43,6 +43,7 @@ that, a hot kernel would write back on every cache lookup.
 module DiskCache
 
 import LMDB
+using SHA: sha256
 using Scratch: @get_scratch!
 
 # ===========================================================================
@@ -362,7 +363,7 @@ const SCHEMA_VERSION = UInt32(2)
 """
     compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
 
-Derive an 8-byte content-addressable cache key for a Tile IR compilation.
+Derive a SHA-256 content-addressable cache key for a Tile IR compilation.
 The key covers the bytecode plus every input that changes the resulting
 CUBIN: target arch, opt level, and the `tileiras` toolkit version
 (typically the full `--version` stdout; see `cuTile.toolkit_version()`).
@@ -374,12 +375,32 @@ when the value layout changes.
 """
 function compute_key(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
                      opt_level::Integer, toolkit_version::AbstractString)
-    h = hash(SCHEMA_VERSION)
-    h = hash(toolkit_version, h)
-    h = hash(sm_arch, h)
-    h = hash(opt_level, h)
-    h = hash(bytecode, h)
-    return reinterpret(UInt8, [h])
+    data = UInt8[]
+    append_uint32_be!(data, SCHEMA_VERSION)
+    append_field!(data, codeunits(toolkit_version))
+    append_field!(data, codeunits(string(sm_arch)))
+    append_uint32_be!(data, opt_level)
+    append_field!(data, bytecode)
+    return sha256(data)
+end
+
+function append_field!(data::Vector{UInt8}, bytes)
+    n = length(bytes)
+    n <= typemax(UInt32) || throw(ArgumentError("cache key field too large: $n bytes"))
+    append_uint32_be!(data, n)
+    append!(data, bytes)
+    return data
+end
+
+function append_uint32_be!(data::Vector{UInt8}, x::Integer)
+    0 <= x <= typemax(UInt32) || throw(ArgumentError("cache key integer out of range: $x"))
+    u = UInt32(x)
+    push!(data,
+          UInt8((u >> 24) & 0xff),
+          UInt8((u >> 16) & 0xff),
+          UInt8((u >> 8) & 0xff),
+          UInt8(u & 0xff))
+    return data
 end
 
 # ===========================================================================
