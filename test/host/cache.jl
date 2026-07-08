@@ -9,6 +9,38 @@ const DC = cuTile.DiskCache
         @test cuTile.parse_toolkit_version("") === nothing
     end
 
+    @testset "configuration" begin
+        @test DC.cache_setting_disabled("")
+        @test DC.cache_setting_disabled("0")
+        @test DC.cache_setting_disabled(" OFF ")
+        @test DC.cache_setting_disabled("none")
+        @test !DC.cache_setting_disabled("cache-dir")
+
+        @test DC.parse_cache_size("4096") == 4096
+        @test_throws ArgumentError DC.parse_cache_size("0")
+        @test_throws ArgumentError DC.parse_cache_size("not-a-size")
+
+        mktempdir() do dir
+            withenv("JULIA_CUTILE_CACHE_DIR" => dir) do
+                @test DC.configured_cache_dir() == abspath(dir)
+            end
+            withenv("JULIA_CUTILE_CACHE_DIR" => "off") do
+                @test DC.configured_cache_dir() === nothing
+            end
+            withenv("JULIA_CUTILE_CACHE_SIZE" => "8192") do
+                @test DC.configured_mapsize() == 8192
+            end
+
+            write(joinpath(dir, "data.mdb"), "stale")
+            write(joinpath(dir, "lock.mdb"), "stale")
+            write(joinpath(dir, "keep"), "user data")
+            DC.wipe_lmdb_files(dir)
+            @test !isfile(joinpath(dir, "data.mdb"))
+            @test !isfile(joinpath(dir, "lock.mdb"))
+            @test isfile(joinpath(dir, "keep"))
+        end
+    end
+
     @testset "compute_key" begin
         bc = collect(b"some bytecode bytes")
         k = DC.compute_key(bc, v"12.0", 3, "13.1")

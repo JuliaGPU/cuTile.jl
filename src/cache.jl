@@ -13,6 +13,9 @@ entirely.
 - A single LMDB env at `\$(scratchspace)/disk_cache/`. The directory
   contains `data.mdb` + `lock.mdb`; wiping the cache means `rm -rf` of
   that directory or `Scratch.delete_scratch!`.
+- Set `JULIA_CUTILE_CACHE_DIR` to override the cache directory. Values
+  `0`, `off`, `none`, and the empty string disable the disk cache. Set
+  `JULIA_CUTILE_CACHE_SIZE` to override the default 1 GiB LMDB map size.
 - Keys: `sha256(SCHEMA_VERSION || toolkit_version || sm_arch || opt_level || bytecode)`.
   Any input change produces a fresh key, so old-toolkit entries never
   match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate every
@@ -102,6 +105,8 @@ end
 
 isopen(cache::Cache) = LMDB.isopen(cache.env)
 
+const DEFAULT_MAPSIZE = Csize_t(1) << 30
+
 """
     close(cache::Cache)
 
@@ -122,7 +127,7 @@ missing. `mapsize` is the maximum on-disk size in bytes (LMDB grows the
 map sparsely up to this limit). `maxreaders` caps concurrent reader
 transactions.
 """
-function open(path::AbstractString; mapsize::Integer = (Csize_t(1) << 30),
+function open(path::AbstractString; mapsize::Integer = DEFAULT_MAPSIZE,
               maxreaders::Integer = 510)
     mkpath(path)
 
@@ -435,20 +440,55 @@ end
 
 function try_init()
     try
-        # @get_scratch! resolves to cuTile's package UUID via moduleroot,
-        # so the path is $DEPOT/scratchspaces/<cuTile-UUID>/disk_cache/.
-        root = @get_scratch!("disk_cache")
+        root = configured_cache_dir()
+        root === nothing && return nothing
+        mapsize = configured_mapsize()
         try
-            return open(root)
+            return open(root; mapsize)
         catch err
             @debug "cuTile disk cache failed to open; wiping" path=root exception=(err, catch_backtrace())
-            rm(root; recursive=true, force=true)
-            return open(root)
+            wipe_lmdb_files(root)
+            return open(root; mapsize)
         end
     catch err
         @debug "cuTile disk cache disabled" exception=(err, catch_backtrace())
         return nothing
     end
+end
+
+function configured_cache_dir()
+    setting = Base.get(ENV, "JULIA_CUTILE_CACHE_DIR", nothing)
+    if setting === nothing
+        # @get_scratch! resolves to cuTile's package UUID via moduleroot,
+        # so the path is $DEPOT/scratchspaces/<cuTile-UUID>/disk_cache/.
+        return @get_scratch!("disk_cache")
+    end
+    cache_setting_disabled(setting) && return nothing
+    return abspath(expanduser(setting))
+end
+
+function configured_mapsize()
+    setting = Base.get(ENV, "JULIA_CUTILE_CACHE_SIZE", nothing)
+    setting === nothing && return DEFAULT_MAPSIZE
+    return parse_cache_size(setting)
+end
+
+function cache_setting_disabled(setting::AbstractString)
+    lowercase(strip(setting)) in ("", "0", "off", "none")
+end
+
+function parse_cache_size(setting::AbstractString)
+    value = tryparse(UInt64, strip(setting))
+    if value === nothing || value == 0
+        throw(ArgumentError("JULIA_CUTILE_CACHE_SIZE must be a positive integer byte count"))
+    end
+    return value
+end
+
+function wipe_lmdb_files(path::AbstractString)
+    rm(joinpath(path, "data.mdb"); force=true)
+    rm(joinpath(path, "lock.mdb"); force=true)
+    return
 end
 
 end # module DiskCache
