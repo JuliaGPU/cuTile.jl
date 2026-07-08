@@ -20,8 +20,9 @@ entirely.
   Any input change produces a fresh key, so old-toolkit entries never
   match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate every
   existing entry on the next access (e.g. after a value-framing change).
-- Values: 8 bytes little-endian `atime_ns` followed by the CUBIN bytes.
-  The atime drives the LRU eviction policy.
+- Values: prefixed records in the LMDB keyspace. Data records hold CUBIN
+  bytes, metadata records hold `(atime_ns, size)`, and LRU-index records
+  sort by `atime_ns`.
 
 # Eviction
 
@@ -51,31 +52,96 @@ using SHA: sha256
 using Scratch: @get_scratch!
 
 # ===========================================================================
-# Value framing — `atime_ns ‖ payload`
+# Value framing and key prefixes
 # ===========================================================================
 
-const ATIME_PREFIX = 8  # bytes for a UInt64 little-endian timestamp
+const CACHE_KEY_BYTES = 32
+const DATA_TAG  = 0x00
+const ATIME_TAG = 0x01
+const LRU_TAG   = 0x02
+const U64_BYTES = 8
+const META_VALUE_BYTES = 2 * U64_BYTES
+const SIZE_VALUE_BYTES = U64_BYTES
 
-# `tryget(txn, dbi, key, AtimedBlob)` returns the payload (atime stripped),
-# or `nothing` for both NOTFOUND and malformed entries. Both surface as a
-# cache miss. Single copy out of the mmap via `read(io, Vector{UInt8})`.
-struct AtimedBlob end
+# `read(io, MetaValue)` decodes the metadata value attached to
+# `ATIME_TAG || digest`. Malformed metadata is treated as absent.
+struct MetaValue end
 
-function Base.read(io::IO, ::Type{AtimedBlob})
-    bytesavailable(io) < ATIME_PREFIX && return nothing
-    skip(io, ATIME_PREFIX)
-    return read(io, Vector{UInt8})
+function Base.read(io::IO, ::Type{MetaValue})
+    bytesavailable(io) < META_VALUE_BYTES && return nothing
+    atime = ntoh(read(io, UInt64))
+    raw_size = ntoh(read(io, UInt64))
+    size = raw_size <= typemax(Int) ? Int(raw_size) : typemax(Int)
+    return (atime = atime, size = size)
 end
 
-# `walk(cur, Vector{UInt8}, AtimeMeta)` yields per-entry `(atime, full_size)`
-# pairs without copying out the payload. Eviction uses it to sort by atime
-# and approximate freed-byte counts.
-struct AtimeMeta end
+# `read(io, StoredSize)` is used while walking the database for eviction.
+# LRU-index records store an approximate total entry size. Legacy records
+# (from older schemas) have arbitrary payloads, so eviction uses their raw
+# value size instead.
+struct StoredSize end
 
-function Base.read(io::IO, ::Type{AtimeMeta})
+function Base.read(io::IO, ::Type{StoredSize})
     sz = bytesavailable(io)
-    atime = sz >= ATIME_PREFIX ? ltoh(read(io, UInt64)) : UInt64(0)
-    return (atime = atime, size = sz)
+    stored = if sz >= SIZE_VALUE_BYTES
+        n = ntoh(read(io, UInt64))
+        n <= typemax(Int) ? Int(n) : typemax(Int)
+    else
+        sz
+    end
+    return (stored_size = stored, value_size = sz)
+end
+
+function data_key(key::AbstractVector{UInt8})
+    prefixed_key(DATA_TAG, key)
+end
+
+function atime_key(key::AbstractVector{UInt8})
+    prefixed_key(ATIME_TAG, key)
+end
+
+function prefixed_key(tag::UInt8, key::AbstractVector{UInt8})
+    out = UInt8[tag]
+    append!(out, key)
+    return out
+end
+
+function lru_key(atime::UInt64, key::AbstractVector{UInt8})
+    out = UInt8[LRU_TAG]
+    append_uint64_be!(out, atime)
+    append!(out, key)
+    return out
+end
+
+is_data_key(key::AbstractVector{UInt8}) =
+    length(key) == 1 + CACHE_KEY_BYTES && key[1] == DATA_TAG
+is_atime_key(key::AbstractVector{UInt8}) =
+    length(key) == 1 + CACHE_KEY_BYTES && key[1] == ATIME_TAG
+is_lru_key(key::AbstractVector{UInt8}) =
+    length(key) == 1 + U64_BYTES + CACHE_KEY_BYTES && key[1] == LRU_TAG
+is_current_key(key::AbstractVector{UInt8}) =
+    is_data_key(key) || is_atime_key(key) || is_lru_key(key)
+
+function lru_key_parts(key::AbstractVector{UInt8})
+    atime = read_uint64_be(key, 2)
+    digest = key[(2 + U64_BYTES):end]
+    return digest, atime
+end
+
+function store_uint64_be!(buf::AbstractVector{UInt8}, offset::Integer, x::Integer)
+    u = UInt64(x)
+    for i in 0:7
+        buf[offset + i] = UInt8((u >> (8 * (7 - i))) & 0xff)
+    end
+    return buf
+end
+
+function read_uint64_be(buf::AbstractVector{UInt8}, offset::Integer)
+    x = UInt64(0)
+    for i in 0:7
+        x = (x << 8) | UInt64(buf[offset + i])
+    end
+    return x
 end
 
 # ===========================================================================
@@ -205,18 +271,19 @@ function get(cache::Cache, key::AbstractVector{UInt8})
     LMDB.isopen(cache.env) || error("DiskCache.get on closed cache")
 
     blob = LMDB.Transaction(cache.env; flags = LMDB.MDB_RDONLY) do txn
-        LMDB.get(txn, cache.dbi, key, AtimedBlob, nothing)
+        LMDB.get(txn, cache.dbi, data_key(key), Vector{UInt8}, nothing)
     end
     blob === nothing && return nothing
 
     # Throttled atime refresh. Done outside the read txn (LMDB doesn't
-    # allow nesting). Errors here are non-fatal; we'd rather return the
-    # blob than fail the launch.
+    # allow nesting). Only metadata is rewritten; the CUBIN payload stays
+    # untouched. Errors here are non-fatal; we'd rather return the blob
+    # than fail the launch.
     Base.@lock cache.state_lock begin
         if !(key in cache.refreshed)
             push!(cache.refreshed, copy(key))
             try
-                put_framed!(cache, key, time_ns(), blob)
+                update_atime!(cache, key, time_ns(), entry_storage_size(length(blob)))
             catch err
                 @debug "atime refresh failed" exception=(err, catch_backtrace())
             end
@@ -244,7 +311,7 @@ function put!(cache::Cache, key::AbstractVector{UInt8},
 
     # Double-checked: the cheap utilization probe gates the lock
     # acquisition in the common case, when we're well below high water.
-    incoming = ATIME_PREFIX + length(value)
+    incoming = entry_storage_size(length(value))
     if should_evict(cache, incoming)
         Base.@lock cache.state_lock begin
             if should_evict(cache, incoming)
@@ -254,12 +321,12 @@ function put!(cache::Cache, key::AbstractVector{UInt8},
     end
 
     try
-        put_framed!(cache, key, time_ns(), value)
+        put_entry!(cache, key, time_ns(), value)
     catch err
         is_map_full(err) || rethrow()
         Base.@lock cache.state_lock begin
             evict_lru!(cache, MAP_FULL_RETRY_WATER; room_for=incoming)
-            put_framed!(cache, key, time_ns(), value)
+            put_entry!(cache, key, time_ns(), value)
         end
     end
 
@@ -269,20 +336,59 @@ function put!(cache::Cache, key::AbstractVector{UInt8},
     return
 end
 
-# Write `atime ‖ payload` directly into LMDB-allocated mmap pages,
-# instead of building an intermediate `Vector{UInt8}` (now that
-# `MDB_RESERVE` is reachable from tier-2).
-function put_framed!(cache::Cache, key::AbstractVector{UInt8}, atime::UInt64,
-                     payload::AbstractVector{UInt8})
-    sz = ATIME_PREFIX + length(payload)
+function entry_storage_size(payload_size::Integer)
+    return payload_size + META_VALUE_BYTES + SIZE_VALUE_BYTES
+end
+
+function put_entry!(cache::Cache, key::AbstractVector{UInt8}, atime::UInt64,
+                    payload::AbstractVector{UInt8})
     LMDB.Transaction(cache.env) do txn
-        LMDB.put_reserved!(txn, cache.dbi, key, sz) do buf
-            unsafe_store!(Ptr{UInt64}(pointer(buf)), htol(atime))
-            copyto!(buf, ATIME_PREFIX + 1, payload, 1, length(payload))
-        end
+        put_data!(txn, cache.dbi, key, payload)
+        update_atime!(txn, cache.dbi, key, atime, entry_storage_size(length(payload)))
     end
     return
 end
+
+function put_data!(txn::LMDB.Transaction, dbi::LMDB.Database,
+                   key::AbstractVector{UInt8}, payload::AbstractVector{UInt8})
+    try
+        LMDB.put_reserved!(txn, dbi, data_key(key), length(payload);
+                           flags=LMDB.MDB_NOOVERWRITE) do buf
+            copyto!(buf, payload)
+        end
+        return true
+    catch err
+        is_key_exist(err) && return false
+        rethrow()
+    end
+end
+
+function update_atime!(cache::Cache, key::AbstractVector{UInt8}, atime::UInt64,
+                       stored_size::Integer)
+    LMDB.Transaction(cache.env) do txn
+        update_atime!(txn, cache.dbi, key, atime, stored_size)
+    end
+    return
+end
+
+function update_atime!(txn::LMDB.Transaction, dbi::LMDB.Database,
+                       key::AbstractVector{UInt8}, atime::UInt64,
+                       stored_size::Integer)
+    ak = atime_key(key)
+    old = LMDB.get(txn, dbi, ak, MetaValue, nothing)
+    old !== nothing && LMDB.delete!(txn, dbi, lru_key(old.atime, key))
+
+    LMDB.put_reserved!(txn, dbi, ak, META_VALUE_BYTES) do buf
+        store_uint64_be!(buf, 1, atime)
+        store_uint64_be!(buf, 1 + U64_BYTES, stored_size)
+    end
+    LMDB.put_reserved!(txn, dbi, lru_key(atime, key), SIZE_VALUE_BYTES) do buf
+        store_uint64_be!(buf, 1, stored_size)
+    end
+    return
+end
+
+is_key_exist(err) = err isa LMDB.LMDBError && err.code == LMDB.MDB_KEYEXIST
 
 # ===========================================================================
 # Eviction
@@ -313,19 +419,19 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER;
     bytes_to_free = info.used_bytes - target_bytes
 
     entries = collect_entries(cache)
-    sort!(entries, by = e -> e[2])  # atime ascending
+    sort!(entries, by = e -> e.atime)
 
     evicted = 0
     nominated = 0
-    batch = Vector{Vector{UInt8}}()
+    batch = EvictEntry[]
     sizehint!(batch, EVICT_BATCH)
 
-    for (key, _atime, raw_size) in entries
-        push!(batch, key)
+    for entry in entries
+        push!(batch, entry)
         # Approximate freed bytes by entry size; LMDB's actual freed-page
         # count is fuzzier (page granularity, COW), but this is the right
         # order of magnitude.
-        nominated += cld(raw_size, cache.psize) * cache.psize
+        nominated += cld(entry.size, cache.psize) * cache.psize
         if length(batch) >= EVICT_BATCH || nominated >= bytes_to_free
             evicted += delete_batch!(cache, batch)
             empty!(batch)
@@ -343,29 +449,47 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER;
     return evicted
 end
 
-# Collect (key_copy, atime, raw_value_size) for every entry in the cache.
-# Typed walk: the key gets unpacked as `Vector{UInt8}` (default Julia-owned
-# copy), the value as the AtimeMeta NamedTuple (atime + size, no payload
-# copy). Pre-eviction-format / malformed entries surface with `atime = 0`
-# so they evict first.
+struct EvictEntry
+    key::Vector{UInt8}
+    atime::UInt64
+    size::Int
+    legacy::Bool
+end
+
+# Collect eviction candidates. Current-schema entries are represented by
+# LRU-index records; old unprefixed records from previous schemas are
+# treated as oldest so they do not strand space after a schema bump.
 function collect_entries(cache::Cache)
-    entries = Tuple{Vector{UInt8}, UInt64, Int}[]
+    entries = EvictEntry[]
     LMDB.Transaction(cache.env; flags = LMDB.MDB_RDONLY) do txn
         LMDB.Cursor(txn, cache.dbi) do cur
-            LMDB.walk(cur, Vector{UInt8}, AtimeMeta) do key, meta
-                push!(entries, (key, meta.atime, meta.size))
+            LMDB.walk(cur) do key_ref, val_ref
+                key = Base.read(LMDB.MDBValueIO(key_ref[]), Vector{UInt8})
+                if is_lru_key(key)
+                    meta = Base.read(LMDB.MDBValueIO(val_ref[]), StoredSize)
+                    digest, atime = lru_key_parts(key)
+                    push!(entries, EvictEntry(digest, atime, meta.stored_size, false))
+                elseif !is_current_key(key)
+                    push!(entries, EvictEntry(key, UInt64(0), Int(val_ref[].mv_size), true))
+                end
             end
         end
     end
     return entries
 end
 
-# Delete a batch of keys in a single write txn.
-function delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
+# Delete a batch of entries in a single write txn.
+function delete_batch!(cache::Cache, entries::Vector{EvictEntry})
     LMDB.Transaction(cache.env) do txn
         deleted = 0
-        for key in keys
-            LMDB.delete!(txn, cache.dbi, key) && (deleted += 1)
+        for entry in entries
+            if entry.legacy
+                LMDB.delete!(txn, cache.dbi, entry.key) && (deleted += 1)
+            else
+                LMDB.delete!(txn, cache.dbi, data_key(entry.key)) && (deleted += 1)
+                LMDB.delete!(txn, cache.dbi, atime_key(entry.key))
+                LMDB.delete!(txn, cache.dbi, lru_key(entry.atime, entry.key))
+            end
         end
         deleted
     end
@@ -380,11 +504,11 @@ end
 
 Cache schema version, mixed into every [`compute_key`](@ref). Bump this
 when the on-disk value layout changes incompatibly (e.g. add/move bytes
-in the framed value, change the hash algorithm, or alter what inputs
+in stored records, change the hash algorithm, or alter what inputs
 the key covers). After the bump, no existing entry matches on lookup,
 and LRU eventually evicts them.
 """
-const SCHEMA_VERSION = UInt32(2)
+const SCHEMA_VERSION = UInt32(3)
 
 """
     compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
@@ -426,6 +550,15 @@ function append_uint32_be!(data::Vector{UInt8}, x::Integer)
           UInt8((u >> 16) & 0xff),
           UInt8((u >> 8) & 0xff),
           UInt8(u & 0xff))
+    return data
+end
+
+function append_uint64_be!(data::Vector{UInt8}, x::Integer)
+    0 <= x <= typemax(UInt64) || throw(ArgumentError("cache key integer out of range: $x"))
+    u = UInt64(x)
+    for i in 7:-1:0
+        push!(data, UInt8((u >> (8 * i)) & 0xff))
+    end
     return data
 end
 

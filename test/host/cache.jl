@@ -45,7 +45,7 @@ const DC = cuTile.DiskCache
         bc = collect(b"some bytecode bytes")
         k = DC.compute_key(bc, v"12.0", 3, "13.1")
         @test length(k) == 32
-        @test bytes2hex(k) == "fd117ab2268ddfc8e0dccaad206b80557fa4239ea12f2d83293bcfa95f9d485e"
+        @test bytes2hex(k) == "18e56484bf2c7013c94b9c32d505359be46dc77269b9a0d20b1f74bfced0f120"
         @test DC.compute_key(bc, v"12.0", 3, "13.1") == k
         @test DC.compute_key(bc, v"12.0", 3, "13.2") != k
         @test DC.compute_key(bc, v"12.0", 2, "13.1") != k
@@ -64,6 +64,9 @@ const DC = cuTile.DiskCache
                 @test DC.get(cache, k) == v
                 # idempotent: same key+value, same observable state
                 DC.put!(cache, k, v)
+                @test DC.get(cache, k) == v
+                # content-addressed keys are first-writer-wins
+                DC.put!(cache, k, collect(b"different payload"))
                 @test DC.get(cache, k) == v
             finally
                 DC.close(cache)
