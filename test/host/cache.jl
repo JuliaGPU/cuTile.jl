@@ -108,6 +108,30 @@ const DC = cuTile.DiskCache
         end
     end
 
+    @testset "put! reserves room for incoming value" begin
+        mktempdir() do dir
+            blob_size = 50_000
+            mapsize   = 4 * 1024 * 1024
+            cache = DC.open(dir; mapsize)
+            try
+                i = 0
+                while DC.env_info(cache).used_bytes <= 0.82 * mapsize
+                    i += 1
+                    k = sha256(UInt8[0x33, i % 256, (i ÷ 256) % 256])
+                    DC.put!(cache, k, rand(UInt8, blob_size))
+                end
+                @test DC.env_info(cache).used_bytes < 0.90 * mapsize
+
+                large_key = sha256(b"large incoming blob")
+                large_blob = rand(UInt8, 900_000)
+                DC.put!(cache, large_key, large_blob)
+                @test DC.get(cache, large_key) == large_blob
+            finally
+                DC.close(cache)
+            end
+        end
+    end
+
     @testset "cross-session atime refresh keeps read-hot keys" begin
         # The atime-refresh-on-hit path is throttled to once per session
         # per key. To exercise it we need at least three opens of the

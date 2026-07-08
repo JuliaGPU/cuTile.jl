@@ -31,8 +31,9 @@ point. Deletes are also copy-on-write and need free pages, so draining
 a fully-saturated map is unreliable. On every `put!`:
 
 1. Compute env utilization via `LMDB.info` + the cached page size.
-2. If above [`HIGH_WATER`](@ref) (90%), call [`evict_lru!`](@ref)
-   targeting [`LOW_WATER`](@ref) (75%).
+2. If the current usage plus incoming entry would cross
+   [`HIGH_WATER`](@ref) (90%), call [`evict_lru!`](@ref) targeting
+   [`LOW_WATER`](@ref) (75%) with enough room for the incoming entry.
 3. Then write the new entry.
 
 `evict_lru!` cursor-walks all entries collecting `(key, atime, size)`,
@@ -180,6 +181,11 @@ end
 const HIGH_WATER = 0.90
 const LOW_WATER  = 0.75
 
+# Overflow-page allocation can still hit MDB_MAP_FULL after ordinary LRU
+# pruning if free pages are too fragmented. On that rare path, prune much
+# harder and retry once.
+const MAP_FULL_RETRY_WATER = 0.25
+
 # Keep the eviction batch small so freed COW pages become available
 # within a couple of write txns (per LMDB authors' advice).
 const EVICT_BATCH = 100
@@ -228,8 +234,9 @@ overwritten: under content addressing, a key collision means the values
 are identical (or, vanishingly, a `hash` collision). Either way, the
 first writer wins.
 
-If the env is above [`HIGH_WATER`](@ref), [`evict_lru!`](@ref) is run
-first to drop down to [`LOW_WATER`](@ref).
+If the env plus the incoming value would cross [`HIGH_WATER`](@ref),
+[`evict_lru!`](@ref) is run first to drop down to [`LOW_WATER`](@ref)
+with enough room for the value.
 """
 function put!(cache::Cache, key::AbstractVector{UInt8},
               value::AbstractVector{UInt8})
@@ -237,15 +244,24 @@ function put!(cache::Cache, key::AbstractVector{UInt8},
 
     # Double-checked: the cheap utilization probe gates the lock
     # acquisition in the common case, when we're well below high water.
-    if utilization(cache) > HIGH_WATER
+    incoming = ATIME_PREFIX + length(value)
+    if should_evict(cache, incoming)
         Base.@lock cache.state_lock begin
-            if utilization(cache) > HIGH_WATER
-                evict_lru!(cache, LOW_WATER)
+            if should_evict(cache, incoming)
+                evict_lru!(cache, LOW_WATER; room_for=incoming)
             end
         end
     end
 
-    put_framed!(cache, key, time_ns(), value)
+    try
+        put_framed!(cache, key, time_ns(), value)
+    catch err
+        is_map_full(err) || rethrow()
+        Base.@lock cache.state_lock begin
+            evict_lru!(cache, MAP_FULL_RETRY_WATER; room_for=incoming)
+            put_framed!(cache, key, time_ns(), value)
+        end
+    end
 
     # Mark this key as "atime is fresh" so a subsequent get in the same
     # session doesn't redundantly bump it.
@@ -277,14 +293,22 @@ end
 
 Walk the cache, sort entries by atime ascending (oldest first), and
 delete enough of them in batched write txns to bring used bytes below
-`target_ratio * mapsize`. Returns the number of entries evicted.
+`target_ratio * mapsize - room_for`. Returns the number of entries evicted.
 
-Called automatically from [`put!`](@ref) when utilization crosses
-[`HIGH_WATER`](@ref); also exposed for manual invocation.
+Called automatically from [`put!`](@ref) when usage plus the incoming
+entry would cross [`HIGH_WATER`](@ref); also exposed for manual invocation.
 """
-function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
+function should_evict(cache::Cache, room_for::Integer = 0)
     info = env_info(cache)
-    target_bytes = floor(Int, target_ratio * info.mapsize)
+    return info.used_bytes + room_for > HIGH_WATER * info.mapsize
+end
+
+is_map_full(err) = err isa LMDB.LMDBError && err.code == LMDB.MDB_MAP_FULL
+
+function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER;
+                    room_for::Integer = 0)
+    info = env_info(cache)
+    target_bytes = max(0, floor(Int, target_ratio * info.mapsize) - room_for)
     info.used_bytes <= target_bytes && return 0
     bytes_to_free = info.used_bytes - target_bytes
 
@@ -292,7 +316,7 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
     sort!(entries, by = e -> e[2])  # atime ascending
 
     evicted = 0
-    freed = 0
+    nominated = 0
     batch = Vector{Vector{UInt8}}()
     sizehint!(batch, EVICT_BATCH)
 
@@ -301,16 +325,13 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
         # Approximate freed bytes by entry size; LMDB's actual freed-page
         # count is fuzzier (page granularity, COW), but this is the right
         # order of magnitude.
-        freed += raw_size
-        if length(batch) >= EVICT_BATCH
+        nominated += cld(raw_size, cache.psize) * cache.psize
+        if length(batch) >= EVICT_BATCH || nominated >= bytes_to_free
             evicted += delete_batch!(cache, batch)
             empty!(batch)
+            env_info(cache).used_bytes <= target_bytes && break
+            nominated = 0
         end
-        # Stop as soon as we've nominated enough bytes for eviction. The
-        # check has to sit outside the batch-flush branch; otherwise a
-        # cache with fewer than EVICT_BATCH entries flushes the entire
-        # contents in one shot.
-        freed >= bytes_to_free && break
     end
     isempty(batch) || (evicted += delete_batch!(cache, batch))
 
