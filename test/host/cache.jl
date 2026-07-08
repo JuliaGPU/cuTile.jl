@@ -3,6 +3,12 @@ using SHA: sha256
 const DC = cuTile.DiskCache
 
 @testset "DiskCache" begin
+    @testset "toolkit version parsing" begin
+        @test cuTile.parse_toolkit_version("tileiras V13.2.78\nBuild local") == "13.2.78"
+        @test cuTile.parse_toolkit_version("future version format") == "future version format"
+        @test cuTile.parse_toolkit_version("") === nothing
+    end
+
     @testset "compute_key" begin
         bc = collect(b"some bytecode bytes")
         k = DC.compute_key(bc, v"12.0", 3, "13.1")

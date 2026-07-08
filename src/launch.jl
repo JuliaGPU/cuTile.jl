@@ -178,7 +178,8 @@ end
 
 const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
 
-const toolkit_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, String}}(nothing))
+const toolkit_version_cache =
+    Base.Lockable(Base.RefValue{Union{Nothing, Some{Union{Nothing, String}}}}(nothing))
 
 # Bytecode versions cuTile.jl can emit, in ascending order. Each version listed
 # here is one we have explicit `cb.version >= v"X.Y"` handling for in
@@ -195,7 +196,7 @@ const max_bytecode_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, Ve
 const TILEIRAS_VERSION_REGEX = r"V(\d+\.\d+\.\d+)"
 
 """
-    toolkit_version() -> String
+    toolkit_version() -> Union{String, Nothing}
 
 Lazy-cached `tileiras` toolkit identity, used as the toolkit-identity
 component of the disk-cache key so distinct CUDA Toolkit patches
@@ -215,25 +216,35 @@ the V-token instead and fall back to the full stdout only if the
 regex misses, so a future format change degrades to Python-style
 over-invalidation rather than aliasing distinct compilers.
 
-Failure to invoke `tileiras` returns the string `"unknown"` so the
-cache still functions (all entries collapse into a single toolkit
-bucket); it's the caller's job to decide whether that's acceptable.
+Failure to invoke `tileiras --version` returns `nothing`; callers should
+skip disk-cache use rather than collapsing distinct compilers into an
+unknown bucket.
 """
 function toolkit_version()
     Base.@lock toolkit_version_cache begin
         ref = toolkit_version_cache[]
-        ref[] === nothing || return ref[]::String
+        ref[] === nothing || return ref[].value
 
-        proc, log = run_and_collect(tileiras_cmd("--version"))
-        success(proc) ||
-            error("tileiras --version failed: $(proc.exitcode), log: $log")
-
-        m = match(TILEIRAS_VERSION_REGEX, log)
-        isnothing(m) && error("tileiras --version output did not match expected format: $log")
-
-        ref[] = m.captures[1]
-        return ref[]::String
+        version = try
+            proc, log = run_and_collect(tileiras_cmd("--version"))
+            if success(proc)
+                parse_toolkit_version(log)
+            else
+                @debug "tileiras --version failed; disabling disk cache" exitcode=proc.exitcode log
+                nothing
+            end
+        catch err
+            @debug "tileiras --version failed; disabling disk cache" exception=(err, catch_backtrace())
+            nothing
+        end
+        ref[] = Some(version)
+        return version
     end
+end
+
+function parse_toolkit_version(log::AbstractString)
+    m = match(TILEIRAS_VERSION_REGEX, log)
+    m === nothing ? (isempty(log) ? nothing : String(log)) : m.captures[1]
 end
 
 """
@@ -423,8 +434,9 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     # in the bytecode itself, so it's covered transitively by the bytecode hash.
     dc = DiskCache.global_cache()
     cache_key = nothing
-    if dc !== nothing
-        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, toolkit_version())
+    toolkit_id = toolkit_version()
+    if dc !== nothing && toolkit_id !== nothing
+        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, toolkit_id)
         cubin = try
             DiskCache.get(dc, cache_key)
         catch err
@@ -754,7 +766,7 @@ function versioninfo(io::IO=stdout)
     println(io, "cuTile toolchain:")
 
     install = tileiras_override === nothing ? "artifact installation" : "local installation"
-    println(io, "- tileiras $(toolkit_version()), $install")
+    println(io, "- tileiras $(something(toolkit_version(), "unknown")), $install")
 
     bv = bytecode_version()
     bv_src = bytecode_version_override === nothing ? "auto-detected" : "set via preference"
