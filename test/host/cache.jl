@@ -3,10 +3,49 @@ using SHA: sha256
 const DC = cuTile.DiskCache
 
 @testset "DiskCache" begin
+    @testset "toolkit version parsing" begin
+        @test cuTile.parse_toolkit_version("tileiras V13.2.78\nBuild local") == "13.2.78"
+        @test cuTile.parse_toolkit_version("future version format") == "future version format"
+        @test cuTile.parse_toolkit_version("") === nothing
+    end
+
+    @testset "configuration" begin
+        @test DC.cache_setting_disabled("")
+        @test DC.cache_setting_disabled("0")
+        @test DC.cache_setting_disabled(" OFF ")
+        @test DC.cache_setting_disabled("none")
+        @test !DC.cache_setting_disabled("cache-dir")
+
+        @test DC.parse_cache_size("4096") == 4096
+        @test_throws ArgumentError DC.parse_cache_size("0")
+        @test_throws ArgumentError DC.parse_cache_size("not-a-size")
+
+        mktempdir() do dir
+            withenv("JULIA_CUTILE_CACHE_DIR" => dir) do
+                @test DC.configured_cache_dir() == abspath(dir)
+            end
+            withenv("JULIA_CUTILE_CACHE_DIR" => "off") do
+                @test DC.configured_cache_dir() === nothing
+            end
+            withenv("JULIA_CUTILE_CACHE_SIZE" => "8192") do
+                @test DC.configured_mapsize() == 8192
+            end
+
+            write(joinpath(dir, "data.mdb"), "stale")
+            write(joinpath(dir, "lock.mdb"), "stale")
+            write(joinpath(dir, "keep"), "user data")
+            DC.wipe_lmdb_files(dir)
+            @test !isfile(joinpath(dir, "data.mdb"))
+            @test !isfile(joinpath(dir, "lock.mdb"))
+            @test isfile(joinpath(dir, "keep"))
+        end
+    end
+
     @testset "compute_key" begin
         bc = collect(b"some bytecode bytes")
         k = DC.compute_key(bc, v"12.0", 3, "13.1")
-        @test length(k) == sizeof(UInt64)
+        @test length(k) == 32
+        @test bytes2hex(k) == "18e56484bf2c7013c94b9c32d505359be46dc77269b9a0d20b1f74bfced0f120"
         @test DC.compute_key(bc, v"12.0", 3, "13.1") == k
         @test DC.compute_key(bc, v"12.0", 3, "13.2") != k
         @test DC.compute_key(bc, v"12.0", 2, "13.1") != k
@@ -25,6 +64,9 @@ const DC = cuTile.DiskCache
                 @test DC.get(cache, k) == v
                 # idempotent: same key+value, same observable state
                 DC.put!(cache, k, v)
+                @test DC.get(cache, k) == v
+                # content-addressed keys are first-writer-wins
+                DC.put!(cache, k, collect(b"different payload"))
                 @test DC.get(cache, k) == v
             finally
                 DC.close(cache)
@@ -63,6 +105,30 @@ const DC = cuTile.DiskCache
                 @test old_present < length(old_keys) ÷ 2
                 # And most of the new set is intact
                 @test new_present >= 0.6 * length(new_keys)
+            finally
+                DC.close(cache)
+            end
+        end
+    end
+
+    @testset "put! reserves room for incoming value" begin
+        mktempdir() do dir
+            blob_size = 50_000
+            mapsize   = 4 * 1024 * 1024
+            cache = DC.open(dir; mapsize)
+            try
+                i = 0
+                while DC.env_info(cache).used_bytes <= 0.82 * mapsize
+                    i += 1
+                    k = sha256(UInt8[0x33, i % 256, (i ÷ 256) % 256])
+                    DC.put!(cache, k, rand(UInt8, blob_size))
+                end
+                @test DC.env_info(cache).used_bytes < 0.90 * mapsize
+
+                large_key = sha256(b"large incoming blob")
+                large_blob = rand(UInt8, 900_000)
+                DC.put!(cache, large_key, large_blob)
+                @test DC.get(cache, large_key) == large_blob
             finally
                 DC.close(cache)
             end
