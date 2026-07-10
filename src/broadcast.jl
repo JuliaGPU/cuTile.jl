@@ -45,64 +45,40 @@ end
 ## kernel wrapper
 
 """
-    BroadcastLeaf{P}(arr::TileArray)
+    Extruded{K}(arr::AbstractTileArray)
 
-Kernel-side wrapper for an array leaf whose shape differs from the broadcast
-destination's. `P` is an `NTuple{N,Bool}` over the destination dims, flagging
-dims where the leaf is size 1 (or absent) and must be loaded 1-wide at index 1,
-to be expanded to the full tile shape by the device-side tile broadcast.
+Array leaf of a `Broadcasted` tree. Like `Base.Broadcast.Extruded`, `K` flags
+the dimensions along which the leaf has extent, except that the mask lives in
+the type domain because it determines the static shape of the tile to load:
+flagged dimensions cover the tile, the others are loaded 1-wide at index 1 and
+expanded by the device-side tile broadcast.
 """
-struct BroadcastLeaf{P, A}
-    arr::A
+struct Extruded{K, A}
+    x::A
 end
-BroadcastLeaf{P}(arr::A) where {P, A} = BroadcastLeaf{P, A}(arr)
+Extruded{K}(x::A) where {K, A} = Extruded{K, A}(x)
 
-# Reject leaves the kernel cannot address: a host Array would compile fine but
-# dereference a CPU pointer on device (illegal memory access, poisoning the
-# CUDA context), and ranges have no pointer at all.
-function _check_device_leaf(arr::AbstractArray)
-    root = arr
-    while (p = parent(root)) !== root
-        root = p
-    end
-    if root isa Array || root isa AbstractRange
-        throw(ArgumentError("cuTile broadcast requires device arrays, got $(typeof(arr))"))
-    end
+# Counterpart of `Base.Broadcast.preprocess`: convert the array leaves of a
+# Broadcasted tree into Extruded TileArrays, given the destination rank.
+preprocess(t::Tiled, rank::Val) = preprocess(parent(t), rank)
+preprocess(arr::AbstractArray{<:Any, 0}, rank::Val) = preprocess(reshape(arr, 1), rank)
+function preprocess(arr::AbstractArray, ::Val{N}) where N
+    keeps = ntuple(d -> size(arr, d) != 1, Val(N))
+    # The typeassert rejects leaves without device storage, like ranges,
+    # which `cuTileconvert` passes through unchanged.
+    Extruded{keeps}(cuTileconvert(arr)::AbstractTileArray)
 end
-
-_to_tiled_bc(t::Tiled, dsize) = _to_tiled_bc(parent(t), dsize)
-# 0-dim leaves become 1-element vectors; the kernel path assumes rank >= 1.
-_to_tiled_bc(arr::AbstractArray{<:Any,0}, dsize::Dims) = _to_tiled_bc(reshape(arr, 1), dsize)
-function _to_tiled_bc(arr::AbstractArray, dsize::Dims{N}) where N
-    _check_device_leaf(arr)
-    ta = cuTileconvert(arr)
-    ndims(arr) == N && size(arr) == dsize && return ta
-    P = ntuple(d -> size(arr, d) == 1 && dsize[d] > 1, N)
-    return BroadcastLeaf{P}(ta)
-end
-_to_tiled_bc(x::Number, dsize) = x
-_to_tiled_bc(x, dsize) = x  # fallback for other types
-function _to_tiled_bc(bc::Broadcasted, dsize)
-    new_args = map(arg -> _to_tiled_bc(arg, dsize), bc.args)
-    Broadcasted{Nothing}(bc.f, new_args, nothing)
-end
-
-# 0-dim destinations: the kernel path needs at least one dimension, so run as
-# a 1-element 1-D broadcast (0-dim leaves load rank-0 tiles and expand).
-function _tiled_broadcast!(dest::AbstractArray{T,0}, bc::Broadcasted) where T
-    Base.Broadcast.check_broadcast_axes(axes(dest), bc.args...)
-    _tiled_broadcast!(reshape(dest, 1), bc)
-end
+preprocess(bc::Broadcasted, rank::Val) =
+    Broadcasted{Nothing}(bc.f, map(arg -> preprocess(arg, rank), bc.args), nothing)
+preprocess(x, rank::Val) = x
 
 function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
-    # Reject shapes Base broadcasting would reject (throws DimensionMismatch);
-    # size-1 dims are legal and expanded per-leaf in the kernel.
+    # Match Base semantics: size-1 dimensions expand, other mismatches throw.
     Base.Broadcast.check_broadcast_axes(axes(dest), bc.args...)
     isempty(dest) && return
 
-    _check_device_leaf(dest)
     dest_ta = cuTileconvert(dest)
-    tiled_bc = _to_tiled_bc(bc, size(dest))
+    tiled_bc = preprocess(bc, Val(N))
 
     ts = _compute_tile_sizes(size(dest))
     grid = ntuple(i -> cld(size(dest, i), ts[i]), N)
@@ -112,51 +88,42 @@ function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, 
            Constant(ts), Constant(overflow))
 end
 
+# The kernel operates on tiles of rank >= 1, so run 0-dim broadcasts (both
+# destinations, above, and leaves, in `preprocess`) as 1-element vectors.
+_tiled_broadcast!(dest::AbstractArray{<:Any,0}, bc::Broadcasted) =
+    _tiled_broadcast!(reshape(dest, 1), bc)
+
 
 ## kernel
 
-@inline _eval_bc(arr::AbstractTileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
-@inline _eval_bc(x::Number, bid, tile_size) = x
-
-@inline _bc_func(f) = f
-@inline _bc_func(::Constant{Type{T}, T}) where {T} = T
-
-# Shape-mismatched leaf: dims flagged in P load a 1-wide slice at index 1;
-# the tile-level broadcast in `broadcast(bc.f, ...)` expands them to the
-# common tile shape. The leaf's rank M may differ from the destination rank
-# (trailing dims); `load` pads/squeezes trailing singleton dims to match.
-@generated function _eval_bc(leaf::BroadcastLeaf{P}, bid, tile_size) where P
-    A = fieldtype(leaf, :arr)
-    M, N = ndims(A), length(P)
-    shape = [P[d] ? 1 : :(tile_size[$d]) for d in 1:N]
-    index = [(d > N || P[d]) ? :(Int32(1)) : :(bid[$d]) for d in 1:M]
-    return :(cuTile.load(leaf.arr, ($(index...),), ($(shape...),)))
+# Evaluate one node of the Broadcasted tree for the current block, like
+# `Base.Broadcast._broadcast_getindex` does per element. A leaf's rank may be
+# lower than the destination's (trailing dimensions); `load` completes the
+# tile shape with trailing singleton dimensions.
+@generated function _eval_bc(leaf::Extruded{K}, bid, tile_size) where K
+    M = ndims(fieldtype(leaf, :x))
+    shape = [K[d] ? :(tile_size[$d]) : 1 for d in 1:length(K)]
+    index = [K[d] ? :(bid[$d]) : :(Int32(1)) for d in 1:M]
+    return :(cuTile.load(leaf.x, ($(index...),), ($(shape...),)))
 end
-
+@inline _eval_bc(x::Number, bid, tile_size) = x
 @inline function _eval_bc(bc::Broadcasted, bid, tile_size)
-    args = _eval_bc_args(bc.args, bid, tile_size)
+    args = map(arg -> _eval_bc(arg, bid, tile_size), bc.args)
     # Use broadcast to get element-wise semantics (not direct call, which
     # would dispatch to e.g. matmul for * on tiles)
     broadcast(_bc_func(bc.f), args...)
 end
 
-@inline _eval_bc_args(::Tuple{}, bid, tile_size) = ()
-@inline _eval_bc_args(args::Tuple, bid, tile_size) =
-    (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
-
-# Convert the broadcast result to a dest-eltype, dest-shaped tile. A `Number`
-# result comes from a scalar-only RHS (e.g. `Tiled(C) .= 0`); a smaller tile
-# arises when every leaf is size-1 in some dim.
-@inline _bc_result(x::Number, ::Type{T}, tile_size) where {T} =
-    broadcast_to(Tile(T(x)), tile_size)
-@inline _bc_result(t::Tile, ::Type{T}, tile_size) where {T} =
-    broadcast_to(convert(Tile{T}, t), tile_size)
+@inline _bc_func(f) = f
+@inline _bc_func(::Constant{Type{T}, T}) where {T} = T
 
 @generated function broadcast_kernel(dest::AbstractTileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
     quote
         bids = _unflatten_bids(Val{$N}(), overflow_grids)
         result = _eval_bc(bc, bids, tile_size)
-        store(dest, bids, _bc_result(result, $T, tile_size))
+        # The result can be smaller than the tile (all leaves size-1 in some
+        # dimension) or even a scalar (scalar-only right-hand side).
+        store(dest, bids, broadcast_to(convert(Tile{$T}, result), tile_size))
         return
     end
 end

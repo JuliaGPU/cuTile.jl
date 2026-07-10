@@ -158,6 +158,15 @@ using CUDA
         @test Array(C) ≈ repeat(Array(A) .+ 1.0f0, m, 1)
     end
 
+    @testset "size-1 expansion in nested broadcast" begin
+        m, n = 64, 128
+        A = CUDA.rand(Float32, 1, n)
+        B = CUDA.rand(Float32, m, n)
+        C = CUDA.zeros(Float32, m, n)
+        ct.Tiled(C) .= ct.Tiled(B) .+ sin.(ct.Tiled(A))
+        @test Array(C) ≈ Array(B) .+ sin.(Array(A))
+    end
+
     @testset "rank expansion (vector + matrix)" begin
         m, n = 64, 128
         A = CUDA.rand(Float32, m)
@@ -210,7 +219,7 @@ using CUDA
         C = CUDA.zeros(Float32, 16)
         A_cpu = rand(Float32, 16)
         @test_throws ArgumentError ct.Tiled(C) .= ct.Tiled(A_cpu) .* 2.0f0
-        @test_throws ArgumentError ct.Tiled(C) .= ct.Tiled(C) .+ (1:16)
+        @test_throws TypeError ct.Tiled(C) .= ct.Tiled(C) .+ (1:16)  # no device storage
         @test_throws ArgumentError ct.Tiled(A_cpu) .= 0  # CPU destination
     end
 
