@@ -6,8 +6,9 @@
 # `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, bytecode_version)`.
 
 using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
-                AbstractBackend, AbstractKernel, kernel_convert, kernel_compile, PerDevice
+                deviceid, AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
 using CUDA_Compiler_jll
+using GPUToolbox: @memoize
 using Preferences: @load_preference
 
 using Adapt: Adapt, adapt
@@ -176,8 +177,6 @@ function run_and_collect(cmd)
     return proc, log
 end
 
-const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
-
 const toolkit_version_cache =
     Base.Lockable(Base.RefValue{Union{Nothing, Some{Union{Nothing, String}}}}(nothing))
 
@@ -339,7 +338,7 @@ function check_tile_ir_support()
     end
 
     dev = device()
-    ver = get!(tile_ir_support, dev) do
+    ver = @memoize index=deviceid(dev)+1 begin
         ver = bytecode_version()
 
         cap = capability(dev)
@@ -356,7 +355,7 @@ function check_tile_ir_support()
         end
 
         return ver
-    end
+    end::Union{Nothing, VersionNumber}
 
     if ver === nothing
         error("CUDA Tile is not supported on the current device")
