@@ -63,9 +63,9 @@ Lower a control-flow / block result type `T` to a Tile IR type. If `T` has no
 representation (typically `Any`/`Union{}` left when inference could not pin a
 tile down), record a diagnostic and return a poison type with `ok = false`, so
 the caller can keep emitting the region (surfacing the real cause inside it) and
-mark its result poison. The message stays neutral; the precise cause is reported
-by the offending op below, which sits at a deeper inlining frame so
-`report_errors!` orders it first.
+mark its result poison. When the region body then records errors of its own,
+the caller drops this carry diagnostic again via [`prune_derived_errors!`](@ref):
+it was just the symptom.
 """
 function result_type_or_poison!(ctx::CGCtx, @nospecialize(T); context::AbstractString="result")
     tid = tile_type_for_julia!(ctx, T; throw_error=false)
@@ -91,6 +91,21 @@ function collect_result_types!(ctx::CGCtx, types; context::AbstractString="resul
         push!(result_types, tid)
     end
     return result_types, poisoned
+end
+
+"""
+    prune_derived_errors!(ctx, range)
+
+Delete the carry-type diagnostics recorded at `range` in `ctx.errors` if any
+further error was recorded after them: region emission then surfaced a root
+cause, and the non-representable carry type is just its symptom. Control-flow
+emitters bracket `collect_result_types!` with `length(ctx.errors)` marks and
+call this after building their regions.
+"""
+function prune_derived_errors!(ctx::CGCtx, range::UnitRange{Int})
+    isempty(range) && return nothing
+    length(ctx.errors) > last(range) && deleteat!(ctx.errors, range)
+    return nothing
 end
 
 """

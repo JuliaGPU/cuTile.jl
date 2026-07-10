@@ -94,14 +94,18 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     # could not pin a branch's tile down) is recorded but does NOT abort: we
     # substitute a poison type and still emit both regions, so the root cause
     # inside the branch (e.g. a non-constant tile shape) surfaces too. The IfOp
-    # result is then marked poison to suppress the cascade at its consumers.
+    # result is then marked poison to suppress the cascade at its consumers,
+    # and the carry diagnostic itself is dropped again if the regions surface
+    # errors of their own (prune_derived_errors! below).
     result_types = TypeId[]
     result_poisoned = false
+    carry_mark = length(ctx.errors)
     if parent_result_type !== Nothing
         Ts = parent_result_type <: Tuple ? collect(parent_result_type.parameters) :
                                             Any[parent_result_type]
         result_types, result_poisoned = collect_result_types!(ctx, Ts; context="`if`/`else` result")
     end
+    carry_errors = carry_mark+1:length(ctx.errors)
 
     then_body = function(_)
         saved = copy(ctx.block_args)
@@ -116,6 +120,7 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
+    prune_derived_errors!(ctx, carry_errors)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
     result_poisoned && push!(ctx.poisoned, ssa_idx)
@@ -154,8 +159,10 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     # (typically `Any`/`Union{}`) is recorded but does not abort: poison it and
     # still emit the body so the root cause inside the loop surfaces too.
     n_carries = length(body_blk.args)
+    carry_mark = length(ctx.errors)
     result_types, result_poisoned =
         collect_result_types!(ctx, (arg.type for arg in body_blk.args); context="loop carry")
+    carry_errors = carry_mark+1:length(ctx.errors)
 
     body_builder = function(block_args)
         saved = copy(ctx.block_args)
@@ -177,6 +184,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
     end
     results = encode_ForOp!(body_builder, cb, result_types, iv_type,
                              lower_tv.v, upper_tv.v, step_tv.v, init_values)
+    prune_derived_errors!(ctx, carry_errors)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
     result_poisoned && push!(ctx.poisoned, ssa_idx)
@@ -198,8 +206,10 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
     end
 
     n_carries = length(body_blk.args)
+    carry_mark = length(ctx.errors)
     result_types, result_poisoned =
         collect_result_types!(ctx, (arg.type for arg in body_blk.args); context="loop carry")
+    carry_errors = carry_mark+1:length(ctx.errors)
 
     body_builder = function(block_args)
         saved = copy(ctx.block_args)
@@ -221,6 +231,7 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
+    prune_derived_errors!(ctx, carry_errors)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
     result_poisoned && push!(ctx.poisoned, ssa_idx)
@@ -248,8 +259,10 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
     end
 
     n_carries = length(before_blk.args)
+    carry_mark = length(ctx.errors)
     result_types, result_poisoned =
         collect_result_types!(ctx, (arg.type for arg in before_blk.args); context="loop carry")
+    carry_errors = carry_mark+1:length(ctx.errors)
 
     body_builder = function(block_args)
         saved = copy(ctx.block_args)
@@ -336,6 +349,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         empty!(ctx.block_args); merge!(ctx.block_args, saved)
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
+    prune_derived_errors!(ctx, carry_errors)
 
     ctx.values[ssa_idx] = CGVal(results, parent_result_type)
     result_poisoned && push!(ctx.poisoned, ssa_idx)
