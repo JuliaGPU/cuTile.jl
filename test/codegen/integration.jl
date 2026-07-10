@@ -678,6 +678,18 @@ end
             @test err isa ct.CodegenErrors
             @test length(err.errors) == 1
         end
+
+        @testset "internal compiler errors retain their cause" begin
+            cause = try
+                error("deliberate internal error")
+            catch err
+                CapturedException(err, catch_backtrace())
+            end
+            err = ct.InternalCompilerError(ct.SourceLocation[], cause)
+            rendered = sprint(showerror, err)
+            @test occursin("deliberate internal error", rendered)
+            @test occursin("Stacktrace:", rendered)
+        end
     end
 
     @testset "method error detection" begin

@@ -49,7 +49,8 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
                     # inconsistent), but point the report at the offending
                     # kernel statement and ask for an issue.
                     e isa Union{InternalCompilerError, InterruptException} && rethrow()
-                    throw(InternalCompilerError(source_location(ctx.sci, inst.ssa_idx)))
+                    throw(InternalCompilerError(source_location(ctx.sci, inst.ssa_idx),
+                                                CapturedException(e, catch_backtrace())))
                 end
                 ctx.current_ssa_idx = inst.ssa_idx
                 # Suppress errors derived purely from an already-poisoned input;

@@ -194,12 +194,13 @@ end
 A non-`IRError` exception escaped statement emission: a bug in cuTile.jl
 itself, not a kernel diagnostic. The per-statement boundary in `emit_block!`
 wraps it with the offending statement's kernel-side stack and aborts
-compilation immediately (the codegen context may be inconsistent). Thrown
-from inside the `catch`, so the original exception and its backtrace render
-below it via Julia's exception-cause chain.
+compilation immediately (the codegen context may be inconsistent). The
+original exception and backtrace are retained as a [`CapturedException`](@ref)
+and rendered below the report.
 """
 struct InternalCompilerError <: Exception
     stack::Vector{SourceLocation}
+    cause::CapturedException
 end
 
 function Base.showerror(io::IO, err::InternalCompilerError)
@@ -211,6 +212,8 @@ function Base.showerror(io::IO, err::InternalCompilerError)
     print(io, "\n\nThis is a bug in cuTile.jl, not in your kernel. Please file an issue at\n",
               "https://github.com/JuliaGPU/cuTile.jl/issues, including the kernel source\n",
               "and the cause below.")
+    print(io, "\n\nOriginal exception:\n")
+    Base.showerror(io, err.cause)
     return
 end
 
