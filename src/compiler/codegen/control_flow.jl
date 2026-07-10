@@ -43,7 +43,14 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
                     push!(ctx.poisoned, inst.ssa_idx)
                 end
             catch e
-                e isa IRError || rethrow()
+                if !(e isa IRError)
+                    # Anything else escaping emission is a compiler bug, not a
+                    # kernel diagnostic: abort immediately (the context may be
+                    # inconsistent), but point the report at the offending
+                    # kernel statement and ask for an issue.
+                    e isa Union{InternalCompilerError, InterruptException} && rethrow()
+                    throw(InternalCompilerError(source_location(ctx.sci, inst.ssa_idx)))
+                end
                 ctx.current_ssa_idx = inst.ssa_idx
                 # Suppress errors derived purely from an already-poisoned input;
                 # keep only root causes. The static operand check backs up the

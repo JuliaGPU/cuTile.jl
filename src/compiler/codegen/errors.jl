@@ -189,6 +189,32 @@ function Base.showerror(io::IO, err::CodegenErrors)
 end
 
 """
+    InternalCompilerError <: Exception
+
+A non-`IRError` exception escaped statement emission: a bug in cuTile.jl
+itself, not a kernel diagnostic. The per-statement boundary in `emit_block!`
+wraps it with the offending statement's kernel-side stack and aborts
+compilation immediately (the codegen context may be inconsistent). Thrown
+from inside the `catch`, so the original exception and its backtrace render
+below it via Julia's exception-cause chain.
+"""
+struct InternalCompilerError <: Exception
+    stack::Vector{SourceLocation}
+end
+
+function Base.showerror(io::IO, err::InternalCompilerError)
+    print(io, "InternalCompilerError: unexpected exception during Tile IR code generation")
+    if !isempty(err.stack)
+        print(io, " while emitting:")
+        Base.show_backtrace(io, codegen_frames(err.stack))
+    end
+    print(io, "\n\nThis is a bug in cuTile.jl, not in your kernel. Please file an issue at\n",
+              "https://github.com/JuliaGPU/cuTile.jl/issues, including the kernel source\n",
+              "and the cause below.")
+    return
+end
+
+"""
     report_errors!(ctx)
 
 If any deferred diagnostics were recorded during emission, raise them together
