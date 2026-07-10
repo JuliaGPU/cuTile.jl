@@ -72,17 +72,32 @@ struct TokenResultNode
     mem_op_ssa::Int  # SSA index of the memory operation that produced this token
 end
 
+"""
+    ThrowNode(message, runtime)
+
+Canonical form for a Julia `throw`. Runtime throws lower to a failing Tile IR
+assertion. An unavoidable top-level throw becomes a compile-time diagnostic.
+The exception object is not retained as an operand, so DCE can remove its
+otherwise-dead construction.
+"""
+struct ThrowNode
+    message::String
+    runtime::Bool
+end
+
 # walk_uses! extensions so that IRStructurizer's uses()/replace_uses! see
 # operands inside cuTile-specific IR nodes.
 IRStructurizer.walk_uses!(f, node::JoinTokensNode) =
     for i in 1:length(node.tokens); f(IRStructurizer.IndexedUseRef(node.tokens, i)); end
 IRStructurizer.walk_uses!(f, ::TokenResultNode) = nothing
 IRStructurizer.walk_uses!(f, ::MakeTokenNode) = nothing
+IRStructurizer.walk_uses!(f, ::ThrowNode) = nothing
 
 # operands extensions for cuTile-specific IR nodes.
 operands(::Block, s::JoinTokensNode) = s.tokens
 operands(::Block, s::TokenResultNode) = Any[SSAValue(s.mem_op_ssa)]
 operands(::Block, ::MakeTokenNode) = Any[]
+operands(::Block, ::ThrowNode) = Any[]
 
 
 """
@@ -107,6 +122,20 @@ struct IRError <: Exception
     msg::String
 end
 Base.showerror(io::IO, e::IRError) = print(io, "IRError: ", e.msg)
+
+"""
+    CodegenError(msg, stack)
+
+A single deferred codegen diagnostic: a message plus the kernel-side
+inlining stack (`source_location`, ordered outermost→innermost) of the
+statement that produced it. Instead of throwing on the first unsupported
+construct, codegen accumulates these in `CGCtx.errors` and `report_errors!`
+raises them together at the end of `emit_kernel!`.
+"""
+struct CodegenError
+    msg::String
+    stack::Vector{SourceLocation}
+end
 
 #=============================================================================
  CGVal: Unified value representation (analogous to Julia's jl_cgval_t)
@@ -327,6 +356,19 @@ mutable struct CGCtx
     # marked for this kernel. Gates the function-definition-line coverage visit
     # in `emit_kernel!` so untracked kernels aren't reported.
     recorded_coverage::Bool
+
+    # Deferred codegen diagnostics. Rather than aborting on the first
+    # unsupported construct, codegen catches each `IRError` at the per-
+    # statement boundary (`emit_block!`), records it here with the offending
+    # statement's kernel-side inlining stack, and continues with a poison
+    # placeholder, so one compile surfaces all problems (cf. GPUCompiler's
+    # `InvalidIRError` accumulation). `report_errors!` raises the aggregate.
+    errors::Vector{CodegenError}
+    # SSA indices whose emission failed; their results are poison. A consumer
+    # that reads a poisoned value sets `touched_poison`, letting the boundary
+    # handler drop the cascading (derived) error and keep only the root cause.
+    poisoned::Set{Int}
+    touched_poison::Bool
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
@@ -360,6 +402,9 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Value, Value}(),            # assume_wrapped
         nothing,                         # current_block — set by emit_block!
         false,                           # recorded_coverage — set by record_coverage!
+        CodegenError[],                  # errors, accumulated by record_error!
+        Set{Int}(),                      # poisoned
+        false,                           # touched_poison
     )
 end
 

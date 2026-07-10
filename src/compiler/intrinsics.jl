@@ -66,7 +66,7 @@ end
 # Shared helper for creating load/store optimization hints
 function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, allow_tma::Bool=true)
     isnothing(latency) && allow_tma && return nothing
-    isnothing(latency) || 1 <= latency <= 10 || throw(ArgumentError("latency must be between 1 and 10, got $latency"))
+    isnothing(latency) || 1 <= latency <= 10 || throw(IRError("latency must be between 1 and 10, got $latency"))
     hints = LoadStoreHints(; latency, allow_tma)
     return make_load_store_hints(ctx.sm_arch, ctx.cb.version, hints)
 end

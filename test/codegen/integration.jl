@@ -615,13 +615,111 @@ end
         @testset "binary op type mismatch errors in Julia" begin
             # addi with mismatched types (Int32 + Int64) should fail if the
             # result is used. Dead code is removed by DCE before codegen.
-            @test_throws ct.IRError code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+            @test_throws ct.CodegenErrors code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                 pid = ct.bid(1)  # Int32
                 # Force type mismatch by calling addi with different types
                 result = ct.Intrinsics.addi(pid, Int64(1))
                 # Use the result so DCE doesn't remove it
                 Base.donotdelete(result)
                 return
+            end
+        end
+    end
+
+    @testset "deferred error aggregation" begin
+        spec = ct.ArraySpec{1}(16, true)
+        trycompile(f, tt) = try
+            code_tiled(f, tt)
+            nothing
+        catch e
+            e
+        end
+
+        @testset "independent errors all reported, in program order" begin
+            err = trycompile(Tuple{ct.TileArray{Float32,1,spec}, Int, Int}) do a, n, m
+                pid = ct.bid(1)
+                ct.store(a; index=pid, tile=ct.fill(1f0, (n,)))
+                ct.store(a; index=pid, tile=ct.fill(2f0, (m,)))
+                return
+            end
+            @test err isa ct.CodegenErrors
+            @test length(err.errors) == 2
+            @test all(e -> occursin("compile-time constant", e.msg), err.errors)
+            # stacks are outermost→innermost; [1] is the kernel frame
+            @test err.errors[1].stack[1].line < err.errors[2].stack[1].line
+        end
+
+        @testset "cascading errors suppressed" begin
+            # Failures on values derived from an already-failed statement are
+            # cascades; only the root cause is reported.
+            err = trycompile(Tuple{ct.TileArray{Float32,1,spec}, Int}) do a, n
+                pid = ct.bid(1)
+                t = ct.fill(1f0, (n,))
+                ct.store(a; index=pid, tile=t + t)
+                return
+            end
+            @test err isa ct.CodegenErrors
+            @test length(err.errors) == 1
+            @test occursin("compile-time constant", err.errors[1].msg)
+        end
+
+        @testset "duplicate reports from one kernel statement deduplicated" begin
+            # The same problem hit on several inlined lines of a single kernel
+            # statement is reported once.
+            fill_twice(a, pid, n) = begin
+                ct.store(a; index=pid, tile=ct.fill(1f0, (n,)))
+                ct.store(a; index=pid, tile=ct.fill(2f0, (n,)))
+                nothing
+            end
+            err = trycompile(Tuple{ct.TileArray{Float32,1,spec}, Int}) do a, n
+                fill_twice(a, ct.bid(1), n)
+                return
+            end
+            @test err isa ct.CodegenErrors
+            @test length(err.errors) == 1
+        end
+
+        @testset "internal compiler errors retain their cause" begin
+            cause = try
+                error("deliberate internal error")
+            catch err
+                CapturedException(err, catch_backtrace())
+            end
+            err = ct.InternalCompilerError(ct.SourceLocation[], cause)
+            rendered = sprint(showerror, err)
+            @test occursin("deliberate internal error", rendered)
+            @test occursin("Stacktrace:", rendered)
+        end
+    end
+
+    @testset "Julia throws" begin
+        @testset "conditional throw lowers to a runtime assertion" begin
+            @test @filecheck begin
+                @check "assert {{.*}}ArgumentError: x must be positive"
+                code_tiled(Tuple{Int32}) do x
+                    x > Int32(0) || throw(ArgumentError("x must be positive"))
+                    return
+                end
+            end
+        end
+
+        @testset "conditional singleton exception uses showerror" begin
+            @test @filecheck begin
+                @check "assert {{.*}}DivideError: integer division error"
+                code_tiled(Tuple{Int32}) do x
+                    x != Int32(0) || throw(DivideError())
+                    return
+                end
+            end
+        end
+
+        @testset "runtime-dependent message falls back to the exception type" begin
+            @test @filecheck begin
+                @check "assert {{.*}}ArgumentError was thrown"
+                code_tiled(Tuple{Int32}) do x
+                    x > Int32(0) || throw(ArgumentError("invalid value $x"))
+                    return
+                end
             end
         end
     end

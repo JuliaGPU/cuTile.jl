@@ -1106,7 +1106,7 @@ end
     end
 
     @testset "batched mat-vec (3D × 1D) errors" begin
-        @test_throws cuTile.IRError begin
+        @test_throws cuTile.CodegenErrors begin
             ct.code_tiled(Tuple{ct.TileArray{Float32,3,ct.ArraySpec{3}(16,true)},
                                 ct.TileArray{Float32,1,ct.ArraySpec{1}(16,true)}}) do a, b
                 bidx = ct.bid(1)

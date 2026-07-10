@@ -67,7 +67,7 @@ function get_stmt_operands(@nospecialize(s))
 end
 
 """
-    must_keep(s) -> Bool
+    must_keep(inst) -> Bool
 
 Check if a statement is side-effectful and must be kept as a root.
 
@@ -79,6 +79,15 @@ efunc override are pure. Unknown calls are conservatively kept.
 Mirrors Python cuTile's `_must_keep` (dce.py:205-206) and Julia's compiler
 `stmt_effect_free` — both classify by per-instruction effect annotations.
 """
+function must_keep(block::Block, inst::Instruction)
+    # Preserve Julia's per-statement effect analysis. This covers removable
+    # invokes and `:new` expressions that are not cuTile intrinsics, notably
+    # exception construction made dead by `lower_throws!`.
+    flag = inst[:flag]
+    (flag & CC.IR_FLAGS_REMOVABLE) == CC.IR_FLAGS_REMOVABLE && return false
+    return must_keep(block, inst[:stmt])
+end
+
 function must_keep(block::Block, @nospecialize(s))
     # Token bookkeeping: no side effects
     s isa JoinTokensNode && return false
@@ -233,7 +242,7 @@ function _build_dataflow_graph!(graph::Dict{Any, Vector{Any}},
                 graph[val] = deps
             end
 
-            if must_keep(block, s)
+            if must_keep(block, inst)
                 operands = get_stmt_operands(s)
                 push!(roots, val)
                 for op in operands
@@ -483,7 +492,7 @@ function _prune_block!(block::Block, live::Set{Any}, op_to_cf::Dict{UInt64, CFNo
 
         else
             # Regular instruction: dead if not live and not must-keep
-            if val ∉ live && !must_keep(block, s)
+            if val ∉ live && !must_keep(block, inst)
                 push!(to_delete, inst)
                 changed = true
             end

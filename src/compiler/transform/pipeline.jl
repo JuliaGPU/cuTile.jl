@@ -272,6 +272,7 @@ derive per-operand `AssumePredicate` chains on demand via
 `op_predicates` (analysis/assume.jl).
 """
 function run_passes!(sci::StructuredIRCode)
+    lower_throws!(sci)
     canonicalize!(sci)
 
     rewrite_patterns!(sci, PRINT_FUSION_RULES)

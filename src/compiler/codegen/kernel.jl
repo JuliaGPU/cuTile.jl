@@ -192,6 +192,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # prologue; the per-statement coverage effects only cover body lines).
     record_definition_coverage!(ctx)
 
+    # Raise any deferred diagnostics accumulated during emission before we
+    # commit a (necessarily incomplete) function body.
+    report_errors!(ctx)
+
     finalize_function!(func_buf, cb, writer.debug_info)
 end
 
@@ -439,6 +443,11 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
 
     # 5. Emit body (skip terminator — we yield manually)
     emit_block!(sub_ctx, sci.entry; skip_terminator=true)
+
+    # Subprograms compile in their own context; lift any deferred diagnostics
+    # (e.g. an unsupported op inside a reduce/scan combiner) into the parent so
+    # the top-level `report_errors!` surfaces them with their kernel-side stack.
+    append!(ctx.errors, sub_ctx.errors)
 
     # 6. Extract return value and yield
     ret = terminator(sci.entry)::ReturnNode
