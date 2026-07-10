@@ -35,12 +35,22 @@ function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
                 else
                     emit_statement!(ctx, s, inst.ssa_idx, value_type(inst))
                 end
+                # A successful statement that read a poisoned input still
+                # yields a poison-derived value: taint it so failures further
+                # down the dataflow chain are suppressed as cascades even when
+                # intermediate statements emit fine.
+                if ctx.touched_poison || reads_poison(ctx, s)
+                    push!(ctx.poisoned, inst.ssa_idx)
+                end
             catch e
                 e isa IRError || rethrow()
                 ctx.current_ssa_idx = inst.ssa_idx
                 # Suppress errors derived purely from an already-poisoned input;
-                # keep only root causes.
-                ctx.touched_poison || record_error!(ctx, e.msg)
+                # keep only root causes. The static operand check backs up the
+                # dynamic flag for emitters that throw before reading arguments.
+                if !(ctx.touched_poison || reads_poison(ctx, s))
+                    record_error!(ctx, e.msg)
+                end
                 push!(ctx.poisoned, inst.ssa_idx)
                 ctx.values[inst.ssa_idx] = poison_value(ctx)
             end

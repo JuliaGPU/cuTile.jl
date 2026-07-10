@@ -94,6 +94,39 @@ function collect_result_types!(ctx::CGCtx, types; context::AbstractString="resul
 end
 
 """
+    reads_poison(ctx, stmt) -> Bool
+
+Statically check whether any operand of `stmt` is a poisoned SSA value. The
+dynamic `touched_poison` flag only catches operands the emitter actually read
+(via `emit_value!`) before failing; emitters that throw early — e.g. rejecting
+a statement on its type before touching arguments — would otherwise report a
+cascade as a fresh root cause.
+"""
+function reads_poison(ctx::CGCtx, @nospecialize(stmt))
+    check(@nospecialize(v)) = v isa SSAValue && v.id in ctx.poisoned
+    if stmt isa Expr
+        return any(check, stmt.args)
+    elseif stmt isa IfOp
+        return check(stmt.condition)
+    elseif stmt isa ForOp
+        return check(stmt.lower) || check(stmt.upper) || check(stmt.step) ||
+               any(check, stmt.init_values)
+    elseif stmt isa Union{WhileOp, LoopOp}
+        return any(check, stmt.init_values)
+    elseif stmt isa PiNode
+        return check(stmt.val)
+    elseif stmt isa TokenResultNode
+        # References its memory op by raw SSA index; a poisoned (failed) memory
+        # op registered no result token, so the extraction failure is a cascade.
+        return stmt.mem_op_ssa in ctx.poisoned
+    elseif stmt isa JoinTokensNode
+        return any(check, stmt.tokens)
+    else
+        return check(stmt)   # alias statements: the stmt IS the operand
+    end
+end
+
+"""
     CodegenErrors <: Exception
 
 Aggregates every deferred [`CodegenError`](@ref) from one kernel compilation.
