@@ -767,7 +767,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "vec-vec throws error" begin
-        @test_throws cuTile.CodegenErrors begin
+        err = try
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (16,))
@@ -775,7 +775,13 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_a * tile_b
                 return
             end
+            nothing
+        catch e
+            e
         end
+        @test err isa cuTile.CodegenErrors
+        @test only(err.errors).msg ==
+            "Vector-vector multiplication is not supported. Use dot(a, b) for inner products, or reshape explicitly."
     end
 
     @testset "4D batched matmul (2 batch dims)" begin

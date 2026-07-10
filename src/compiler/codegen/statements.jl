@@ -15,6 +15,8 @@ function emit_statement!(ctx::CGCtx, @nospecialize(stmt), ssa_idx::Int, @nospeci
         tv = emit_join_tokens!(ctx, stmt)
     elseif stmt isa TokenResultNode
         tv = emit_token_result!(ctx, stmt)
+    elseif stmt isa ThrowNode
+        tv = emit_throw!(ctx, stmt)
     elseif stmt isa ReturnNode
         emit_return!(ctx, stmt)
     elseif stmt isa Expr
@@ -53,6 +55,13 @@ function emit_statement!(ctx::CGCtx, @nospecialize(stmt), ssa_idx::Int, @nospeci
     if tv !== nothing
         ctx.values[ssa_idx] = tv
     end
+end
+
+function emit_throw!(ctx::CGCtx, node::ThrowNode)
+    node.runtime || throw(IRError(node.message))
+    cond = emit_value!(ctx, false)
+    encode_AssertOp!(ctx.cb, cond.v, node.message)
+    return nothing
 end
 
 """
@@ -112,4 +121,3 @@ function emit_token_result!(ctx::CGCtx, node::TokenResultNode)
     v === nothing && throw(IRError("TokenResultNode: no result token for memory op at SSA %$(node.mem_op_ssa)"))
     return CGVal(v, ctx.token_type, TokenType)
 end
-

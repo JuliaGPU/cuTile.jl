@@ -692,6 +692,38 @@ end
         end
     end
 
+    @testset "Julia throws" begin
+        @testset "conditional throw lowers to a runtime assertion" begin
+            @test @filecheck begin
+                @check "assert {{.*}}x must be positive"
+                code_tiled(Tuple{Int32}) do x
+                    x > Int32(0) || throw(ArgumentError("x must be positive"))
+                    return
+                end
+            end
+        end
+
+        @testset "conditional singleton exception uses showerror" begin
+            @test @filecheck begin
+                @check "assert {{.*}}DivideError: integer division error"
+                code_tiled(Tuple{Int32}) do x
+                    x != Int32(0) || throw(DivideError())
+                    return
+                end
+            end
+        end
+
+        @testset "runtime-dependent message falls back to the exception type" begin
+            @test @filecheck begin
+                @check "assert {{.*}}ArgumentError was thrown"
+                code_tiled(Tuple{Int32}) do x
+                    x > Int32(0) || throw(ArgumentError("invalid value $x"))
+                    return
+                end
+            end
+        end
+    end
+
     @testset "method error detection" begin
         spec = ct.ArraySpec{1}(16, true)
 

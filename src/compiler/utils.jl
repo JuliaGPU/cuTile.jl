@@ -72,17 +72,32 @@ struct TokenResultNode
     mem_op_ssa::Int  # SSA index of the memory operation that produced this token
 end
 
+"""
+    ThrowNode(message, runtime)
+
+Canonical form for a Julia `throw`. Runtime throws lower to a failing Tile IR
+assertion. An unavoidable top-level throw becomes a compile-time diagnostic.
+The exception object is not retained as an operand, so DCE can remove its
+otherwise-dead construction.
+"""
+struct ThrowNode
+    message::String
+    runtime::Bool
+end
+
 # walk_uses! extensions so that IRStructurizer's uses()/replace_uses! see
 # operands inside cuTile-specific IR nodes.
 IRStructurizer.walk_uses!(f, node::JoinTokensNode) =
     for i in 1:length(node.tokens); f(IRStructurizer.IndexedUseRef(node.tokens, i)); end
 IRStructurizer.walk_uses!(f, ::TokenResultNode) = nothing
 IRStructurizer.walk_uses!(f, ::MakeTokenNode) = nothing
+IRStructurizer.walk_uses!(f, ::ThrowNode) = nothing
 
 # operands extensions for cuTile-specific IR nodes.
 operands(::Block, s::JoinTokensNode) = s.tokens
 operands(::Block, s::TokenResultNode) = Any[SSAValue(s.mem_op_ssa)]
 operands(::Block, ::MakeTokenNode) = Any[]
+operands(::Block, ::ThrowNode) = Any[]
 
 
 """
