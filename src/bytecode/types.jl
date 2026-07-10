@@ -148,12 +148,12 @@ F8E4M3FN(table::TypeTable) = simple_type!(table, SimpleType.F8E4M3FN)
 F8E5M2(table::TypeTable) = simple_type!(table, SimpleType.F8E5M2)
 function F8E8M0FNU(table::TypeTable)
     table.version >= v"13.2" ||
-        throw(ArgumentError("Float8_E8M0FNU requires Tile IR bytecode v13.2+, got v$(table.version)"))
+        throw(IRError("Float8_E8M0FNU requires Tile IR bytecode v13.2+, got v$(table.version)"))
     simple_type!(table, SimpleType.F8E8M0FNU)
 end
 function F4E2M1FN(table::TypeTable)
     table.version >= v"13.3" ||
-        throw(ArgumentError("Float4_E2M1FN requires Tile IR bytecode v13.3+, got v$(table.version)"))
+        throw(IRError("Float4_E2M1FN requires Tile IR bytecode v13.3+, got v$(table.version)"))
     simple_type!(table, SimpleType.F4E2M1FN)
 end
 Token(table::TypeTable) = simple_type!(table, SimpleType.Token)
@@ -242,7 +242,7 @@ function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
         elem_dtype = lookup_dtype!(table, eltype(T))
         pointer_type!(table, elem_dtype)
     else
-        error("Unsupported Julia type for Tile IR: $T")
+        throw(IRError("Unsupported Julia type for Tile IR: $T"))
     end
 end
 
