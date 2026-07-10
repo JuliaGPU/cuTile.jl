@@ -188,39 +188,26 @@ function Base.showerror(io::IO, err::CodegenErrors)
     return
 end
 
-# Sort key placing the most deeply-inlined (root-cause) errors first, with a
-# deterministic tie-break on the innermost frame's location and the message.
-function error_sort_key(e::CodegenError)
-    if isempty(e.stack)
-        return (0, "", 0, e.msg)
-    end
-    inner = e.stack[end]   # source_location is outermost→innermost
-    return (-length(e.stack), string(inner.file), Int(inner.line), e.msg)
-end
-
 """
     report_errors!(ctx)
 
 If any deferred diagnostics were recorded during emission, raise them together
 as a single [`CodegenErrors`](@ref) (each reported separately, GPUCompiler-
 style). No-op otherwise.
+
+Errors are reported in recording order, which is emission order and hence the
+kernel's program order: an error on line 3 prints before one on line 4.
+The same message reached through several inlining paths of the same kernel
+statement (e.g. multiple `fill` calls inside one `randn`) is reported once:
+entries are deduplicated on the message plus the outermost frame, i.e. one
+report per kernel line per problem, Clang-style.
 """
 function report_errors!(ctx::CGCtx)
     isempty(ctx.errors) && return nothing
 
-    # Dedup identical (message + stack) entries, e.g. the same non-const `fill`
-    # reached from both arms of an `if`. Key on message + full stack.
-    dedup_key(e) = string(e.msg, '\0',
-                          join((string(loc.method, '|', loc.file, '|', loc.line)
-                                for loc in e.stack), ';'))
+    dedup_key(e) = (e.msg,
+                    isempty(e.stack) ? nothing : (e.stack[1].file, e.stack[1].line))
     deduped = unique(dedup_key, ctx.errors)
-
-    # Order by source location: deepest inlining frame first. The offending op
-    # is the most deeply-inlined; a control-flow op that merely observed the
-    # resulting `Any` sits at a shallower frame, so root causes sort ahead of
-    # their symptoms. Tie-break on the innermost frame's file/line, then the
-    # message, for a fully deterministic order.
-    sort!(deduped; by=error_sort_key)
 
     throw(CodegenErrors(deduped))
 end
