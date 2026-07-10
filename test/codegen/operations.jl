@@ -781,7 +781,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
         @test err isa cuTile.CodegenErrors
         @test only(err.errors).msg ==
-            "Vector-vector multiplication is not supported. Use dot(a, b) for inner products, or reshape explicitly."
+            "ArgumentError: Vector-vector multiplication is not supported. Use dot(a, b) for inner products, or reshape explicitly."
     end
 
     @testset "4D batched matmul (2 batch dims)" begin

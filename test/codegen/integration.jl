@@ -695,7 +695,7 @@ end
     @testset "Julia throws" begin
         @testset "conditional throw lowers to a runtime assertion" begin
             @test @filecheck begin
-                @check "assert {{.*}}x must be positive"
+                @check "assert {{.*}}ArgumentError: x must be positive"
                 code_tiled(Tuple{Int32}) do x
                     x > Int32(0) || throw(ArgumentError("x must be positive"))
                     return

@@ -116,10 +116,6 @@ function exception_message(sci::StructuredIRCode, def_index, block::Block,
 
     ex = thrown_exception(sci, def_index, block, exception)
     if ex !== nothing
-        if hasfield(typeof(ex), :msg) && isdefined(ex, :msg)
-            msg = getfield(ex, :msg)
-            msg isa AbstractString && return String(msg)
-        end
         return sprint(showerror, ex)
     end
 
