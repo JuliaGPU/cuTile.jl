@@ -626,6 +626,60 @@ end
         end
     end
 
+    @testset "deferred error aggregation" begin
+        spec = ct.ArraySpec{1}(16, true)
+        trycompile(f, tt) = try
+            code_tiled(f, tt)
+            nothing
+        catch e
+            e
+        end
+
+        @testset "independent errors all reported, in program order" begin
+            err = trycompile(Tuple{ct.TileArray{Float32,1,spec}, Int, Int}) do a, n, m
+                pid = ct.bid(1)
+                ct.store(a; index=pid, tile=ct.fill(1f0, (n,)))
+                ct.store(a; index=pid, tile=ct.fill(2f0, (m,)))
+                return
+            end
+            @test err isa ct.CodegenErrors
+            @test length(err.errors) == 2
+            @test all(e -> occursin("compile-time constant", e.msg), err.errors)
+            # stacks are outermost→innermost; [1] is the kernel frame
+            @test err.errors[1].stack[1].line < err.errors[2].stack[1].line
+        end
+
+        @testset "cascading errors suppressed" begin
+            # Failures on values derived from an already-failed statement are
+            # cascades; only the root cause is reported.
+            err = trycompile(Tuple{ct.TileArray{Float32,1,spec}, Int}) do a, n
+                pid = ct.bid(1)
+                t = ct.fill(1f0, (n,))
+                ct.store(a; index=pid, tile=t + t)
+                return
+            end
+            @test err isa ct.CodegenErrors
+            @test length(err.errors) == 1
+            @test occursin("compile-time constant", err.errors[1].msg)
+        end
+
+        @testset "duplicate reports from one kernel statement deduplicated" begin
+            # The same problem hit on several inlined lines of a single kernel
+            # statement is reported once.
+            fill_twice(a, pid, n) = begin
+                ct.store(a; index=pid, tile=ct.fill(1f0, (n,)))
+                ct.store(a; index=pid, tile=ct.fill(2f0, (n,)))
+                nothing
+            end
+            err = trycompile(Tuple{ct.TileArray{Float32,1,spec}, Int}) do a, n
+                fill_twice(a, ct.bid(1), n)
+                return
+            end
+            @test err isa ct.CodegenErrors
+            @test length(err.errors) == 1
+        end
+    end
+
     @testset "method error detection" begin
         spec = ct.ArraySpec{1}(16, true)
 
