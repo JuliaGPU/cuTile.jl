@@ -692,6 +692,12 @@ The entire broadcast expression is fused into a single cuTile kernel. Tile sizes
 are automatically chosen based on array dimensions (power-of-2, budget-based).
 Works with 1D through N-dimensional arrays.
 
+Standard broadcast shape semantics apply: size-1 dimensions are expanded to the
+destination's size (`Tiled(C) .= Tiled(row) .+ Tiled(B)` with a `(1, N)` row),
+scalars fill the destination (`Tiled(C) .= 0`), and incompatible shapes throw a
+`DimensionMismatch`. For in-place assignment, `ct.@.` returns the original
+destination array.
+
 ### Random Number Generation
 
 `cuTile.RNG` fills `CuArray`s on the device using the same Philox2x32-7

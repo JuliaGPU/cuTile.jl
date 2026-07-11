@@ -215,7 +215,7 @@ end
 """
     TileArray(arr)
 
-Create a TileArray from a CUDA array (CuArray or similar).
+Create a TileArray from a device array (CuArray or similar).
 Automatically extracts pointer, sizes, strides, and computes ArraySpec.
 
 This method works with any array type that supports:
@@ -224,18 +224,25 @@ This method works with any array type that supports:
 - `strides(arr)` - returns array strides
 """
 function TileArray(arr::AbstractArray{T, N}) where {T, N}
-    # Use reinterpret to handle both Ptr and CuPtr (device pointers)
-    ptr = reinterpret(Ptr{T}, pointer(arr))
     sizes = NTuple{N, Int32}(Int32.(size(arr)))
     strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
-    TileArray(ptr, sizes, strides_val)
+    TileArray(device_pointer(arr), sizes, strides_val)
 end
 
 function TileArray(arr::PermutedDimsArray{T, N}) where {T, N}
-    ptr = reinterpret(Ptr{T}, pointer(parent(arr)))
     sizes = NTuple{N, Int32}(Int32.(size(arr)))
     strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
-    TileArray(ptr, sizes, strides_val)
+    TileArray(device_pointer(parent(arr)), sizes, strides_val)
+end
+
+# Device arrays hand out device pointer types (e.g. `CuPtr`), which TileArray
+# stores reinterpreted as `Ptr`. A `pointer` that already is a `Ptr` means host
+# memory, which would compile fine but fault when dereferenced on device.
+function device_pointer(arr::AbstractArray{T}) where T
+    ptr = pointer(arr)
+    ptr isa Ptr &&
+        throw(ArgumentError("cannot create a TileArray from host memory ($(typeof(arr)))"))
+    reinterpret(Ptr{T}, ptr)
 end
 
 

@@ -1015,6 +1015,7 @@ end
 @inline Base.convert(::Type{Tile{T}}, tile::Tile{T}) where {T} = tile
 @inline Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} =
     map(T2, tile)
+@inline Base.convert(::Type{Tile{T}}, x::Number) where {T} = Tile(convert(T, x))
 
 #=============================================================================
  Reduction
