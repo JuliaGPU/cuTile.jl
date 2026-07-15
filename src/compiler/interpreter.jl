@@ -54,8 +54,8 @@ CC.method_table(interp::cuTileInterpreter) = interp.method_table
 CC.lock_mi_inference(::cuTileInterpreter, ::MethodInstance) = nothing
 CC.unlock_mi_inference(::cuTileInterpreter, ::MethodInstance) = nothing
 
-# Setup caching - generates cache_owner and ipo_dataflow_analysis! methods
-@setup_caching cuTileInterpreter.cache
+# Cache partition
+CC.cache_owner(interp::cuTileInterpreter) = interp.cache.owner
 
 # Optimization flags
 CC.may_optimize(::cuTileInterpreter) = true

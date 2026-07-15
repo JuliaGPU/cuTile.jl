@@ -22,7 +22,7 @@ using EnumX
 public BFloat16
 
 import CompilerCaching
-using CompilerCaching: CacheView, @setup_caching, method_instance, match_method_instance, typeinf!, results, lookup, get_source
+using CompilerCaching: CacheView, method_instance, match_method_instance, typeinf!, results, lookup, get_source
 
 # Shared definitions
 include("shapes.jl")

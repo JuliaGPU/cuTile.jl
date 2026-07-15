@@ -95,8 +95,8 @@ function get_ci(cache::CacheView, mi::Core.MethodInstance;
     ci = get(cache, mi, nothing)
     if ci === nothing
         interp = cuTileInterpreter(cache)
-        typeinf!(cache, interp, mi)
-        ci = get(cache, mi)
+        ci = typeinf!(interp, mi)
+        ci === nothing && error("Inference failed for $mi")
     end
 
     # Run const-prop inference, if needed
