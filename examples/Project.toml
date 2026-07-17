@@ -10,3 +10,4 @@ cuTile = {path = ".."}
 
 [compat]
 FFTW = "1.10.0"
+NVTX = "1.0.3"
