@@ -234,4 +234,23 @@ end
             return
         end
     end
+
+
+    @test_throws "contradicts a known constant" begin
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            n = ct.assume_divisible_by(Int32(5), 4)
+            ct.store(a, n, ct.load(a, n, (64,)))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            n = ct.assume_divisible_by(Int32(8), 4)
+            @check_not "assume div_by<4>"
+            ct.store(a, n, ct.load(a, n, (64,)))
+            return
+        end
+    end
 end
