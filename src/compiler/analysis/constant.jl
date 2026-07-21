@@ -69,13 +69,12 @@ function transfer(a::ConstantAnalysis, r::DataflowResult, @nospecialize(func),
        length(ops) >= 1
         return operand_value(a, r, ops[1])
     end
-    # Type-narrowing intrinsics — preserve scalar values across width changes
+    # Integer conversions preserve scalar values across width changes
     # so a `1::Int64` field becomes a `1::Int32` after `Int32(stride)` lowers
     # to `trunci`. Otherwise downstream `muli(idx, stride_i32)` would lose
-    # the constant on the convert. Also covers `exti` (widening) and `bitcast`
-    # (no-op on signless integers).
-    if (func === Intrinsics.trunci || func === Intrinsics.exti ||
-        func === Intrinsics.bitcast) && length(ops) >= 1
+    # the constant on the convert. `bitcast` cannot pass through: it preserves
+    # bits, not the scalar value used by this analysis.
+    if (func === Intrinsics.trunci || func === Intrinsics.exti) && length(ops) >= 1
         v = operand_value(a, r, ops[1])
         return v isa Number ? v : CONSTANT_TOP
     end

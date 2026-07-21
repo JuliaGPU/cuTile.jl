@@ -269,6 +269,45 @@ end
 end
 
 
+@testset "bitcast preserves only sound analysis facts" begin
+    function bitcast_sci(scalar, T; target=T)
+        S = typeof(scalar)
+        entry = Block()
+        push!(entry, 1, Expr(:call, cuTile.Intrinsics.constant,
+                             QuoteNode(()), scalar, S), S)
+        push!(entry, 2, Expr(:call, cuTile.Intrinsics.bitcast,
+                             SSAValue(1), target), T)
+        entry.terminator = ReturnNode(SSAValue(2))
+        StructuredIRCode(Any[Any], Any[], entry, 2)
+    end
+
+    # Reinterpretation preserves bits, not the scalar value tracked by
+    # ConstantAnalysis.
+    sci = bitcast_sci(Int32(-1), UInt32)
+    constants = cuTile.analyze_constants(sci)
+    @test cuTile.const_value(constants, SSAValue(2)) === nothing
+
+    # A signedness change can add 2^width to the mathematical value. Only
+    # power-of-two divisors survive that change.
+    divisibility = cuTile.analyze_divisibility(bitcast_sci(Int32(-3), UInt32))
+    @test cuTile.div_by(divisibility, SSAValue(2)) == 1
+    divisibility = cuTile.analyze_divisibility(bitcast_sci(Int32(-4), UInt32))
+    @test cuTile.div_by(divisibility, SSAValue(2)) == 4
+    divisibility = cuTile.analyze_divisibility(
+        bitcast_sci(Int32(-4), UInt32; target=GlobalRef(Core, :UInt32)))
+    @test cuTile.div_by(divisibility, SSAValue(2)) == 4
+    divisibility = cuTile.analyze_divisibility(bitcast_sci(Int64(-6), UInt64))
+    @test cuTile.div_by(divisibility, SSAValue(2)) == 2
+
+    # Same-signedness integer bitcasts retain the divisor; non-integer
+    # bitcasts do not carry integer divisibility facts.
+    divisibility = cuTile.analyze_divisibility(bitcast_sci(Int32(-6), Int32))
+    @test cuTile.div_by(divisibility, SSAValue(2)) == 6
+    divisibility = cuTile.analyze_divisibility(bitcast_sci(Int32(-4), Float32))
+    @test cuTile.div_by(divisibility, SSAValue(2)) == 1
+end
+
+
 # ── convergence cap ──────────────────────────────────────────────────────
 
 # A deliberately non-monotone analysis: its `tmerge` never stabilises, so the

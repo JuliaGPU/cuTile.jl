@@ -177,6 +177,48 @@ end
     @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(5, 5)
 end
 
+@testset "bounds — bitcast consults source and destination signedness" begin
+    function bitcast_sci(scalar, T)
+        S = typeof(scalar)
+        entry = Block()
+        push!(entry, 1, Expr(:call, cuTile.Intrinsics.constant,
+                             QuoteNode(()), scalar, S), S)
+        push!(entry, 2, Expr(:call, cuTile.Intrinsics.bitcast,
+                             SSAValue(1), T), T)
+        entry.terminator = ReturnNode(SSAValue(2))
+        StructuredIRCode(Any[Any], Any[], entry, 2)
+    end
+
+    r = cuTile.analyze_bounds(bitcast_sci(Int32(-1), UInt32))
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
+
+    r = cuTile.analyze_bounds(bitcast_sci(Int32(5), UInt32))
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(5, 5)
+
+    r = cuTile.analyze_bounds(bitcast_sci(UInt8(250), Int8))
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
+
+    r = cuTile.analyze_bounds(bitcast_sci(UInt8(5), Int8))
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(5, 5)
+
+    r = cuTile.analyze_bounds(bitcast_sci(Int32(-1), Float32))
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
+
+    # The unknown bitcast range must not justify a no-wrap flag on an add
+    # that wraps from typemax(UInt32) to zero.
+    sci = bitcast_sci(Int32(-1), UInt32)
+    entry = sci.entry
+    push!(entry, 3, Expr(:call, cuTile.Intrinsics.constant,
+                         QuoteNode(()), UInt32(1), UInt32), UInt32)
+    push!(entry, 4, Expr(:call, cuTile.Intrinsics.addi,
+                         SSAValue(2), SSAValue(3)), UInt32)
+    entry.terminator = ReturnNode(SSAValue(4))
+    r = cuTile.analyze_bounds(sci)
+    @test cuTile.bounds(r, SSAValue(4)) == cuTile.TOP_RANGE
+    cuTile.no_wrap_pass!(sci, r)
+    @test length(entry.body[4].stmt.args) == 3
+end
+
 @testset "bounds — arithmetic clamps to the result element width" begin
     mk_add(T) = begin
         entry = Block()
