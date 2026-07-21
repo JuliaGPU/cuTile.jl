@@ -167,6 +167,7 @@ end
 
 function pointer_type!(table::TypeTable, pointee::TypeId)
     buf = UInt8[CompositeType.Pointer]
+    table.version >= v"13.4" && encode_varint!(buf, 0) # no PtrAttr
     encode_varint!(buf, pointee.id)
     _get_or_create!(table, buf)
 end
@@ -175,6 +176,7 @@ function tensor_view_type!(table::TypeTable, dtype::TypeId,
                            shape::TileShape,
                            strides::AbstractVector{<:Integer})
     buf = UInt8[CompositeType.TensorView]
+    table.version >= v"13.4" && encode_varint!(buf, 0) # no PtrAttr
     encode_varint!(buf, dtype.id)
     encode_int_list!(buf, collect(shape), 8)
     encode_int_list!(buf, strides, 8)

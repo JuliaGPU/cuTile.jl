@@ -184,7 +184,7 @@ const toolkit_version_cache =
 # here is one we have explicit `cb.version >= v"X.Y"` handling for in
 # `bytecode/encodings.jl`. `bytecode_version()` probes `tileiras` to find the
 # highest entry it accepts (or returns the user's preference override).
-const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2", v"13.3")
+const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2", v"13.3", v"13.4")
 
 const max_bytecode_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, VersionNumber}}(nothing))
 
