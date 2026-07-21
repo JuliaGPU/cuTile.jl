@@ -327,6 +327,51 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     CGVal(result, output_tile_type, Tile{elem_type, Tuple{shape_tuple...}}, output_shape)
 end
 
+@intrinsic insert(tile, index, value)
+tfunc(𝕃, ::typeof(Intrinsics.insert), @nospecialize(tile), @nospecialize args...) =
+    CC.widenconst(tile)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.insert), args)
+    destination = @something emit_value!(ctx, args[1]) throw(IRError("insert: cannot resolve destination"))
+    value = @something emit_value!(ctx, args[3]) throw(IRError("insert: cannot resolve value"))
+
+    destination_type = CC.widenconst(destination.jltype)
+    value_type = CC.widenconst(value.jltype)
+    T = eltype(destination_type)
+    eltype(value_type) === T ||
+        throw(IRError("insert: value element type $(eltype(value_type)) does not match destination element type $T"))
+
+    destination_shape = Tuple(ColMajorShape(destination.shape).dims)
+    value_shape = Tuple(ColMajorShape(value.shape).dims)
+    if isempty(value_shape)
+        value_shape = ntuple(_ -> 1, length(destination_shape))
+        dtype = lookup_dtype!(ctx.tt, T)
+        reshaped_type = tile_type!(ctx.tt, dtype, RowMajorShape(ColMajorShape(value_shape)))
+        value = CGVal(encode_ReshapeOp!(ctx.cb, reshaped_type, value.v), reshaped_type,
+                      Tile{T, Tuple{value_shape...}}, RowMajorShape(ColMajorShape(value_shape)))
+    elseif length(value_shape) != length(destination_shape)
+        throw(IRError("insert: value rank $(length(value_shape)) does not match destination rank $(length(destination_shape))"))
+    end
+
+    index_tvs = resolve_tuple(ctx, args[2], "insert: index")
+    length(index_tvs) == length(destination_shape) ||
+        throw(IRError("insert: index rank $(length(index_tvs)) does not match destination rank $(length(destination_shape))"))
+    for (axis, (outer, inner, index_tv)) in enumerate(zip(destination_shape, value_shape, index_tvs))
+        outer % inner == 0 ||
+            throw(IRError("insert: destination shape $destination_shape is not divisible by value shape $value_shape in dimension $axis"))
+        if index_tv.constant !== nothing
+            idx = something(index_tv.constant)
+            nslices = outer ÷ inner
+            0 <= idx < nslices ||
+                throw(IRError("insert: slice index $(idx + 1) out of bounds in dimension $axis; valid indices are 1:$nslices"))
+        end
+    end
+
+    index_values = reverse(Value[index_tv.v for index_tv in index_tvs])
+    result = encode_InsertOp!(ctx.cb, destination.type_id, value.v,
+                              destination.v, index_values)
+    return CGVal(result, destination.type_id, destination.jltype, destination.shape)
+end
+
 # TODO: cuda_tile.get_global
 
 """

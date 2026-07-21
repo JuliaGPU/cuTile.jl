@@ -348,7 +348,8 @@ end
 
 
 """
-    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=nothing) -> Tile
+    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined,
+         check_bounds=true, latency=nothing, allow_tma=nothing) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -374,6 +375,7 @@ outside the array, the behavior is undefined regardless of `padding_mode`.
 - `PaddingMode.NegInf`: Return negative infinity for OOB elements
 
 # Optimization Hints
+- `check_bounds`: Set to `false` to promise the entire tile is in bounds. Requires Tile IR v13.4+.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 
@@ -388,12 +390,14 @@ tile = ct.load(arr, (bidy, bidx), (TN, TM); order=(2, 1))
 @inline function load(arr::TileArray, index, shape::NTuple{<:Any, Int};
                       order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                       padding_mode::PaddingMode.T=PaddingMode.Undetermined,
+                      check_bounds::Bool=true,
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
-    tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
+    tile = Intrinsics.load_partition_view(
+        pv, latency, allow_tma, promote(index...) .- One(), check_bounds)
     reshape(tile, shape)
 end
 
@@ -407,7 +411,8 @@ end
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
-    tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
+    tile = Intrinsics.load_partition_view(
+        pv, nothing, nothing, promote(indices...) .- One(), true)
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -443,7 +448,8 @@ end
 end
 
 """
-    store(arr::TileArray, index, tile::Tile; order=nothing, latency=nothing, allow_tma=nothing) -> Tile
+    store(arr::TileArray, index, tile::Tile; order=nothing, check_bounds=true,
+          latency=nothing, allow_tma=nothing) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
@@ -459,15 +465,18 @@ behavior is undefined.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Optimization Hints
+- `check_bounds`: Set to `false` to promise the entire tile is in bounds. Requires Tile IR v13.4+.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 """
 @inline function store(arr::TileArray{T}, index, tile::Tile{T};
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
+                       check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
-    _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...) .- One())
+    _store_reshaped(
+        arr, reshaped, order, check_bounds, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
@@ -487,18 +496,20 @@ end
 end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
-                                 order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
+                                 order, check_bounds, latency, allow_tma,
+                                 indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, size(tile), PaddingMode.Undetermined, order)
-    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices, check_bounds)
 end
 
 # Keyword argument version - dispatch to positional version
 @inline function store(arr::TileArray{T}; index, tile::Tile{T},
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
+                       check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing) where {T}
-    store(arr, index, tile; order, latency, allow_tma)
+    store(arr, index, tile; order, check_bounds, latency, allow_tma)
 end
 
 # Scalar store: arr[i, j, ...] = val
@@ -1635,7 +1646,7 @@ end
  Selection
 =============================================================================#
 
-public extract
+public extract, insert
 
 """
     extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -1661,6 +1672,20 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
     Intrinsics.extract(tile, map(i -> i - 1, index), shape)
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, map(i -> i - 1, Index), Shape)
+
+"""
+    insert(tile::Tile, index, value::Tile) -> Tile
+
+Return a copy of `tile` with the non-overlapping subtile at the 1-indexed
+slice `index` replaced by `value`. This is the inverse of [`extract`](@ref)
+and requires Tile IR v13.4 or newer.
+"""
+@inline insert(tile::Tile, index::NTuple{<:Any, Int}, value::Tile) =
+    Intrinsics.insert(tile, map(i -> Int32(i - 1), index), value)
+@inline insert(tile::Tile, ::Val{Index}, value::Tile) where {Index} =
+    Intrinsics.insert(tile, map(i -> Int32(i - 1), Index), value)
+@inline insert(tile::Tile{T}, index::NTuple{<:Any, Int}, value::Number) where {T} =
+    insert(tile, index, Tile(T(value)))
 
 #=============================================================================
  Assume

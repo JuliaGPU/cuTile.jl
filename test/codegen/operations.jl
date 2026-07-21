@@ -300,6 +300,14 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "extract" begin
+        @test_throws "requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            tile = ct.load(a, (1, 1), (4, 8))
+            value = ct.extract(tile, (1, 1), (2, 4))
+            Base.donotdelete(ct.insert(tile, (2, 2), value))
+            return
+        end
+
         # Extract slice from 2D tile
         @test @filecheck begin
             @check_label "entry"
@@ -353,6 +361,21 @@ spec4d = ct.ArraySpec{4}(16, true)
                 ct.store(b, pid, real_part)
                 return
             end
+        end
+    end
+
+    @testset "unchecked view access requires v13.4" begin
+        @test_throws "check_bounds=false requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            tile = ct.load(a, 1, (16,); check_bounds=false)
+            ct.store(a, 1, tile)
+            return
+        end
+        @test_throws "check_bounds=false requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            tile = ct.load(a, 1, (16,))
+            ct.store(a, 1, tile; check_bounds=false)
+            return
         end
     end
 

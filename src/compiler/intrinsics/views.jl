@@ -63,7 +63,7 @@ order and is reversed/zero-padded to match `pv`'s index space rank
 before emission. The token argument is appended by `token_order_pass!`
 and is not part of the user-visible signature.
 """
-@intrinsic load_partition_view(pv, latency, allow_tma, indices)
+@intrinsic load_partition_view(pv, latency, allow_tma, indices, check_bounds)
 function tfunc(𝕃, ::typeof(Intrinsics.load_partition_view), @nospecialize(pv), @nospecialize args...)
     pv_type = CC.widenconst(pv)
     pv_type <: PartitionView || return nothing
@@ -81,7 +81,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     # Extract input token from last arg (added by token_order_pass!)
     input_token = extract_token_arg!(ctx, args)
 
-    # args: (partition_view, latency, allow_tma, indices)
+    # args: (partition_view, latency, allow_tma, indices, check_bounds)
     pv_arg = emit_value!(ctx, args[1])
     pv_arg === nothing && throw(IRError("load_partition_view() requires a PartitionView argument"))
     pv_arg.v === nothing && throw(IRError("load_partition_view() requires a materialized PartitionView"))
@@ -103,6 +103,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     latency = @something get_constant(ctx, args[2]) throw(IRError("load_partition_view(): latency must be a compile-time constant"))
     allow_tma = @something get_constant(ctx, args[3]) throw(IRError("load_partition_view(): allow_tma must be a compile-time constant"))
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
+    check_bounds = @something get_constant(ctx, args[5]) throw(IRError("load_partition_view(): check_bounds must be a compile-time constant"))
 
     # Extract indices
     index_tvs = resolve_tuple(ctx, args[4], "load_partition_view indices")
@@ -124,7 +125,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
 
     tile_val, result_token = encode_LoadViewTkoOp!(
         cb, tile_type, token_type, pv_arg.v, index_vals;
-        token = input_token, optimization_hints
+        token = input_token, optimization_hints, inbounds=fill(!check_bounds, ndim)
     )
 
     # Store result token for TokenResultNode
@@ -419,7 +420,8 @@ views require at least 1-D. The token argument is appended by
                                           tile::Tile{T},
                                           latency::Union{Int, Nothing},
                                           allow_tma::Bool,
-                                          indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
+                                          indices::NTuple{M, <:Integer},
+                                          check_bounds::Bool) where {T, N, Shape, M}
 tfunc(𝕃, ::typeof(Intrinsics.store_partition_view), @nospecialize args...) = Nothing
 efunc(::typeof(Intrinsics.store_partition_view), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
@@ -463,6 +465,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
     latency = @something get_constant(ctx, args[3]) throw(IRError("store_partition_view(): latency must be a compile-time constant"))
     allow_tma = @something get_constant(ctx, args[4]) throw(IRError("store_partition_view(): allow_tma must be a compile-time constant"))
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
+    check_bounds = @something get_constant(ctx, args[6]) throw(IRError("store_partition_view(): check_bounds must be a compile-time constant"))
 
     # Extract indices
     index_tvs = resolve_tuple(ctx, args[5], "store_partition_view indices")
@@ -486,7 +489,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), 
 
     result_token = encode_StoreViewTkoOp!(
         cb, token_type, tile_val, pv_arg.v, index_vals;
-        token = input_token, optimization_hints
+        token = input_token, optimization_hints, inbounds=fill(!check_bounds, actual_ndim)
     )
 
     # Store result token for TokenResultNode
