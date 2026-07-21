@@ -35,6 +35,7 @@ end
 
 const TOP_RANGE = IntRange(nothing, nothing)
 nonneg_range() = IntRange(0, nothing)
+signed_max_value(T::DataType) = T === Bool ? 0 : Int(typemax(signed(T)))
 
 """
     BoundsAnalysis
@@ -81,22 +82,29 @@ end
 =============================================================================#
 
 function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
-                  ops, block::Block, ::Any)
+                  ops, block::Block, @nospecialize(inst))
+    # Arithmetic transfers compute the exact mathematical interval, but
+    # the hardware op wraps modulo the result's element width — clamp
+    # each result through `clamp_to_width` so a range the runtime value
+    # can escape never reaches downstream consumers.
     if func === Intrinsics.addi
         length(ops) >= 2 || return TOP_RANGE
-        return range_add(operand_value(a, r, ops[1]), operand_value(a, r, ops[2]))
+        return clamp_to_width(
+            range_add(operand_value(a, r, ops[1]), operand_value(a, r, ops[2])), inst)
     end
     if func === Intrinsics.subi
         length(ops) >= 2 || return TOP_RANGE
-        return range_sub(operand_value(a, r, ops[1]), operand_value(a, r, ops[2]))
+        return clamp_to_width(
+            range_sub(operand_value(a, r, ops[1]), operand_value(a, r, ops[2])), inst)
     end
     if func === Intrinsics.muli
         length(ops) >= 2 || return TOP_RANGE
-        return range_mul(operand_value(a, r, ops[1]), operand_value(a, r, ops[2]))
+        return clamp_to_width(
+            range_mul(operand_value(a, r, ops[1]), operand_value(a, r, ops[2])), inst)
     end
     if func === Intrinsics.negi
         length(ops) >= 1 || return TOP_RANGE
-        return range_neg(operand_value(a, r, ops[1]))
+        return clamp_to_width(range_neg(operand_value(a, r, ops[1])), inst)
     end
 
     if func === Intrinsics.constant
@@ -114,11 +122,14 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
     end
 
     # `Intrinsics.assume(x, predicate)` — refines via `Bounded` (interval
-    # intersection), passes through for any other predicate kind.
+    # intersection), passes through for any other predicate kind. The
+    # predicate is resolved through `constant_operand`: pass-constructed
+    # assumes embed it raw, user-written ones arrive as a `QuoteNode` or
+    # const-inferred SSAValue.
     if func === Intrinsics.assume
         length(ops) >= 2 || return TOP_RANGE
         x_range = operand_value(a, r, ops[1])
-        pred = ops[2]
+        pred = constant_operand(block, ops[2])
         if pred isa Bounded
             return range_intersect(x_range,
                                    IntRange(pred.lb === nothing ? nothing : Int(pred.lb),
@@ -127,13 +138,35 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
         return x_range
     end
 
-    # Casts: `bitcast`/`exti` preserve the integer value (exti is sign-
-    # or zero-extend; both widen the type without changing the
-    # mathematical value). `trunci` clamps to the destination width's
+    # Casts: `bitcast` preserves the integer value. `exti` preserves it
+    # for sign-extension; zero-extension reinterprets the source bits as
+    # unsigned, so it is value-preserving only when the source provably
+    # can't be negative. `trunci` clamps to the destination width's
     # signed range — conservatively bail to top when truncating.
-    if func === Intrinsics.bitcast || func === Intrinsics.exti
+    if func === Intrinsics.bitcast
         length(ops) >= 1 || return TOP_RANGE
         return operand_value(a, r, ops[1])
+    end
+    if func === Intrinsics.exti
+        length(ops) >= 3 || return TOP_RANGE
+        v = operand_value(a, r, ops[1])
+        s = constant_operand(block, ops[3])
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (v isa IntRange && src_T !== nothing && dst_T !== nothing) || return TOP_RANGE
+        nonnegative = v.lo !== nothing && v.lo >= 0
+        if s === Signedness.Signed
+            source_ok = src_T <: Signed ||
+                        (v.hi !== nothing && v.hi <= signed_max_value(src_T))
+            target_ok = dst_T <: Signed || nonnegative
+        elseif s === Signedness.Unsigned
+            source_ok = !(src_T <: Signed) || nonnegative
+            target_ok = !(dst_T <: Signed) ||
+                        (v.hi !== nothing && v.hi <= signed_max_value(dst_T))
+        else
+            return TOP_RANGE
+        end
+        return source_ok && target_ok ? v : TOP_RANGE
     end
     if func === Intrinsics.trunci
         return TOP_RANGE
@@ -152,13 +185,10 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
 end
 
 # Override the framework's default ForOp transfer to seed the IV with
-# its static bounds. ForOp iterates `iv ∈ [lower, upper)` with stride
-# `step`; when `lower`/`upper`/`step` are literal-resolvable, the IV
-# range is exactly `[lower, last_iv]` where `last_iv = upper - step`
-# (assuming `step > 0`). Without literal bounds, the IV defaults to
-# top (the framework's default).
+# its static bounds (see `compute_iv_range`). Back-edges are collected
+# via `reachable_terminators`, mirroring the framework's ForOp handler.
 function transfer_cf!(analysis::BoundsAnalysis, result::DataflowResult,
-                      op::ForOp, ::SSAValue, ::Block, tracker::ChangeTracker)
+                      op::ForOp, ssa::SSAValue, ::Block, tracker::ChangeTracker)
     iv = compute_iv_range(analysis, result, op)
     record!(analysis, result, op.iv_arg, iv, tracker)
 
@@ -166,25 +196,34 @@ function transfer_cf!(analysis::BoundsAnalysis, result::DataflowResult,
         record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
     end
     walk!(analysis, result, op.body, tracker)
-    term = op.body.terminator
-    if term isa ContinueOp
-        for (arg, v) in zip(op.body.args, term.values)
+    for t in reachable_terminators(op.body)
+        t isa ContinueOp || continue
+        for (arg, v) in zip(op.body.args, t.values)
             record!(analysis, result, arg, operand_value(analysis, result, v), tracker)
         end
     end
+    record!(analysis, result, ssa, top(analysis), tracker)
 end
 
+# ForOp iterates `iv ∈ [lower, upper)` with stride `step > 0`, so
+# `upper.hi - 1` is always a sound upper bound on the IV. The sharper
+# `upper - step` (the last IV taken) requires the trip length to divide
+# the step — slt/sle-promoted while loops with `step > 1` overshoot it
+# otherwise (0:4:10 visits 8, not 10 - 4 = 6) — so it is used only when
+# `lower`, `upper`, and `step` are exact and the divisibility holds.
 function compute_iv_range(a::BoundsAnalysis, r::DataflowResult, op::ForOp)
     lower = operand_value(a, r, op.lower)
     upper = operand_value(a, r, op.upper)
     step  = operand_value(a, r, op.step)
     iv_lo = (lower === nothing) ? nothing : lower.lo
-    # Last IV is `upper - step` (loop iterates while iv < upper). Need
-    # both an upper bound on `upper` and a lower bound on `step` to
-    # compute it.
-    iv_hi = (upper === nothing || step === nothing ||
-             upper.hi === nothing || step.lo === nothing || step.lo < 1) ?
-            nothing : upper.hi - step.lo
+    iv_hi = (upper === nothing || upper.hi === nothing) ? nothing :
+            sub_or_nothing(upper.hi, 1)
+    if iv_hi !== nothing &&
+       step !== nothing && step.lo !== nothing && step.lo == step.hi && step.lo > 1 &&
+       lower !== nothing && lower.lo !== nothing && lower.lo == lower.hi &&
+       upper.lo == upper.hi && mod(upper.hi - lower.lo, step.lo) == 0
+        iv_hi = sub_or_nothing(upper.hi, step.lo)
+    end
     return IntRange(iv_lo, iv_hi)
 end
 
@@ -198,27 +237,20 @@ end
 
 @inline function add_or_nothing(a::Union{Int,Nothing}, b::Union{Int,Nothing})
     (a === nothing || b === nothing) && return nothing
-    r = a + b
-    # Detect overflow (signed): result has different sign from inputs.
-    (a > 0 && b > 0 && r < 0) && return nothing
-    (a < 0 && b < 0 && r > 0) && return nothing
-    return r
+    r, overflow = Base.add_with_overflow(a, b)
+    return overflow ? nothing : r
 end
 
 @inline function sub_or_nothing(a::Union{Int,Nothing}, b::Union{Int,Nothing})
     (a === nothing || b === nothing) && return nothing
-    r = a - b
-    (a >= 0 && b < 0 && r < 0) && return nothing
-    (a < 0 && b > 0 && r > 0) && return nothing
-    return r
+    r, overflow = Base.sub_with_overflow(a, b)
+    return overflow ? nothing : r
 end
 
 @inline function mul_or_nothing(a::Union{Int,Nothing}, b::Union{Int,Nothing})
     (a === nothing || b === nothing) && return nothing
-    a == 0 && return 0
-    b == 0 && return 0
-    abs(a) > typemax(Int) ÷ abs(b) && return nothing
-    return a * b
+    r, overflow = Base.mul_with_overflow(a, b)
+    return overflow ? nothing : r
 end
 
 range_add(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange}) = begin
@@ -233,9 +265,7 @@ end
 
 range_neg(a::Union{Nothing,IntRange}) = begin
     a === nothing && return nothing
-    lo = a.hi === nothing ? nothing : -a.hi
-    hi = a.lo === nothing ? nothing : -a.lo
-    IntRange(lo, hi)
+    IntRange(sub_or_nothing(0, a.hi), sub_or_nothing(0, a.lo))
 end
 
 # General multiplication — pick min/max over all four corner products.
@@ -250,6 +280,18 @@ function range_mul(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange})
     # on all four corners, and the open-endpoint logic gets fiddly.
     # Worth elaborating only if a workload demands it.
     return TOP_RANGE
+end
+
+# Arithmetic above is over ℤ. An open, inverted, or out-of-width interval
+# may wrap at runtime, so it degrades to top.
+function clamp_to_width(rng::Union{Nothing, IntRange}, @nospecialize(inst))
+    rng === nothing && return rng               # ⊥ stays ⊥
+    T = inst isa Instruction ? bitinteger_eltype(inst[:type]) : nothing
+    T === nothing && return rng
+    sizeof(T) <= 8 || return TOP_RANGE
+    (rng.lo === nothing || rng.hi === nothing) && return TOP_RANGE
+    lo, hi = Int128(rng.lo), Int128(rng.hi)
+    return Int128(typemin(T)) <= lo <= hi <= Int128(typemax(T)) ? rng : TOP_RANGE
 end
 
 function range_intersect(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange})

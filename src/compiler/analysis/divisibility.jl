@@ -131,13 +131,14 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
     end
 
     # `Intrinsics.assume(x, predicate)` — refines when the predicate is
-    # `DivBy`, otherwise passes through. The predicate is an embedded
-    # `AssumePredicate` value (constructed at pass time), so it lives in
-    # the operand list directly rather than being wrapped in a QuoteNode.
+    # `DivBy`, otherwise passes through. The predicate is resolved
+    # through `constant_operand`: pass-constructed assumes embed the
+    # `AssumePredicate` value directly in the operand list, user-written
+    # ones arrive as a `QuoteNode` or const-inferred SSAValue.
     if func === Intrinsics.assume
         length(ops) >= 2 || return 1
         x_div = operand_value(a, r, ops[1])
-        pred = ops[2]
+        pred = constant_operand(block, ops[2])
         if pred isa DivBy
             d = pred.divisor
             return d > 0 ? lcm(max(x_div, 1), d) : x_div
@@ -151,12 +152,28 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
         return operand_value(a, r, ops[1])
     end
 
-    # Integer casts: `bitcast`/`exti` preserve the value (and so the
-    # divisor); `trunci` reduces to mod 2^bitwidth (matches Python's
-    # `TileAsType` rule on integer→integer).
-    if func === Intrinsics.bitcast || func === Intrinsics.exti
+    # Integer casts: `bitcast` preserves the value (and so the divisor);
+    # `trunci` reduces to mod 2^bitwidth (matches Python's `TileAsType`
+    # rule on integer→integer).
+    if func === Intrinsics.bitcast
         length(ops) >= 1 || return 1
         return operand_value(a, r, ops[1])
+    end
+    # Reinterpreting the source sign changes the value by 2^src_bits, so
+    # only the power-of-two part of the divisor survives.
+    if func === Intrinsics.exti
+        length(ops) >= 3 || return 1
+        x_div = operand_value(a, r, ops[1])
+        s = constant_operand(block, ops[3])
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (src_T === nothing || dst_T === nothing) && return 1
+        src_s = src_T <: Signed ? Signedness.Signed : Signedness.Unsigned
+        dst_s = dst_T <: Signed ? Signedness.Signed : Signedness.Unsigned
+        s === src_s && s === dst_s && return x_div
+        x_div == 0 && return 0
+        width = min(bitinteger_width(src_T), bitinteger_width(dst_T))
+        return 1 << min(trailing_zeros(x_div), width)
     end
     if func === Intrinsics.trunci
         length(ops) >= 2 || return 1
