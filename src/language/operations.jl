@@ -1112,10 +1112,8 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
 end
 
 for (f, op, init_expr) in [
-    (:sum,     :(+),   :(zero(T))),
-    (:prod,    :(*),   :(one(T))),
-    (:maximum, :(max), :(typemin(T))),
-    (:minimum, :(min), :(typemax(T))),
+    (:sum,  :(+), :(zero(T))),
+    (:prod, :(*), :(one(T))),
 ]
     @eval @inline function Base.$f(tile::Tile{T,S}; dims) where {T<:Integer, S}
         reduce($op, tile; dims, init=$init_expr)
@@ -1125,9 +1123,37 @@ for (f, op, init_expr) in [
     end
 end
 
+@inline _max_ignore_nan(x, y) = Intrinsics.maxf(x, y, false)
+@inline _max_propagate_nan(x, y) = Intrinsics.maxf(x, y, true)
+@inline _min_ignore_nan(x, y) = Intrinsics.minf(x, y, false)
+@inline _min_propagate_nan(x, y) = Intrinsics.minf(x, y, true)
+
+for (f, dim_helper, all_helper, ignore_op, propagate_op, integer_op, init_expr) in [
+    (:maximum, :_maximum_dim, :_maximum_all,
+     :_max_ignore_nan, :_max_propagate_nan, :max, :(typemin(T))),
+    (:minimum, :_minimum_dim, :_minimum_all,
+     :_min_ignore_nan, :_min_propagate_nan, :min, :(typemax(T))),
+]
+    @eval @inline $dim_helper(tile::Tile{T}, dims::Integer, ::Val{P}) where {T<:AbstractFloat, P} =
+        reduce(P ? $propagate_op : $ignore_op, tile; dims, init=$init_expr)
+    @eval @inline $dim_helper(tile::Tile{T}, dims::Integer, ::Val) where {T<:Integer} =
+        reduce($integer_op, tile; dims, init=$init_expr)
+
+    @eval @inline $all_helper(tile::Tile{T,Tuple{}}, ::Val) where {T<:Number} =
+        Intrinsics.to_scalar(tile)
+    @eval @inline $all_helper(tile::Tile{T,S}, propagate::Val) where {T<:Number, S<:Tuple{Any,Vararg}} =
+        $all_helper(dropdims($dim_helper(tile, 1, propagate); dims=1), propagate)
+
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims=nothing,
+                                   propagate_nan::Bool=false) where {T<:Number, S}
+        propagate = propagate_nan ? Val(true) : Val(false)
+        dims === nothing ? $all_helper(tile, propagate) : $dim_helper(tile, dims, propagate)
+    end
+end
+
 # sum/prod/max/min without dims — reduce all dimensions, return scalar T
 # Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
-for f in (:sum, :prod, :maximum, :minimum)
+for f in (:sum, :prod)
     # Multiple definitions for specificity reasons
     for T in (:Integer, :AbstractFloat)
         @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:$T} =
@@ -1198,21 +1224,29 @@ Ties are broken by smallest index.
 indices = argmax(tile; dims=2)  # Column indices of max per row
 ```
 """
-@inline function Base.argmax(tile::Tile{T}; dims::Integer) where {T<:Number}
+struct ArgMaxReducer{T, PropagateNan} end
+@inline function (::ArgMaxReducer{T, PropagateNan})(accs, elems) where {T, PropagateNan}
+    val_acc, idx_acc = accs
+    val_elem, idx_elem = elems
+    strict = val_acc > val_elem
+    eq = val_acc == val_elem
+    if T <: AbstractFloat
+        acc_nan = isnan(val_acc)
+        elem_nan = isnan(val_elem)
+        strict |= PropagateNan ? (acc_nan & !elem_nan) : (!acc_nan & elem_nan)
+        eq |= acc_nan & elem_nan
+    end
+    cond = strict | (eq & (idx_acc < idx_elem))
+    (ifelse(cond, val_acc, val_elem), ifelse(cond, idx_acc, idx_elem))
+end
+
+@inline function Base.argmax(tile::Tile{T}; dims::Integer, propagate_nan::Bool=false) where {T<:Number}
     n = size(tile, dims)
     indices = reshape(Intrinsics.iota((n,), Int32),
                       ntuple(i -> i == dims ? n : 1, ndims(tile)))
     indices = broadcast_to(indices, size(tile))
 
-    function reducer(accs, elems)
-        val_acc, idx_acc = accs
-        val_elem, idx_elem = elems
-        strict = val_acc > val_elem
-        eq = val_acc == val_elem
-        cond = strict | (eq & (idx_acc < idx_elem))
-        (ifelse(cond, val_acc, val_elem),
-         ifelse(cond, idx_acc, idx_elem))
-    end
+    reducer = propagate_nan ? ArgMaxReducer{T, true}() : ArgMaxReducer{T, false}()
     _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemin(T), Int32(0)))
     idx .+ one(Int32)
 end
@@ -1228,21 +1262,29 @@ Ties are broken by smallest index.
 indices = argmin(tile; dims=2)  # Column indices of min per row
 ```
 """
-@inline function Base.argmin(tile::Tile{T}; dims::Integer) where {T<:Number}
+struct ArgMinReducer{T, PropagateNan} end
+@inline function (::ArgMinReducer{T, PropagateNan})(accs, elems) where {T, PropagateNan}
+    val_acc, idx_acc = accs
+    val_elem, idx_elem = elems
+    strict = val_elem > val_acc
+    eq = val_acc == val_elem
+    if T <: AbstractFloat
+        acc_nan = isnan(val_acc)
+        elem_nan = isnan(val_elem)
+        strict |= PropagateNan ? (acc_nan & !elem_nan) : (!acc_nan & elem_nan)
+        eq |= acc_nan & elem_nan
+    end
+    cond = strict | (eq & (idx_acc < idx_elem))
+    (ifelse(cond, val_acc, val_elem), ifelse(cond, idx_acc, idx_elem))
+end
+
+@inline function Base.argmin(tile::Tile{T}; dims::Integer, propagate_nan::Bool=false) where {T<:Number}
     n = size(tile, dims)
     indices = reshape(Intrinsics.iota((n,), Int32),
                       ntuple(i -> i == dims ? n : 1, ndims(tile)))
     indices = broadcast_to(indices, size(tile))
 
-    function reducer(accs, elems)
-        val_acc, idx_acc = accs
-        val_elem, idx_elem = elems
-        strict = val_elem > val_acc
-        eq = val_acc == val_elem
-        cond = strict | (eq & (idx_acc < idx_elem))
-        (ifelse(cond, val_acc, val_elem),
-         ifelse(cond, idx_acc, idx_elem))
-    end
+    reducer = propagate_nan ? ArgMinReducer{T, true}() : ArgMinReducer{T, false}()
     _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemax(T), Int32(0)))
     idx .+ one(Int32)
 end
