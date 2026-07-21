@@ -308,6 +308,43 @@ end
 end
 
 
+@testset "constant analysis evaluates integer conversions" begin
+    function converted_constant(scalar, func, T, operands...)
+        S = typeof(scalar)
+        entry = Block()
+        push!(entry, 1, Expr(:call, cuTile.Intrinsics.constant,
+                             QuoteNode(()), scalar, S), S)
+        push!(entry, 2, Expr(:call, func, SSAValue(1), T, operands...), T)
+        entry.terminator = ReturnNode(SSAValue(2))
+        sci = StructuredIRCode(Any[Any], Any[], entry, 2)
+        constants = cuTile.analyze_constants(sci)
+        cuTile.const_value(constants, SSAValue(2))
+    end
+
+    signed = QuoteNode(cuTile.Signedness.Signed)
+    unsigned = QuoteNode(cuTile.Signedness.Unsigned)
+
+    @test converted_constant(Int8(-6), cuTile.Intrinsics.exti, Int32, signed) ===
+          Int32(-6)
+    @test converted_constant(Int8(-6), cuTile.Intrinsics.exti, Int32, unsigned) ===
+          Int32(250)
+    @test converted_constant(UInt8(250), cuTile.Intrinsics.exti, Int32, signed) ===
+          Int32(-6)
+    @test converted_constant(Int8(-6), cuTile.Intrinsics.exti, UInt32, signed) ===
+          UInt32(0xffff_fffa)
+    @test converted_constant(Int64(-6), cuTile.Intrinsics.exti, UInt128, unsigned) ===
+          UInt128(typemax(UInt64) - 5)
+
+    @test converted_constant(Int64(1), cuTile.Intrinsics.trunci, Int32) === Int32(1)
+    @test converted_constant(Int64(0xffff_ffff), cuTile.Intrinsics.trunci, Int32) ===
+          Int32(-1)
+    @test converted_constant(Int64(-1), cuTile.Intrinsics.trunci, UInt32) ===
+          typemax(UInt32)
+    @test converted_constant(typemax(UInt64), cuTile.Intrinsics.trunci, Int32) ===
+          Int32(-1)
+end
+
+
 # ── convergence cap ──────────────────────────────────────────────────────
 
 # A deliberately non-monotone analysis: its `tmerge` never stabilises, so the
