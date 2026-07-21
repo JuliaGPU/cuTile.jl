@@ -2561,6 +2561,23 @@ end
         end
     end
 
+    @testset "prints are globally ordered" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Float32,1,spec1d}}) do a, b
+                ta = ct.load(a, 1, (16,))
+                tb = ct.load(b, 1, (16,))
+                @check "[[FIRST:%[^ ]+]] = print_tko"
+                print(ta)
+                @check "[[JOIN:%[^ ]+]] = join_tokens [[FIRST]]"
+                @check "print_tko{{.*}}token=[[JOIN]]"
+                print(tb)
+                return
+            end
+        end
+    end
+
     # On v13.1 we forward print_tko's input token; a second make_token here
     # would mean we synthesised a disconnected one (the bug we're guarding).
     @testset "v13.1 reuses input token for print_tko" begin
