@@ -145,6 +145,10 @@ end
 function unsafe_permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm}
     Perm isa NTuple{N, Int} ||
         throw(ArgumentError("permutedims: Perm must be an NTuple{$N, Int}, got $Perm"))
+    all(axis -> 1 <= axis <= N, Perm) ||
+        throw(ArgumentError("permutedims: axis order contains an out-of-range axis: $Perm"))
+    allunique(Perm) ||
+        throw(ArgumentError("permutedims: axis order must be a permutation; an axis is repeated: $Perm"))
     new_sizes = ntuple(i -> arr.sizes[Perm[i]], Val(N))
     new_strides = ntuple(i -> arr.strides[Perm[i]], Val(N))
     permuted_arraytype(typeof(arr), Val(Perm))(arr.ptr, new_sizes, new_strides)

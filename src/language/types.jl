@@ -215,6 +215,17 @@ function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTupl
                  layout_may_alias_internally(sizes, strides))
 end
 
+function validate_axis_order(order, rank::Integer, first_axis::Integer, context::AbstractString)
+    order isa Tuple || throw(ArgumentError("$context: axis order must be a tuple, got $(typeof(order))"))
+    length(order) == rank ||
+        throw(ArgumentError("$context: axis order length $(length(order)) does not match rank $rank"))
+    all(axis -> axis isa Integer && first_axis <= axis < first_axis + rank, order) ||
+        throw(ArgumentError("$context: axis order contains an out-of-range axis: $order"))
+    allunique(order) ||
+        throw(ArgumentError("$context: axis order must be a permutation; an axis is repeated: $order"))
+    return nothing
+end
+
 
 """
     TileArray{T, N, S}

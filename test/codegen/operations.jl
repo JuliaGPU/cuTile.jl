@@ -212,6 +212,25 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "permutedims" begin
+        @test_throws "axis order must be a permutation" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Base.donotdelete(permutedims(a, Val((1, 1))))
+            return
+        end
+
+        @test_throws "axis order must be a permutation" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Base.donotdelete(ct.load(a, (1, 1), (4, 8); order=(1, 1)))
+            return
+        end
+
+        @test_throws "axis order must be a permutation" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            tile = ct.load(a, (1, 1), (4, 8))
+            Base.donotdelete(permutedims(tile, (1, 1)))
+            return
+        end
+
         # 2D permutedims with explicit perm (same as transpose)
         @test @filecheck begin
             @check_label "entry"

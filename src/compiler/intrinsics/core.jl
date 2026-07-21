@@ -682,6 +682,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
 
     julia_perm = collect(Int, perm_tuple)
     n = length(julia_perm)
+    validate_axis_order(perm_tuple, length(input_shape), 0, "permute")
     # Transform: q[i'] = n-1 - p[n-1-i'] (maps Julia perm to Tile IR perm)
     tileir_perm = [n - 1 - julia_perm[n - i] for i in 0:n-1]
 

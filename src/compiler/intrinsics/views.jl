@@ -194,6 +194,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     if order_val === nothing
         dim_map = collect(0:ndim-1)
     else
+        validate_axis_order(order_val, ndim, 1, "load/store")
         # Convert Julia dim_map to Tile IR: reverse and remap indices
         julia_dim_map = collect(Int, map(p -> p - 1, order_val))
         dim_map = [ndim - 1 - julia_dim_map[ndim - i] for i in 0:ndim-1]
