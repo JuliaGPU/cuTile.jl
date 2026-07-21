@@ -223,27 +223,20 @@ end
 
 @inline function add_or_nothing(a::Union{Int,Nothing}, b::Union{Int,Nothing})
     (a === nothing || b === nothing) && return nothing
-    r = a + b
-    # Detect overflow (signed): result has different sign from inputs.
-    (a > 0 && b > 0 && r < 0) && return nothing
-    (a < 0 && b < 0 && r > 0) && return nothing
-    return r
+    r, overflow = Base.add_with_overflow(a, b)
+    return overflow ? nothing : r
 end
 
 @inline function sub_or_nothing(a::Union{Int,Nothing}, b::Union{Int,Nothing})
     (a === nothing || b === nothing) && return nothing
-    r = a - b
-    (a >= 0 && b < 0 && r < 0) && return nothing
-    (a < 0 && b > 0 && r > 0) && return nothing
-    return r
+    r, overflow = Base.sub_with_overflow(a, b)
+    return overflow ? nothing : r
 end
 
 @inline function mul_or_nothing(a::Union{Int,Nothing}, b::Union{Int,Nothing})
     (a === nothing || b === nothing) && return nothing
-    a == 0 && return 0
-    b == 0 && return 0
-    abs(a) > typemax(Int) ÷ abs(b) && return nothing
-    return a * b
+    r, overflow = Base.mul_with_overflow(a, b)
+    return overflow ? nothing : r
 end
 
 range_add(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange}) = begin
@@ -258,9 +251,7 @@ end
 
 range_neg(a::Union{Nothing,IntRange}) = begin
     a === nothing && return nothing
-    lo = a.hi === nothing ? nothing : -a.hi
-    hi = a.lo === nothing ? nothing : -a.lo
-    IntRange(lo, hi)
+    IntRange(sub_or_nothing(0, a.hi), sub_or_nothing(0, a.lo))
 end
 
 # General multiplication — pick min/max over all four corner products.
@@ -291,8 +282,8 @@ function clamp_to_width(rng::Union{Nothing, IntRange}, @nospecialize(inst))
     T === nothing && return rng
     sizeof(T) <= 8 || return TOP_RANGE
     (rng.lo === nothing || rng.hi === nothing) && return TOP_RANGE
-    tmin = T <: Unsigned ? Int128(0) : Int128(typemin(T))
-    return (tmin <= rng.lo && rng.hi <= Int128(typemax(T))) ? rng : TOP_RANGE
+    lo, hi = Int128(rng.lo), Int128(rng.hi)
+    return Int128(typemin(T)) <= lo <= hi <= Int128(typemax(T)) ? rng : TOP_RANGE
 end
 
 # Integer element type of an instruction's inferred result type (peeling

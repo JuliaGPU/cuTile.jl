@@ -87,6 +87,8 @@ end
     @test cuTile.range_neg(cuTile.IntRange(2, 8)) == cuTile.IntRange(-8, -2)
     @test cuTile.range_neg(cuTile.IntRange(2, nothing)) ==
           cuTile.IntRange(nothing, -2)
+    @test cuTile.range_neg(cuTile.IntRange(typemin(Int), -1)) ==
+          cuTile.IntRange(1, nothing)
 
     # Non-negative multiplication: [a, b] * [c, d] = [a*c, b*d].
     @test cuTile.range_mul(cuTile.IntRange(2, 4), cuTile.IntRange(3, 5)) ==
@@ -181,6 +183,25 @@ end
     r = mk_add(Int64)
     @test cuTile.bounds(r, SSAValue(2)) ==
           cuTile.IntRange(2 * Int(typemax(Int32)), 2 * Int(typemax(Int32)))
+end
+
+@testset "bounds — host Int overflow widens to top" begin
+    entry = Block()
+    push!(entry, 1, Expr(:call, cuTile.Intrinsics.assume, Argument(2),
+                         QuoteNode(cuTile.Bounded(typemin(Int), -1))), Int)
+    push!(entry, 2, Expr(:call, cuTile.Intrinsics.addi,
+                         SSAValue(1), SSAValue(1)), Int)
+    push!(entry, 3, Expr(:call, cuTile.Intrinsics.addi,
+                         SSAValue(2), 2), Int)
+    entry.terminator = ReturnNode(SSAValue(3))
+    sci = StructuredIRCode(Any[Any, Int], Any[], entry, 3)
+
+    r = cuTile.analyze_bounds(sci)
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
+    @test cuTile.bounds(r, SSAValue(3)) == cuTile.TOP_RANGE
+
+    cuTile.no_wrap_pass!(sci, r)
+    @test length(entry.body[3].stmt.args) == 3
 end
 
 @testset "bounds — assume(Bounded) refines through a QuoteNode predicate" begin
