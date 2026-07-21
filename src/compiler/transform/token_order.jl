@@ -300,13 +300,17 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo, argtypes::Vector{
         return val isa Integer
     end
 
-    is_nonzero_constant(val) =
-        (val isa Integer && !iszero(val)) ||
-        (val isa QuoteNode && val.value isa Integer && !iszero(val.value))
+    # `muli` returns the low half of the product, so its arithmetic is modulo
+    # 2^n. Multiplication is injective in that ring exactly when the constant
+    # is odd; merely being nonzero is insufficient (e.g. 2x collides for
+    # inputs separated by 2^(n-1)).
+    is_injective_multiplier(val) =
+        (val isa Integer && isodd(val)) ||
+        (val isa QuoteNode && val.value isa Integer && isodd(val.value))
 
     # Check if a value is a provably injective affine function of the loop's
     # induction variable: the IV itself, `x ± invariant`, `invariant - x`,
-    # `x * c` with `c` a nonzero constant, or an integer extension of such a
+    # `x * c` with `c` an odd constant, or an integer extension of such a
     # value (Julia's 1-based `store` always lowers the index through
     # `iv - 1`, so the bare-identity check Python uses would never fire
     # here). Non-injective derivations (`iv ÷ 2`, `iv % k`, `min(iv, c)`, …)
@@ -329,8 +333,8 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo, argtypes::Vector{
         elseif func === Intrinsics.muli
             length(args) >= 2 || return false
             a, b = args[1], args[2]
-            return (is_injective_iv_affine(a, iv, depth + 1) && is_nonzero_constant(b)) ||
-                   (is_nonzero_constant(a) && is_injective_iv_affine(b, iv, depth + 1))
+            return (is_injective_iv_affine(a, iv, depth + 1) && is_injective_multiplier(b)) ||
+                   (is_injective_multiplier(a) && is_injective_iv_affine(b, iv, depth + 1))
         elseif func === Intrinsics.exti
             length(args) >= 1 || return false
             return is_injective_iv_affine(args[1], iv, depth + 1)

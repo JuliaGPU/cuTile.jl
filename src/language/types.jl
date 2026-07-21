@@ -129,21 +129,39 @@ end
 
 Whether two distinct in-bounds index tuples may map to the same linear
 offset. Returns `false` only when the strided layout is provably injective:
-sorting the dimensions with extent > 1 by |stride|, each stride must exceed
-the total span of all smaller-strided dimensions (the standard
-non-overlapping strided layout criterion, which C-/Fortran-contiguous and
-sliced layouts all satisfy). Zero strides on a dimension with extent > 1,
-and layouts that fail the (sufficient, not necessary) criterion, report
-`true` — conservative for consumers that require non-overlap.
+each dimension's absolute stride must exceed the total span of all
+smaller-strided dimensions (the standard non-overlapping strided layout
+criterion, which C-/Fortran-contiguous and sliced layouts all satisfy). Zero
+or repeated strides on dimensions with extent > 1, and layouts that fail the
+(sufficient, not necessary) criterion, report `true` — conservative for
+consumers that require non-overlap.
 """
 function layout_may_alias_internally(sizes::NTuple{N, <:Integer},
                                      strides::NTuple{N, <:Integer}) where N
-    dims = [(abs(Int(strides[i])), Int(sizes[i])) for i in 1:N if sizes[i] > 1]
-    sort!(dims)
-    span = 0  # highest offset reachable from the dimensions checked so far
-    for (stride, size) in dims
-        stride > span || return true  # includes stride == 0
-        span += (size - 1) * stride
+    # Express the sorted-stride criterion pairwise to avoid allocating and
+    # sorting a temporary vector on every kernel launch. The division form
+    # also avoids overflowing while computing a span that already reaches
+    # the current stride.
+    for i in 1:N
+        size_i = Int(sizes[i])
+        size_i > 1 || continue
+        stride_i = abs(Int(strides[i]))
+        iszero(stride_i) && return true
+
+        span = 0
+        for j in 1:N
+            j == i && continue
+            size_j = Int(sizes[j])
+            size_j > 1 || continue
+            stride_j = abs(Int(strides[j]))
+            iszero(stride_j) && return true
+            stride_j == stride_i && return true
+            stride_j < stride_i || continue
+
+            remaining = stride_i - 1 - span
+            size_j - 1 > remaining ÷ stride_j && return true
+            span += (size_j - 1) * stride_j
+        end
     end
     return false
 end

@@ -33,12 +33,31 @@ AT_aliasing = ct.TileArray{Float32, 1, spec1d_aliasing}
 end
 
 @testset "token_order — injective affine IV store is loop-parallel" begin
-    # `2i` lowers through `muli(iv, 2)` then `subi(_, 1)`: still injective.
+    # Odd multiplication is injective even when fixed-width arithmetic wraps.
     @test @filecheck begin
         @check_label "entry"
         @check "[[TOK:%.+]] = make_token"
         @check_not "iter_values"
         @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{AT, AT, Int32}) do a, b, n
+            for i in 1:n
+                t = ct.load(a, i, (16,))
+                ct.store(b, 3i, t + t)
+            end
+            return
+        end
+    end
+end
+
+@testset "token_order — even IV multiplier keeps token carry" begin
+    # `muli` returns the low half of the product, so `2i` is not injective
+    # over the full fixed-width integer domain.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_token"
+        @check "iter_values"
+        @check "[[JOIN:%.+]] = join_tokens"
+        @check "store_view_tko{{.*}}token = [[JOIN]] :"
         code_tiled(Tuple{AT, AT, Int32}) do a, b, n
             for i in 1:n
                 t = ct.load(a, i, (16,))
