@@ -138,14 +138,28 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
         return x_range
     end
 
-    # Casts: `bitcast` preserves the integer value. `exti` preserves it
-    # for sign-extension; zero-extension reinterprets the source bits as
-    # unsigned, so it is value-preserving only when the source provably
-    # can't be negative. `trunci` clamps to the destination width's
-    # signed range — conservatively bail to top when truncating.
+    # Casts: `bitcast` preserves bits, but only preserves the mathematical
+    # integer value when a signedness change cannot reinterpret the sign bit.
+    # `exti` preserves the value for sign-extension; zero-extension
+    # reinterprets the source bits as unsigned, so it is value-preserving only
+    # when the source provably can't be negative. `trunci` clamps to the
+    # destination width's signed range — conservatively bail to top when
+    # truncating.
     if func === Intrinsics.bitcast
-        length(ops) >= 1 || return TOP_RANGE
-        return operand_value(a, r, ops[1])
+        length(ops) >= 2 || return TOP_RANGE
+        v = operand_value(a, r, ops[1])
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (v isa IntRange && src_T !== nothing && dst_T !== nothing &&
+         bitinteger_width(src_T) == bitinteger_width(dst_T)) || return TOP_RANGE
+        src_signed = src_T <: Signed
+        dst_signed = dst_T <: Signed
+        src_signed == dst_signed && return v
+        if src_signed
+            return v.lo !== nothing && v.lo >= 0 ? v : TOP_RANGE
+        else
+            return v.hi !== nothing && v.hi <= signed_max_value(dst_T) ? v : TOP_RANGE
+        end
     end
     if func === Intrinsics.exti
         length(ops) >= 3 || return TOP_RANGE

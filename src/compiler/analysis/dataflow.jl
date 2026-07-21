@@ -165,6 +165,10 @@ function constant_operand(block::Block, @nospecialize(op))
 end
 
 function bitinteger_eltype(@nospecialize(T))
+    if T isa GlobalRef
+        isdefined(T.mod, T.name) || return nothing
+        T = getfield(T.mod, T.name)
+    end
     T = CC.widenconst(T)
     T isa DataType || return nothing
     T <: Tile && (T = eltype(T))

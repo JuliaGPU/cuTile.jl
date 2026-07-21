@@ -36,6 +36,7 @@ through straight-line code and structured control flow. Recognises:
 
 - `Intrinsics.constant(shape, scalar, T)` — seeds from the scalar operand
 - `Intrinsics.broadcast(x, _)`, `Intrinsics.reshape(x, _)` — pass-through
+- `Intrinsics.exti`, `Intrinsics.trunci` — evaluates the integer conversion
 
 Everything else → `CONSTANT_TOP`.
 """
@@ -69,15 +70,36 @@ function transfer(a::ConstantAnalysis, r::DataflowResult, @nospecialize(func),
        length(ops) >= 1
         return operand_value(a, r, ops[1])
     end
-    # Type-narrowing intrinsics — preserve scalar values across width changes
-    # so a `1::Int64` field becomes a `1::Int32` after `Int32(stride)` lowers
-    # to `trunci`. Otherwise downstream `muli(idx, stride_i32)` would lose
-    # the constant on the convert. Also covers `exti` (widening) and `bitcast`
-    # (no-op on signless integers).
-    if (func === Intrinsics.trunci || func === Intrinsics.exti ||
-        func === Intrinsics.bitcast) && length(ops) >= 1
+    # Evaluate integer conversions instead of passing the source scalar
+    # through. Signedness and the destination type can both change its value.
+    if func === Intrinsics.exti
+        length(ops) >= 3 || return CONSTANT_TOP
         v = operand_value(a, r, ops[1])
-        return v isa Number ? v : CONSTANT_TOP
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        signedness = constant_operand(block, ops[3])
+        (v isa Integer && src_T !== nothing && dst_T !== nothing &&
+         bitinteger_width(src_T) <= bitinteger_width(dst_T)) || return CONSTANT_TOP
+        if signedness === Signedness.Signed
+            source_signed = true
+        elseif signedness === Signedness.Unsigned
+            source_signed = false
+        else
+            return CONSTANT_TOP
+        end
+        value = interpret_integer(v, bitinteger_width(src_T), source_signed)
+        return convert(dst_T,
+                       interpret_integer(value, bitinteger_width(dst_T), dst_T <: Signed))
+    end
+    if func === Intrinsics.trunci
+        length(ops) >= 2 || return CONSTANT_TOP
+        v = operand_value(a, r, ops[1])
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (v isa Integer && src_T !== nothing && dst_T !== nothing &&
+         bitinteger_width(src_T) >= bitinteger_width(dst_T)) || return CONSTANT_TOP
+        value = interpret_integer(v, bitinteger_width(dst_T), dst_T <: Signed)
+        return convert(dst_T, value)
     end
     # `getfield(getfield(arg::TileArray, :strides), 1)` for an array with
     # `ArraySpec` `contiguous=true` is statically `1` (Julia column-major
@@ -92,6 +114,12 @@ function transfer(a::ConstantAnalysis, r::DataflowResult, @nospecialize(func),
         v !== nothing && return v
     end
     CONSTANT_TOP
+end
+
+function interpret_integer(value::Integer, width::Int, signed::Bool)
+    modulus = big(1) << width
+    bits = mod(BigInt(value), modulus)
+    signed && bits >= modulus >> 1 ? bits - modulus : bits
 end
 
 # Project a `TileArrayFieldRef` to a scalar constant when the spec pins

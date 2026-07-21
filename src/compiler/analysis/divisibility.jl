@@ -152,12 +152,19 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
         return operand_value(a, r, ops[1])
     end
 
-    # Integer casts: `bitcast` preserves the value (and so the divisor);
-    # `trunci` reduces to mod 2^bitwidth (matches Python's `TileAsType`
-    # rule on integer→integer).
+    # Integer casts: a signedness-changing `bitcast` can change the value by
+    # 2^bitwidth, so only the power-of-two part of the divisor survives.
+    # `trunci` reduces to mod 2^bitwidth (matches Python's `TileAsType` rule on
+    # integer→integer).
     if func === Intrinsics.bitcast
-        length(ops) >= 1 || return 1
-        return operand_value(a, r, ops[1])
+        length(ops) >= 2 || return 1
+        x_div = operand_value(a, r, ops[1])
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (src_T === nothing || dst_T === nothing ||
+         bitinteger_width(src_T) != bitinteger_width(dst_T)) && return 1
+        (src_T <: Signed) == (dst_T <: Signed) && return x_div
+        return divisor_after_reinterpret(x_div, bitinteger_width(src_T))
     end
     # Reinterpreting the source sign changes the value by 2^src_bits, so
     # only the power-of-two part of the divisor survives.
@@ -171,9 +178,8 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
         src_s = src_T <: Signed ? Signedness.Signed : Signedness.Unsigned
         dst_s = dst_T <: Signed ? Signedness.Signed : Signedness.Unsigned
         s === src_s && s === dst_s && return x_div
-        x_div == 0 && return 0
         width = min(bitinteger_width(src_T), bitinteger_width(dst_T))
-        return 1 << min(trailing_zeros(x_div), width)
+        return divisor_after_reinterpret(x_div, width)
     end
     if func === Intrinsics.trunci
         length(ops) >= 2 || return 1
@@ -192,6 +198,11 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
     end
 
     return 1
+end
+
+function divisor_after_reinterpret(divisor::Int, width::Int)
+    divisor == 0 && return 0
+    return 1 << min(trailing_zeros(divisor), width)
 end
 
 # Project a `TileArrayFieldRef` to its divisor:

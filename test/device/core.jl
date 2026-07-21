@@ -2,6 +2,22 @@
 
 using CUDA
 
+@testset "bitcast constants retain their bit-pattern semantics" begin
+    function bitcast_constants(a::ct.TileArray{UInt32,1})
+        pid = ct.bid(1)
+        x = ct.load(a, pid, (16,))
+        int_bits = reinterpret(UInt32, fill(Int32(-1), (16,)))
+        float_bits = reinterpret(UInt32, fill(Float32(-1), (16,)))
+        ct.store(a, pid, (x .+ int_bits) .- float_bits)
+        return
+    end
+
+    a = CUDA.zeros(UInt32, 16)
+    @cuda backend=cuTile blocks=1 bitcast_constants(a)
+    expected = reinterpret(UInt32, Int32(-1)) - reinterpret(UInt32, Float32(-1))
+    @test Array(a) == fill(expected, 16)
+end
+
 @testset "compilation cache" begin
     function cached_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
