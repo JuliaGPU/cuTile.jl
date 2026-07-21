@@ -25,6 +25,17 @@ using CUDA
     @test Array(m) == mod.(x_cpu, Int32(-3))
 end
 
+@testset "arange start and step" begin
+    function arange_kernel(out::ct.TileArray{Int32,1})
+        ct.store(out, 1, ct.arange(16; start=3, step=-2))
+        return
+    end
+
+    out = CUDA.zeros(Int32, 16)
+    @cuda backend=cuTile arange_kernel(out)
+    @test Array(out) == Int32.(3 .- 2 .* (0:15))
+end
+
 @testset "1D vector add" begin
     function vadd_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                      c::ct.TileArray{Float32,1})

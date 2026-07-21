@@ -656,6 +656,19 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "arange start and step" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do out
+                @check "iota"
+                @check "muli"
+                @check "addi"
+                ct.store(out, 1, ct.arange(16; start=3, step=2))
+                return
+            end
+        end
+    end
+
     @testset "mmaf" begin
         @test @filecheck begin
             @check_label "entry"

@@ -725,8 +725,8 @@ end
 public arange
 
 """
-    arange(shape; dtype=Int32) -> Tile{dtype, shape}
-    arange(n; dtype=Int32) -> Tile{dtype, Tuple{n}}
+    arange(shape; dtype=Int32, start=1, step=1) -> Tile{dtype, shape}
+    arange(n; dtype=Int32, start=1, step=1) -> Tile{dtype, Tuple{n}}
 
 Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
@@ -734,11 +734,17 @@ Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 ```julia
 indices = ct.arange(16)              # Int32 [1, 2, ..., 16]
 indices = ct.arange(16; dtype=Int64) # Int64 [1, 2, ..., 16]
+odd = ct.arange(16; start=1, step=2) # Int32 [1, 3, ..., 31]
 ```
 """
-@inline arange(shape::NTuple{1, Int}; dtype::Type{T}=Int32) where {T} =
-    Intrinsics.iota(shape, T) .+ one(T)
-@inline arange(n::Int; dtype::Type{T}=Int32) where {T} = arange((n,); dtype)
+@inline function arange(shape::NTuple{1, Int}; dtype::Type{T}=Int32,
+                        start::Number=1, step::Number=1) where {T}
+    result = Intrinsics.iota(shape, T)
+    step == 1 || (result = result .* T(step))
+    start == 0 || (result = result .+ T(start))
+    return result
+end
+@inline arange(n::Int; kwargs...) = arange((n,); kwargs...)
 
 # Internal: create a tile filled with a constant value.
 # Used by Base.fill/zeros/ones overlays (see overlays.jl).
