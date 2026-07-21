@@ -35,6 +35,7 @@ end
 
 const TOP_RANGE = IntRange(nothing, nothing)
 nonneg_range() = IntRange(0, nothing)
+signed_max_value(T::DataType) = T === Bool ? 0 : Int(typemax(signed(T)))
 
 """
     BoundsAnalysis
@@ -155,13 +156,13 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
         (v isa IntRange && src_T !== nothing && dst_T !== nothing) || return TOP_RANGE
         nonnegative = v.lo !== nothing && v.lo >= 0
         if s === Signedness.Signed
-            src_max = src_T === Bool ? 0 : Int(typemax(signed(src_T)))
-            source_ok = src_T <: Signed || (v.hi !== nothing && v.hi <= src_max)
+            source_ok = src_T <: Signed ||
+                        (v.hi !== nothing && v.hi <= signed_max_value(src_T))
             target_ok = dst_T <: Signed || nonnegative
         elseif s === Signedness.Unsigned
-            dst_max = dst_T === Bool ? 0 : Int(typemax(signed(dst_T)))
             source_ok = !(src_T <: Signed) || nonnegative
-            target_ok = !(dst_T <: Signed) || (v.hi !== nothing && v.hi <= dst_max)
+            target_ok = !(dst_T <: Signed) ||
+                        (v.hi !== nothing && v.hi <= signed_max_value(dst_T))
         else
             return TOP_RANGE
         end
@@ -281,31 +282,16 @@ function range_mul(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange})
     return TOP_RANGE
 end
 
-# Clamp an arithmetic transfer's result to what the destination element
-# width can represent. The interval arithmetic above is exact over ℤ
-# (saturating to open endpoints at the lattice level), but the hardware
-# op wraps modulo the element width — once a computed range can escape
-# `[typemin(T), typemax(T)]` (any open endpoint counts), the wrapped
-# runtime value can land anywhere, so the result degrades to top rather
-# than feeding a false range to downstream consumers (`Bounded` assume
-# predicates, `nsw`/`nuw` flags).
+# Arithmetic above is over ℤ. An open, inverted, or out-of-width interval
+# may wrap at runtime, so it degrades to top.
 function clamp_to_width(rng::Union{Nothing, IntRange}, @nospecialize(inst))
     rng === nothing && return rng               # ⊥ stays ⊥
-    T = result_int_eltype(inst)
+    T = inst isa Instruction ? bitinteger_eltype(inst[:type]) : nothing
     T === nothing && return rng
     sizeof(T) <= 8 || return TOP_RANGE
     (rng.lo === nothing || rng.hi === nothing) && return TOP_RANGE
     lo, hi = Int128(rng.lo), Int128(rng.hi)
     return Int128(typemin(T)) <= lo <= hi <= Int128(typemax(T)) ? rng : TOP_RANGE
-end
-
-# Integer element type of an instruction's inferred result type (peeling
-# `Tile{T}` to `T`), or `nothing` when the result isn't a bit-integer.
-function result_int_eltype(@nospecialize(inst))
-    inst isa Instruction || return nothing
-    T = inst[:type]
-    T === nothing && return nothing
-    return bitinteger_eltype(T)
 end
 
 function range_intersect(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange})

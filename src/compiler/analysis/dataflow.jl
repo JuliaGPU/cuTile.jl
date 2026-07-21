@@ -56,7 +56,7 @@ Optional methods, with defaults:
 
 - `operand_value(a, result, op)::T` — lattice value for an operand in a
   transfer-function position. Default routes anchors to `result[anchor]`
-  and returns `bottom(a)` for anything else. Override to recognise raw
+  and returns `top(a)` for anything else. Override to recognise raw
   literal operands (e.g. an integer literal is its own constant for a
   constant analysis).
 - `init_arg(a, i, argtype)::T` — seed for kernel parameter `Argument(i)` with
@@ -141,14 +141,9 @@ Base.values(r::DataflowResult) = values(r.values)
 """
     operand_value(analysis, result, op) -> T
 
-Lattice value for an operand as used *inside a transfer function*. The
-default handles `LatticeAnchor`s (via dict lookup) and treats everything
-else (integer/float literals, QuoteNodes, GlobalRefs, …) as `top` — an
-unrecognised literal is "no information", never ⊥. Bottom is the merge
-identity, so returning it for a live operand would let the other side of
-a join keep facts this operand doesn't share. Analyses override this to
-recognise raw literals when those are meaningful lattice inputs — e.g. a
-constant analysis returns the integer itself for a raw `Int` operand.
+Lattice value for an operand inside a transfer function. Anchors read from
+the result; other operands default to top. Analyses override this to handle
+meaningful literals.
 """
 operand_value(a::ForwardAnalysis, r::DataflowResult, @nospecialize(op)) =
     op isa LatticeAnchor ? r[op] : top(a)
@@ -156,14 +151,8 @@ operand_value(a::ForwardAnalysis, r::DataflowResult, @nospecialize(op)) =
 """
     constant_operand(block::Block, op) -> value or nothing
 
-Resolve an operand to its compile-time constant value, mirroring what
-codegen's `get_constant` sees: raw embedded values are returned as-is,
-`QuoteNode`s are unwrapped, and anchors (SSAValues etc.) are chased
-through their inferred type via `singleton_type`. Returns `nothing` for
-operands with no known constant. Used by transfer rules that key on a
-constant operand — e.g. the `Intrinsics.assume` predicate, which is
-embedded directly when a pass constructs the call but arrives as a
-`QuoteNode` (or const-inferred SSAValue) from user-written kernels.
+Resolve raw, quoted, or inferred singleton constants. Returns `nothing`
+when an anchor is not constant.
 """
 function constant_operand(block::Block, @nospecialize(op))
     op isa QuoteNode && return op.value
