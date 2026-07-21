@@ -233,25 +233,38 @@ end
 
 # ── exti signedness (divisibility) ───────────────────────────────────────
 
-@testset "zero-extension reduces divisibility mod 2^srcbits" begin
-    mk_exti(s) = begin
+@testset "exti preserves sound divisibility" begin
+    mk_exti(scalar, T, s) = begin
+        S = typeof(scalar)
         entry = Block()
         push!(entry, 1, Expr(:call, cuTile.Intrinsics.constant,
-                             QuoteNode(()), -6, Int8), Int8)
+                             QuoteNode(()), scalar, S), S)
         push!(entry, 2, Expr(:call, cuTile.Intrinsics.exti,
-                             SSAValue(1), Int32, QuoteNode(s)), Int32)
+                             SSAValue(1), T, QuoteNode(s)), T)
         entry.terminator = ReturnNode(SSAValue(2))
         sci = StructuredIRCode(Any[Any], Any[], entry, 2)
         cuTile.analyze_divisibility(sci)
     end
 
     # Sign-extension preserves the value, and so the divisor.
-    r = mk_exti(cuTile.Signedness.Signed)
+    r = mk_exti(Int8(-6), Int32, cuTile.Signedness.Signed)
     @test cuTile.div_by(r, SSAValue(2)) == 6
 
     # Zero-extension of Int8(-6) yields 250 = -6 + 2^8, which is not a
     # multiple of 6; only divisors of gcd(6, 2^8) = 2 survive.
-    r = mk_exti(cuTile.Signedness.Unsigned)
+    r = mk_exti(Int8(-6), Int32, cuTile.Signedness.Unsigned)
+    @test cuTile.div_by(r, SSAValue(2)) == 2
+
+    # Sign-extension of UInt8(250) produces -6, so the same reduction applies.
+    r = mk_exti(UInt8(250), Int32, cuTile.Signedness.Signed)
+    @test cuTile.div_by(r, SSAValue(2)) == 2
+
+    # A differently signed destination also reinterprets the result.
+    r = mk_exti(Int8(-6), UInt32, cuTile.Signedness.Signed)
+    @test cuTile.div_by(r, SSAValue(2)) == 2
+
+    # The reduction also works when 2^srcbits does not fit in Int.
+    r = mk_exti(Int64(-6), Int128, cuTile.Signedness.Unsigned)
     @test cuTile.div_by(r, SSAValue(2)) == 2
 end
 

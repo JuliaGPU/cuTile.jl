@@ -137,28 +137,43 @@ using IRStructurizer: StructuredIRCode, Block, BlockArgument, ForOp, ContinueOp
 end
 
 @testset "bounds — exti consults signedness" begin
-    mk_exti(scalar, s) = begin
+    mk_exti(scalar, T, s) = begin
+        S = typeof(scalar)
         entry = Block()
         push!(entry, 1, Expr(:call, cuTile.Intrinsics.constant,
-                             QuoteNode(()), scalar, Int32), Int32)
+                             QuoteNode(()), scalar, S), S)
         push!(entry, 2, Expr(:call, cuTile.Intrinsics.exti,
-                             SSAValue(1), Int64, QuoteNode(s)), Int64)
+                             SSAValue(1), T, QuoteNode(s)), T)
         entry.terminator = ReturnNode(SSAValue(2))
         sci = StructuredIRCode(Any[Any], Any[], entry, 2)
         cuTile.analyze_bounds(sci)
     end
 
     # Sign-extension preserves the mathematical value.
-    r = mk_exti(-5, cuTile.Signedness.Signed)
+    r = mk_exti(Int32(-5), Int64, cuTile.Signedness.Signed)
     @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(-5, -5)
 
     # Zero-extension of a possibly-negative value reinterprets the bits
     # (Int32(-5) zexts to 2^32 - 5) — the range must not pass through.
-    r = mk_exti(-5, cuTile.Signedness.Unsigned)
+    r = mk_exti(Int32(-5), Int64, cuTile.Signedness.Unsigned)
     @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
 
     # Zero-extension of a provably non-negative value stays exact.
-    r = mk_exti(5, cuTile.Signedness.Unsigned)
+    r = mk_exti(Int32(5), Int64, cuTile.Signedness.Unsigned)
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(5, 5)
+
+    # Sign-extension reinterprets the high bit of an unsigned source.
+    r = mk_exti(UInt8(250), Int32, cuTile.Signedness.Signed)
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
+
+    # Values below the signed maximum have the same interpretation.
+    r = mk_exti(UInt8(5), Int32, cuTile.Signedness.Signed)
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(5, 5)
+
+    # The destination interpretation can also change the value.
+    r = mk_exti(Int8(-5), UInt32, cuTile.Signedness.Signed)
+    @test cuTile.bounds(r, SSAValue(2)) == cuTile.TOP_RANGE
+    r = mk_exti(Int8(5), UInt32, cuTile.Signedness.Signed)
     @test cuTile.bounds(r, SSAValue(2)) == cuTile.IntRange(5, 5)
 end
 

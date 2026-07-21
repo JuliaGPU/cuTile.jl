@@ -150,9 +150,22 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
         length(ops) >= 3 || return TOP_RANGE
         v = operand_value(a, r, ops[1])
         s = constant_operand(block, ops[3])
-        s === Signedness.Signed && return v
-        (v isa IntRange && v.lo !== nothing && v.lo >= 0) && return v
-        return TOP_RANGE
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (v isa IntRange && src_T !== nothing && dst_T !== nothing) || return TOP_RANGE
+        nonnegative = v.lo !== nothing && v.lo >= 0
+        if s === Signedness.Signed
+            src_max = src_T === Bool ? 0 : Int(typemax(signed(src_T)))
+            source_ok = src_T <: Signed || (v.hi !== nothing && v.hi <= src_max)
+            target_ok = dst_T <: Signed || nonnegative
+        elseif s === Signedness.Unsigned
+            dst_max = dst_T === Bool ? 0 : Int(typemax(signed(dst_T)))
+            source_ok = !(src_T <: Signed) || nonnegative
+            target_ok = !(dst_T <: Signed) || (v.hi !== nothing && v.hi <= dst_max)
+        else
+            return TOP_RANGE
+        end
+        return source_ok && target_ok ? v : TOP_RANGE
     end
     if func === Intrinsics.trunci
         return TOP_RANGE
@@ -292,11 +305,7 @@ function result_int_eltype(@nospecialize(inst))
     inst isa Instruction || return nothing
     T = inst[:type]
     T === nothing && return nothing
-    T = CC.widenconst(T)
-    T isa DataType || return nothing
-    T <: Tile && (T = eltype(T))
-    (T isa DataType && T <: Base.BitInteger) || return nothing
-    return T
+    return bitinteger_eltype(T)
 end
 
 function range_intersect(a::Union{Nothing,IntRange}, b::Union{Nothing,IntRange})

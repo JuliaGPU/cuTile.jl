@@ -175,6 +175,15 @@ function constant_operand(block::Block, @nospecialize(op))
     return op
 end
 
+function bitinteger_eltype(@nospecialize(T))
+    T = CC.widenconst(T)
+    T isa DataType || return nothing
+    T <: Tile && (T = eltype(T))
+    return T isa DataType && T <: Base.BitInteger ? T : nothing
+end
+
+bitinteger_width(T::DataType) = T === Bool ? 1 : sizeof(T) * 8
+
 """
     lookup_def_call(block::Block, val::SSAValue) -> Union{Tuple, Nothing}
 

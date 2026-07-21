@@ -159,20 +159,21 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
         length(ops) >= 1 || return 1
         return operand_value(a, r, ops[1])
     end
-    # `exti` preserves the value for sign-extension. Zero-extension of a
-    # negative adds 2^src_bits (`zext(x) = x mod 2^w`), so only divisors
-    # of both `x` and `2^w` survive: reduce to `gcd(x_div, 2^w)`.
+    # Reinterpreting the source sign changes the value by 2^src_bits, so
+    # only the power-of-two part of the divisor survives.
     if func === Intrinsics.exti
         length(ops) >= 3 || return 1
         x_div = operand_value(a, r, ops[1])
         s = constant_operand(block, ops[3])
-        s === Signedness.Signed && return x_div
-        src_T = value_type(block, ops[1])
-        src_T = src_T === nothing ? Any : CC.widenconst(src_T)
-        src_T <: Tile && (src_T = eltype(src_T))
-        src_T isa DataType && src_T <: Base.BitInteger && sizeof(src_T) < 8 ||
-            return 1
-        return gcd(x_div, 1 << (sizeof(src_T) * 8))
+        src_T = bitinteger_eltype(value_type(block, ops[1]))
+        dst_T = bitinteger_eltype(constant_operand(block, ops[2]))
+        (src_T === nothing || dst_T === nothing) && return 1
+        src_s = src_T <: Signed ? Signedness.Signed : Signedness.Unsigned
+        dst_s = dst_T <: Signed ? Signedness.Signed : Signedness.Unsigned
+        s === src_s && s === dst_s && return x_div
+        x_div == 0 && return 0
+        width = min(bitinteger_width(src_T), bitinteger_width(dst_T))
+        return 1 << min(trailing_zeros(x_div), width)
     end
     if func === Intrinsics.trunci
         length(ops) >= 2 || return 1
