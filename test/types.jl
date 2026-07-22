@@ -62,6 +62,28 @@ end
     @test size(PV, 2) == 32
 end
 
+@testset "StridedView" begin
+    SV = cuTile.StridedView{Float32, 2, Tuple{16, 32}, Tuple{8, 4}}
+    @test eltype(SV) == Float32
+    @test ndims(SV) == 2
+    @test size(SV) == (16, 32)
+    @test size(SV, 1) == 16
+    @test size(SV, 2) == 32
+end
+
+@testset "eachtile" begin
+    a = ct.TileArray(Ptr{Float32}(0), (Int32(16), Int32(10)), (Int32(1), Int32(16)))
+    tiles = eachtile(a, (8, 4); step=(3, 2))
+    @test parent(tiles) === a
+    @test ndims(tiles) == 2
+    @test size(tiles) == (Int32(6), Int32(5))
+    @test size(tiles, 1) == Int32(6)
+    @test size(tiles, 2) == Int32(5)
+    @test :eachtile in names(cuTile)
+    @test_throws "strictly positive" eachtile(a, (8, 4); step=(0, 2))
+    @test_throws "cannot squeeze step" eachtile(a, (8, 4); step=(2, 2, 2))
+end
+
 @testset "TensorView" begin
     @test eltype(cuTile.TensorView{Float32, 2}) == Float32
     @test eltype(cuTile.TensorView{Float64, 3}) == Float64
