@@ -1,7 +1,7 @@
 # Resolve Julia's bounds-check marker before the rest of the Tile IR pipeline.
 
 function boundscheck_value(expr::Expr)
-    @assert expr.head === :boundscheck
+    Base.@assert expr.head === :boundscheck
     opt = Base.JLOptions().check_bounds
     return opt == 1 ? true :
            opt == 2 ? false :
