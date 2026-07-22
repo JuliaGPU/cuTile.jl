@@ -17,9 +17,8 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif expr.head === :foreigncall
         throw(IRError("Foreign calls not supported in Tile IR"))
     elseif expr.head === :boundscheck
-        # Bounds checking is always disabled in Tile IR kernels.
-        # Emit false so IfOps referencing this SSA can resolve the condition.
-        return emit_constant!(ctx, false, Bool)
+        # Keep the fallback consistent with the resolver pass.
+        return emit_constant!(ctx, boundscheck_value(expr), Bool)
     elseif expr.head === :static_parameter
         # Static type parameter reference (e.g., V in `f(::T{V}) where {V}`).
         # Look up the concrete value from the method's sptypes.
