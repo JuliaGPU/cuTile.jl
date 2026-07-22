@@ -392,6 +392,51 @@ Base.size(pv::PartitionView) = size(typeof(pv))
 Base.size(pv::PartitionView, d::Integer) = size(typeof(pv), d)
 
 """
+    StridedView{T, N, Shape, Steps}
+
+Opaque Tile IR view with a fixed tile shape and a distinct traversal stride
+between adjacent tile origins. It is an internal compiler carrier; public
+array-of-tiles operations use `eachtile` instead.
+"""
+mutable struct StridedView{T, N, Shape, Steps} end
+
+Base.eltype(::Type{<:StridedView{T}}) where {T} = T
+Base.eltype(::StridedView{T}) where {T} = T
+Base.ndims(::Type{<:StridedView{<:Any, N}}) where {N} = N
+Base.ndims(::StridedView{<:Any, N}) where {N} = N
+Base.size(::Type{<:StridedView{<:Any, <:Any, Shape}}) where {Shape} = Tuple(Shape.parameters)
+Base.size(::Type{<:StridedView{<:Any, <:Any, Shape}}, d::Integer) where {Shape} = Shape.parameters[d]
+Base.size(sv::StridedView) = size(typeof(sv))
+Base.size(sv::StridedView, d::Integer) = size(typeof(sv), d)
+
+"""
+    TiledView{A, RequestedShape, ViewShape, Step, Padding}
+
+Internal immutable array-of-tiles wrapper returned by `eachtile`. Shape and
+step live in the type because Tile IR view types require compile-time values;
+the parent is the sole runtime field.
+"""
+struct TiledView{A, RequestedShape, ViewShape, Step, Padding}
+    parent::A
+end
+
+Base.parent(tiles::TiledView) = tiles.parent
+Base.ndims(::Type{<:TiledView{A}}) where {A} = ndims(A)
+Base.ndims(tiles::TiledView) = ndims(typeof(tiles))
+
+_tiled_view_steps(::Type{<:TiledView{A, RequestedShape, ViewShape, Step}}) where
+        {A, RequestedShape, ViewShape, Step} = Tuple(Step.parameters)
+
+function Base.size(tiles::TiledView)
+    steps = _tiled_view_steps(typeof(tiles))
+    ntuple(i -> cld(size(tiles.parent, i), Int32(steps[i])), Val(ndims(tiles)))
+end
+function Base.size(tiles::TiledView, d::Integer)
+    d < 1 && error("arraysize: dimension out of range")
+    d > ndims(tiles) ? Int32(1) : size(tiles)[d]
+end
+
+"""
     Constant{T, V}
 
 Compile-time constant with element type `T` and value `V`.
