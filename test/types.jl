@@ -51,6 +51,13 @@ end
     TA = ct.TileArray{Float32, 2, spec}
     @test ct.array_spec(TA) === spec
     @test ct.array_spec(ct.TileArray{Float32, 2}) === nothing
+
+    spec1 = ct.ArraySpec{2}(128, true, (1, 4), (16, 8))
+    T = ct.TileArray{Float32, 2, spec1}
+    @test ct.array_spec(ct.sliced_arraytype(T)).contiguous
+    @test !ct.array_spec(ct.sliced_arraytype(T; stepped_axis=1)).contiguous
+    @test ct.array_spec(ct.sliced_arraytype(T; stepped_axis=2)).contiguous
+    @test ct.array_spec(ct.sliced_arraytype(T; stepped_axis=1)).stride_div_by == (1, 4)
 end
 
 @testset "PartitionView" begin
