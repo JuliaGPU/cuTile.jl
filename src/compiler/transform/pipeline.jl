@@ -273,6 +273,7 @@ derive per-operand `AssumePredicate` chains on demand via
 """
 function run_passes!(sci::StructuredIRCode)
     lower_throws!(sci)
+    resolve_boundscheck!(sci)
     canonicalize!(sci)
 
     rewrite_patterns!(sci, PRINT_FUSION_RULES)
