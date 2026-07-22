@@ -174,12 +174,16 @@ Also invocable with scalars, promoted to 0-D tiles before codegen. The
 active `@fpmode` scope supplies `flush_to_zero`. Mismatched-shape operands
 are broadcast to a common shape.
 """
-@intrinsic maxf(x::T, y::T) where {T<:AbstractFloat}
-@intrinsic maxf(x::Tile{T}, y::Tile{T}) where {T<:AbstractFloat}
-tfunc(𝕃, ::typeof(Intrinsics.maxf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+@intrinsic maxf(x::T, y::T, propagate_nan::Bool=false) where {T<:AbstractFloat}
+@intrinsic maxf(x::Tile{T}, y::Tile{T}, propagate_nan::Bool=false) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.maxf), @nospecialize(x), @nospecialize(y),
+      @nospecialize(rest...)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args)
     flush_to_zero = current_fpmode(ctx).flush_to_zero
-    emit_binop!(ctx, args, encode_MaxFOp!; flush_to_zero)
+    propagate_nan = length(args) >= 3 ?
+        (@something get_constant(ctx, args[3]) throw(IRError("maxf: propagate_nan must be a compile-time constant"))) :
+        false
+    emit_binop!(ctx, args, encode_MaxFOp!; flush_to_zero, propagate_nan)
 end
 
 """
@@ -191,12 +195,16 @@ Also invocable with scalars, promoted to 0-D tiles before codegen. The
 active `@fpmode` scope supplies `flush_to_zero`. Mismatched-shape operands
 are broadcast to a common shape.
 """
-@intrinsic minf(x::T, y::T) where {T<:AbstractFloat}
-@intrinsic minf(x::Tile{T}, y::Tile{T}) where {T<:AbstractFloat}
-tfunc(𝕃, ::typeof(Intrinsics.minf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+@intrinsic minf(x::T, y::T, propagate_nan::Bool=false) where {T<:AbstractFloat}
+@intrinsic minf(x::Tile{T}, y::Tile{T}, propagate_nan::Bool=false) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.minf), @nospecialize(x), @nospecialize(y),
+      @nospecialize(rest...)) = CC.widenconst(x)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args)
     flush_to_zero = current_fpmode(ctx).flush_to_zero
-    emit_binop!(ctx, args, encode_MinFOp!; flush_to_zero)
+    propagate_nan = length(args) >= 3 ?
+        (@something get_constant(ctx, args[3]) throw(IRError("minf: propagate_nan must be a compile-time constant"))) :
+        false
+    emit_binop!(ctx, args, encode_MinFOp!; flush_to_zero, propagate_nan)
 end
 
 """

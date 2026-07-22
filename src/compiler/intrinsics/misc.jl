@@ -65,8 +65,6 @@ tfunc(𝕃, ::typeof(Intrinsics.assume), @nospecialize(x), @nospecialize(predica
 efunc(::typeof(Intrinsics.assume), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assume), args)
-    x = @something emit_value!(ctx, args[1]) throw(IRError("assume: cannot resolve value"))
-    x.v === nothing && throw(IRError("assume: value must be materialized"))
     pred_c = get_constant(ctx, args[2])
     pred_c === nothing && throw(IRError("assume: predicate must be a compile-time constant"))
     pred = pred_c.value
@@ -74,6 +72,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assume), args)
         throw(IRError("assume: predicate must be an AssumePredicate, got $(typeof(pred))"))
     pred isa DivBy && pred.divisor < 1 &&
         throw(IRError("assume: DivBy requires a positive divisor, got $(pred.divisor)"))
+
+    constant = get_constant(ctx, args[1])
+    if pred isa DivBy && constant !== nothing && constant.value isa Integer
+        value = constant.value
+        value % pred.divisor == 0 ||
+            throw(IRError("assume_divisible_by($value, $(pred.divisor)) contradicts a known constant"))
+        return @something emit_value!(ctx, args[1]) throw(IRError("assume: cannot resolve value"))
+    end
+
+    x = @something emit_value!(ctx, args[1]) throw(IRError("assume: cannot resolve value"))
+    x.v === nothing && throw(IRError("assume: value must be materialized"))
     new_val = encode_AssumeOp!(ctx.cb, x.type_id, x.v, pred)
     return CGVal(new_val, x.type_id, x.jltype, x.shape)
 end

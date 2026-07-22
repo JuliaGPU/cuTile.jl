@@ -292,6 +292,13 @@ function encode_dense_int32_array!(cb::CodeBuilder, values::Vector{Int})
     end
 end
 
+function encode_dense_bool_array!(cb::CodeBuilder, values)
+    encode_varint!(cb.buf, length(values))
+    for value in values
+        push!(cb.buf, value ? 0x01 : 0x00)
+    end
+end
+
 #=============================================================================
  Tagged attributes for ReduceOp identity values
 =============================================================================#

@@ -212,6 +212,25 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "permutedims" begin
+        @test_throws "axis order must be a permutation" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Base.donotdelete(permutedims(a, Val((1, 1))))
+            return
+        end
+
+        @test_throws "axis order must be a permutation" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Base.donotdelete(ct.load(a, (1, 1), (4, 8); order=(1, 1)))
+            return
+        end
+
+        @test_throws "axis order must be a permutation" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            tile = ct.load(a, (1, 1), (4, 8))
+            Base.donotdelete(permutedims(tile, (1, 1)))
+            return
+        end
+
         # 2D permutedims with explicit perm (same as transpose)
         @test @filecheck begin
             @check_label "entry"
@@ -281,6 +300,14 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "extract" begin
+        @test_throws "requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            tile = ct.load(a, (1, 1), (4, 8))
+            value = ct.extract(tile, (1, 1), (2, 4))
+            Base.donotdelete(ct.insert(tile, (2, 2), value))
+            return
+        end
+
         # Extract slice from 2D tile
         @test @filecheck begin
             @check_label "entry"
@@ -334,6 +361,21 @@ spec4d = ct.ArraySpec{4}(16, true)
                 ct.store(b, pid, real_part)
                 return
             end
+        end
+    end
+
+    @testset "unchecked view access requires v13.4" begin
+        @test_throws "check_bounds=false requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            tile = ct.load(a, 1, (16,); check_bounds=false)
+            ct.store(a, 1, tile)
+            return
+        end
+        @test_throws "check_bounds=false requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            tile = ct.load(a, 1, (16,))
+            ct.store(a, 1, tile; check_bounds=false)
+            return
         end
     end
 
@@ -611,6 +653,19 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
             Base.donotdelete(ct.Intrinsics.iota((16,), Float32))
             return
+        end
+    end
+
+    @testset "arange start and step" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do out
+                @check "iota"
+                @check "muli"
+                @check "addi"
+                ct.store(out, 1, ct.arange(16; start=3, step=2))
+                return
+            end
         end
     end
 
@@ -2537,6 +2592,23 @@ end
                 print("x=", ta, " y=", tb)
                 ct.store(a, bid, ta)
                 ct.store(b, bid, tb)
+                return
+            end
+        end
+    end
+
+    @testset "prints are globally ordered" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Float32,1,spec1d}}) do a, b
+                ta = ct.load(a, 1, (16,))
+                tb = ct.load(b, 1, (16,))
+                @check "[[FIRST:%[^ ]+]] = print_tko"
+                print(ta)
+                @check "[[JOIN:%[^ ]+]] = join_tokens [[FIRST]]"
+                @check "print_tko{{.*}}token=[[JOIN]]"
+                print(tb)
                 return
             end
         end

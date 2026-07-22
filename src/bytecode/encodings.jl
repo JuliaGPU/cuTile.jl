@@ -100,6 +100,7 @@ module Opcode
     const UnpackOp = 112 # since 13.3
     # 113 (AllocaOp) not implemented
     const MmaFScaledOp = 114 # since 13.3
+    const InsertOp = 118     # since 13.4
 end
 
 # Enums for operation attributes
@@ -517,7 +518,8 @@ function encode_LoadViewTkoOp!(cb::CodeBuilder,
                                token::Union{Value, Nothing}=nothing,
                                memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Weak,
                                memory_scope::Union{MemoryScope.T, Nothing}=nothing,
-                               optimization_hints::Union{OptimizationHints, Nothing}=nothing)
+                               optimization_hints::Union{OptimizationHints, Nothing}=nothing,
+                               inbounds=fill(false, length(index)))
     encode_varint!(cb.buf, Opcode.LoadViewTkoOp)
     # Variadic result types
     encode_typeid_seq!(cb.buf, [tile_type, token_type])
@@ -543,6 +545,11 @@ function encode_LoadViewTkoOp!(cb::CodeBuilder,
     if optimization_hints !== nothing
         encode_opattr_optimization_hints!(cb, optimization_hints)
     end
+    if cb.version >= v"13.4"
+        encode_dense_bool_array!(cb, inbounds)
+    elseif any(inbounds)
+        throw(IRError("load: check_bounds=false requires Tile IR v13.4+, got v$(cb.version)"))
+    end
 
     # Operands
     encode_operand!(cb.buf, view)
@@ -566,7 +573,8 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
                                 token::Union{Value, Nothing}=nothing,
                                 memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Weak,
                                 memory_scope::Union{MemoryScope.T, Nothing}=nothing,
-                                optimization_hints::Union{OptimizationHints, Nothing}=nothing)
+                                optimization_hints::Union{OptimizationHints, Nothing}=nothing,
+                                inbounds=fill(false, length(index)))
     encode_varint!(cb.buf, Opcode.StoreViewTkoOp)
     # Variadic result types (just token)
     encode_typeid_seq!(cb.buf, [token_type])
@@ -591,6 +599,11 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
     end
     if optimization_hints !== nothing
         encode_opattr_optimization_hints!(cb, optimization_hints)
+    end
+    if cb.version >= v"13.4"
+        encode_dense_bool_array!(cb, inbounds)
+    elseif any(inbounds)
+        throw(IRError("store: check_bounds=false requires Tile IR v13.4+, got v$(cb.version)"))
     end
 
     # Operands
@@ -1790,6 +1803,7 @@ function encode_FToIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
                         rounding_mode::RoundingMode.T=RoundingMode.NearestIntToZero)
     encode_varint!(cb.buf, Opcode.FToIOp)
     encode_typeid!(cb.buf, result_type)
+    cb.version >= v"13.4" && encode_varint!(cb.buf, 0) # saturating=false
     encode_enum!(cb.buf, signedness)
     encode_enum!(cb.buf, rounding_mode)
     encode_operand!(cb.buf, source)
@@ -1898,6 +1912,19 @@ function encode_ExtractOp!(cb::CodeBuilder, result_type::TypeId, source::Value, 
     for idx in indices
         encode_operand!(cb.buf, idx)
     end
+    return new_op!(cb)
+end
+
+function encode_InsertOp!(cb::CodeBuilder, result_type::TypeId, source::Value,
+                          destination::Value, indices::Vector{Value})
+    cb.version >= v"13.4" ||
+        throw(IRError("cuda_tile.insert requires Tile IR v13.4+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.InsertOp)
+    encode_typeid_seq!(cb.buf, [result_type])
+    encode_varint!(cb.buf, 2 + length(indices))
+    encode_operand!(cb.buf, source)
+    encode_operand!(cb.buf, destination)
+    encode_operands!(cb.buf, indices)
     return new_op!(cb)
 end
 

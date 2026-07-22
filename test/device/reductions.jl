@@ -568,6 +568,43 @@ end
     end
 end
 
+@testset "NaN reduction semantics" begin
+    function nan_reduction_kernel(a::ct.TileArray{Float32,2},
+                                  idx_default::ct.TileArray{Int32,2},
+                                  idx_propagate::ct.TileArray{Int32,2},
+                                  val_default::ct.TileArray{Float32,2},
+                                  val_propagate::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (2, 16))
+        ct.store(idx_default, (1, 1), argmax(tile; dims=2))
+        ct.store(idx_default, (1, 2), argmin(tile; dims=2))
+        ct.store(idx_propagate, (1, 1), argmax(tile; dims=2, propagate_nan=true))
+        ct.store(idx_propagate, (1, 2), argmin(tile; dims=2, propagate_nan=true))
+        ct.store(val_default, (1, 1), maximum(tile; dims=2))
+        ct.store(val_default, (1, 2), minimum(tile; dims=2))
+        ct.store(val_propagate, (1, 1), maximum(tile; dims=2, propagate_nan=true))
+        ct.store(val_propagate, (1, 2), minimum(tile; dims=2, propagate_nan=true))
+        return nothing
+    end
+
+    a_cpu = repeat(reshape(Float32.(1:16), 1, 16), 2, 1)
+    a_cpu[1, 1] = NaN
+    a_cpu[2, 5] = NaN
+    a_cpu[2, 9] = NaN
+    a = CuArray(a_cpu)
+    idx_default = CUDA.zeros(Int32, 2, 2)
+    idx_propagate = CUDA.zeros(Int32, 2, 2)
+    val_default = CUDA.zeros(Float32, 2, 2)
+    val_propagate = CUDA.zeros(Float32, 2, 2)
+
+    @cuda backend=cuTile nan_reduction_kernel(
+        a, idx_default, idx_propagate, val_default, val_propagate)
+
+    @test Array(idx_default) == Int32[16 2; 16 1]
+    @test Array(idx_propagate) == Int32[1 1; 5 5]
+    @test Array(val_default) == Float32[16 2; 16 1]
+    @test all(isnan, Array(val_propagate))
+end
+
 @testset "sum without dims (1D)" begin
     function sum_no_dims_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, tileSz::Int)
         tile = ct.load(a, ct.bid(1), (tileSz,))

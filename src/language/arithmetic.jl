@@ -24,6 +24,15 @@
 @overlay Base.rem(x::T, y::T) where {T <: Signed} = Intrinsics.remi(x, y, Signedness.Signed)
 @overlay Base.rem(x::T, y::T) where {T <: Unsigned} = Intrinsics.remi(x, y, Signedness.Unsigned)
 
+for T in (:ScalarInt, :ScalarFloat)
+    @eval @overlay function Base.mod(x::$T, y::$T)
+        value = rem(x, y)
+        zero_value = zero(x)
+        needs_fix = ((value < zero_value) != (y < zero_value)) & (value != zero_value)
+        ifelse(needs_fix, value + y, value)
+    end
+end
+
 # floor division on floats — `fld(x, y)` and `div(x, y, RoundDown)`
 @overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: ScalarFloat} = Intrinsics.floor(Intrinsics.divf(x, y))
 
@@ -67,6 +76,12 @@ end
 
 
 ## tile arithmetic
+
+public divmod
+
+@inline divmod(x::T, y::T) where {T<:Integer} = (div(x, y, RoundDown), mod(x, y))
+@inline divmod(x::Tile{T,S}, y::Tile{T,S}) where {T<:Integer, S} =
+    (div.(x, y, RoundDown), mod.(x, y))
 
 # direct operators (same shape required)
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.addf(a, b)

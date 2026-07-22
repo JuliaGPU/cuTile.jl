@@ -145,6 +145,10 @@ end
 function unsafe_permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm}
     Perm isa NTuple{N, Int} ||
         throw(ArgumentError("permutedims: Perm must be an NTuple{$N, Int}, got $Perm"))
+    all(axis -> 1 <= axis <= N, Perm) ||
+        throw(ArgumentError("permutedims: axis order contains an out-of-range axis: $Perm"))
+    allunique(Perm) ||
+        throw(ArgumentError("permutedims: axis order must be a permutation; an axis is repeated: $Perm"))
     new_sizes = ntuple(i -> arr.sizes[Perm[i]], Val(N))
     new_strides = ntuple(i -> arr.strides[Perm[i]], Val(N))
     permuted_arraytype(typeof(arr), Val(Perm))(arr.ptr, new_sizes, new_strides)
@@ -344,7 +348,8 @@ end
 
 
 """
-    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=nothing) -> Tile
+    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined,
+         check_bounds=true, latency=nothing, allow_tma=nothing) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -370,6 +375,7 @@ outside the array, the behavior is undefined regardless of `padding_mode`.
 - `PaddingMode.NegInf`: Return negative infinity for OOB elements
 
 # Optimization Hints
+- `check_bounds`: Set to `false` to promise the entire tile is in bounds. Requires Tile IR v13.4+.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 
@@ -384,12 +390,14 @@ tile = ct.load(arr, (bidy, bidx), (TN, TM); order=(2, 1))
 @inline function load(arr::TileArray, index, shape::NTuple{<:Any, Int};
                       order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                       padding_mode::PaddingMode.T=PaddingMode.Undetermined,
+                      check_bounds::Bool=true,
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
-    tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
+    tile = Intrinsics.load_partition_view(
+        pv, latency, allow_tma, promote(index...) .- One(), check_bounds)
     reshape(tile, shape)
 end
 
@@ -403,7 +411,8 @@ end
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
-    tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
+    tile = Intrinsics.load_partition_view(
+        pv, nothing, nothing, promote(indices...) .- One(), true)
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -439,7 +448,8 @@ end
 end
 
 """
-    store(arr::TileArray, index, tile::Tile; order=nothing, latency=nothing, allow_tma=nothing) -> Tile
+    store(arr::TileArray, index, tile::Tile; order=nothing, check_bounds=true,
+          latency=nothing, allow_tma=nothing) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
@@ -455,15 +465,18 @@ behavior is undefined.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Optimization Hints
+- `check_bounds`: Set to `false` to promise the entire tile is in bounds. Requires Tile IR v13.4+.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 """
 @inline function store(arr::TileArray{T}, index, tile::Tile{T};
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
+                       check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
-    _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...) .- One())
+    _store_reshaped(
+        arr, reshaped, order, check_bounds, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
@@ -483,18 +496,20 @@ end
 end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
-                                 order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
+                                 order, check_bounds, latency, allow_tma,
+                                 indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, size(tile), PaddingMode.Undetermined, order)
-    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices, check_bounds)
 end
 
 # Keyword argument version - dispatch to positional version
 @inline function store(arr::TileArray{T}; index, tile::Tile{T},
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
+                       check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing) where {T}
-    store(arr, index, tile; order, latency, allow_tma)
+    store(arr, index, tile; order, check_bounds, latency, allow_tma)
 end
 
 # Scalar store: arr[i, j, ...] = val
@@ -710,8 +725,8 @@ end
 public arange
 
 """
-    arange(shape; dtype=Int32) -> Tile{dtype, shape}
-    arange(n; dtype=Int32) -> Tile{dtype, Tuple{n}}
+    arange(shape; dtype=Int32, start=1, step=1) -> Tile{dtype, shape}
+    arange(n; dtype=Int32, start=1, step=1) -> Tile{dtype, Tuple{n}}
 
 Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
@@ -719,11 +734,17 @@ Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 ```julia
 indices = ct.arange(16)              # Int32 [1, 2, ..., 16]
 indices = ct.arange(16; dtype=Int64) # Int64 [1, 2, ..., 16]
+odd = ct.arange(16; start=1, step=2) # Int32 [1, 3, ..., 31]
 ```
 """
-@inline arange(shape::NTuple{1, Int}; dtype::Type{T}=Int32) where {T} =
-    Intrinsics.iota(shape, T) .+ one(T)
-@inline arange(n::Int; dtype::Type{T}=Int32) where {T} = arange((n,); dtype)
+@inline function arange(shape::NTuple{1, Int}; dtype::Type{T}=Int32,
+                        start::Number=1, step::Number=1) where {T}
+    result = Intrinsics.iota(shape, T)
+    step == 1 || (result = result .* T(step))
+    start == 0 || (result = result .+ T(start))
+    return result
+end
+@inline arange(n::Int; kwargs...) = arange((n,); kwargs...)
 
 # Internal: create a tile filled with a constant value.
 # Used by Base.fill/zeros/ones overlays (see overlays.jl).
@@ -1112,10 +1133,8 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
 end
 
 for (f, op, init_expr) in [
-    (:sum,     :(+),   :(zero(T))),
-    (:prod,    :(*),   :(one(T))),
-    (:maximum, :(max), :(typemin(T))),
-    (:minimum, :(min), :(typemax(T))),
+    (:sum,  :(+), :(zero(T))),
+    (:prod, :(*), :(one(T))),
 ]
     @eval @inline function Base.$f(tile::Tile{T,S}; dims) where {T<:Integer, S}
         reduce($op, tile; dims, init=$init_expr)
@@ -1125,9 +1144,37 @@ for (f, op, init_expr) in [
     end
 end
 
+@inline _max_ignore_nan(x, y) = Intrinsics.maxf(x, y, false)
+@inline _max_propagate_nan(x, y) = Intrinsics.maxf(x, y, true)
+@inline _min_ignore_nan(x, y) = Intrinsics.minf(x, y, false)
+@inline _min_propagate_nan(x, y) = Intrinsics.minf(x, y, true)
+
+for (f, dim_helper, all_helper, ignore_op, propagate_op, integer_op, init_expr) in [
+    (:maximum, :_maximum_dim, :_maximum_all,
+     :_max_ignore_nan, :_max_propagate_nan, :max, :(typemin(T))),
+    (:minimum, :_minimum_dim, :_minimum_all,
+     :_min_ignore_nan, :_min_propagate_nan, :min, :(typemax(T))),
+]
+    @eval @inline $dim_helper(tile::Tile{T}, dims::Integer, ::Val{P}) where {T<:AbstractFloat, P} =
+        reduce(P ? $propagate_op : $ignore_op, tile; dims, init=$init_expr)
+    @eval @inline $dim_helper(tile::Tile{T}, dims::Integer, ::Val) where {T<:Integer} =
+        reduce($integer_op, tile; dims, init=$init_expr)
+
+    @eval @inline $all_helper(tile::Tile{T,Tuple{}}, ::Val) where {T<:Number} =
+        Intrinsics.to_scalar(tile)
+    @eval @inline $all_helper(tile::Tile{T,S}, propagate::Val) where {T<:Number, S<:Tuple{Any,Vararg}} =
+        $all_helper(dropdims($dim_helper(tile, 1, propagate); dims=1), propagate)
+
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims=nothing,
+                                   propagate_nan::Bool=false) where {T<:Number, S}
+        propagate = propagate_nan ? Val(true) : Val(false)
+        dims === nothing ? $all_helper(tile, propagate) : $dim_helper(tile, dims, propagate)
+    end
+end
+
 # sum/prod/max/min without dims — reduce all dimensions, return scalar T
 # Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
-for f in (:sum, :prod, :maximum, :minimum)
+for f in (:sum, :prod)
     # Multiple definitions for specificity reasons
     for T in (:Integer, :AbstractFloat)
         @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:$T} =
@@ -1198,21 +1245,29 @@ Ties are broken by smallest index.
 indices = argmax(tile; dims=2)  # Column indices of max per row
 ```
 """
-@inline function Base.argmax(tile::Tile{T}; dims::Integer) where {T<:Number}
+struct ArgMaxReducer{T, PropagateNan} end
+@inline function (::ArgMaxReducer{T, PropagateNan})(accs, elems) where {T, PropagateNan}
+    val_acc, idx_acc = accs
+    val_elem, idx_elem = elems
+    strict = val_acc > val_elem
+    eq = val_acc == val_elem
+    if T <: AbstractFloat
+        acc_nan = isnan(val_acc)
+        elem_nan = isnan(val_elem)
+        strict |= PropagateNan ? (acc_nan & !elem_nan) : (!acc_nan & elem_nan)
+        eq |= acc_nan & elem_nan
+    end
+    cond = strict | (eq & (idx_acc < idx_elem))
+    (ifelse(cond, val_acc, val_elem), ifelse(cond, idx_acc, idx_elem))
+end
+
+@inline function Base.argmax(tile::Tile{T}; dims::Integer, propagate_nan::Bool=false) where {T<:Number}
     n = size(tile, dims)
     indices = reshape(Intrinsics.iota((n,), Int32),
                       ntuple(i -> i == dims ? n : 1, ndims(tile)))
     indices = broadcast_to(indices, size(tile))
 
-    function reducer(accs, elems)
-        val_acc, idx_acc = accs
-        val_elem, idx_elem = elems
-        strict = val_acc > val_elem
-        eq = val_acc == val_elem
-        cond = strict | (eq & (idx_acc < idx_elem))
-        (ifelse(cond, val_acc, val_elem),
-         ifelse(cond, idx_acc, idx_elem))
-    end
+    reducer = propagate_nan ? ArgMaxReducer{T, true}() : ArgMaxReducer{T, false}()
     _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemin(T), Int32(0)))
     idx .+ one(Int32)
 end
@@ -1228,21 +1283,29 @@ Ties are broken by smallest index.
 indices = argmin(tile; dims=2)  # Column indices of min per row
 ```
 """
-@inline function Base.argmin(tile::Tile{T}; dims::Integer) where {T<:Number}
+struct ArgMinReducer{T, PropagateNan} end
+@inline function (::ArgMinReducer{T, PropagateNan})(accs, elems) where {T, PropagateNan}
+    val_acc, idx_acc = accs
+    val_elem, idx_elem = elems
+    strict = val_elem > val_acc
+    eq = val_acc == val_elem
+    if T <: AbstractFloat
+        acc_nan = isnan(val_acc)
+        elem_nan = isnan(val_elem)
+        strict |= PropagateNan ? (acc_nan & !elem_nan) : (!acc_nan & elem_nan)
+        eq |= acc_nan & elem_nan
+    end
+    cond = strict | (eq & (idx_acc < idx_elem))
+    (ifelse(cond, val_acc, val_elem), ifelse(cond, idx_acc, idx_elem))
+end
+
+@inline function Base.argmin(tile::Tile{T}; dims::Integer, propagate_nan::Bool=false) where {T<:Number}
     n = size(tile, dims)
     indices = reshape(Intrinsics.iota((n,), Int32),
                       ntuple(i -> i == dims ? n : 1, ndims(tile)))
     indices = broadcast_to(indices, size(tile))
 
-    function reducer(accs, elems)
-        val_acc, idx_acc = accs
-        val_elem, idx_elem = elems
-        strict = val_elem > val_acc
-        eq = val_acc == val_elem
-        cond = strict | (eq & (idx_acc < idx_elem))
-        (ifelse(cond, val_acc, val_elem),
-         ifelse(cond, idx_acc, idx_elem))
-    end
+    reducer = propagate_nan ? ArgMinReducer{T, true}() : ArgMinReducer{T, false}()
     _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemax(T), Int32(0)))
     idx .+ one(Int32)
 end
@@ -1589,7 +1652,7 @@ end
  Selection
 =============================================================================#
 
-public extract
+public extract, insert
 
 """
     extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -1615,6 +1678,20 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
     Intrinsics.extract(tile, map(i -> i - 1, index), shape)
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, map(i -> i - 1, Index), Shape)
+
+"""
+    insert(tile::Tile, index, value::Tile) -> Tile
+
+Return a copy of `tile` with the non-overlapping subtile at the 1-indexed
+slice `index` replaced by `value`. This is the inverse of [`extract`](@ref)
+and requires Tile IR v13.4 or newer.
+"""
+@inline insert(tile::Tile, index::NTuple{<:Any, Int}, value::Tile) =
+    Intrinsics.insert(tile, map(i -> Int32(i - 1), index), value)
+@inline insert(tile::Tile, ::Val{Index}, value::Tile) where {Index} =
+    Intrinsics.insert(tile, map(i -> Int32(i - 1), Index), value)
+@inline insert(tile::Tile{T}, index::NTuple{<:Any, Int}, value::Number) where {T} =
+    insert(tile, index, Tile(T(value)))
 
 #=============================================================================
  Assume

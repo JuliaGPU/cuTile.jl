@@ -2,6 +2,40 @@
 
 using CUDA
 
+@testset "divmod and mod" begin
+    function divmod_kernel(x::ct.TileArray{Int32,1}, q::ct.TileArray{Int32,1},
+                           r::ct.TileArray{Int32,1}, m::ct.TileArray{Int32,1})
+        tile = ct.load(x, 1, (16,))
+        divisor = fill(Int32(-3), (16,))
+        quotient, remainder = ct.divmod(tile, divisor)
+        ct.store(q, 1, quotient)
+        ct.store(r, 1, remainder)
+        ct.store(m, 1, mod.(tile, divisor))
+        return
+    end
+
+    x_cpu = Int32.(collect(-8:7))
+    x = CuArray(x_cpu)
+    q = similar(x)
+    r = similar(x)
+    m = similar(x)
+    @cuda backend=cuTile divmod_kernel(x, q, r, m)
+    @test Array(q) == fld.(x_cpu, Int32(-3))
+    @test Array(r) == mod.(x_cpu, Int32(-3))
+    @test Array(m) == mod.(x_cpu, Int32(-3))
+end
+
+@testset "arange start and step" begin
+    function arange_kernel(out::ct.TileArray{Int32,1})
+        ct.store(out, 1, ct.arange(16; start=3, step=-2))
+        return
+    end
+
+    out = CUDA.zeros(Int32, 16)
+    @cuda backend=cuTile arange_kernel(out)
+    @test Array(out) == Int32.(3 .- 2 .* (0:15))
+end
+
 @testset "1D vector add" begin
     function vadd_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                      c::ct.TileArray{Float32,1})

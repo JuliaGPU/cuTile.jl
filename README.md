@@ -136,7 +136,8 @@ uses standard Julia syntax and is overlaid on `Base`.
 | `ct.gather(arr, indices; ...)` | Gather elements by index tile |
 | `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
 
-`load` and `store` accept keyword arguments `order`, `padding_mode`, `latency`, and `allow_tma`.
+`load` and `store` accept keyword arguments `order`, `check_bounds`, `latency`, and `allow_tma`;
+`load` also accepts `padding_mode`. Setting `check_bounds=false` requires Tile IR v13.4 or newer.
 `gather` accepts `mask`, `padding_value`, `check_bounds`, and `latency`.
 `scatter` accepts `mask`, `check_bounds`, and `latency`.
 
@@ -172,6 +173,8 @@ Tile IR operations.
 | `+`, `-` | Element-wise (same shape only) |
 | `tile * scalar`, `tile / scalar` | Scalar multiply/divide |
 | `.+`, `.-`, `.*`, `./`, `.^` | Broadcasting element-wise |
+| `mod.(x, y)` | Floored remainder with Julia sign semantics |
+| `ct.divmod(x, y)` | Floored quotient and remainder |
 
 ### Construction
 | Operation | Description |
@@ -179,7 +182,7 @@ Tile IR operations.
 | `zeros(T, dims...)` | Zero-filled tile |
 | `ones(T, dims...)` | One-filled tile |
 | `fill(value, dims...)` | Constant-filled tile |
-| `ct.arange(shape, T)` / `ct.arange(n, T)` | Sequence `[1, 2, 3, ..., n]` |
+| `ct.arange(n; dtype, start, step)` | Configurable arithmetic sequence (defaults to `1:n`) |
 
 ### Shape
 | Operation | Description |
@@ -189,6 +192,7 @@ Tile IR operations.
 | `permutedims(tile, perm)` | Permute dimensions |
 | `repeat(tile, counts...)` `repeat(tile; inner, outer)` | Repeat values along dimensions |
 | `ct.extract(tile, index, shape)` | Extract sub-tile |
+| `ct.insert(tile, index, value)` | Replace a non-overlapping sub-tile (Tile IR v13.4+) |
 | `ct.cat((a, b), axis)` | Concatenate tiles |
 | `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
 | `dropdims(tile; dims)` | Remove singleton dimensions |
@@ -234,13 +238,13 @@ any scalar function element-wise over tiles: `sqrt.(tile)`, `max.(a, b)`,
 |-----------|-------------|
 | `sum(tile; dims)` | Sum along axis |
 | `prod(tile; dims)` | Product along axis |
-| `maximum(tile; dims)` | Maximum along axis |
-| `minimum(tile; dims)` | Minimum along axis |
+| `maximum(tile; dims, propagate_nan)` | Maximum along axis |
+| `minimum(tile; dims, propagate_nan)` | Minimum along axis |
 | `any(tile; dims)` | Logical OR along axis |
 | `all(tile; dims)` | Logical AND along axis |
 | `count(tile; dims)` | Count `true` elements along axis |
-| `argmax(tile; dims)` | 1-based index of maximum along axis |
-| `argmin(tile; dims)` | 1-based index of minimum along axis |
+| `argmax(tile; dims, propagate_nan)` | 1-based index of maximum along axis |
+| `argmin(tile; dims, propagate_nan)` | 1-based index of minimum along axis |
 | `cumsum(tile; dims, rev)` | Cumulative sum |
 | `cumprod(tile; dims, rev)` | Cumulative product |
 
