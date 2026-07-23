@@ -2389,6 +2389,57 @@ end
         end
     end
 
+    @testset "@atomic macro" begin
+        spec2d = ct.ArraySpec{2}(16, true)
+
+        # Statement form, default (relaxed) on a tile/view target → view reduction.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tiles = ct.eachtile(a, (16, 16))
+                v = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.@atomic tiles[1, 1] += v
+                return
+            end
+        end
+
+        # Statement form with an explicit stronger order → fetch (atomic_rmw_tko).
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "atomic_red_view_tko"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko acq_rel"
+                ct.@atomic :acquire_release a[bid] += Int32(1)
+                return
+            end
+        end
+
+        # Value form → fetch with the old => new pair consumed.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko"
+                pair = ct.@atomic a[bid] + Int32(3)
+                Base.donotdelete(pair.first)
+                Base.donotdelete(pair.second)
+                return
+            end
+        end
+
+        # Macro-expansion errors.
+        @test_throws "sequentially_consistent" macroexpand(@__MODULE__,
+            :(ct.@atomic :sequentially_consistent a[1] += 1))
+        @test_throws "indexed reference" macroexpand(@__MODULE__,
+            :(ct.@atomic a += 1))
+        @test_throws "must reference" macroexpand(@__MODULE__,
+            :(ct.@atomic a[1] = min(b[1], 2)))
+        @test_throws "plain" macroexpand(@__MODULE__,
+            :(ct.@atomic a[1] = 2))
+    end
+
     # Unsigned max/min select the umax/umin comparison modes.
     @testset "unsigned atomic_max/min → umax/umin" begin
         for T in (UInt32, UInt64)

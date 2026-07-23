@@ -597,6 +597,59 @@ end
     end
 end
 
+@testset "@atomic macro" begin
+    # Statement form, default relaxed → view reduction on a TiledView.
+    function k_stmt(a::ct.TileArray{Float32,1})
+        tiles = ct.eachtile(a, (16,))
+        ct.@atomic tiles[1] += ct.broadcast_to(ct.Tile(1.0f0), (16,))
+        return
+    end
+    a = CUDA.zeros(Float32, 16)
+    @cuda backend=cuTile blocks=10 k_stmt(a)
+    @test all(Array(a) .== 10)
+
+    # Statement form with an explicit stronger order → fetching path.
+    function k_ordered(c::ct.TileArray{Int,1})
+        ct.@atomic :acquire_release c[1] += 1
+        return
+    end
+    c = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=100 k_ordered(c)
+    @test Array(c)[1] == 100
+
+    # Subtraction lowers to add-of-negated.
+    function k_sub(c::ct.TileArray{Int,1})
+        ct.@atomic c[1] -= 2
+        return
+    end
+    c = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=10 k_sub(c)
+    @test Array(c)[1] == -20
+
+    # `= op(A[i], v)` statement form (max).
+    function k_max(c::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        ct.@atomic c[1] = max(c[1], bid)
+        return
+    end
+    c = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=50 k_max(c)
+    @test Array(c)[1] == 50
+
+    # Value form returns old => new.
+    function k_value(c::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
+        pair = ct.@atomic c[1] + 5
+        ct.store(out, 1, pair.first)   # old
+        ct.store(out, 2, pair.second)  # new
+        return
+    end
+    c = CUDA.fill(Int(7), 1)
+    out = CUDA.zeros(Int, 2)
+    @cuda backend=cuTile k_value(c, out)
+    @test Array(out) == [7, 12]
+    @test Array(c)[1] == 12
+end
+
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
