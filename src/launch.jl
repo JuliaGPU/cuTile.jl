@@ -124,6 +124,18 @@ TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
                  pack_hint(opt_level), pack_hint(num_ctas), pack_hint(occupancy),
                  pack_hint(num_worker_warps))
 
+struct TemporaryTileCacheKey
+    key::TileCacheKey
+end
+
+# Autotune candidates compile under this owner so they share inference/codegen
+# work without becoming visible to (or polluting) the normal `cufunction` cache
+# keyed by `TileCacheKey`. It's a plain marker wrapper: candidate CIs are keyed
+# by content, so the cached set is bounded by the search space, not by how many
+# times you tune. The winning config is promoted by the final normal launch.
+@inline tile_cache_key(key::TileCacheKey) = key
+@inline tile_cache_key(key::TemporaryTileCacheKey) = key.key
+
 
 #=============================================================================
  Toolkit / device validation (cached: once per `(capability, cuda_version)`).
@@ -404,27 +416,40 @@ end
  Compilation: bytecode → CUBIN → CuFunction.
 =============================================================================#
 
+# Serializes the Julia-side codegen pipeline (inference, structured IR,
+# tile-IR emission). `emit_tile!` and everything it calls into mutates shared
+# state: `CacheView` entries, `CuTileResults` fields, the inference cache,
+# and CompilerCaching's per-CI const_entries vector. None of that is
+# thread-safe. We hold the lock only across `emit_tile!`; the tileiras
+# subprocess below runs unlocked so concurrent `cufunction` calls (e.g.
+# from autotuning's precompile fan-out) can still overlap their tileiras
+# shell-outs.
+const EMIT_TILE_LOCK = ReentrantLock()
+
 """
-    emit_binary!(cache, mi, ci, res; const_argtypes=nothing) -> Vector{UInt8}
+    emit_binary!(cache, mi, ci, res; const_argtypes=nothing,
+                 store_disk=true) -> Vector{UInt8}
 
 Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
 function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
                       ci::Core.CodeInstance, res::CuTileResults;
-                      const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+                      const_argtypes::Union{Vector{Any}, Nothing}=nothing,
+                      store_disk::Bool=true)
     # Recurse first — emit_structured! at the bottom of the chain fires
     # `compile_hook` for `@device_code_*` reflection, which must run on every
     # launch even when downstream artifacts are fully cached.
-    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
+    bytecode = Base.@lock EMIT_TILE_LOCK emit_tile!(cache, mi, ci, res; const_argtypes)
 
     res.cuda_bin !== nothing && return res.cuda_bin
 
-    sm_arch = unpack_version(cache.owner.sm_arch)
+    owner = tile_cache_key(cache.owner)
+    sm_arch = unpack_version(owner.sm_arch)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
     # num_ctas/occupancy/num_worker_warps are resolved in emit_tile because they're encoded in bytecode.
     _, _, kernel_meta = res.julia_ir
-    opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
+    opt_level = something(resolve_hint(unpack_hint(owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
 
     # Disk cache lookup. The hash covers every input that changes the CUBIN
@@ -478,7 +503,7 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
         rm(output_path, force=true)
     end
 
-    if cache_key !== nothing
+    if store_disk && cache_key !== nothing
         try
             DiskCache.put!(dc, cache_key, res.cuda_bin)
         catch err
@@ -566,7 +591,24 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # invalidated by any package that defines methods on Base.Compiler hooks
     # like `OptimizationParams(::AbstractInterpreter)`. To reuse precompiled
     # native code, run the pipeline in the world captured at __init__.
-    invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, key)::TileKernel{Core.Typeof(f), tt}
+    invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes,
+                  key, true)::TileKernel{Core.Typeof(f), tt}
+end
+
+function temporary_cufunction(@nospecialize(f), tt::Type{<:Tuple};
+                              sm_arch::Union{VersionNumber, Nothing}=nothing,
+                              opt_level::Union{Int, Nothing}=nothing,
+                              num_ctas::Union{Int, Nothing}=nothing,
+                              occupancy::Union{Int, Nothing}=nothing,
+                              num_worker_warps::Union{Int, Nothing}=nothing)
+    bytecode_version = check_tile_ir_support()
+    resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
+    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
+                       num_worker_warps)
+    owner = TemporaryTileCacheKey(key)
+    argtypes, const_argtypes = unwrap_argtypes(f, tt)
+    return invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes,
+                         owner, false)::TileKernel{Core.Typeof(f), tt}
 end
 
 """
@@ -578,7 +620,7 @@ by [`link`](@ref) to load the result onto the GPU. No CUDA context required.
 """
 function compile(@nospecialize(f), @nospecialize(argtypes),
                  const_argtypes::Union{Vector{Any}, Nothing},
-                 key::TileCacheKey)
+                 key, store_disk::Bool=true)
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
@@ -595,12 +637,17 @@ function compile(@nospecialize(f), @nospecialize(argtypes),
     # underlying `CodeInstance` via CompilerCaching; the `TileKernel` wrapper
     # rides along in the same `CuTileResults`, so kernel-instance lifecycle
     # follows the CI's instead of needing a separate global Dict.
-    ci, res = ensure_compiled(cache, mi, const_argtypes)
+    #
+    # Held under EMIT_TILE_LOCK so concurrent compiles (e.g. autotuning's
+    # precompile fan-out) don't race on inference / CompilerCaching state.
+    # The lock-protected region also includes the lookup fast path; that
+    # path is just a hashtable read, so brief contention here is fine.
+    ci, res = Base.@lock EMIT_TILE_LOCK ensure_compiled(cache, mi, const_argtypes)
 
     # Always walk the emit chain (each phase short-circuits on its own cached
     # field, but `emit_structured!` also fires `compile_hook` for reflection,
     # which has to run on every launch even when the cube/cufunc is cached).
-    emit_binary!(cache, mi, ci, res; const_argtypes)
+    emit_binary!(cache, mi, ci, res; const_argtypes, store_disk)
     return cache, mi, ci, res
 end
 
@@ -609,8 +656,8 @@ end
 # even when later-loaded packages would otherwise have invalidated it.
 function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
                              const_argtypes::Union{Vector{Any}, Nothing},
-                             key::TileCacheKey)
-    cache, mi, ci, res = compile(f, argtypes, const_argtypes, key)
+                             key, store_disk::Bool=true)
+    cache, mi, ci, res = compile(f, argtypes, const_argtypes, key, store_disk)
 
     cufunc = link(cache, mi, ci, res)
 

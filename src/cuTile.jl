@@ -92,8 +92,26 @@ include("cache.jl")
 include("launch.jl")
 
 public launch, TileBackend, DefaultBackend, Tiled, ByTarget,
-       @compiler_options, @fpmode, @.,
+       @compiler_options, @fpmode, @., @cutile,
        bytecode_version
+
+"""
+    @cutile [kwargs...] kernel(args...)
+
+Shorthand for `CUDACore.@cuda backend=cuTile [kwargs...] kernel(args...)`.
+
+Works from any module — does not require the caller to `using CUDACore`,
+since the macro expands to a fully-qualified reference to the actual
+`CUDACore` module object.
+
+```julia
+@cutile blocks=N kernel(a, b, c)
+@cutile blocks=N occupancy=4 kernel(a, b, c)
+```
+"""
+macro cutile(args...)
+    esc(:($CUDACore.@cuda backend=$cuTile $(args...)))
+end
 
 # World age captured at __init__ time. The compilation pipeline
 # (typeinf!, codegen, bytecode emission) is invoked in this world via
@@ -126,5 +144,7 @@ function __init__()
 end
 
 include("precompile.jl")
+
+include("experimental/Experimental.jl")
 
 end # module cuTile
