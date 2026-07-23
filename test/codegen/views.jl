@@ -77,3 +77,94 @@ end
         @check "assert {{.*}}reshape: TileArray must be contiguous"
     end
 end
+
+@testset "eachtile — partition and strided views" begin
+    # Equal shape and step preserves the pre-v13.3 PartitionView path.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_partition_view"
+        @check_not "make_strided_view"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
+                   bytecode_version=v"13.2") do a, b
+            src = eachtile(a, (8,))
+            dst = eachtile(b, (8,); step=(8,))
+            dst[1] = src[1]
+            return
+        end
+    end
+
+    # Tile IR is row-major, so Julia shape/step `(8,4)`/`(3,2)` are reversed
+    # in the emitted StridedView type.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_strided_view"
+        @check "tile=(4x8), traversal_strides=[2,3]"
+        @check "load_view_tko"
+        @check "store_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}};
+                   bytecode_version=v"13.3") do a, b
+            src = eachtile(a, (8, 4); step=(3, 2), padding_mode=ct.PaddingMode.Zero)
+            dst = eachtile(b, (8, 4); step=(3, 2))
+            tile = ct.load(src, (2, 3); check_bounds=true, latency=3, allow_tma=false)
+            ct.store(dst, (2, 3), tile; check_bounds=true, latency=3, allow_tma=false)
+            return
+        end
+    end
+
+    @test_throws "v13.3+" code_tiled(
+        Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.2") do a
+            tiles = eachtile(a, (8,); step=(4,))
+            ct.store(tiles, 1, ct.load(tiles, 1))
+            return
+        end
+end
+
+@testset "eachtile — device size queries the backend index space" begin
+    # `size(tiles, d)` computes `cld` on the host, but in kernels it is
+    # overlaid to defer to `get_index_space_shape` (matching cuTile Python's
+    # `num_tiles` lowering). Feed the result into a load index so it isn't
+    # DCE'd.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_strided_view"
+        @check "get_index_space_shape"
+        @check "load_view_tko"
+        @check "store_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            tiles = eachtile(a, (8,); step=(4,))
+            n = size(tiles, 1)
+            ct.store(a, 1, ct.load(tiles, n))
+            return
+        end
+    end
+end
+
+@testset "eachtile — order permutes the view dim_map" begin
+    # `order` follows ct.load/ct.store: tile dim i maps to array dim order[i].
+    # Julia 1-indexed order (2, 1) reverses to the row-major dim_map [1, 0].
+    # Equal shape/step keeps the PartitionView arm.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_partition_view"
+        @check "dim_map=[1, 0]"
+        @check "load_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            tiles = eachtile(a, (4, 8); order=(2, 1))
+            ct.store(a, (1, 1), ct.load(tiles, (1, 1)))
+            return
+        end
+    end
+
+    # Unequal step exercises the StridedView arm.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_strided_view"
+        @check "dim_map=[1, 0]"
+        @check "load_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            tiles = eachtile(a, (4, 8); step=(2, 8), order=(2, 1))
+            ct.store(a, (1, 1), ct.load(tiles, (1, 1)))
+            return
+        end
+    end
+end

@@ -392,6 +392,84 @@ Base.size(pv::PartitionView) = size(typeof(pv))
 Base.size(pv::PartitionView, d::Integer) = size(typeof(pv), d)
 
 """
+    StridedView{T, N, Shape, Steps}
+
+Opaque Tile IR view with a fixed tile shape and a distinct traversal stride
+between adjacent tile origins. It is an internal compiler carrier; public
+array-of-tiles operations use `eachtile` instead.
+"""
+mutable struct StridedView{T, N, Shape, Steps} end
+
+Base.eltype(::Type{<:StridedView{T}}) where {T} = T
+Base.eltype(::StridedView{T}) where {T} = T
+Base.ndims(::Type{<:StridedView{<:Any, N}}) where {N} = N
+Base.ndims(::StridedView{<:Any, N}) where {N} = N
+Base.size(::Type{<:StridedView{<:Any, <:Any, Shape}}) where {Shape} = Tuple(Shape.parameters)
+Base.size(::Type{<:StridedView{<:Any, <:Any, Shape}}, d::Integer) where {Shape} = Shape.parameters[d]
+Base.size(sv::StridedView) = size(typeof(sv))
+Base.size(sv::StridedView, d::Integer) = size(typeof(sv), d)
+
+"""
+    TiledView{A, RequestedShape, ViewShape, Step, Padding, Order}
+
+Internal immutable array-of-tiles wrapper returned by `eachtile`. Shape, step,
+and order live in the type because Tile IR view types require compile-time
+values; the parent is the sole runtime field. `Order` is the 1-indexed
+tile-dim-to-array-dim permutation (or `nothing` for identity), matching the
+`order` kwarg of `ct.load`/`ct.store`.
+"""
+struct TiledView{A, RequestedShape, ViewShape, Step, Padding, Order}
+    parent::A
+end
+
+Base.parent(tiles::TiledView) = tiles.parent
+Base.ndims(::Type{<:TiledView{A}}) where {A} = ndims(A)
+Base.ndims(tiles::TiledView) = ndims(typeof(tiles))
+
+# The element of a `TiledView` is a whole tile of the user-requested shape:
+# `load` reshapes the view tile back to `RequestedShape`, which may be a lower
+# rank than the rank-normalized `ViewShape`.
+Base.eltype(::Type{<:TiledView{A, RequestedShape}}) where
+        {T, A<:TileArray{T}, RequestedShape} = Tile{T, RequestedShape}
+Base.eltype(tiles::TiledView) = eltype(typeof(tiles))
+
+# Type-parameter accessors. Defined on the type (single source of truth) with
+# an instance forwarder for convenience.
+tiled_view_requested_shape(::Type{<:TiledView{A, RequestedShape}}) where {A, RequestedShape} =
+    Tuple(RequestedShape.parameters)
+tiled_view_shape(::Type{<:TiledView{A, RequestedShape, ViewShape}}) where
+        {A, RequestedShape, ViewShape} = Tuple(ViewShape.parameters)
+tiled_view_step(::Type{<:TiledView{A, RequestedShape, ViewShape, Step}}) where
+        {A, RequestedShape, ViewShape, Step} = Tuple(Step.parameters)
+tiled_view_order(::Type{<:TiledView{A, RequestedShape, ViewShape, Step, Padding, Order}}) where
+        {A, RequestedShape, ViewShape, Step, Padding, Order} = Order
+tiled_view_requested_shape(tiles::TiledView) = tiled_view_requested_shape(typeof(tiles))
+tiled_view_shape(tiles::TiledView) = tiled_view_shape(typeof(tiles))
+tiled_view_step(tiles::TiledView) = tiled_view_step(typeof(tiles))
+tiled_view_order(tiles::TiledView) = tiled_view_order(typeof(tiles))
+
+"""
+    size(tiles::TiledView[, d])
+
+Number of tiles along each axis. On the host this is computed as
+`cld(size(parent, d), step[d])` for launch-grid sizing. Inside kernels the
+same call is overlaid to query the Tile IR backend via
+`get_index_space_shape` (matching cuTile Python's `TiledView.num_tiles`
+lowering), since the strided index-space formula is the backend's contract,
+not ours.
+"""
+function Base.size(tiles::TiledView)
+    steps = tiled_view_step(typeof(tiles))
+    order = tiled_view_order(typeof(tiles))
+    dims = something(order, ntuple(identity, Val(ndims(tiles))))
+    ntuple(i -> cld(size(tiles.parent, dims[i]), Int32(steps[i])), Val(ndims(tiles)))
+end
+function Base.size(tiles::TiledView, d::Integer)
+    d < 1 && error("arraysize: dimension out of range")
+    d > ndims(tiles) ? Int32(1) : size(tiles)[d]
+end
+
+"""
     Constant{T, V}
 
 Compile-time constant with element type `T` and value `V`.

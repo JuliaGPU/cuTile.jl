@@ -124,6 +124,26 @@ end
     end
 end
 
+@testset "token_order — StridedView stores keep token carry" begin
+    # Tile indices are injective, but overlapping windows are not disjoint in
+    # memory. `store_strided_view` therefore must never take the partition
+    # store parallelization path.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_strided_view"
+        @check "iter_values"
+        @check "store_view_tko"
+        code_tiled(Tuple{AT, AT, Int32}) do a, b, n
+            windows = eachtile(b, (16,); step=(8,))
+            for i in 1:n
+                tile = ct.load(a, i, (16,))
+                ct.store(windows, i, tile)
+            end
+            return
+        end
+    end
+end
+
 @testset "layout_may_alias_internally" begin
     lmai = ct.layout_may_alias_internally
     @test !lmai((Int32(4),), (Int32(1),))                        # contiguous 1-D

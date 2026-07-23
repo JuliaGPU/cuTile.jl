@@ -21,9 +21,11 @@ externally observable side effect).
 """
 function classify_memory_op(resolved_func)
     if resolved_func === Intrinsics.load_partition_view ||
+       resolved_func === Intrinsics.load_strided_view ||
        resolved_func === Intrinsics.load_ptr_tko
         return MEM_LOAD
     elseif resolved_func === Intrinsics.store_partition_view ||
+           resolved_func === Intrinsics.store_strided_view ||
            resolved_func === Intrinsics.store_ptr_tko
         return MEM_STORE
     elseif resolved_func === Intrinsics.print_tko

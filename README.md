@@ -133,6 +133,7 @@ uses standard Julia syntax and is overlaid on `Base`.
 |-----------|-------------|
 | `ct.load(arr; index, shape, ...)` | Load a tile from array |
 | `ct.store(arr; index, tile, ...)` | Store a tile to array |
+| `eachtile(arr, shape; step=...)` | Array-of-tiles view with controllable tile origins |
 | `ct.gather(arr, indices; ...)` | Gather elements by index tile |
 | `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
 
@@ -324,12 +325,12 @@ end
 | `@view arr[r1:r2, :, ...]` / `view(arr, ...)` | Sub-range view of a `TileArray` |
 
 `@view` and `view` derive a sub-range `TileArray` from an existing one. Each
-index must be `:` or a `UnitRange` (e.g. `i:j`); other forms (`StepRange`,
-scalar `Int`, `CartesianIndex`, ...) are rejected at compile time. The result
-is itself a `TileArray` and can be passed to `ct.load`/`ct.store` (or sliced
-again). A runtime assert verifies that each range starts at ≥ 1; the upper
-bound is not checked because Julia's range construction already clamps
-`last(r) >= first(r) - 1`.
+index must be `:`, a `UnitRange` (e.g. `i:j`), or a positive `StepRange` (e.g.
+`i:s:j`); scalar `Int` and `CartesianIndex` forms are rejected at compile
+time. A StepRange changes the element stride inside the resulting TileArray.
+The result can be passed to `ct.load`/`ct.store` (or sliced again). Runtime
+asserts verify that ranges start at ≥ 1 and have a positive step; negative
+steps cannot be represented by Tile IR TensorViews.
 
 ```julia
 function rowsum(a, b, r1::Int32, r2::Int32)
@@ -347,6 +348,31 @@ end
 | `permutedims(arr, perm)` | Permute axes (1-indexed) |
 | `transpose(arr)` | 2D transpose (`permutedims(arr, (2, 1))`) |
 | `reshape(arr, dims)` | Column-major reshape, requires contiguous source |
+
+### Tile Windows
+
+`eachtile` creates a small, indexable device-side collection of fixed-shape
+tiles. Its indices are 1-based and `step` (one entry per tile dimension)
+controls tile origins, not the element stride inside a tile. `size(tiles, d)`
+is the number of tiles along `d`: on the host it computes
+`cld(size(a, d), step[d])` for launch-grid sizing, while inside a kernel it
+queries the Tile IR backend for the authoritative index-space count:
+
+```julia
+adjacent = eachtile(a, (8, 8))              # default: step == (8, 8)
+overlap  = eachtile(a, (8, 8); step=(4, 8)) # neighboring windows overlap
+gapped   = eachtile(a, (8, 8); step=(16, 8)) # gaps between row windows
+
+tile = overlap[2, 1]
+overlap[2, 1] = tile
+```
+
+`eachtile` also accepts the same `order` kwarg as `ct.load`/`ct.store` to
+permute which array dimension each tile dimension walks. Use `ct.load` and
+`ct.store` for `check_bounds`, `latency`, and `allow_tma` controls. Equal shape and step use the ordinary Tile IR partition view;
+unequal values require Tile IR bytecode v13.3 or newer. This is distinct from
+`@view a[1:2:end, :]`, which steps individual elements rather than tile
+origins.
 
 ### Atomics
 | Operation | Description |

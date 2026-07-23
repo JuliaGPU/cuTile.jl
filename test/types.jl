@@ -69,6 +69,49 @@ end
     @test size(PV, 2) == 32
 end
 
+@testset "StridedView" begin
+    SV = cuTile.StridedView{Float32, 2, Tuple{16, 32}, Tuple{8, 4}}
+    @test eltype(SV) == Float32
+    @test ndims(SV) == 2
+    @test size(SV) == (16, 32)
+    @test size(SV, 1) == 16
+    @test size(SV, 2) == 32
+end
+
+@testset "eachtile" begin
+    a = ct.TileArray(Ptr{Float32}(0), (Int32(16), Int32(10)), (Int32(1), Int32(16)))
+    tiles = eachtile(a, (8, 4); step=(3, 2))
+    @test parent(tiles) === a
+    @test ndims(tiles) == 2
+    @test size(tiles) == (Int32(6), Int32(5))
+    @test size(tiles, 1) == Int32(6)
+    @test size(tiles, 2) == Int32(5)
+    @test :eachtile in names(cuTile)
+
+    # The element of the collection is a whole tile of the requested shape.
+    @test eltype(tiles) == ct.Tile{Float32, Tuple{8, 4}}
+    @test eltype(typeof(tiles)) == ct.Tile{Float32, Tuple{8, 4}}
+
+    @test_throws "strictly positive" eachtile(a, (8, 4); step=(0, 2))
+    # `step` must carry one entry per user tile dimension: a mismatched length
+    # is rejected rather than silently overlapping the padded dimensions.
+    @test_throws "must match tile_shape" eachtile(a, (8, 4); step=(2, 2, 2))
+    @test_throws "must match tile_shape" eachtile(a, (4, 4); step=(2,))
+
+    # A short tile_shape/step pair on a higher-rank array pads consistently:
+    # the trailing dimension is a unit-step singleton, not a step-1 overlap.
+    short = eachtile(a, (4,); step=(2,))
+    @test cuTile.tiled_view_shape(short) == (4, 1)
+    @test cuTile.tiled_view_step(short) == (2, 1)
+
+    # `order` permutes which array dimension each tile dimension walks, so the
+    # host tile count pairs step[i] with array dim order[i]. a is 16×10.
+    permuted = eachtile(a, (8, 4); step=(3, 2), order=(2, 1))
+    @test size(permuted) == (Int32(4), Int32(8))  # cld(10, 3), cld(16, 2)
+    @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1, 1))
+    @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1,))
+end
+
 @testset "TensorView" begin
     @test eltype(cuTile.TensorView{Float32, 2}) == Float32
     @test eltype(cuTile.TensorView{Float64, 3}) == Float64

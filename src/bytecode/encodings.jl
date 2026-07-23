@@ -100,6 +100,7 @@ module Opcode
     const UnpackOp = 112 # since 13.3
     # 113 (AllocaOp) not implemented
     const MmaFScaledOp = 114 # since 13.3
+    const MakeStridedViewOp = 116 # since 13.3
     const InsertOp = 118     # since 13.4
 end
 
@@ -457,6 +458,21 @@ Opcode: 66
 """
 function encode_MakePartitionViewOp!(cb::CodeBuilder, result_type::TypeId, tensor_view::Value)
     encode_varint!(cb.buf, Opcode.MakePartitionViewOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, tensor_view)
+    return new_op!(cb)
+end
+
+"""
+    encode_MakeStridedViewOp!(cb, result_type, tensor_view) -> Value
+
+Create a strided view from a tensor view.
+Opcode: 116 (Tile IR v13.3+)
+"""
+function encode_MakeStridedViewOp!(cb::CodeBuilder, result_type::TypeId, tensor_view::Value)
+    cb.version >= v"13.3" ||
+        throw(IRError("MakeStridedViewOp requires Tile IR v13.3+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.MakeStridedViewOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, tensor_view)
     return new_op!(cb)

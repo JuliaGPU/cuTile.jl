@@ -73,3 +73,100 @@ end
     expected = permutedims(Array(a), (3, 1, 2))
     @test Array(b)[1:2, 1:2, 1:2] == expected[1:2, 1:2, 1:2]
 end
+
+@testset "eachtile — adjacent, overlapping, and gapped windows" begin
+    function copy_windows(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, n::Int32)
+        src = eachtile(a, (4,); step=(2,))
+        dst = eachtile(b, (4,); step=(2,))
+        for i in 1:n
+            dst[i] = src[i]
+        end
+        return
+    end
+
+    a = CUDA.rand(Float32, 16)
+    b = CUDA.zeros(Float32, 16)
+    @cuda backend=cuTile copy_windows(a, b, Int32(8))
+    @test Array(b) == Array(a)
+
+    function copy_gaps(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        src = eachtile(a, (4,); step=(8,))
+        dst = eachtile(b, (4,); step=(8,))
+        # On device, `size` is overlaid to query the backend index space
+        # (get_index_space_shape) rather than baking in `cld`.
+        for i in 1:size(src, 1)
+            dst[i] = src[i]
+        end
+        return
+    end
+
+    fill!(b, 0)
+    @cuda backend=cuTile copy_gaps(a, b)
+    expected = zeros(Float32, 16)
+    expected[1:4] .= Array(a)[1:4]
+    expected[9:12] .= Array(a)[9:12]
+    @test Array(b) == expected
+end
+
+@testset "eachtile — asymmetric 2D windows" begin
+    function copy_window(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        src = eachtile(a, (4, 8); step=(3, 2), padding_mode=ct.PaddingMode.Zero)
+        dst = eachtile(b, (4, 8); step=(3, 2))
+        ct.store(dst, (2, 3), ct.load(src, (2, 3)))
+        return
+    end
+
+    a = CUDA.rand(Float32, 12, 12)
+    b = CUDA.zeros(Float32, 12, 12)
+    @cuda backend=cuTile copy_window(a, b)
+    expected = zeros(Float32, 12, 12)
+    expected[4:7, 5:12] .= Array(a)[4:7, 5:12]
+    @test Array(b) == expected
+end
+
+@testset "eachtile — order permutes tile dimensions" begin
+    # order=(2, 1): tile dim 1 (extent 4, step 3) walks array dim 2, tile dim 2
+    # (extent 8, step 2) walks array dim 1. Index (2, 3) selects the window
+    # cols 4:7 (origin (2-1)*3) and rows 5:12 (origin (3-1)*2). A load/store
+    # roundtrip through identically-parameterized views copies that window.
+    function copy_permuted(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        src = eachtile(a, (4, 8); step=(3, 2), order=(2, 1), padding_mode=ct.PaddingMode.Zero)
+        dst = eachtile(b, (4, 8); step=(3, 2), order=(2, 1))
+        dst[2, 3] = src[2, 3]
+        return
+    end
+
+    a = CUDA.rand(Float32, 12, 12)
+    b = CUDA.zeros(Float32, 12, 12)
+    @cuda backend=cuTile copy_permuted(a, b)
+    expected = zeros(Float32, 12, 12)
+    expected[5:12, 4:7] .= Array(a)[5:12, 4:7]
+    @test Array(b) == expected
+end
+
+@testset "eachtile — partial edges and requested-rank normalization" begin
+    function copy_partial(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        src = eachtile(a, (4,); step=(4,), padding_mode=ct.PaddingMode.Zero)
+        ct.store(b, 1, ct.load(src, 2))
+        return
+    end
+
+    a = CUDA.rand(Float32, 6)
+    b = CUDA.zeros(Float32, 4)
+    @cuda backend=cuTile copy_partial(a, b)
+    @test Array(b) == vcat(Array(a)[5:6], zeros(Float32, 2))
+
+    function copy_normalized(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        src = eachtile(a, (4,); step=(2,))
+        dst = eachtile(b, (4,); step=(2,))
+        dst[2, 1] = src[2, 1]
+        return
+    end
+
+    a2 = CUDA.rand(Float32, 8, 1)
+    b2 = CUDA.zeros(Float32, 8, 1)
+    @cuda backend=cuTile copy_normalized(a2, b2)
+    expected = zeros(Float32, 8, 1)
+    expected[3:6, 1] .= Array(a2)[3:6, 1]
+    @test Array(b2) == expected
+end

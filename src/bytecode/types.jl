@@ -46,6 +46,7 @@ module CompositeType
     const TensorView    = UInt8(0x0e)
     const PartitionView = UInt8(0x0f)
     const Func          = UInt8(0x10)
+    const StridedView   = UInt8(0x15) # since 13.3
 end
 
 # Dynamic shape marker
@@ -203,6 +204,24 @@ function partition_view_type!(table::TypeTable,
         encode_int_list!(buf, dim_map, 4)
         encode_padding_value!(buf, padding_value)
     end
+    _get_or_create!(table, buf)
+end
+
+function strided_view_type!(table::TypeTable,
+                            tile_shape::TileShape,
+                            traversal_strides::TileShape,
+                            tensor_view::TypeId,
+                            dim_map::AbstractVector{<:Integer},
+                            padding_value::PaddingValue.T)
+    table.version >= v"13.3" ||
+        throw(IRError("StridedView requires Tile IR bytecode v13.3+, got v$(table.version)"))
+    buf = UInt8[CompositeType.StridedView]
+    encode_optional_flags!(buf, padding_value)
+    encode_int_list!(buf, collect(tile_shape), 4)
+    encode_int_list!(buf, collect(traversal_strides), 4)
+    encode_varint!(buf, tensor_view.id)
+    encode_int_list!(buf, dim_map, 4)
+    encode_optional_padding_byte!(buf, padding_value)
     _get_or_create!(table, buf)
 end
 
