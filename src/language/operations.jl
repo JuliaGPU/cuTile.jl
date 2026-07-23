@@ -341,7 +341,9 @@ end
     return :($kept)
 end
 
-function _normalize_eachtile_shape(shape::Tuple, rank::Int, name::String)
+# Pad a short tile shape with trailing 1s, or squeeze trailing singletons, to
+# reach the array rank. Rejects a shape whose non-singleton tail can't be dropped.
+function normalize_eachtile_shape(shape::Tuple, rank::Int, name::String)
     length(shape) == rank && return shape
     if length(shape) < rank
         return (shape..., ntuple(_ -> 1, rank - length(shape))...)
@@ -353,16 +355,36 @@ function _normalize_eachtile_shape(shape::Tuple, rank::Int, name::String)
     return shape[1:rank]
 end
 
-@generated function _eachtile(a::A, ::Val{Requested}, ::Val{Step}, ::Val{Padding}) where
+# Normalize a user `step` (already length-matched to the user `tile_shape`) to
+# the array rank, following the same pad/squeeze as the tile shape. Padded
+# (trailing) dimensions default to the corresponding `view_shape` entry — the
+# "step defaults to tile shape" rule applied per dimension — so a short
+# `tile_shape`/`step` pair stays consistent (padded dims are unit-step
+# singletons). Squeezed trailing dimensions (already validated as singletons by
+# the tile-shape normalization) simply drop their step entries.
+function normalize_eachtile_step(step::Tuple, view_shape::Tuple, rank::Int)
+    M = length(step)
+    M == rank && return step
+    M < rank && return (step..., ntuple(i -> view_shape[M + i], rank - M)...)
+    return step[1:rank]
+end
+
+@generated function build_tiled_view(a::A, ::Val{Requested}, ::Val{Step}, ::Val{Padding}) where
         {A<:TileArray, Requested, Step, Padding}
     Requested isa Tuple || throw(ArgumentError(
         "eachtile: tile_shape must be a compile-time tuple, got $(typeof(Requested))"))
     rank = ndims(A)
-    view_shape = _normalize_eachtile_shape(Requested, rank, "tile_shape")
+    view_shape = normalize_eachtile_shape(Requested, rank, "tile_shape")
     normalized_step = if Step === nothing
         view_shape
     elseif Step isa Tuple
-        _normalize_eachtile_shape(Step, rank, "step")
+        # A short `step` must not silently overlap the padded tile dimensions
+        # (Python requires `traversal_steps` at full rank). Require it to carry
+        # one entry per user tile dimension, then normalize both together.
+        length(Step) == length(Requested) || throw(ArgumentError(
+            "eachtile: step $Step must match tile_shape $Requested in length " *
+            "($(length(Step)) vs $(length(Requested))); pass one step per tile dimension"))
+        normalize_eachtile_step(Step, view_shape, rank)
     else
         throw(ArgumentError("eachtile: step must be a compile-time tuple or nothing, got $(typeof(Step))"))
     end
@@ -372,13 +394,6 @@ end
                             Tuple{normalized_step...}, Padding}
     return :($result_type(a))
 end
-
-_tiled_view_requested_shape(::TiledView{A, RequestedShape}) where {A, RequestedShape} =
-    Tuple(RequestedShape.parameters)
-_tiled_view_shape(::TiledView{A, RequestedShape, ViewShape}) where
-        {A, RequestedShape, ViewShape} = Tuple(ViewShape.parameters)
-_tiled_view_step(::TiledView{A, RequestedShape, ViewShape, Step}) where
-        {A, RequestedShape, ViewShape, Step} = Tuple(Step.parameters)
 
 """
     eachtile(a, tile_shape; step=nothing,
@@ -397,29 +412,29 @@ given padding mode on loads and clipped stores.
 @inline function eachtile(a::TileArray, tile_shape::Tuple;
                           step::Union{Tuple, Nothing}=nothing,
                           padding_mode::PaddingMode.T=PaddingMode.Undetermined)
-    _eachtile(a, Val(tile_shape), Val(step), Val(padding_mode))
+    build_tiled_view(a, Val(tile_shape), Val(step), Val(padding_mode))
 end
 
-@inline function _make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Shape, Padding}) where
+@inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Shape, Padding}) where
         {A, RequestedShape, Shape, Padding}
     parent = tiles.parent
     tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
-    Intrinsics.make_partition_view(tv, _tiled_view_shape(tiles), Padding, nothing)
+    Intrinsics.make_partition_view(tv, tiled_view_shape(tiles), Padding, nothing)
 end
-@inline function _make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Step, Padding}) where
+@inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Step, Padding}) where
         {A, RequestedShape, Shape, Step, Padding}
     parent = tiles.parent
     tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
-    Intrinsics.make_strided_view(tv, _tiled_view_shape(tiles), _tiled_view_step(tiles), Padding, nothing)
+    Intrinsics.make_strided_view(tv, tiled_view_shape(tiles), tiled_view_step(tiles), Padding, nothing)
 end
 
-@inline _load_tile_view(view::PartitionView, latency, allow_tma, indices, check_bounds) =
+@inline load_tile_view(view::PartitionView, latency, allow_tma, indices, check_bounds) =
     Intrinsics.load_partition_view(view, latency, allow_tma, indices, check_bounds)
-@inline _load_tile_view(view::StridedView, latency, allow_tma, indices, check_bounds) =
+@inline load_tile_view(view::StridedView, latency, allow_tma, indices, check_bounds) =
     Intrinsics.load_strided_view(view, latency, allow_tma, indices, check_bounds)
-@inline _store_tile_view(view::PartitionView, tile, latency, allow_tma, indices, check_bounds) =
+@inline store_tile_view(view::PartitionView, tile, latency, allow_tma, indices, check_bounds) =
     Intrinsics.store_partition_view(view, tile, latency, allow_tma, indices, check_bounds)
-@inline _store_tile_view(view::StridedView, tile, latency, allow_tma, indices, check_bounds) =
+@inline store_tile_view(view::StridedView, tile, latency, allow_tma, indices, check_bounds) =
     Intrinsics.store_strided_view(view, tile, latency, allow_tma, indices, check_bounds)
 
 @inline function load(tiles::TiledView{A}, index::NTuple{N, <:Integer};
@@ -427,9 +442,9 @@ end
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing) where {A, N}
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
-    view = _make_tile_view(tiles)
-    tile = _load_tile_view(view, latency, allow_tma, promote(index...) .- One(), check_bounds)
-    reshape(tile, _tiled_view_requested_shape(tiles))
+    view = make_tile_view(tiles)
+    tile = load_tile_view(view, latency, allow_tma, promote(index...) .- One(), check_bounds)
+    reshape(tile, tiled_view_requested_shape(tiles))
 end
 @inline function load(tiles::TiledView, index::Integer; kwargs...)
     load(tiles, (index,); kwargs...)
@@ -444,8 +459,8 @@ end
                        allow_tma::Union{Bool, Nothing}=nothing) where {A, N, T}
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
     reshaped = _reshape_to_rank(tile, Val(ndims(tiles)))
-    view = _make_tile_view(tiles)
-    _store_tile_view(view, reshaped, latency, allow_tma, promote(index...) .- One(), check_bounds)
+    view = make_tile_view(tiles)
+    store_tile_view(view, reshaped, latency, allow_tma, promote(index...) .- One(), check_bounds)
     return tile
 end
 @inline function store(tiles::TiledView, index::Integer, tile::Tile; kwargs...)
@@ -455,13 +470,26 @@ end
     store(tiles, index, tile; kwargs...)
 end
 
+# In kernels, `size` on a TiledView defers the tile count to the Tile IR
+# backend (`get_index_space_shape`) instead of baking in the host `cld`
+# formula; this matches cuTile Python's `TiledView.num_tiles` lowering.
+@overlay function Base.size(tiles::TiledView)
+    view = make_tile_view(tiles)
+    ntuple(i -> Intrinsics.get_index_space_shape(view, i - One()), Val(ndims(tiles)))
+end
+@overlay function Base.size(tiles::TiledView, d::Integer)
+    d > ndims(tiles) && return Int32(1)
+    view = make_tile_view(tiles)
+    Intrinsics.get_index_space_shape(view, d - One())
+end
+
 @overlay function Base.getindex(tiles::TiledView{A}, indices::Vararg{Integer, N}) where {A, N}
     load(tiles, indices)
 end
 Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(
         tiles::TiledView{A}, tile::Tile, indices::Vararg{Integer, N}) where {A, N}
     store(tiles, indices, tile)
-    return
+    return tiles
 end
 
 # Reshape a tile to match target rank N, preserving data layout.

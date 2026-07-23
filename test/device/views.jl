@@ -92,6 +92,8 @@ end
     function copy_gaps(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
         src = eachtile(a, (4,); step=(8,))
         dst = eachtile(b, (4,); step=(8,))
+        # On device, `size` is overlaid to query the backend index space
+        # (get_index_space_shape) rather than baking in `cld`.
         for i in 1:size(src, 1)
             dst[i] = src[i]
         end

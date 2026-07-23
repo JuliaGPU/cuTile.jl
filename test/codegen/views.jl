@@ -118,3 +118,23 @@ end
             return
         end
 end
+
+@testset "eachtile — device size queries the backend index space" begin
+    # `size(tiles, d)` computes `cld` on the host, but in kernels it is
+    # overlaid to defer to `get_index_space_shape` (matching cuTile Python's
+    # `num_tiles` lowering). Feed the result into a load index so it isn't
+    # DCE'd.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_strided_view"
+        @check "get_index_space_shape"
+        @check "load_view_tko"
+        @check "store_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            tiles = eachtile(a, (8,); step=(4,))
+            n = size(tiles, 1)
+            ct.store(a, 1, ct.load(tiles, n))
+            return
+        end
+    end
+end

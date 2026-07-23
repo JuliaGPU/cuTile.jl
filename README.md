@@ -352,9 +352,11 @@ end
 ### Tile Windows
 
 `eachtile` creates a small, indexable device-side collection of fixed-shape
-tiles. Its indices are 1-based and `size(eachtile(a, shape; step), d)` is
-`cld(size(a, d), step[d])`. `step` controls tile origins, not the element
-stride inside a tile:
+tiles. Its indices are 1-based and `step` (one entry per tile dimension)
+controls tile origins, not the element stride inside a tile. `size(tiles, d)`
+is the number of tiles along `d`: on the host it computes
+`cld(size(a, d), step[d])` for launch-grid sizing, while inside a kernel it
+queries the Tile IR backend for the authoritative index-space count:
 
 ```julia
 adjacent = eachtile(a, (8, 8))              # default: step == (8, 8)

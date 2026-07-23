@@ -424,11 +424,37 @@ Base.parent(tiles::TiledView) = tiles.parent
 Base.ndims(::Type{<:TiledView{A}}) where {A} = ndims(A)
 Base.ndims(tiles::TiledView) = ndims(typeof(tiles))
 
-_tiled_view_steps(::Type{<:TiledView{A, RequestedShape, ViewShape, Step}}) where
-        {A, RequestedShape, ViewShape, Step} = Tuple(Step.parameters)
+# The element of a `TiledView` is a whole tile of the user-requested shape:
+# `load` reshapes the view tile back to `RequestedShape`, which may be a lower
+# rank than the rank-normalized `ViewShape`.
+Base.eltype(::Type{<:TiledView{A, RequestedShape}}) where
+        {T, A<:TileArray{T}, RequestedShape} = Tile{T, RequestedShape}
+Base.eltype(tiles::TiledView) = eltype(typeof(tiles))
 
+# Type-parameter accessors. Defined on the type (single source of truth) with
+# an instance forwarder for convenience.
+tiled_view_requested_shape(::Type{<:TiledView{A, RequestedShape}}) where {A, RequestedShape} =
+    Tuple(RequestedShape.parameters)
+tiled_view_shape(::Type{<:TiledView{A, RequestedShape, ViewShape}}) where
+        {A, RequestedShape, ViewShape} = Tuple(ViewShape.parameters)
+tiled_view_step(::Type{<:TiledView{A, RequestedShape, ViewShape, Step}}) where
+        {A, RequestedShape, ViewShape, Step} = Tuple(Step.parameters)
+tiled_view_requested_shape(tiles::TiledView) = tiled_view_requested_shape(typeof(tiles))
+tiled_view_shape(tiles::TiledView) = tiled_view_shape(typeof(tiles))
+tiled_view_step(tiles::TiledView) = tiled_view_step(typeof(tiles))
+
+"""
+    size(tiles::TiledView[, d])
+
+Number of tiles along each axis. On the host this is computed as
+`cld(size(parent, d), step[d])` for launch-grid sizing. Inside kernels the
+same call is overlaid to query the Tile IR backend via
+`get_index_space_shape` (matching cuTile Python's `TiledView.num_tiles`
+lowering), since the strided index-space formula is the backend's contract,
+not ours.
+"""
 function Base.size(tiles::TiledView)
-    steps = _tiled_view_steps(typeof(tiles))
+    steps = tiled_view_step(typeof(tiles))
     ntuple(i -> cld(size(tiles.parent, i), Int32(steps[i])), Val(ndims(tiles)))
 end
 function Base.size(tiles::TiledView, d::Integer)
