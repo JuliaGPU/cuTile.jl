@@ -3,6 +3,8 @@
 # Provides atomic compare-and-swap, exchange, and add operations for TileArrays.
 
 public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, atomic_and, atomic_xor
+public atomic_store_add, atomic_store_max, atomic_store_min,
+       atomic_store_or, atomic_store_and, atomic_store_xor
 
 """
 Memory ordering for atomic operations.
@@ -222,4 +224,74 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
             $fname(array, indices, T(val); check_bounds, memory_order, memory_scope)
         end
     end
+end
+
+# ============================================================================
+# View-based atomic reductions (atomic_store_add/max/min/or/and/xor)
+#
+# Reduce a whole tile into a view and return `nothing`, without reading back
+# the old values; these lower to `cuda_tile.atomic_red_view_tko` (relaxed,
+# device). Unlike the pointer-style `atomic_*`, they take no
+# `memory_order`/`memory_scope`/`mask`/`check_bounds` keywords. Out-of-bounds
+# handling comes from the view: partial tiles are clipped, and a tile that lies
+# entirely out of bounds is undefined. Requires Tile IR bytecode ≥ 13.3.
+# ============================================================================
+
+"""
+    atomic_store_add(dst, index, update) -> Nothing
+
+Atomically reduce `update` into the tile of `dst` selected by `index`, without
+reading back the old values. `dst` is a `TileArray` (the update tile's shape
+selects the partition) or a `TiledView` from [`eachtile`](@ref). `update`
+broadcasts to the view's tile shape. The reduction is relaxed/device-scoped.
+
+Also available: `atomic_store_max`, `atomic_store_min`, `atomic_store_or`,
+`atomic_store_and`, `atomic_store_xor`. The bitwise variants require `update`
+to exactly match the destination element type; `add`/`max`/`min` convert.
+
+Requires Tile IR bytecode ≥ 13.3.
+"""
+function atomic_store_add end
+
+# Coerce an update tile to `Target` element type: arithmetic ops convert,
+# bitwise ops require an exact match (mirrors Python's `_cast_rmw_update_dtype`).
+@inline _red_update(::Type{Target}, tile::Tile{Target}, bitwise::Bool) where {Target} = tile
+@inline function _red_update(::Type{Target}, tile::Tile, bitwise::Bool) where {Target}
+    bitwise && throw(ArgumentError("bitwise atomic reduction requires the update tile element type to exactly match the destination; no implicit conversion"))
+    convert(Tile{Target}, tile)
+end
+
+for op in (:add, :max, :min, :or, :and, :xor)
+    fname = Symbol(:atomic_store_, op)
+    intrinsic = Symbol(:atomic_red_view_, op)
+    bitwise = op in (:or, :and, :xor)
+
+    # TileArray: the update tile's shape drives the partition view.
+    @eval @inline function $fname(arr::TileArray{T}, index, tile::Tile) where {T}
+        update = _red_update(T, tile, $bitwise)
+        reshaped = _reshape_to_rank(update, Val(ndims(arr)))
+        tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
+        pv = Intrinsics.make_partition_view(tv, size(reshaped), PaddingMode.Undetermined, nothing)
+        Intrinsics.$intrinsic(pv, reshaped, promote(index...) .- One())
+        return nothing
+    end
+    @eval @inline $fname(arr::TileArray{T}, index::Integer, tile::Tile) where {T} =
+        $fname(arr, (index,), tile)
+    @eval @inline function $fname(arr::TileArray{T}, index, val::T) where {T}
+        shape = ntuple(_ -> 1, Val(ndims(arr)))
+        $fname(arr, index, reshape(Intrinsics.from_scalar(val, Tuple{}), shape))
+    end
+
+    # TiledView: update broadcasts to the view's tile shape (eachtile windows).
+    @eval @inline function $fname(tiles::TiledView{A}, index::NTuple{N, <:Integer},
+                                  tile::Tile) where {A, N}
+        N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
+        update = _red_update(eltype(A), tile, $bitwise)
+        view = make_tile_view(tiles)
+        Intrinsics.$intrinsic(view, broadcast_to(update, tiled_view_shape(tiles)),
+                              promote(index...) .- One())
+        return nothing
+    end
+    @eval @inline $fname(tiles::TiledView, index::Integer, tile::Tile) =
+        $fname(tiles, (index,), tile)
 end

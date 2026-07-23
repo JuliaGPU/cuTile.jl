@@ -218,3 +218,92 @@ for (op, mode, desc) in ((:xchg, AtomicRMWMode.XCHG, "exchange (`val`, returning
         end
     end
 end
+
+# cuda_tile.atomic_red_view_tko (view-based atomic reduction)
+
+# Element types accepted by each reduction mode (operations.md:5247-5253).
+const RED_VIEW_INT_DTYPES = (Int32, Int64, UInt32, UInt64)
+const RED_VIEW_ADD_DTYPES = (RED_VIEW_INT_DTYPES..., Float16, BFloat16, Float32, Float64)
+
+# ADDF on bf16 requires bytecode ≥ 13.3 (13.3 release note); shared with the
+# rmw path, which can reach ADDF+bf16 on older bytecode.
+function check_atomic_bf16_support(cb::CodeBuilder, mode::AtomicRMWMode.T, @nospecialize(elem_type))
+    if mode == AtomicRMWMode.ADDF && elem_type === BFloat16 && cb.version < v"13.3"
+        throw(IRError("atomic add on BFloat16 requires Tile IR bytecode ≥ 13.3, got v$(cb.version)"))
+    end
+end
+
+# Shared emission for the six `atomic_red_view_*` intrinsics. Mirrors the
+# view-store side of views.jl (view + index + value, single token result), but
+# fixes the ordering to relaxed/device and carries a reduction mode.
+function emit_atomic_red_view!(ctx::CGCtx, args::AbstractVector,
+                               base_mode::AtomicRMWMode.T, name::String)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Friendly version gate ahead of the encoder's hard IRError.
+    cb.version >= v"13.3" ||
+        throw(IRError("$name requires Tile IR bytecode ≥ 13.3 (tileiras too old), got v$(cb.version)"))
+
+    # Input token appended by token_order_pass!.
+    input_token = extract_token_arg!(ctx, args)
+
+    # args: (view, value, indices)
+    view_arg = emit_value!(ctx, args[1])
+    view_arg === nothing && throw(IRError("$name requires a view argument"))
+    view_arg.v === nothing && throw(IRError("$name requires a materialized view"))
+    view_arg.constant === nothing && throw(IRError("$name: view missing ndim info"))
+    ndim = something(view_arg.constant)
+
+    value_tv = emit_value!(ctx, args[2])
+    value_tv === nothing && throw(IRError("$name requires a value"))
+    elem_type = eltype(CC.widenconst(value_tv.jltype))
+
+    supported = base_mode == AtomicRMWMode.ADD ? RED_VIEW_ADD_DTYPES : RED_VIEW_INT_DTYPES
+    elem_type in supported ||
+        throw(IRError("$name: unsupported element type $elem_type"))
+
+    mode = select_rmw_mode(base_mode, elem_type)
+    check_atomic_bf16_support(cb, mode, elem_type)
+
+    index_tvs = resolve_tuple(ctx, args[3], "$name indices")
+    index_vals = Value[tv.v for tv in index_tvs]
+    index_jl_types = Type[tv.jltype for tv in index_tvs]
+    unique_types = unique(index_jl_types)
+    length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
+    isempty(unique_types) && ndim > 0 && throw(IRError("$name: indices required for $(ndim)D view"))
+    index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]
+    index_type = tile_type_for_julia!(ctx, index_jl_type)
+    index_vals = pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
+    reverse!(index_vals)
+
+    token_type = Token(tt)
+    result_token = encode_AtomicRedViewTkoOp!(cb, token_type, view_arg.v, index_vals, value_tv.v;
+                                              token=input_token,
+                                              memory_ordering=MemoryOrderingSemantics.Relaxed,
+                                              memory_scope=MemoryScope.Device,
+                                              mode=mode)
+    ctx.result_tokens[ctx.current_ssa_idx] = result_token
+    return nothing
+end
+
+for (op, mode) in ((:add, AtomicRMWMode.ADD), (:max, AtomicRMWMode.MAX), (:min, AtomicRMWMode.MIN),
+                   (:or, AtomicRMWMode.OR), (:and, AtomicRMWMode.AND), (:xor, AtomicRMWMode.XOR))
+    name = Symbol(:atomic_red_view_, op)
+    docstring = """
+        Intrinsics.$name(view, value::Tile, indices::NTuple) -> Nothing
+
+    Token-ordered atomic reduction ($op) into the tile of `view` selected by
+    `indices`; lowers to `cuda_tile.atomic_red_view_tko` (relaxed, device).
+    Returns nothing — unlike `atomic_rmw_tko`, the old value is not read back.
+    The token argument is appended by `token_order_pass!`.
+    """
+    @eval begin
+        @doc $docstring @intrinsic $name(view, value, indices)
+        tfunc(𝕃, ::typeof(Intrinsics.$name), @nospecialize args...) = Nothing
+        efunc(::typeof(Intrinsics.$name), effects::CC.Effects) =
+            CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
+        emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.$name), args) =
+            emit_atomic_red_view!(ctx, args, $mode, $(string(name)))
+    end
+end

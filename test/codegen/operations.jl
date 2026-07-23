@@ -2306,6 +2306,89 @@ end
         end
     end
 
+    @testset "atomic_red_view_tko" begin
+        spec2d = ct.ArraySpec{2}(16, true)
+        # TiledView (partition), 2D → relaxed device addf reduction.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tiles = ct.eachtile(a, (16, 16))
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+                @check "make_partition_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, (1, 1), val)
+                return
+            end
+        end
+
+        # TileArray direct, 1D.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))
+                @check "atomic_red_view_tko relaxed device{{.*}}, add,"
+                ct.atomic_store_add(a, bid, val)
+                return
+            end
+        end
+
+        # Stepped (overlapping) eachtile → strided view, still relaxed device.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tiles = ct.eachtile(a, (16,); step=(8,))
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+                @check "make_strided_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, 1, val)
+                return
+            end
+        end
+
+        # Unsigned max → umax mode.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                val = ct.broadcast_to(ct.Tile(UInt32(1)), (16,))
+                @check "atomic_red_view_tko relaxed device{{.*}}umax"
+                ct.atomic_store_max(a, bid, val)
+                return
+            end
+        end
+
+        # Token wiring: an atomic reduction after a store carries a token.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "store_view_tko{{.*}}token = [[TOK:%[^ ]+]]"
+                ct.store(a, bid, tile)
+                @check "atomic_red_view_tko{{.*}}token ="
+                ct.atomic_store_add(a, bid, tile)
+                return
+            end
+        end
+
+        # Bitwise reductions require an exact-eltype update tile.
+        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+            bid = ct.bid(1)
+            val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))  # Int32 into Int64
+            ct.atomic_store_or(a, bid, val)
+            return
+        end
+
+        # Wrong-rank tile index for a TiledView.
+        @test_throws "expected" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            tiles = ct.eachtile(a, (16, 16))
+            val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+            ct.atomic_store_add(tiles, (1, 1, 1), val)  # 3 indices for a 2D view
+            return
+        end
+    end
+
     # Unsigned max/min select the umax/umin comparison modes.
     @testset "unsigned atomic_max/min → umax/umin" begin
         for T in (UInt32, UInt64)
