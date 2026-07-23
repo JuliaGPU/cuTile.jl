@@ -2346,6 +2346,33 @@ end
             end
         end
 
+        # Load padding is not carried into the atomic view: Tile IR rejects a
+        # padding_value on atomic_red_view_tko.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tiles = ct.eachtile(a, (16,); padding_mode=ct.PaddingMode.Zero)
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+                @check "make_partition_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, 1, val)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tiles = ct.eachtile(
+                    a, (16,); step=(8,), padding_mode=ct.PaddingMode.Zero)
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+                @check "make_strided_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, 1, val)
+                return
+            end
+        end
+
         # Unsigned max → umax mode.
         @test @filecheck begin
             @check_label "entry"

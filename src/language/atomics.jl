@@ -261,6 +261,24 @@ function atomic_store_add end
     convert(Tile{Target}, tile)
 end
 
+# Atomic reductions cannot use views with a padding value. Preserve the
+# TiledView's partition/strided layout, but materialize it without load padding.
+@inline function make_atomic_tile_view(
+        tiles::TiledView{A, RequestedShape, Shape, Shape}) where {A, RequestedShape, Shape}
+    parent = tiles.parent
+    tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
+    Intrinsics.make_partition_view(
+        tv, tiled_view_shape(tiles), PaddingMode.Undetermined, tiled_view_order(tiles))
+end
+@inline function make_atomic_tile_view(
+        tiles::TiledView{A, RequestedShape, Shape, Step}) where {A, RequestedShape, Shape, Step}
+    parent = tiles.parent
+    tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
+    Intrinsics.make_strided_view(
+        tv, tiled_view_shape(tiles), tiled_view_step(tiles),
+        PaddingMode.Undetermined, tiled_view_order(tiles))
+end
+
 for op in (:add, :max, :min, :or, :and, :xor)
     fname = Symbol(:atomic_store_, op)
     intrinsic = Symbol(:atomic_red_view_, op)
@@ -299,7 +317,7 @@ for op in (:add, :max, :min, :or, :and, :xor)
                                   tile::Tile) where {A, N}
         N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
         update = _red_update(eltype(A), tile, $bitwise)
-        view = make_tile_view(tiles)
+        view = make_atomic_tile_view(tiles)
         Intrinsics.$intrinsic(view, broadcast_to(update, tiled_view_shape(tiles)),
                               promote(index...) .- One())
         return nothing
