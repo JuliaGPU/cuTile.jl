@@ -103,7 +103,8 @@ These propagate alias identity from their first operand.
 function is_view_constructor(func)
     return func === Intrinsics.make_tensor_view ||
         func === Intrinsics.make_partition_view ||
-        func === Intrinsics.make_strided_view
+        func === Intrinsics.make_strided_view ||
+        func === Intrinsics.make_gather_scatter_view
 end
 
 function is_pointer_passthrough(func)

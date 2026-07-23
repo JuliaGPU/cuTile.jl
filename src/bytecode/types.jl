@@ -46,6 +46,7 @@ module CompositeType
     const TensorView    = UInt8(0x0e)
     const PartitionView = UInt8(0x0f)
     const Func          = UInt8(0x10)
+    const GatherScatterView = UInt8(0x14) # since 13.3
     const StridedView   = UInt8(0x15) # since 13.3
 end
 
@@ -221,6 +222,25 @@ function strided_view_type!(table::TypeTable,
     encode_int_list!(buf, collect(traversal_strides), 4)
     encode_varint!(buf, tensor_view.id)
     encode_int_list!(buf, dim_map, 4)
+    encode_optional_padding_byte!(buf, padding_value)
+    _get_or_create!(table, buf)
+end
+
+function gather_scatter_view_type!(table::TypeTable,
+                                   tile_shape::TileShape,
+                                   tensor_view::TypeId,
+                                   sparse_dim::Integer,
+                                   padding_value::PaddingValue.T)
+    table.version >= v"13.3" ||
+        throw(IRError("GatherScatterView requires Tile IR bytecode v13.3+, got v$(table.version)"))
+    sparse_dim >= 0 || throw(IRError("GatherScatterView sparse dimension must be non-negative, got $sparse_dim"))
+    sparse_dim < length(tile_shape) ||
+        throw(IRError("GatherScatterView sparse dimension $sparse_dim is outside rank $(length(tile_shape))"))
+    buf = UInt8[CompositeType.GatherScatterView]
+    encode_optional_flags!(buf, padding_value)
+    encode_int_list!(buf, collect(tile_shape), 4)
+    encode_varint!(buf, tensor_view.id)
+    encode_varint!(buf, sparse_dim)
     encode_optional_padding_byte!(buf, padding_value)
     _get_or_create!(table, buf)
 end

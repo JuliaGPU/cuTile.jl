@@ -63,20 +63,41 @@ end
 #-----------------------------------------------------------------------------
 
 # Return type for the view-load intrinsics: `Tile{eltype, Shape}` where `Shape`
-# is the view's tile-shape parameter (index 3 of both `PartitionView{T,N,Shape}`
-# and `StridedView{T,N,Shape,Steps}`). `min_params` guards a fully-parameterized
-# view type (3 for partition, 4 for strided).
+# is the view's tile-shape parameter (index 3 of `PartitionView{T,N,Shape}`,
+# `StridedView{T,N,Shape,Steps}`, and `GatherScatterView{T,N,Shape,SparseDim}`).
+# `min_params` guards a fully-parameterized view type (3 for partition, 4 for
+# strided and gather/scatter).
 function view_load_return_type(@nospecialize(view), min_params::Int)
     view_type = CC.widenconst(view)
     view_type isa DataType || return nothing
-    (view_type <: PartitionView || view_type <: StridedView) || return nothing
+    (view_type <: PartitionView || view_type <: StridedView ||
+     view_type <: GatherScatterView) || return nothing
     length(view_type.parameters) >= min_params || return nothing
     Shape = view_type.parameters[3]
     Shape isa Type || return nothing
     return Tile{eltype(view_type), Shape}
 end
 
-function emit_view_load!(ctx::CGCtx, args, name::String)
+# Index resolution for the view load/store helpers. Returns Julia-order values;
+# the helper reverses them for Tile IR's row-major layout. The homogeneous
+# default validates that every index tile shares a type and zero-pads a short
+# tuple to `ndim`; the gather/scatter variant accepts one 1D tile plus 0D
+# scalar tiles.
+function default_view_indices(ctx::CGCtx, indices_arg, view_arg, ndim::Int, name::String)
+    index_tvs = resolve_tuple(ctx, indices_arg, "$name indices")
+    index_vals = Value[tv.v for tv in index_tvs]
+    index_jl_types = Type[tv.jltype for tv in index_tvs]
+
+    unique_types = unique(index_jl_types)
+    length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
+    isempty(unique_types) && ndim > 0 && throw(IRError("$name(): indices required for $(ndim)D view"))
+    index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
+    index_type = tile_type_for_julia!(ctx, index_jl_type)
+
+    return pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
+end
+
+function emit_view_load!(ctx::CGCtx, args, name::String; resolve_indices=default_view_indices)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -106,18 +127,8 @@ function emit_view_load!(ctx::CGCtx, args, name::String)
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
     check_bounds = @something get_constant(ctx, args[5]) throw(IRError("$name(): check_bounds must be a compile-time constant"))
 
-    index_tvs = resolve_tuple(ctx, args[4], "$name indices")
-    index_vals = Value[tv.v for tv in index_tvs]
-    index_jl_types = Type[tv.jltype for tv in index_tvs]
-
-    unique_types = unique(index_jl_types)
-    length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
-    isempty(unique_types) && ndim > 0 && throw(IRError("$name(): indices required for $(ndim)D view"))
-    index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
-    index_type = tile_type_for_julia!(ctx, index_jl_type)
-
-    # Pad indices if needed, then reverse for Tile IR row-major order
-    index_vals = pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
+    # Resolve indices to Julia-order values, then reverse for Tile IR row-major.
+    index_vals = resolve_indices(ctx, args[4], view_arg, ndim, name)
     reverse!(index_vals)
 
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
@@ -134,7 +145,8 @@ function emit_view_load!(ctx::CGCtx, args, name::String)
     return CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
 end
 
-function emit_view_store!(ctx::CGCtx, args, name::String)
+function emit_view_store!(ctx::CGCtx, args, name::String;
+                          resolve_indices=default_view_indices, check_tile_shape::Bool=false)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -154,6 +166,15 @@ function emit_view_store!(ctx::CGCtx, args, name::String)
     tile_shape = tile_tv.shape
     tile_shape === nothing && throw(IRError("Cannot determine tile shape for $name()"))
 
+    # Gather/scatter stores fix the tile shape to the view's static shape (no
+    # rank-normalizing reshape); partition/strided stores accept any tile.
+    if check_tile_shape
+        view_type = CC.widenconst(view_arg.jltype)
+        expected_shape = RowMajorShape(ColMajorShape(size(view_type)))
+        tile_shape == expected_shape ||
+            throw(IRError("$name(): tile shape $(Tuple(tile_shape)) does not match view shape $(Tuple(expected_shape))"))
+    end
+
     elem_type = eltype(CC.widenconst(tile_tv.jltype))
     dtype = lookup_dtype!(tt, elem_type)
 
@@ -171,17 +192,8 @@ function emit_view_store!(ctx::CGCtx, args, name::String)
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
     check_bounds = @something get_constant(ctx, args[6]) throw(IRError("$name(): check_bounds must be a compile-time constant"))
 
-    index_tvs = resolve_tuple(ctx, args[5], "$name indices")
-    index_vals = Value[tv.v for tv in index_tvs]
-    index_jl_types = Type[tv.jltype for tv in index_tvs]
-
-    unique_types = unique(index_jl_types)
-    length(unique_types) <= 1 || throw(IRError("All index types must match, got: $unique_types"))
-    isempty(unique_types) && actual_ndim > 0 && throw(IRError("$name(): indices required for $(actual_ndim)D view"))
-    index_jl_type = isempty(unique_types) ? Int32 : unique_types[1]  # Int32 only for 0D case
-    index_type = tile_type_for_julia!(ctx, index_jl_type)
-
-    index_vals = pad_indices(ctx, index_vals, actual_ndim, index_type, index_jl_type)
+    # Resolve indices to Julia-order values, then reverse for Tile IR row-major.
+    index_vals = resolve_indices(ctx, args[5], view_arg, actual_ndim, name)
     reverse!(index_vals)
 
     optimization_hints = create_optimization_hints(ctx, latency, allow_tma_val)
@@ -229,6 +241,53 @@ tfunc(𝕃, ::typeof(Intrinsics.load_strided_view), @nospecialize(sv), @nospecia
     view_load_return_type(sv, 4)
 emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_strided_view), args) =
     emit_view_load!(ctx, args, "load_strided_view")
+
+"""
+    Intrinsics.load_gather_scatter_view(view::GatherScatterView, ...)
+
+Token-ordered load from a GatherScatterView. Its indices deliberately accept
+one one-dimensional tile plus scalar tiles, unlike PartitionView's homogeneous
+index tuple.
+"""
+@intrinsic load_gather_scatter_view(view, latency, allow_tma, indices, check_bounds)
+tfunc(𝕃, ::typeof(Intrinsics.load_gather_scatter_view), @nospecialize(view), @nospecialize args...) =
+    view_load_return_type(view, 4)
+emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_gather_scatter_view), args) =
+    emit_view_load!(ctx, args, "load_gather_scatter_view"; resolve_indices=gather_scatter_view_indices)
+
+# Gather/scatter index resolution: one 1D tile on the sparse dim plus 0D scalar
+# tiles elsewhere, validated against the view's static shape and sparse dim.
+function gather_scatter_view_indices(ctx::CGCtx, indices_arg, view_arg, ndim::Int, name::String)
+    view_type = CC.widenconst(view_arg.jltype)
+    sparse_dim = view_type.parameters[4]
+    return gather_scatter_index_values(ctx, indices_arg, size(view_type), ndim, sparse_dim,
+                                       "$name indices")
+end
+
+function gather_scatter_index_values(ctx::CGCtx, indices_arg, view_shape::Tuple, ndim::Int,
+                                     sparse_dim::Integer, name::AbstractString)
+    index_tvs = resolve_tuple(ctx, indices_arg, name)
+    length(index_tvs) == ndim ||
+        throw(IRError("$name must contain $ndim indices, got $(length(index_tvs))"))
+    1 <= sparse_dim <= ndim ||
+        throw(IRError("$name has invalid sparse dimension $sparse_dim for rank $ndim"))
+
+    for (dim, index_tv) in enumerate(index_tvs)
+        index_type = CC.widenconst(index_tv.jltype)
+        index_type <: Tile ||
+            throw(IRError("$name at dimension $dim must be a Tile{Int32}"))
+        eltype(index_type) === Int32 ||
+            throw(IRError("$name at dimension $dim must have Int32 elements, got $(eltype(index_type))"))
+        expected_rank = dim == sparse_dim ? 1 : 0
+        ndims(index_type) == expected_rank ||
+            throw(IRError("$name at dimension $dim must be a $(expected_rank)D Int32 tile"))
+        if dim == sparse_dim
+            size(index_type, 1) == view_shape[dim] ||
+                throw(IRError("$name sparse index length $(size(index_type, 1)) does not match view shape $(view_shape[dim]) at dimension $dim"))
+        end
+    end
+    return Value[index_tv.v for index_tv in index_tvs]
+end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
     while length(index_vals) < ndim
@@ -364,6 +423,60 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_strided_view), arg
     elem_type = eltype(tensor_view.jltype)
     CGVal(strided, sv_type,
           StridedView{elem_type, ndim, Tuple{shape...}, Tuple{strides...}},
+          RowMajorShape(()), nothing, Some(ndim), nothing)
+end
+
+"""
+    Intrinsics.make_gather_scatter_view(tensor_view, shape, sparse_dim, padding_mode)
+
+Construct a Tile IR GatherScatterView. `shape` and the one-based Julia
+`sparse_dim` are compile-time constants; the emitted type uses Tile IR's
+reversed, zero-based dimension numbering.
+"""
+@intrinsic make_gather_scatter_view(tensor_view, shape, sparse_dim, padding_mode)
+function tfunc(𝕃, ::typeof(Intrinsics.make_gather_scatter_view), @nospecialize(tensor_view),
+               @nospecialize(shape_arg), @nospecialize(sparse_dim_arg), @nospecialize args...)
+    tv_type = CC.widenconst(tensor_view)
+    tv_type <: TensorView || return nothing
+    isa(shape_arg, CC.Const) || return nothing
+    isa(sparse_dim_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    sparse_dim = sparse_dim_arg.val
+    shape isa Tuple && sparse_dim isa Integer || return nothing
+    length(shape) == ndims(tv_type) || return nothing
+    1 <= sparse_dim <= length(shape) || return nothing
+    return GatherScatterView{eltype(tv_type), ndims(tv_type), Tuple{shape...}, sparse_dim}
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_gather_scatter_view), args)
+    tensor_view = emit_value!(ctx, args[1])
+    tensor_view === nothing && throw(IRError("make_gather_scatter_view() requires a TensorView argument"))
+    ctx.tt.version >= v"13.3" ||
+        throw(IRError("make_gather_scatter_view requires Tile IR bytecode v13.3+, got v$(ctx.tt.version)"))
+
+    shape = @something get_constant(ctx, args[2]) throw(IRError("make_gather_scatter_view() shape must be a compile-time constant"))
+    shape isa Tuple || throw(IRError("make_gather_scatter_view() shape must be a tuple, got $(typeof(shape))"))
+    validate_tile_shape(collect(Int, shape), "gather/scatter view")
+
+    ndim = ndims(CC.widenconst(tensor_view.jltype))
+    length(shape) == ndim ||
+        throw(IRError("make_gather_scatter_view(): shape rank $(length(shape)) does not match TensorView rank $ndim"))
+    ndim >= 2 || throw(IRError("make_gather_scatter_view() requires a 2D or higher-rank TensorView"))
+
+    sparse_dim = @something get_constant(ctx, args[3]) throw(IRError("make_gather_scatter_view() sparse_dim must be a compile-time constant"))
+    sparse_dim isa Integer || throw(IRError("make_gather_scatter_view() sparse_dim must be an integer, got $(typeof(sparse_dim))"))
+    1 <= sparse_dim <= ndim ||
+        throw(IRError("make_gather_scatter_view(): sparse_dim $sparse_dim is outside rank $ndim"))
+
+    padding_value = convert_enum(PaddingValue,
+        @something get_constant(ctx, args[4]) throw(IRError("padding_mode must be a compile-time constant")))
+    tile_shape = RowMajorShape(ColMajorShape(shape))
+    tileir_sparse_dim = ndim - Int(sparse_dim)
+    view_type = gather_scatter_view_type!(ctx.tt, tile_shape, tensor_view.type_id,
+                                          tileir_sparse_dim, padding_value)
+    view = encode_MakeGatherScatterViewOp!(ctx.cb, view_type, tensor_view.v)
+    elem_type = eltype(tensor_view.jltype)
+    CGVal(view, view_type,
+          GatherScatterView{elem_type, ndim, Tuple{shape...}, Int(sparse_dim)},
           RowMajorShape(()), nothing, Some(ndim), nothing)
 end
 
@@ -606,3 +719,23 @@ efunc(::typeof(Intrinsics.store_strided_view), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_strided_view), args) =
     emit_view_store!(ctx, args, "store_strided_view")
+
+"""
+    Intrinsics.store_gather_scatter_view(view::GatherScatterView, tile, ...)
+
+Token-ordered store to a GatherScatterView. This stays distinct from
+`store_partition_view`, so loop-parallel-store analysis never treats sparse
+indices as injective.
+"""
+@intrinsic store_gather_scatter_view(view::GatherScatterView{T, N, Shape, SparseDim},
+                                     tile::Tile{T},
+                                     latency::Union{Int, Nothing},
+                                     allow_tma::Bool,
+                                     indices,
+                                     check_bounds::Bool) where {T, N, Shape, SparseDim}
+tfunc(𝕃, ::typeof(Intrinsics.store_gather_scatter_view), @nospecialize args...) = Nothing
+efunc(::typeof(Intrinsics.store_gather_scatter_view), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
+emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_gather_scatter_view), args) =
+    emit_view_store!(ctx, args, "store_gather_scatter_view";
+                     resolve_indices=gather_scatter_view_indices, check_tile_shape=true)

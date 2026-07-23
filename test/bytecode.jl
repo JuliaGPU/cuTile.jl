@@ -3,6 +3,28 @@ make_builder(version) = let strings = cuTile.StringTable(), constants = cuTile.C
     cuTile.CodeBuilder(strings, constants, types; version)
 end
 
+@testset "Tile IR v13.3 GatherScatterView encodings" begin
+    tt = cuTile.TypeTable(; version=v"13.3")
+    tensor_view = cuTile.TypeId(7)
+    view = cuTile.gather_scatter_view_type!(
+        tt, cuTile.RowMajorShape([4, 8]), tensor_view, 1, cuTile.PaddingValue.Zero)
+    @test view == cuTile.TypeId(2)
+    @test last(cuTile.items(tt)).first == UInt8[
+        0x14, 0x01,
+        0x02, 0x04, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+        0x07, 0x01, 0x00,
+    ]
+    @test_throws "v13.3+" cuTile.gather_scatter_view_type!(
+        cuTile.TypeTable(; version=v"13.2"), cuTile.RowMajorShape([4]),
+        tensor_view, 0, cuTile.PaddingValue.Missing)
+
+    cb = make_builder(v"13.3")
+    @test cuTile.encode_MakeGatherScatterViewOp!(cb, cuTile.TypeId(5), cuTile.Value(2)) == cuTile.Value(0)
+    @test cb.buf == UInt8[115, 5, 2]
+    @test_throws "v13.3+" cuTile.encode_MakeGatherScatterViewOp!(
+        make_builder(v"13.2"), cuTile.TypeId(5), cuTile.Value(2))
+end
+
 @testset "Tile IR v13.4 encodings" begin
     @test v"13.4" in cuTile.SUPPORTED_BYTECODE_VERSIONS
 

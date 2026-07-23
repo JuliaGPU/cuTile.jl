@@ -100,6 +100,7 @@ module Opcode
     const UnpackOp = 112 # since 13.3
     # 113 (AllocaOp) not implemented
     const MmaFScaledOp = 114 # since 13.3
+    const MakeGatherScatterViewOp = 115 # since 13.3
     const MakeStridedViewOp = 116 # since 13.3
     const InsertOp = 118     # since 13.4
 end
@@ -458,6 +459,22 @@ Opcode: 66
 """
 function encode_MakePartitionViewOp!(cb::CodeBuilder, result_type::TypeId, tensor_view::Value)
     encode_varint!(cb.buf, Opcode.MakePartitionViewOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, tensor_view)
+    return new_op!(cb)
+end
+
+"""
+    encode_MakeGatherScatterViewOp!(cb, result_type, tensor_view) -> Value
+
+Create a gather/scatter view from a tensor view.
+Opcode: 115 (Tile IR v13.3+)
+"""
+function encode_MakeGatherScatterViewOp!(cb::CodeBuilder, result_type::TypeId,
+                                         tensor_view::Value)
+    cb.version >= v"13.3" ||
+        throw(IRError("MakeGatherScatterViewOp requires Tile IR v13.3+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.MakeGatherScatterViewOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, tensor_view)
     return new_op!(cb)

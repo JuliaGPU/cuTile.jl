@@ -153,6 +153,11 @@ function emit_value!(ctx::CGCtx, val::Enum)
     ghost_value(typeof(val), val)
 end
 
+# Literal ranges are structural language values, not Tile IR values. Keep them
+# available for `getfield` extraction so view helpers can lower their scalar
+# endpoints without attempting to encode a range aggregate.
+emit_value!(ctx::CGCtx, val::AbstractUnitRange) = ghost_value(typeof(val), val)
+
 # Fallback for other types (constants embedded in IR)
 function emit_value!(ctx::CGCtx, @nospecialize(val))
     T = typeof(val)
