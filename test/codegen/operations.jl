@@ -2306,6 +2306,34 @@ end
         end
     end
 
+    # Unsigned max/min select the umax/umin comparison modes.
+    @testset "unsigned atomic_max/min → umax/umin" begin
+        for T in (UInt32, UInt64)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{T,1,spec1d}}) do arr
+                    bid = ct.bid(1)
+                    @check "atomic_rmw_tko{{.*}}umax"
+                    ct.atomic_max(arr, bid, zero(eltype(arr)))
+                    @check "atomic_rmw_tko{{.*}}umin"
+                    ct.atomic_min(arr, bid, zero(eltype(arr)))
+                    return
+                end
+            end
+        end
+        # Signed stays signed.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "umax"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do arr
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko{{.*}}max"
+                ct.atomic_max(arr, bid, Int32(0))
+                return
+            end
+        end
+    end
+
     # `weak` ordering is not supported on atomics; reject at the boundary.
     @testset "reject MemoryOrder.Weak" begin
         spec = ct.ArraySpec{1}(16, true)

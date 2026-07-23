@@ -104,6 +104,25 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
 end
 
+"""
+    select_rmw_mode(base_mode, elem_type) -> AtomicRMWMode.T
+
+Refine a base RMW mode for `elem_type`, mirroring Python's `_select_rmw_mode`:
+floating-point `add` selects `ADDF`, and unsigned `max`/`min` select the
+unsigned `UMAX`/`UMIN` comparisons. All other modes pass through unchanged
+(signedness is irrelevant to `xchg` and the bitwise ops).
+"""
+function select_rmw_mode(base_mode::AtomicRMWMode.T, @nospecialize(elem_type))
+    if elem_type <: AbstractFloat
+        base_mode == AtomicRMWMode.ADD ? AtomicRMWMode.ADDF : base_mode
+    elseif elem_type <: Unsigned
+        base_mode == AtomicRMWMode.MAX ? AtomicRMWMode.UMAX :
+        base_mode == AtomicRMWMode.MIN ? AtomicRMWMode.UMIN : base_mode
+    else
+        base_mode
+    end
+end
+
 # cuda_tile.atomic_rmw_tko (shared helper for atomic RMW operations)
 function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.T)
     cb = ctx.cb
@@ -136,11 +155,9 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     result_tile_type = tile_type!(tt, dtype, shape)
     token_type = Token(tt)
 
-    # Use float add mode for floating point types
-    actual_mode = mode
-    if mode == AtomicRMWMode.ADD && elem_type <: AbstractFloat
-        actual_mode = AtomicRMWMode.ADDF
-    end
+    # Refine mode for element signedness: float add → ADDF, unsigned
+    # max/min → UMAX/UMIN.
+    actual_mode = select_rmw_mode(mode, elem_type)
 
     # Emit atomic RMW
     mem_ordering = convert_enum(MemoryOrderingSemantics, memory_order)
@@ -170,8 +187,8 @@ end
 # cuda_tile.atomic_rmw_tko variants
 for (op, mode, desc) in ((:xchg, AtomicRMWMode.XCHG, "exchange (`val`, returning the old value)"),
                          (:add,  AtomicRMWMode.ADD,  "integer addition (or floating-point addition for AbstractFloat element types, via `cuda_tile.atomic_rmw_tko`'s `addf` mode)"),
-                         (:max,  AtomicRMWMode.MAX,  "signed maximum"),
-                         (:min,  AtomicRMWMode.MIN,  "signed minimum"),
+                         (:max,  AtomicRMWMode.MAX,  "maximum (signed for `Signed`, unsigned via `umax` for `Unsigned`)"),
+                         (:min,  AtomicRMWMode.MIN,  "minimum (signed for `Signed`, unsigned via `umin` for `Unsigned`)"),
                          (:or,   AtomicRMWMode.OR,   "bitwise OR"),
                          (:and,  AtomicRMWMode.AND,  "bitwise AND"),
                          (:xor,  AtomicRMWMode.XOR,  "bitwise XOR"))

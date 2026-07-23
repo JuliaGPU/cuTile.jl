@@ -152,7 +152,8 @@ function atomic_xchg end
     atomic_max(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic maximum. Atomically replaces the value at `index` with `max(old, val)`
-and returns the original value. Index is 1-indexed.
+and returns the original value. Index is 1-indexed. The comparison is signed
+for `Signed` element types and unsigned for `Unsigned` ones.
 """
 function atomic_max end
 
@@ -160,7 +161,8 @@ function atomic_max end
     atomic_min(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic minimum. Atomically replaces the value at `index` with `min(old, val)`
-and returns the original value. Index is 1-indexed.
+and returns the original value. Index is 1-indexed. The comparison is signed
+for `Signed` element types and unsigned for `Unsigned` ones.
 """
 function atomic_min end
 

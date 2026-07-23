@@ -368,6 +368,27 @@ end
     @test result == 1
 end
 
+@testset "atomic_max/min UInt32 (unsigned compare)" begin
+    # 0x80000000 has the high bit set: largest as unsigned, negative as signed.
+    # A signed max/min would disagree with the expected unsigned result.
+    function atomic_umax_kernel(out::ct.TileArray{UInt32,1})
+        ct.atomic_max(out, 1, 0x80000000; memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+    function atomic_umin_kernel(out::ct.TileArray{UInt32,1})
+        ct.atomic_min(out, 1, 0x00000001; memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    out_max = CUDA.fill(0x00000001, 1)
+    @cuda backend=cuTile blocks=8 atomic_umax_kernel(out_max)
+    @test Array(out_max)[1] == 0x80000000  # umax; signed would keep 0x00000001
+
+    out_min = CUDA.fill(0x80000000, 1)
+    @cuda backend=cuTile blocks=8 atomic_umin_kernel(out_min)
+    @test Array(out_min)[1] == 0x00000001  # umin; signed would keep 0x80000000
+end
+
 @testset "atomic_or Int" begin
     function atomic_or_kernel(out::ct.TileArray{Int,1})
         bid = ct.bid(1)
