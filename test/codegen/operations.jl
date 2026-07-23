@@ -2436,6 +2436,8 @@ end
             :(ct.@atomic a += 1))
         @test_throws "must reference" macroexpand(@__MODULE__,
             :(ct.@atomic a[1] = min(b[1], 2)))
+        @test_throws "first argument" macroexpand(@__MODULE__,
+            :(ct.@atomic a[1] = 2 - a[1]))
         @test_throws "plain" macroexpand(@__MODULE__,
             :(ct.@atomic a[1] = 2))
     end

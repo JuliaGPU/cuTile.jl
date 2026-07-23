@@ -447,8 +447,12 @@ function _atomic_macro(order_arg, ex)
         target, idx = _atomic_target(lhs)
         op = _atomic_op_fn(rhs.args[1])
         a, b = rhs.args[2], rhs.args[3]
-        val = a == lhs ? b : b == lhs ? a :
-              error("@atomic: the right-hand `op(...)` must reference the left-hand `$lhs`")
+        if a != lhs
+            b == lhs &&
+                error("@atomic: the first argument to `op(...)` must be the left-hand `$lhs`")
+            error("@atomic: the right-hand `op(...)` must reference the left-hand `$lhs`")
+        end
+        val = b
         return esc(_atomic_statement(target, idx, op, val, order))
     end
 
