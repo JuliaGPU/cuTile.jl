@@ -112,6 +112,41 @@ end
     @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1,))
 end
 
+@testset "GatherScatterTileView" begin
+    parent_array = ct.TileArray(Ptr{Float32}(0), (Int32(8), Int32(8)),
+                                (Int32(1), Int32(8)))
+    rows = ct.Tile{Int32, Tuple{4}}()
+    cols = Int32(3):Int32(6)
+
+    direct = view(parent_array, rows, cols)
+    macro_view = @view parent_array[rows, cols]
+    views_macro = @views parent_array[rows, cols]
+    @test typeof(direct) === typeof(macro_view) === typeof(views_macro)
+    @test parent(direct) === parent_array
+    @test parentindices(direct) == (rows, cols)
+    @test eltype(direct) === Float32
+    @test ndims(direct) == 2
+    @test size(direct) == (4, 4)
+    @test !hasmethod(getindex, Tuple{typeof(direct), Int, Int})
+    @test !hasmethod(setindex!, Tuple{typeof(direct), Float32, Int, Int})
+
+    # `:` is a valid dense index; its extent is the parent's (here, 8).
+    colon_view = @view parent_array[rows, :]
+    @test cuTile.gather_scatter_sparse_dim(colon_view) == 1
+    @test size(colon_view) == (4, 8)
+
+    # The more-specific affine view method remains available; its device
+    # result is checked in codegen/views rather than executed on the host.
+    @test hasmethod(view, Tuple{typeof(parent_array), UnitRange{Int32}, UnitRange{Int32}})
+
+    @test_throws "dense indices" view(parent_array, rows, 1:2:7)
+    @test_throws "exactly one Tile" view(parent_array, rows, rows)
+    @test_throws "sparse index" view(parent_array, ct.Tile{Float32, Tuple{4}}(), cols)
+    @test_throws "index count" view(parent_array, rows)
+    # No Tile index: describe the whole view surface, not gather/scatter alone.
+    @test_throws "Scalar indices" view(parent_array, 1, :)
+end
+
 @testset "TensorView" begin
     @test eltype(cuTile.TensorView{Float32, 2}) == Float32
     @test eltype(cuTile.TensorView{Float64, 3}) == Float64

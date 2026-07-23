@@ -280,6 +280,16 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
         return emit_value!(ctx, obj_tv.tuple[field])
     end
 
+    # Immutable compile-time aggregates such as literal UnitRanges are ghost
+    # values, but their scalar fields can still participate in kernel code.
+    # Materialize the selected field rather than attempting to lower the
+    # aggregate itself as a Tile IR value.
+    if obj_tv !== nothing && obj_tv.constant !== nothing
+        obj = something(obj_tv.constant)
+        index = field isa Symbol ? Base.fieldindex(typeof(obj), field) : field
+        index isa Integer && return emit_value!(ctx, getfield(obj, index))
+    end
+
     # If obj is a lazy arg_ref, extend the chain
     if obj_tv !== nothing && is_arg_ref(obj_tv)
         arg_idx, chain = obj_tv.arg_ref

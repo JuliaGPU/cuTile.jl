@@ -332,6 +332,25 @@ The result can be passed to `ct.load`/`ct.store` (or sliced again). Runtime
 asserts verify that ranges start at ≥ 1 and have a positive step; negative
 steps cannot be represented by Tile IR TensorViews.
 
+For a 2D-or-higher array, one 1D integer `Tile` index plus integer unit ranges
+(or `:`) in every other dimension creates a sparse view consumed only by
+`ct.load` and `ct.store`. Public indices are one-based; the load shape is
+explicit and static while range starts may be runtime values. A `:` dense
+dimension starts at element 1 and takes its extent from the load shape.
+
+```julia
+rows = ct.arange(4; start=1, step=2)
+selected = @view a[rows, col_start:col_start+3]
+tile = ct.load(selected, (4, 4); padding_mode=ct.PaddingMode.Zero)
+ct.store(selected, tile)
+```
+
+Sparse loads apply the requested padding and stores clip partially
+out-of-bounds elements. Repeated sparse indices are valid for loads, but
+conflicting stores are undefined. This requires Tile IR v13.3. Direct bracket
+access, view atomics, and Python-style advanced-indexing function names are
+intentionally not provided.
+
 ```julia
 function rowsum(a, b, r1::Int32, r2::Int32)
     sub = @view a[r1:r2, :]                    # sub-range TileArray

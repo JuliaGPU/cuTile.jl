@@ -5,7 +5,7 @@
 module Intrinsics
 
 using Base: compilerbarrier, inferencebarrier
-using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView, StridedView
+using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView, StridedView, GatherScatterView
 using ..cuTile: Signedness, ComparisonPredicate, ComparisonOrdering
 using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 

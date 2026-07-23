@@ -470,6 +470,56 @@ function Base.size(tiles::TiledView, d::Integer)
 end
 
 """
+    GatherScatterView{T, N, Shape, SparseDim}
+
+Opaque Tile IR GatherScatterView value. `SparseDim` is a one-based Julia
+dimension; bytecode emission reverses it at the column-major boundary.
+"""
+mutable struct GatherScatterView{T, N, Shape, SparseDim} end
+
+Base.eltype(::Type{<:GatherScatterView{T}}) where {T} = T
+Base.eltype(::GatherScatterView{T}) where {T} = T
+Base.ndims(::Type{<:GatherScatterView{<:Any, N}}) where {N} = N
+Base.ndims(::GatherScatterView{<:Any, N}) where {N} = N
+Base.size(::Type{<:GatherScatterView{<:Any, <:Any, Shape}}) where {Shape} = Tuple(Shape.parameters)
+Base.size(::Type{<:GatherScatterView{<:Any, <:Any, Shape}}, d::Integer) where {Shape} = Shape.parameters[d]
+Base.size(view::GatherScatterView) = size(typeof(view))
+Base.size(view::GatherScatterView, d::Integer) = size(typeof(view), d)
+
+"""
+    GatherScatterTileView{A, I, SparseDim}
+
+Language-level descriptor for a Julia `view` with one sparse tile index and
+unit ranges in every other dimension. It is deliberately not an
+`AbstractArray`: direct indexing, iteration, broadcast, and mutation are not
+part of the GatherScatterView surface. `load` and `store` materialize it.
+"""
+struct GatherScatterTileView{A, I, SparseDim}
+    parent::A
+    indices::I
+end
+
+Base.parent(view::GatherScatterTileView) = view.parent
+Base.parentindices(view::GatherScatterTileView) = view.indices
+Base.eltype(::Type{<:GatherScatterTileView{A}}) where {A} = eltype(A)
+Base.eltype(view::GatherScatterTileView) = eltype(typeof(view))
+Base.ndims(::Type{<:GatherScatterTileView{A}}) where {A} = ndims(A)
+Base.ndims(view::GatherScatterTileView) = ndims(typeof(view))
+# A `Colon` dense dimension has no length of its own; report the parent extent.
+_gather_scatter_extent(view::GatherScatterTileView, ::Colon, d) = size(parent(view), d)
+_gather_scatter_extent(::GatherScatterTileView, index, ::Any) = length(index)
+Base.size(view::GatherScatterTileView) =
+    ntuple(i -> _gather_scatter_extent(view, view.indices[i], i), Val(ndims(view)))
+Base.size(view::GatherScatterTileView, d::Integer) =
+    _gather_scatter_extent(view, view.indices[d], d)
+
+# One-based Julia sparse dimension. Defined on the type (single source of
+# truth) with an instance forwarder, as for the `TiledView` accessors.
+gather_scatter_sparse_dim(::Type{<:GatherScatterTileView{A, I, SparseDim}}) where {A, I, SparseDim} =
+    SparseDim
+gather_scatter_sparse_dim(view::GatherScatterTileView) = gather_scatter_sparse_dim(typeof(view))
+
+"""
     Constant{T, V}
 
 Compile-time constant with element type `T` and value `V`.

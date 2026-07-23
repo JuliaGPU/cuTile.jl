@@ -23,22 +23,61 @@
 # view / @view → unsafe_view
 #-----------------------------------------------------------------------------
 
-# Restricted to `Vararg{SliceIndex, N}`: rank mismatches and unsupported
-# index types (Int, CartesianIndex, non-integer ranges, …) fall through
-# to Base's regular `view` methods (which don't match TileArray) and surface
-# as a codegen-time `IRError`. The error message there is whatever
-# `_throw_method_error`'s formatting produces — cleaner reporting is tied
-# to a broader rework toward runtime asserts; defer.
-#
-# Throwing from inside `unsafe_view` doesn't work either: a
-# `throw(ArgumentError(...))` reached from inlined kernel code leaks the
-# exception object to codegen, which can't lower String / Exception values.
+# Two methods dispatch TileArray views. The affine method just below
+# (`Vararg{SliceIndex, N}`) wins by specificity for index tuples that are all
+# `:`/UnitRange/StepRange, deriving a sub-range TileArray. Every other
+# combination — a `Tile` index, scalar `Int`s, `CartesianIndex`, a rank
+# mismatch, … — routes to the less-specific `_gather_scatter_tile_view`, which
+# either builds a `GatherScatterTileView` (one 1D integer `Tile` plus unit
+# ranges/`:`) or throws an `ArgumentError`. Such throws reached from inlined
+# kernel code are rendered as clean `CodegenErrors` by the deferred-codegen
+# machinery, so they surface with their own message.
 const SliceIndex = Union{Colon, UnitRange{<:Integer}, StepRange{<:Integer, <:Integer}}
 Base.maybeview(arr::TileArray{T, N}, inds::Vararg{SliceIndex, N}) where {T, N} =
     Base.view(arr, inds...)
 function Base.view(arr::TileArray{T, N}, inds::Vararg{SliceIndex, N}) where {T, N}
     check_slice_bounds(inds)
     unsafe_view(arr, Val(1), inds)
+end
+
+# A Tile index selects GatherScatterView construction. This fallback is less
+# specific than the affine-only method above, so existing `:`/UnitRange views
+# keep returning TileArray values unchanged.
+Base.maybeview(arr::TileArray, inds...) = Base.view(arr, inds...)
+Base.view(arr::TileArray{T, N}, inds...) where {T, N} =
+    _gather_scatter_tile_view(arr, inds)
+
+@generated function _gather_scatter_tile_view(arr::TileArray{T, N}, inds::I) where {T, N, I <: Tuple}
+    types = I.parameters
+    length(types) == N || return :(throw(ArgumentError(
+        "GatherScatterView: index count $(length(inds)) does not match parent rank $N")))
+    N >= 2 || return :(throw(ArgumentError(
+        "GatherScatterView requires a 2D or higher-rank TileArray")))
+
+    sparse_dims = Int[i for (i, index_type) in enumerate(types) if index_type <: Tile]
+    isempty(sparse_dims) && return :(throw(ArgumentError(
+        "unsupported index types for a TileArray view; supported: Colon, " *
+        "UnitRange, or StepRange (affine views), or exactly one 1D integer " *
+        "Tile plus unit ranges/Colon (gather/scatter views). Scalar indices " *
+        "are not supported; use a length-1 range.")))
+    if length(sparse_dims) != 1
+        msg = "GatherScatterView requires exactly one Tile index; found $(length(sparse_dims))"
+        return :(throw(ArgumentError($msg)))
+    end
+    sparse_dim = only(sparse_dims)
+    sparse_type = types[sparse_dim]
+    eltype(sparse_type) <: Integer && ndims(sparse_type) == 1 ||
+        return :(throw(ArgumentError(
+            "GatherScatterView sparse index must be a one-dimensional integer Tile")))
+
+    for (dim, index_type) in enumerate(types)
+        dim == sparse_dim && continue
+        index_type <: Union{Colon, AbstractUnitRange{<:Integer}} ||
+            return :(throw(ArgumentError(
+                "GatherScatterView dense indices must be `:` or integer AbstractUnitRange values")))
+    end
+
+    return :(GatherScatterTileView{typeof(arr), typeof(inds), $sparse_dim}(arr, inds))
 end
 
 """
@@ -602,6 +641,79 @@ end
     load(arr, (index,), shape; kwargs...)
 end
 
+@inline function _gather_scatter_sparse_index(index::Tile{I}) where {I<:Integer}
+    convert(Tile{Int32}, index .- one(I))
+end
+
+Base.@constprop :aggressive function _gather_scatter_dense_index(index::AbstractUnitRange{I}) where {I<:Integer}
+    Intrinsics.assert(first(index) >= one(I), "GatherScatterView: dense range start must be ≥ 1")
+    Int32(first(index) - One())
+end
+# `:` starts at element 1 (0-based 0); its extent comes from the load/store shape.
+_gather_scatter_dense_index(::Colon) = Int32(0)
+
+Base.@constprop :aggressive function _check_gather_scatter_dense_shape(
+        index::AbstractUnitRange{I}, expected::Integer) where {I<:Integer}
+    Intrinsics.assert(length(index) == expected,
+                      "GatherScatterView: dense range length must match tile shape")
+    return
+end
+# `:` takes its extent from the tile shape, so there is no length to check.
+_check_gather_scatter_dense_shape(::Colon, ::Integer) = nothing
+
+@generated function _gather_scatter_indices(view::GatherScatterTileView{A, I, SparseDim}) where
+        {A, I <: Tuple, SparseDim}
+    expressions = Any[]
+    for dim in 1:length(I.parameters)
+        if dim == SparseDim
+            push!(expressions, :(_gather_scatter_sparse_index(view.indices[$dim])))
+        else
+            push!(expressions, :(_gather_scatter_dense_index(view.indices[$dim])))
+        end
+    end
+    Expr(:tuple, expressions...)
+end
+
+@generated function _check_gather_scatter_shape(view::GatherScatterTileView{A, I, SparseDim},
+                                                 shape::NTuple{N, Int}) where
+        {A, I <: Tuple, SparseDim, N}
+    rank = ndims(A)
+    # Both ranks are static here, so a mismatch is a compile-time error rather
+    # than a device-side trap.
+    if N != rank
+        msg = "GatherScatterView: load/store shape rank $N does not match view rank $rank"
+        return :(throw(ArgumentError($msg)))
+    end
+    checks = Any[]
+    for dim in 1:length(I.parameters)
+        dim == SparseDim && continue
+        push!(checks, :(_check_gather_scatter_dense_shape(view.indices[$dim], shape[$dim])))
+    end
+    Expr(:block, checks...)
+end
+
+"""
+    load(view::GatherScatterTileView, shape; padding_mode=PaddingMode.Undetermined,
+         check_bounds=true, latency=nothing, allow_tma=nothing) -> Tile
+
+Materialize a Julia gather/scatter view with an explicit static tile shape.
+The sparse tile index and dense range starts are one-based at this boundary.
+"""
+@inline function load(view::GatherScatterTileView, shape::NTuple{<:Any, Int};
+                      padding_mode::PaddingMode.T=PaddingMode.Undetermined,
+                      check_bounds::Bool=true,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Union{Bool, Nothing}=nothing)
+    _check_gather_scatter_shape(view, shape)
+    parent_array = parent(view)
+    tensor_view = Intrinsics.make_tensor_view(typeof(parent_array), parent_array.ptr,
+                                              parent_array.sizes, parent_array.strides)
+    gather_view = Intrinsics.make_gather_scatter_view(
+        tensor_view, shape, gather_scatter_sparse_dim(view), padding_mode)
+    Intrinsics.load_gather_scatter_view(
+        gather_view, latency, allow_tma, _gather_scatter_indices(view), check_bounds)
+end
+
 # Scalar indexing: arr[i, j, ...] → scalar T
 @overlay function Base.getindex(arr::TileArray{T, N}, indices::Vararg{Integer, N}) where {T, N}
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
@@ -679,6 +791,29 @@ end
 # Scalar index → wrap in tuple
 @inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T}; kwargs...) where {T}
     store(arr, (index,), tile; kwargs...)
+end
+
+"""
+    store(view::GatherScatterTileView, tile; check_bounds=true,
+          latency=nothing, allow_tma=nothing) -> Tile
+
+Store through a Julia gather/scatter view. Repeated sparse indices retain Tile
+IR's undefined conflicting-store semantics and are conservatively token-ordered.
+"""
+@inline function store(view::GatherScatterTileView{A}, tile::Tile{T};
+                       check_bounds::Bool=true,
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Union{Bool, Nothing}=nothing) where {T, A<:TileArray{T}}
+    shape = size(tile)
+    _check_gather_scatter_shape(view, shape)
+    parent_array = parent(view)
+    tensor_view = Intrinsics.make_tensor_view(typeof(parent_array), parent_array.ptr,
+                                              parent_array.sizes, parent_array.strides)
+    gather_view = Intrinsics.make_gather_scatter_view(
+        tensor_view, shape, gather_scatter_sparse_dim(view), PaddingMode.Undetermined)
+    Intrinsics.store_gather_scatter_view(
+        gather_view, tile, latency, allow_tma, _gather_scatter_indices(view), check_bounds)
+    return tile
 end
 
 # Scalar value → wrap in 1-element tile and store
