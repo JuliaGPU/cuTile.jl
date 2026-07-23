@@ -193,6 +193,7 @@ function atomic_xor end
 for op in (:add, :xchg, :max, :min, :or, :and, :xor)
     fname = Symbol(:atomic_, op)
     intrinsic = Symbol(:atomic_, op)
+    bitwise = op in (:or, :and, :xor)
 
     @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar{T};
                                    check_bounds::Bool=true,
@@ -204,10 +205,21 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
         S === () ? Intrinsics.to_scalar(result) : result
     end
 
-    @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
-                                   check_bounds::Bool=true,
-                                   memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
-                                   memory_scope::MemScope.T=MemScope.Device) where {T}
-        $fname(array, indices, T(val); check_bounds, memory_order, memory_scope)
+    if bitwise
+        # Bitwise atomics require the update to exactly match the array element
+        # type — no implicit conversion (mirrors cuTile Python's
+        # `_cast_rmw_update_dtype`). add/max/min/xchg convert below.
+        @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
+                                       kwargs...) where {T}
+            throw(ArgumentError($("$fname requires the update value to exactly match " *
+                "the array element type; bitwise atomics do not convert implicitly")))
+        end
+    else
+        @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
+                                       check_bounds::Bool=true,
+                                       memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
+                                       memory_scope::MemScope.T=MemScope.Device) where {T}
+            $fname(array, indices, T(val); check_bounds, memory_order, memory_scope)
+        end
     end
 end

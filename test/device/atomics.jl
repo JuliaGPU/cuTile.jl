@@ -428,8 +428,9 @@ end
 @testset "atomic_xor Int" begin
     function atomic_xor_kernel(out::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        # XOR with bid — each bid XORs once
-        ct.atomic_xor(out, 1, bid;
+        # XOR with bid — each bid XORs once. `Int(bid)` matches the array
+        # element type: bitwise atomics require an exact-type update.
+        ct.atomic_xor(out, 1, Int(bid);
                      memory_order=ct.MemoryOrder.AcqRel)
         return
     end

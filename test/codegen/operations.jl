@@ -2334,6 +2334,25 @@ end
         end
     end
 
+    # Bitwise atomics require the update to exactly match the array eltype.
+    @testset "reject bitwise atomic dtype mismatch" begin
+        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
+            bid = ct.bid(1)
+            ct.atomic_or(arr, bid, Int32(1))  # Int32 update into Int64 array
+            return
+        end
+        # add/max/min still convert implicitly.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko"
+                ct.atomic_add(arr, bid, Int32(1))
+                return
+            end
+        end
+    end
+
     # `weak` ordering is not supported on atomics; reject at the boundary.
     @testset "reject MemoryOrder.Weak" begin
         spec = ct.ArraySpec{1}(16, true)
