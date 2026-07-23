@@ -2114,8 +2114,7 @@ end
                                token, memory_ordering, memory_scope, mode) -> Value
 
 Atomic read-modify-write of `value` into the tile selected by `index` within
-`view`. Unlike `AtomicRMWPtrOp`, it does not return the old value — only the
-ordering token.
+`view`. Returns an ordering token.
 Opcode: 117 (Tile IR v13.3+)
 """
 function encode_AtomicRedViewTkoOp!(cb::CodeBuilder,
@@ -2130,19 +2129,12 @@ function encode_AtomicRedViewTkoOp!(cb::CodeBuilder,
     cb.version >= v"13.3" ||
         throw(IRError("AtomicRedViewTkoOp requires Tile IR v13.3+, got v$(cb.version)"))
     encode_varint!(cb.buf, Opcode.AtomicRedViewTkoOp)
-    # Variadic result types (just token)
     encode_typeid_seq!(cb.buf, [token_type])
-
-    # Flags
     flags = token !== nothing ? 1 : 0
     encode_varint!(cb.buf, flags)
-
-    # Attributes
     encode_enum!(cb.buf, memory_ordering)
     encode_enum!(cb.buf, memory_scope)
     encode_enum!(cb.buf, mode)
-
-    # Operands
     encode_operand!(cb.buf, view)
     encode_sized_operands!(cb.buf, index)
     encode_operand!(cb.buf, value)

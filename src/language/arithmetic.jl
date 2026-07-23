@@ -89,7 +89,6 @@ public divmod
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.subf(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
 
-# unary negation
 @inline Base.:(-)(a::Tile{T}) where {T <: AbstractFloat} = Intrinsics.negf(a)
 @inline Base.:(-)(a::Tile{T}) where {T <: Integer} = Intrinsics.negi(a)
 

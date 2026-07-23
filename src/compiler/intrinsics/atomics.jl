@@ -104,14 +104,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
 end
 
-"""
-    select_rmw_mode(base_mode, elem_type) -> AtomicRMWMode.T
-
-Refine a base RMW mode for `elem_type`, mirroring Python's `_select_rmw_mode`:
-floating-point `add` selects `ADDF`, and unsigned `max`/`min` select the
-unsigned `UMAX`/`UMIN` comparisons. All other modes pass through unchanged
-(signedness is irrelevant to `xchg` and the bitwise ops).
-"""
 function select_rmw_mode(base_mode::AtomicRMWMode.T, @nospecialize(elem_type))
     if elem_type <: AbstractFloat
         base_mode == AtomicRMWMode.ADD ? AtomicRMWMode.ADDF : base_mode
@@ -155,8 +147,6 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     result_tile_type = tile_type!(tt, dtype, shape)
     token_type = Token(tt)
 
-    # Refine mode for element signedness: float add → ADDF, unsigned
-    # max/min → UMAX/UMIN.
     actual_mode = select_rmw_mode(mode, elem_type)
     check_atomic_bf16_support(cb, actual_mode, elem_type)
 
@@ -220,36 +210,26 @@ for (op, mode, desc) in ((:xchg, AtomicRMWMode.XCHG, "exchange (`val`, returning
     end
 end
 
-# cuda_tile.atomic_red_view_tko (view-based atomic reduction)
-
-# Element types accepted by each reduction mode (operations.md:5247-5253).
+# cuda_tile.atomic_red_view_tko
 const RED_VIEW_INT_DTYPES = (Int32, Int64, UInt32, UInt64)
 const RED_VIEW_ADD_DTYPES = (RED_VIEW_INT_DTYPES..., Float16, BFloat16, Float32, Float64)
 
-# ADDF on bf16 requires bytecode ≥ 13.3 (13.3 release note); shared with the
-# rmw path, which can reach ADDF+bf16 on older bytecode.
 function check_atomic_bf16_support(cb::CodeBuilder, mode::AtomicRMWMode.T, @nospecialize(elem_type))
     if mode == AtomicRMWMode.ADDF && elem_type === BFloat16 && cb.version < v"13.3"
         throw(IRError("atomic add on BFloat16 requires Tile IR bytecode ≥ 13.3, got v$(cb.version)"))
     end
 end
 
-# Shared emission for the six `atomic_red_view_*` intrinsics. Mirrors the
-# view-store side of views.jl (view + index + value, single token result), but
-# fixes the ordering to relaxed/device and carries a reduction mode.
 function emit_atomic_red_view!(ctx::CGCtx, args::AbstractVector,
                                base_mode::AtomicRMWMode.T, name::String)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Friendly version gate ahead of the encoder's hard IRError.
     cb.version >= v"13.3" ||
         throw(IRError("$name requires Tile IR bytecode ≥ 13.3 (tileiras too old), got v$(cb.version)"))
 
-    # Input token appended by token_order_pass!.
     input_token = extract_token_arg!(ctx, args)
 
-    # args: (view, value, indices)
     view_arg = emit_value!(ctx, args[1])
     view_arg === nothing && throw(IRError("$name requires a view argument"))
     view_arg.v === nothing && throw(IRError("$name requires a materialized view"))
@@ -294,10 +274,8 @@ for (op, mode) in ((:add, AtomicRMWMode.ADD), (:max, AtomicRMWMode.MAX), (:min, 
     docstring = """
         Intrinsics.$name(view, value::Tile, indices::NTuple) -> Nothing
 
-    Token-ordered atomic reduction ($op) into the tile of `view` selected by
-    `indices`; lowers to `cuda_tile.atomic_red_view_tko` (relaxed, device).
-    Returns nothing — unlike `atomic_rmw_tko`, the old value is not read back.
-    The token argument is appended by `token_order_pass!`.
+    Apply an atomic $op reduction to a tile of `view`. Uses relaxed,
+    device-wide ordering and returns `nothing`.
     """
     @eval begin
         @doc $docstring @intrinsic $name(view, value, indices)

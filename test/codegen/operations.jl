@@ -2305,7 +2305,6 @@ end
             end
         end
 
-        # bf16 add uses ADDF and requires bytecode 13.3.
         spec_bf16 = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
@@ -2329,7 +2328,6 @@ end
 
     @testset "atomic_red_view_tko" begin
         spec2d = ct.ArraySpec{2}(16, true)
-        # TiledView (partition), 2D → relaxed device addf reduction.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
@@ -2342,7 +2340,6 @@ end
             end
         end
 
-        # TileArray direct, 1D.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
@@ -2354,7 +2351,6 @@ end
             end
         end
 
-        # Stepped (overlapping) eachtile → strided view, still relaxed device.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -2367,8 +2363,7 @@ end
             end
         end
 
-        # Load padding is not carried into the atomic view: Tile IR rejects a
-        # padding_value on atomic_red_view_tko.
+        # Atomic views ignore TiledView padding.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -2394,7 +2389,6 @@ end
             end
         end
 
-        # Unsigned max → umax mode.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}}) do a
@@ -2406,7 +2400,6 @@ end
             end
         end
 
-        # Token wiring: an atomic reduction after a store carries a token.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -2420,7 +2413,6 @@ end
             end
         end
 
-        # Bitwise reductions require an exact-eltype update tile.
         @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
             bid = ct.bid(1)
             val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))  # Int32 into Int64
@@ -2428,7 +2420,6 @@ end
             return
         end
 
-        # Wrong-rank tile index for a TiledView.
         @test_throws "expected" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
             tiles = ct.eachtile(a, (16, 16))
             val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
@@ -2440,7 +2431,6 @@ end
     @testset "@atomic macro" begin
         spec2d = ct.ArraySpec{2}(16, true)
 
-        # Statement form, default (relaxed) on a tile/view target → view reduction.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
@@ -2452,7 +2442,6 @@ end
             end
         end
 
-        # Statement form with an explicit stronger order → fetch (atomic_rmw_tko).
         @test @filecheck begin
             @check_label "entry"
             @check_not "atomic_red_view_tko"
@@ -2464,7 +2453,6 @@ end
             end
         end
 
-        # Value form → fetch with the old => new pair consumed.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
@@ -2477,7 +2465,6 @@ end
             end
         end
 
-        # Macro-expansion errors.
         @test_throws "sequentially_consistent" macroexpand(@__MODULE__,
             :(ct.@atomic :sequentially_consistent a[1] += 1))
         @test_throws "indexed reference" macroexpand(@__MODULE__,
@@ -2490,8 +2477,7 @@ end
             :(ct.@atomic a[1] = 2))
     end
 
-    # Unsigned max/min select the umax/umin comparison modes.
-    @testset "unsigned atomic_max/min → umax/umin" begin
+    @testset "unsigned atomic_max/min modes" begin
         for T in (UInt32, UInt64)
             @test @filecheck begin
                 @check_label "entry"
@@ -2505,7 +2491,6 @@ end
                 end
             end
         end
-        # Signed stays signed.
         @test @filecheck begin
             @check_label "entry"
             @check_not "umax"
@@ -2518,14 +2503,12 @@ end
         end
     end
 
-    # Bitwise atomics require the update to exactly match the array eltype.
     @testset "reject bitwise atomic dtype mismatch" begin
         @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
             bid = ct.bid(1)
             ct.atomic_or(arr, bid, Int32(1))  # Int32 update into Int64 array
             return
         end
-        # add/max/min still convert implicitly.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr

@@ -46,10 +46,7 @@ function is_atomic_intrinsic(func)
     return false
 end
 
-# View-based atomic reductions are relaxed-only and carry no memory_order
-# operand, so they are treated as plain (token-ordered) stores rather than as
-# `is_atomic_intrinsic` — no acquire/release fence handling, never eligible for
-# the parallel-store optimization (get_parallel_stores).
+# Relaxed view atomics use ordinary store token ordering.
 function is_atomic_red_view(func)
     for op in (:atomic_red_view_add, :atomic_red_view_max, :atomic_red_view_min,
                :atomic_red_view_or, :atomic_red_view_and, :atomic_red_view_xor)

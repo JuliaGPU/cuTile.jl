@@ -208,9 +208,7 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
     end
 
     if bitwise
-        # Bitwise atomics require the update to exactly match the array element
-        # type — no implicit conversion (mirrors cuTile Python's
-        # `_cast_rmw_update_dtype`). add/max/min/xchg convert below.
+        # Bitwise atomics do not convert the update.
         @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
                                        kwargs...) where {T}
             throw(ArgumentError($("$fname requires the update value to exactly match " *
@@ -226,43 +224,30 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
     end
 end
 
-# ============================================================================
-# View-based atomic reductions (atomic_store_add/max/min/or/and/xor)
-#
-# Reduce a whole tile into a view and return `nothing`, without reading back
-# the old values; these lower to `cuda_tile.atomic_red_view_tko` (relaxed,
-# device). Unlike the pointer-style `atomic_*`, they take no
-# `memory_order`/`memory_scope`/`mask`/`check_bounds` keywords. Out-of-bounds
-# handling comes from the view: partial tiles are clipped, and a tile that lies
-# entirely out of bounds is undefined. Requires Tile IR bytecode ≥ 13.3.
-# ============================================================================
+# View-based atomic reductions
 
 """
     atomic_store_add(dst, index, update) -> Nothing
 
-Atomically reduce `update` into the tile of `dst` selected by `index`, without
-reading back the old values. `dst` is a `TileArray` (the update tile's shape
-selects the partition) or a `TiledView` from [`eachtile`](@ref). `update`
-broadcasts to the view's tile shape. The reduction is relaxed/device-scoped.
+Reduce `update` into a tile of `dst` without returning its previous value.
+`dst` may be a `TileArray` or a `TiledView` from [`eachtile`](@ref). Updates
+broadcast to the tile shape. The operation uses relaxed, device-wide ordering.
 
 Also available: `atomic_store_max`, `atomic_store_min`, `atomic_store_or`,
-`atomic_store_and`, `atomic_store_xor`. The bitwise variants require `update`
-to exactly match the destination element type; `add`/`max`/`min` convert.
+`atomic_store_and`, and `atomic_store_xor`. Bitwise updates must have the
+destination element type.
 
 Requires Tile IR bytecode ≥ 13.3.
 """
 function atomic_store_add end
 
-# Coerce an update tile to `Target` element type: arithmetic ops convert,
-# bitwise ops require an exact match (mirrors Python's `_cast_rmw_update_dtype`).
-@inline _red_update(::Type{Target}, tile::Tile{Target}, bitwise::Bool) where {Target} = tile
-@inline function _red_update(::Type{Target}, tile::Tile, bitwise::Bool) where {Target}
+@inline atomic_red_update(::Type{Target}, tile::Tile{Target}, bitwise::Bool) where {Target} = tile
+@inline function atomic_red_update(::Type{Target}, tile::Tile, bitwise::Bool) where {Target}
     bitwise && throw(ArgumentError("bitwise atomic reduction requires the update tile element type to exactly match the destination; no implicit conversion"))
     convert(Tile{Target}, tile)
 end
 
-# Atomic reductions cannot use views with a padding value. Preserve the
-# TiledView's partition/strided layout, but materialize it without load padding.
+# Tile IR atomic views cannot carry padding.
 @inline function make_atomic_tile_view(
         tiles::TiledView{A, RequestedShape, Shape, Shape}) where {A, RequestedShape, Shape}
     parent = tiles.parent
@@ -284,9 +269,8 @@ for op in (:add, :max, :min, :or, :and, :xor)
     intrinsic = Symbol(:atomic_red_view_, op)
     bitwise = op in (:or, :and, :xor)
 
-    # TileArray: the update tile's shape drives the partition view.
     @eval @inline function $fname(arr::TileArray{T}, index, tile::Tile) where {T}
-        update = _red_update(T, tile, $bitwise)
+        update = atomic_red_update(T, tile, $bitwise)
         reshaped = _reshape_to_rank(update, Val(ndims(arr)))
         tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
         pv = Intrinsics.make_partition_view(tv, size(reshaped), PaddingMode.Undetermined, nothing)
@@ -295,9 +279,6 @@ for op in (:add, :max, :min, :or, :and, :xor)
     end
     @eval @inline $fname(arr::TileArray{T}, index::Integer, tile::Tile) where {T} =
         $fname(arr, (index,), tile)
-    # Scalar update → 1-element tile. Arithmetic converts to the array element
-    # type; bitwise requires an exact match. (A single `Number` method — a
-    # diagonal `val::T` method would be shadowed by this one.)
     if bitwise
         @eval @inline function $fname(arr::TileArray{T}, index, val::Number) where {T}
             val isa T || throw(ArgumentError($("$fname requires the update value to exactly " *
@@ -312,11 +293,10 @@ for op in (:add, :max, :min, :or, :and, :xor)
         end
     end
 
-    # TiledView: update broadcasts to the view's tile shape (eachtile windows).
     @eval @inline function $fname(tiles::TiledView{A}, index::NTuple{N, <:Integer},
                                   tile::Tile) where {A, N}
         N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
-        update = _red_update(eltype(A), tile, $bitwise)
+        update = atomic_red_update(eltype(A), tile, $bitwise)
         view = make_atomic_tile_view(tiles)
         Intrinsics.$intrinsic(view, broadcast_to(update, tiled_view_shape(tiles)),
                               promote(index...) .- One())
@@ -326,83 +306,59 @@ for op in (:add, :max, :min, :or, :and, :xor)
         $fname(tiles, (index,), tile)
 end
 
-# ============================================================================
-# `@atomic` — Base-style atomic operators
-#
-# Statement forms (`A[i] += v`, `A[i] = op(A[i], v)`) return `nothing`. Value
-# forms (`A[i] + v`, `max(A[i], v)`) follow Base and return `old => new`.
-#
-# The two forms use different default orderings (see the macro docstring):
-# statement forms default to Relaxed, so a tile or view target lowers to
-# `atomic_red_view_tko`; value forms default to AcqRel, matching the
-# `ct.atomic_*` functions.
-# ============================================================================
+# `@atomic`
 
 public @atomic
 
-const _TileIndex = Union{Integer, Tuple{Vararg{Integer}}}
-const _GatherIndex = Union{Tile, Tuple{Vararg{Tile}}}
+const AtomicTileIndex = Union{Integer, Tuple{Vararg{Integer}}}
+const AtomicGatherIndex = Union{Tile, Tuple{Vararg{Tile}}}
 
-# op function → (view-reduction fn, fetching fn, update transform). `-` negates
-# the update and adds (Tile IR has no atomic subtract).
-_red_op(::typeof(+))   = (atomic_store_add, atomic_add, identity)
-_red_op(::typeof(-))   = (atomic_store_add, atomic_add, -)
-_red_op(::typeof(max)) = (atomic_store_max, atomic_max, identity)
-_red_op(::typeof(min)) = (atomic_store_min, atomic_min, identity)
-_red_op(::typeof(&))   = (atomic_store_and, atomic_and, identity)
-_red_op(::typeof(|))   = (atomic_store_or,  atomic_or,  identity)
-_red_op(::typeof(xor)) = (atomic_store_xor, atomic_xor, identity)
+atomic_red_op(::typeof(+))   = (atomic_store_add, atomic_add, identity)
+atomic_red_op(::typeof(-))   = (atomic_store_add, atomic_add, -)
+atomic_red_op(::typeof(max)) = (atomic_store_max, atomic_max, identity)
+atomic_red_op(::typeof(min)) = (atomic_store_min, atomic_min, identity)
+atomic_red_op(::typeof(&))   = (atomic_store_and, atomic_and, identity)
+atomic_red_op(::typeof(|))   = (atomic_store_or,  atomic_or,  identity)
+atomic_red_op(::typeof(xor)) = (atomic_store_xor, atomic_xor, identity)
 
-# Statement-form lowering. The macro picks the relaxed or ordered path at
-# expansion time (it knows the ordering literally); the choice between a view
-# reduction and a fetching atomic below is by target type only, so no branch on
-# the ordering value is emitted inside the kernel.
-
-# Relaxed: a tile or view target reduces into the view; a gather target fetches.
 @inline function atomic_reduce_relaxed!(target::Union{TileArray, TiledView},
-                                        index::_TileIndex, op::F, val) where {F}
-    store_fn, _, transform = _red_op(op)
+                                        index::AtomicTileIndex, op::F, val) where {F}
+    store_fn, _, transform = atomic_red_op(op)
     store_fn(target, index, transform(val))
     return nothing
 end
-@inline function atomic_reduce_relaxed!(target::TileArray, index::_GatherIndex,
+@inline function atomic_reduce_relaxed!(target::TileArray, index::AtomicGatherIndex,
                                         op::F, val) where {F}
-    _, fetch_fn, transform = _red_op(op)
+    _, fetch_fn, transform = atomic_red_op(op)
     fetch_fn(target, index, transform(val); memory_order=MemoryOrder.Relaxed)
     return nothing
 end
 
-# Stronger ordering: read the old value and discard it (a TiledView cannot).
 @inline function atomic_reduce_ordered!(target::TileArray, index, op::F, val, order) where {F}
-    _, fetch_fn, transform = _red_op(op)
+    _, fetch_fn, transform = atomic_red_op(op)
     fetch_fn(target, index, transform(val); memory_order=order)
     return nothing
 end
 @inline atomic_reduce_ordered!(::TiledView, index, op, val, order) =
-    throw(ArgumentError("@atomic on a TiledView must use the default (relaxed) ordering: a view reduction does not return the old value"))
+    throw(ArgumentError("@atomic on TiledView only supports relaxed ordering"))
 
-# Value-form lowering: fetch the old value, recompute `new` elementwise, and
-# return the `old => new` pair (matching Base).
-@inline _atomic_update(::Type{T}, op, val::Tile) where {T} = convert(Tile{T}, val)
-@inline _atomic_update(::Type{T}, op, val) where {T} = convert(T, val)
-@inline _atomic_update(::Type, ::typeof(&), val) = val
-@inline _atomic_update(::Type, ::typeof(|), val) = val
-@inline _atomic_update(::Type, ::typeof(xor), val) = val
+@inline atomic_update(::Type{T}, op, val::Tile) where {T} = convert(Tile{T}, val)
+@inline atomic_update(::Type{T}, op, val) where {T} = convert(T, val)
+@inline atomic_update(::Type, ::typeof(&), val) = val
+@inline atomic_update(::Type, ::typeof(|), val) = val
+@inline atomic_update(::Type, ::typeof(xor), val) = val
 
 @inline function atomic_fetch(target::TileArray{T}, index, op::F, val, order) where {T, F}
-    _, fetch_fn, transform = _red_op(op)
-    update = _atomic_update(T, op, val)
+    _, fetch_fn, transform = atomic_red_op(op)
+    update = atomic_update(T, op, val)
     old = fetch_fn(target, index, transform(update); memory_order=order)
     return old => op(old, update)
 end
 
-# --- macro parsing (runs at expansion time) ---
+const ATOMIC_OPASSIGN = Dict(Symbol("+=") => :+, Symbol("-=") => :-, Symbol("&=") => :&,
+                             Symbol("|=") => :|, Symbol("⊻=") => :⊻)
 
-const _OPASSIGN_SYM = Dict(Symbol("+=") => :+, Symbol("-=") => :-, Symbol("&=") => :&,
-                           Symbol("|=") => :|, Symbol("⊻=") => :⊻)
-
-# Map an operator symbol to its function value, rejecting unsupported ops.
-function _atomic_op_fn(sym)
+function atomic_op(sym)
     sym === :+ && return Base.:+
     sym === :- && return Base.:-
     sym === :max && return Base.max
@@ -413,8 +369,7 @@ function _atomic_op_fn(sym)
     error("@atomic: unsupported operator `$sym`; expected +, -, max, min, &, |, or ⊻")
 end
 
-# Map an ordering symbol to a MemoryOrder value; `nothing` when none was given.
-function _atomic_order(order_arg)
+function atomic_order(order_arg)
     order_arg === nothing && return nothing
     sym = order_arg isa QuoteNode ? order_arg.value : order_arg
     sym isa Symbol || error("@atomic: ordering must be a symbol, e.g. :monotonic")
@@ -427,9 +382,7 @@ function _atomic_order(order_arg)
     error("@atomic: unknown ordering :$sym")
 end
 
-# Build the statement-form call. Statement default is Relaxed; the relaxed vs
-# ordered choice is made here so the ordering is never compared inside the kernel.
-function _atomic_statement(target, idx, op, val, order)
+function atomic_statement(target, idx, op, val, order)
     if order === nothing || order === MemoryOrder.Relaxed
         :($atomic_reduce_relaxed!($target, $idx, $op, $val))
     else
@@ -437,8 +390,7 @@ function _atomic_statement(target, idx, op, val, order)
     end
 end
 
-# `A[i]` / `A[i,j]` → (target, index-expr). Errors on any other LHS.
-function _atomic_target(ref)
+function atomic_target(ref)
     ref isa Expr && ref.head === :ref ||
         error("@atomic: expected an indexed reference like A[i] on the left, got `$ref`")
     inds = ref.args[2:end]
@@ -446,24 +398,22 @@ function _atomic_target(ref)
     return ref.args[1], idx
 end
 
-function _atomic_macro(order_arg, ex)
-    order = _atomic_order(order_arg)
+function atomic_macro(order_arg, ex)
+    order = atomic_order(order_arg)
     head = ex isa Expr ? ex.head : nothing
 
-    # Statement form: A[i] op= v
-    if haskey(_OPASSIGN_SYM, head)
-        target, idx = _atomic_target(ex.args[1])
-        op = _atomic_op_fn(_OPASSIGN_SYM[head])
-        return esc(_atomic_statement(target, idx, op, ex.args[2], order))
+    if haskey(ATOMIC_OPASSIGN, head)
+        target, idx = atomic_target(ex.args[1])
+        op = atomic_op(ATOMIC_OPASSIGN[head])
+        return esc(atomic_statement(target, idx, op, ex.args[2], order))
     end
 
-    # Statement form: A[i] = op(A[i], v)
     if head === :(=)
         lhs, rhs = ex.args
         (rhs isa Expr && rhs.head === :call && length(rhs.args) == 3) ||
             error("@atomic: plain `A[i] = v` is unsupported; write `A[i] op= v` or `A[i] = op(A[i], v)`")
-        target, idx = _atomic_target(lhs)
-        op = _atomic_op_fn(rhs.args[1])
+        target, idx = atomic_target(lhs)
+        op = atomic_op(rhs.args[1])
         a, b = rhs.args[2], rhs.args[3]
         if a != lhs
             b == lhs &&
@@ -471,13 +421,12 @@ function _atomic_macro(order_arg, ex)
             error("@atomic: the right-hand `op(...)` must reference the left-hand `$lhs`")
         end
         val = b
-        return esc(_atomic_statement(target, idx, op, val, order))
+        return esc(atomic_statement(target, idx, op, val, order))
     end
 
-    # Value form: A[i] + v  or  op(A[i], v)  → old => new
     if head === :call && length(ex.args) == 3
-        op = _atomic_op_fn(ex.args[1])
-        target, idx = _atomic_target(ex.args[2])
+        op = atomic_op(ex.args[1])
+        target, idx = atomic_target(ex.args[2])
         ord = order === nothing ? MemoryOrder.AcqRel : order
         return esc(:($atomic_fetch($target, $idx, $op, $(ex.args[3]), $ord)))
     end
@@ -500,18 +449,17 @@ Value forms follow Base and return `old => new`:
     pair = @atomic A[i] + v        # pair.first == old, pair.second == new
 
 An optional leading ordering symbol maps to Tile IR memory orderings:
-`:monotonic`→Relaxed, `:acquire`, `:release`, `:acquire_release`→AcqRel.
+`:monotonic` maps to Relaxed; `:acquire`, `:release`, and
+`:acquire_release` map directly.
 `:sequentially_consistent` is rejected (no Tile IR equivalent).
 
-The two forms use different default orderings. **Statement forms default to
-`:monotonic` (Relaxed)**, so a tile or view target reduces into the view via
-`atomic_red_view_tko`. **Value forms default to `:acquire_release`**, matching
-`ct.atomic_*`. Under a stronger ordering a statement instead reads the old
-value with `atomic_*` and discards it.
+Statement forms default to `:monotonic`; value forms default to
+`:acquire_release`. Stronger statement orderings use `atomic_*` and discard
+the result.
 """
 macro atomic(ex)
-    _atomic_macro(nothing, ex)
+    atomic_macro(nothing, ex)
 end
 macro atomic(order, ex)
-    _atomic_macro(order, ex)
+    atomic_macro(order, ex)
 end

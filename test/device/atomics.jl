@@ -369,8 +369,6 @@ end
 end
 
 @testset "atomic_max/min UInt32 (unsigned compare)" begin
-    # 0x80000000 has the high bit set: largest as unsigned, negative as signed.
-    # A signed max/min would disagree with the expected unsigned result.
     function atomic_umax_kernel(out::ct.TileArray{UInt32,1})
         ct.atomic_max(out, 1, 0x80000000; memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -382,11 +380,11 @@ end
 
     out_max = CUDA.fill(0x00000001, 1)
     @cuda backend=cuTile blocks=8 atomic_umax_kernel(out_max)
-    @test Array(out_max)[1] == 0x80000000  # umax; signed would keep 0x00000001
+    @test Array(out_max)[1] == 0x80000000
 
     out_min = CUDA.fill(0x80000000, 1)
     @cuda backend=cuTile blocks=8 atomic_umin_kernel(out_min)
-    @test Array(out_min)[1] == 0x00000001  # umin; signed would keep 0x80000000
+    @test Array(out_min)[1] == 0x00000001
 end
 
 @testset "atomic_or Int" begin
@@ -428,8 +426,6 @@ end
 @testset "atomic_xor Int" begin
     function atomic_xor_kernel(out::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        # XOR with bid — each bid XORs once. `Int(bid)` matches the array
-        # element type: bitwise atomics require an exact-type update.
         ct.atomic_xor(out, 1, Int(bid);
                      memory_order=ct.MemoryOrder.AcqRel)
         return
@@ -446,15 +442,12 @@ end
     @test result == expected
 end
 
-# ============================================================================
-# View-based atomic reductions (atomic_store_*, cuda_tile.atomic_red_view_tko)
-# ============================================================================
+# View-based atomic reductions
 
 @testset "atomic_store reductions (multi-block)" begin
     N = 16
     n_blocks = 16
 
-    # add (Int32)
     function k_add(a::ct.TileArray{Int32,1})
         tiles = ct.eachtile(a, (16,))
         ct.atomic_store_add(tiles, 1, ct.broadcast_to(ct.Tile(Int32(1)), (16,)))
@@ -464,7 +457,6 @@ end
     @cuda backend=cuTile blocks=n_blocks k_add(a)
     @test all(Array(a) .== n_blocks)
 
-    # add (Float32)
     function k_addf(a::ct.TileArray{Float32,1})
         tiles = ct.eachtile(a, (16,))
         ct.atomic_store_add(tiles, 1, ct.broadcast_to(ct.Tile(1.5f0), (16,)))
@@ -474,7 +466,6 @@ end
     @cuda backend=cuTile blocks=n_blocks k_addf(af)
     @test all(isapprox.(Array(af), n_blocks * 1.5f0))
 
-    # max
     function k_max(a::ct.TileArray{Int32,1})
         bid = ct.bid(1)
         tiles = ct.eachtile(a, (16,))
@@ -485,7 +476,6 @@ end
     @cuda backend=cuTile blocks=n_blocks k_max(a)
     @test all(Array(a) .== n_blocks)
 
-    # min
     function k_min(a::ct.TileArray{Int32,1})
         bid = ct.bid(1)
         tiles = ct.eachtile(a, (16,))
@@ -496,7 +486,6 @@ end
     @cuda backend=cuTile blocks=n_blocks k_min(a)
     @test all(Array(a) .== 1)
 
-    # or (bitwise; exact eltype)
     function k_or(a::ct.TileArray{Int32,1})
         bid = ct.bid(1)
         tiles = ct.eachtile(a, (16,))
@@ -507,7 +496,6 @@ end
     @cuda backend=cuTile blocks=n_blocks k_or(a)
     @test all(Array(a) .== reduce(|, Int32(1):Int32(n_blocks)))
 
-    # and (bitwise; exact eltype)
     function k_and(a::ct.TileArray{Int32,1})
         bid = ct.bid(1)
         tiles = ct.eachtile(a, (16,))
@@ -518,7 +506,6 @@ end
     @cuda backend=cuTile blocks=n_blocks k_and(a)
     @test all(Array(a) .== foldl(&, Int32(1):Int32(n_blocks); init=Int32(-1)))
 
-    # xor (bitwise; exact eltype)
     function k_xor(a::ct.TileArray{Int32,1})
         bid = ct.bid(1)
         tiles = ct.eachtile(a, (16,))
@@ -531,7 +518,6 @@ end
 end
 
 @testset "atomic_store_add broadcast update shapes" begin
-    # 16x16 view; updates of shape (), (1,16), (16,1) each broadcast to the tile.
     function k_scalar(a::ct.TileArray{Float32,2})
         ct.atomic_store_add(ct.eachtile(a, (16, 16)), (1, 1), ct.Tile(1.0f0))
         return
@@ -555,7 +541,6 @@ end
 end
 
 @testset "atomic_store_add boundary partial tile" begin
-    # 20-element array, tile 16 → tile 2 is partial (only elements 17..20 exist).
     function k(a::ct.TileArray{Float32,1})
         tiles = ct.eachtile(a, (16,))
         ct.atomic_store_add(tiles, 2, ct.broadcast_to(ct.Tile(1.0f0), (16,)))
@@ -564,12 +549,11 @@ end
     a = CUDA.zeros(Float32, 20)
     @cuda backend=cuTile k(a)
     r = Array(a)
-    @test all(r[1:16] .== 0)   # tile 1 untouched
-    @test all(r[17:20] .== 1)  # tile 2's in-bounds part; OOB clipped
+    @test all(r[1:16] .== 0)
+    @test all(r[17:20] .== 1)
 end
 
 @testset "atomic_store_add stepped (overlapping) windows" begin
-    # tile 16, step 8 over 24 elements → 3 windows, overlap gets summed twice.
     function k(a::ct.TileArray{Float32,1})
         bid = ct.bid(1)
         tiles = ct.eachtile(a, (16,); step=(8,))
@@ -579,8 +563,8 @@ end
     a = CUDA.zeros(Float32, 24)
     @cuda backend=cuTile blocks=3 k(a)
     r = Array(a)
-    @test all(r[1:8] .== 1)    # window 1 only
-    @test all(r[9:24] .== 2)   # covered by two windows
+    @test all(r[1:8] .== 1)
+    @test all(r[9:24] .== 2)
 end
 
 @testset "atomic_store_add f16/bf16" begin
@@ -598,7 +582,6 @@ end
 end
 
 @testset "@atomic macro" begin
-    # Statement form, default relaxed → view reduction on a TiledView.
     function k_stmt(a::ct.TileArray{Float32,1})
         tiles = ct.eachtile(a, (16,))
         ct.@atomic tiles[1] += ct.broadcast_to(ct.Tile(1.0f0), (16,))
@@ -608,7 +591,6 @@ end
     @cuda backend=cuTile blocks=10 k_stmt(a)
     @test all(Array(a) .== 10)
 
-    # Statement form with an explicit stronger order → fetching path.
     function k_ordered(c::ct.TileArray{Int,1})
         ct.@atomic :acquire_release c[1] += 1
         return
@@ -617,7 +599,6 @@ end
     @cuda backend=cuTile blocks=100 k_ordered(c)
     @test Array(c)[1] == 100
 
-    # Subtraction lowers to add-of-negated.
     function k_sub(c::ct.TileArray{Int,1})
         ct.@atomic c[1] -= 2
         return
@@ -626,7 +607,6 @@ end
     @cuda backend=cuTile blocks=10 k_sub(c)
     @test Array(c)[1] == -20
 
-    # `= op(A[i], v)` statement form (max).
     function k_max(c::ct.TileArray{Int,1})
         bid = ct.bid(1)
         ct.@atomic c[1] = max(c[1], bid)
@@ -636,11 +616,10 @@ end
     @cuda backend=cuTile blocks=50 k_max(c)
     @test Array(c)[1] == 50
 
-    # Value form returns old => new.
     function k_value(c::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
         pair = ct.@atomic c[1] + 5
-        ct.store(out, 1, pair.first)   # old
-        ct.store(out, 2, pair.second)  # new
+        ct.store(out, 1, pair.first)
+        ct.store(out, 2, pair.second)
         return
     end
     c = CUDA.fill(Int(7), 1)
@@ -649,8 +628,6 @@ end
     @test Array(out) == [7, 12]
     @test Array(c)[1] == 12
 
-    # `new` uses the update converted to the target dtype, exactly like the
-    # atomic operation itself.
     function k_value_convert(c::ct.TileArray{Float32,1}, out::ct.TileArray{Float32,1})
         pair = ct.@atomic c[1] + 1.0
         ct.store(out, 1, pair.second)
