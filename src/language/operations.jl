@@ -369,8 +369,9 @@ function normalize_eachtile_step(step::Tuple, view_shape::Tuple, rank::Int)
     return step[1:rank]
 end
 
-@generated function build_tiled_view(a::A, ::Val{Requested}, ::Val{Step}, ::Val{Padding}) where
-        {A<:TileArray, Requested, Step, Padding}
+@generated function build_tiled_view(a::A, ::Val{Requested}, ::Val{Step}, ::Val{Padding},
+                                     ::Val{Order}) where
+        {A<:TileArray, Requested, Step, Padding, Order}
     Requested isa Tuple || throw(ArgumentError(
         "eachtile: tile_shape must be a compile-time tuple, got $(typeof(Requested))"))
     rank = ndims(A)
@@ -390,13 +391,19 @@ end
     end
     all(step -> step isa Integer && step > 0, normalized_step) ||
         throw(ArgumentError("eachtile: step must contain strictly positive integers, got $normalized_step"))
+    if Order !== nothing
+        Order isa Tuple ||
+            throw(ArgumentError("eachtile: order must be a compile-time tuple or nothing, got $(typeof(Order))"))
+        length(Order) == rank && all(o -> o isa Integer, Order) && isperm(Order) ||
+            throw(ArgumentError("eachtile: order must be a permutation of 1:$rank, got $Order"))
+    end
     result_type = TiledView{A, Tuple{Requested...}, Tuple{view_shape...},
-                            Tuple{normalized_step...}, Padding}
+                            Tuple{normalized_step...}, Padding, Order}
     return :($result_type(a))
 end
 
 """
-    eachtile(a, tile_shape; step=nothing,
+    eachtile(a, tile_shape; step=nothing, order=nothing,
              padding_mode=PaddingMode.Undetermined)
 
 Create an immutable device-side collection of fixed-shape tiles over `a`.
@@ -405,27 +412,34 @@ Create an immutable device-side collection of fixed-shape tiles over `a`.
 larger values leave gaps. Unlike `@view a[1:2:end]`, which changes element
 strides inside an array, `eachtile` changes tile origins.
 
-Unequal tile shape and step require Tile IR bytecode v13.3 or newer. Both are
+`order` is the same 1-indexed logical-to-physical dimension mapping as the
+`order` kwarg of [`load`](@ref)/[`store`](@ref): `tile_shape[i]`, `step[i]`,
+and tile index `i` describe tile dimension `i`, which maps to array dimension
+`order[i]`.
+
+Unequal tile shape and step require Tile IR bytecode v13.3 or newer. All are
 compile-time tuples; tile indices are 1-based and partial edge tiles use the
 given padding mode on loads and clipped stores.
 """
 @inline function eachtile(a::TileArray, tile_shape::Tuple;
                           step::Union{Tuple, Nothing}=nothing,
+                          order::Union{Tuple, Nothing}=nothing,
                           padding_mode::PaddingMode.T=PaddingMode.Undetermined)
-    build_tiled_view(a, Val(tile_shape), Val(step), Val(padding_mode))
+    build_tiled_view(a, Val(tile_shape), Val(step), Val(padding_mode), Val(order))
 end
 
 @inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Shape, Padding}) where
         {A, RequestedShape, Shape, Padding}
     parent = tiles.parent
     tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
-    Intrinsics.make_partition_view(tv, tiled_view_shape(tiles), Padding, nothing)
+    Intrinsics.make_partition_view(tv, tiled_view_shape(tiles), Padding, tiled_view_order(tiles))
 end
 @inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Step, Padding}) where
         {A, RequestedShape, Shape, Step, Padding}
     parent = tiles.parent
     tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
-    Intrinsics.make_strided_view(tv, tiled_view_shape(tiles), tiled_view_step(tiles), Padding, nothing)
+    Intrinsics.make_strided_view(tv, tiled_view_shape(tiles), tiled_view_step(tiles), Padding,
+                                 tiled_view_order(tiles))
 end
 
 @inline load_tile_view(view::PartitionView, latency, allow_tma, indices, check_bounds) =

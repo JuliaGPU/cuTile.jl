@@ -138,3 +138,33 @@ end
         end
     end
 end
+
+@testset "eachtile — order permutes the view dim_map" begin
+    # `order` follows ct.load/ct.store: tile dim i maps to array dim order[i].
+    # Julia 1-indexed order (2, 1) reverses to the row-major dim_map [1, 0].
+    # Equal shape/step keeps the PartitionView arm.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_partition_view"
+        @check "dim_map=[1, 0]"
+        @check "load_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            tiles = eachtile(a, (4, 8); order=(2, 1))
+            ct.store(a, (1, 1), ct.load(tiles, (1, 1)))
+            return
+        end
+    end
+
+    # Unequal step exercises the StridedView arm.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "make_strided_view"
+        @check "dim_map=[1, 0]"
+        @check "load_view_tko"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            tiles = eachtile(a, (4, 8); step=(2, 8), order=(2, 1))
+            ct.store(a, (1, 1), ct.load(tiles, (1, 1)))
+            return
+        end
+    end
+end

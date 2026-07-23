@@ -96,6 +96,13 @@ end
     short = eachtile(a, (4,); step=(2,))
     @test cuTile.tiled_view_shape(short) == (4, 1)
     @test cuTile.tiled_view_step(short) == (2, 1)
+
+    # `order` permutes which array dimension each tile dimension walks, so the
+    # host tile count pairs step[i] with array dim order[i]. a is 16×10.
+    permuted = eachtile(a, (8, 4); step=(3, 2), order=(2, 1))
+    @test size(permuted) == (Int32(4), Int32(8))  # cld(10, 3), cld(16, 2)
+    @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1, 1))
+    @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1,))
 end
 
 @testset "TensorView" begin

@@ -367,8 +367,9 @@ tile = overlap[2, 1]
 overlap[2, 1] = tile
 ```
 
-Use `ct.load` and `ct.store` for `check_bounds`, `latency`, and `allow_tma`
-controls. Equal shape and step use the ordinary Tile IR partition view;
+`eachtile` also accepts the same `order` kwarg as `ct.load`/`ct.store` to
+permute which array dimension each tile dimension walks. Use `ct.load` and
+`ct.store` for `check_bounds`, `latency`, and `allow_tma` controls. Equal shape and step use the ordinary Tile IR partition view;
 unequal values require Tile IR bytecode v13.3 or newer. This is distinct from
 `@view a[1:2:end, :]`, which steps individual elements rather than tile
 origins.

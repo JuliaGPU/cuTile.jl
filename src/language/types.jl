@@ -410,13 +410,15 @@ Base.size(sv::StridedView) = size(typeof(sv))
 Base.size(sv::StridedView, d::Integer) = size(typeof(sv), d)
 
 """
-    TiledView{A, RequestedShape, ViewShape, Step, Padding}
+    TiledView{A, RequestedShape, ViewShape, Step, Padding, Order}
 
-Internal immutable array-of-tiles wrapper returned by `eachtile`. Shape and
-step live in the type because Tile IR view types require compile-time values;
-the parent is the sole runtime field.
+Internal immutable array-of-tiles wrapper returned by `eachtile`. Shape, step,
+and order live in the type because Tile IR view types require compile-time
+values; the parent is the sole runtime field. `Order` is the 1-indexed
+tile-dim-to-array-dim permutation (or `nothing` for identity), matching the
+`order` kwarg of `ct.load`/`ct.store`.
 """
-struct TiledView{A, RequestedShape, ViewShape, Step, Padding}
+struct TiledView{A, RequestedShape, ViewShape, Step, Padding, Order}
     parent::A
 end
 
@@ -439,9 +441,12 @@ tiled_view_shape(::Type{<:TiledView{A, RequestedShape, ViewShape}}) where
         {A, RequestedShape, ViewShape} = Tuple(ViewShape.parameters)
 tiled_view_step(::Type{<:TiledView{A, RequestedShape, ViewShape, Step}}) where
         {A, RequestedShape, ViewShape, Step} = Tuple(Step.parameters)
+tiled_view_order(::Type{<:TiledView{A, RequestedShape, ViewShape, Step, Padding, Order}}) where
+        {A, RequestedShape, ViewShape, Step, Padding, Order} = Order
 tiled_view_requested_shape(tiles::TiledView) = tiled_view_requested_shape(typeof(tiles))
 tiled_view_shape(tiles::TiledView) = tiled_view_shape(typeof(tiles))
 tiled_view_step(tiles::TiledView) = tiled_view_step(typeof(tiles))
+tiled_view_order(tiles::TiledView) = tiled_view_order(typeof(tiles))
 
 """
     size(tiles::TiledView[, d])
@@ -455,7 +460,9 @@ not ours.
 """
 function Base.size(tiles::TiledView)
     steps = tiled_view_step(typeof(tiles))
-    ntuple(i -> cld(size(tiles.parent, i), Int32(steps[i])), Val(ndims(tiles)))
+    order = tiled_view_order(typeof(tiles))
+    dims = something(order, ntuple(identity, Val(ndims(tiles))))
+    ntuple(i -> cld(size(tiles.parent, dims[i]), Int32(steps[i])), Val(ndims(tiles)))
 end
 function Base.size(tiles::TiledView, d::Integer)
     d < 1 && error("arraysize: dimension out of range")

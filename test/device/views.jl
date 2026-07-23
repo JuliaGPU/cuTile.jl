@@ -124,6 +124,26 @@ end
     @test Array(b) == expected
 end
 
+@testset "eachtile — order permutes tile dimensions" begin
+    # order=(2, 1): tile dim 1 (extent 4, step 3) walks array dim 2, tile dim 2
+    # (extent 8, step 2) walks array dim 1. Index (2, 3) selects the window
+    # cols 4:7 (origin (2-1)*3) and rows 5:12 (origin (3-1)*2). A load/store
+    # roundtrip through identically-parameterized views copies that window.
+    function copy_permuted(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        src = eachtile(a, (4, 8); step=(3, 2), order=(2, 1), padding_mode=ct.PaddingMode.Zero)
+        dst = eachtile(b, (4, 8); step=(3, 2), order=(2, 1))
+        dst[2, 3] = src[2, 3]
+        return
+    end
+
+    a = CUDA.rand(Float32, 12, 12)
+    b = CUDA.zeros(Float32, 12, 12)
+    @cuda backend=cuTile copy_permuted(a, b)
+    expected = zeros(Float32, 12, 12)
+    expected[5:12, 4:7] .= Array(a)[5:12, 4:7]
+    @test Array(b) == expected
+end
+
 @testset "eachtile — partial edges and requested-rank normalization" begin
     function copy_partial(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
         src = eachtile(a, (4,); step=(4,), padding_mode=ct.PaddingMode.Zero)
