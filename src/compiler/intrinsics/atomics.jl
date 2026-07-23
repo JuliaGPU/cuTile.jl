@@ -148,7 +148,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     token_type = Token(tt)
 
     actual_mode = select_rmw_mode(mode, elem_type)
-    check_atomic_bf16_support(cb, actual_mode, elem_type)
+    check_atomic_bf16_support(ctx, actual_mode, elem_type)
 
     # Emit atomic RMW
     mem_ordering = convert_enum(MemoryOrderingSemantics, memory_order)
@@ -214,9 +214,18 @@ end
 const RED_VIEW_INT_DTYPES = (Int32, Int64, UInt32, UInt64)
 const RED_VIEW_ADD_DTYPES = (RED_VIEW_INT_DTYPES..., Float16, BFloat16, Float32, Float64)
 
-function check_atomic_bf16_support(cb::CodeBuilder, mode::AtomicRMWMode.T, @nospecialize(elem_type))
-    if mode == AtomicRMWMode.ADDF && elem_type === BFloat16 && cb.version < v"13.3"
-        throw(IRError("atomic add on BFloat16 requires Tile IR bytecode ≥ 13.3, got v$(cb.version)"))
+function check_atomic_bf16_support(ctx::CGCtx, mode::AtomicRMWMode.T, @nospecialize(elem_type))
+    mode == AtomicRMWMode.ADDF && elem_type === BFloat16 || return
+
+    if ctx.sm_arch !== nothing && ctx.sm_arch < v"9"
+        throw(IRError(
+            "atomic add on BFloat16 requires Hopper (sm_90) or newer, got " *
+            format_sm_arch(ctx.sm_arch)))
+    end
+    if ctx.cb.version < v"13.3"
+        throw(IRError(
+            "atomic add on BFloat16 requires Tile IR bytecode ≥ 13.3, got " *
+            "v$(ctx.cb.version)"))
     end
 end
 
@@ -245,7 +254,7 @@ function emit_atomic_red_view!(ctx::CGCtx, args::AbstractVector,
         throw(IRError("$name: unsupported element type $elem_type"))
 
     mode = select_rmw_mode(base_mode, elem_type)
-    check_atomic_bf16_support(cb, mode, elem_type)
+    check_atomic_bf16_support(ctx, mode, elem_type)
 
     index_tvs = resolve_tuple(ctx, args[3], "$name indices")
     index_vals = Value[tv.v for tv in index_tvs]

@@ -2310,6 +2310,7 @@ end
             @check_label "entry"
             code_tiled(
                     Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                    sm_arch=v"9.0",
                     bytecode_version=v"13.3") do arr
                 indices = ct.arange(16; dtype=Int)
                 @check "atomic_rmw_tko{{.*}}addf"
@@ -2317,8 +2318,17 @@ end
                 return
             end
         end
+        @test_throws "requires Hopper (sm_90) or newer, got sm_80" code_tiled(
+                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                sm_arch=v"8.0",
+                bytecode_version=v"13.3") do arr
+            indices = ct.arange(16; dtype=Int)
+            ct.atomic_add(arr, indices, ct.BFloat16(1))
+            return
+        end
         @test_throws "BFloat16 requires Tile IR bytecode ≥ 13.3" code_tiled(
                 Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                sm_arch=v"9.0",
                 bytecode_version=v"13.2") do arr
             indices = ct.arange(16; dtype=Int)
             ct.atomic_add(arr, indices, ct.BFloat16(1))
@@ -2398,6 +2408,16 @@ end
                 ct.atomic_store_max(a, bid, val)
                 return
             end
+        end
+
+        spec_bf16 = ct.ArraySpec{1}(16, true)
+        @test_throws "requires Hopper (sm_90) or newer, got sm_80" code_tiled(
+                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                sm_arch=v"8.0",
+                bytecode_version=v"13.3") do a
+            val = ct.broadcast_to(ct.Tile(ct.BFloat16(1)), (16,))
+            ct.atomic_store_add(a, 1, val)
+            return
         end
 
         @test @filecheck begin

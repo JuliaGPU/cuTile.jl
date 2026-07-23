@@ -569,6 +569,8 @@ end
 
 @testset "atomic_store_add f16/bf16" begin
     for T in (Float16, ct.BFloat16)
+        T === ct.BFloat16 && capability(device()) < v"9" && continue
+
         function k(a::ct.TileArray{T,1}) where {T}
             tiles = ct.eachtile(a, (16,))
             ct.atomic_store_add(tiles, 1, ct.broadcast_to(ct.Tile(one(eltype(a))), (16,)))

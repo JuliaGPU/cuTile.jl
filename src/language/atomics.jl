@@ -127,7 +127,8 @@ end
     atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic addition. Atomically adds `val` to the value at `index` and returns
-the original value. Index is 1-indexed.
+the original value. Index is 1-indexed. `BFloat16` requires Tile IR bytecode
+≥ 13.3 and Hopper (sm_90) or newer.
 
 # Example
 ```julia
@@ -237,7 +238,8 @@ Also available: `atomic_store_max`, `atomic_store_min`, `atomic_store_or`,
 `atomic_store_and`, and `atomic_store_xor`. Bitwise updates must have the
 destination element type.
 
-Requires Tile IR bytecode ≥ 13.3.
+Requires Tile IR bytecode ≥ 13.3. `BFloat16` addition requires Hopper (sm_90)
+or newer.
 """
 function atomic_store_add end
 
