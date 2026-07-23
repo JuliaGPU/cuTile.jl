@@ -648,6 +648,19 @@ end
     @cuda backend=cuTile k_value(c, out)
     @test Array(out) == [7, 12]
     @test Array(c)[1] == 12
+
+    # `new` uses the update converted to the target dtype, exactly like the
+    # atomic operation itself.
+    function k_value_convert(c::ct.TileArray{Float32,1}, out::ct.TileArray{Float32,1})
+        pair = ct.@atomic c[1] + 1.0
+        ct.store(out, 1, pair.second)
+        return
+    end
+    c = CUDA.fill(Float32(16777216), 1)
+    out = CUDA.zeros(Float32, 1)
+    @cuda backend=cuTile k_value_convert(c, out)
+    @test Array(c)[1] == Float32(16777216)
+    @test Array(out)[1] == Array(c)[1]
 end
 
 @testset "1D gather - simple" begin

@@ -365,10 +365,17 @@ end
 
 # Value-form lowering: fetch the old value, recompute `new` elementwise, and
 # return the `old => new` pair (matching Base).
-@inline function atomic_fetch(target, index, op::F, val, order) where {F}
+@inline _atomic_update(::Type{T}, op, val::Tile) where {T} = convert(Tile{T}, val)
+@inline _atomic_update(::Type{T}, op, val) where {T} = convert(T, val)
+@inline _atomic_update(::Type, ::typeof(&), val) = val
+@inline _atomic_update(::Type, ::typeof(|), val) = val
+@inline _atomic_update(::Type, ::typeof(xor), val) = val
+
+@inline function atomic_fetch(target::TileArray{T}, index, op::F, val, order) where {T, F}
     _, fetch_fn, transform = _red_op(op)
-    old = fetch_fn(target, index, transform(val); memory_order=order)
-    return old => op(old, val)
+    update = _atomic_update(T, op, val)
+    old = fetch_fn(target, index, transform(update); memory_order=order)
+    return old => op(old, update)
 end
 
 # --- macro parsing (runs at expansion time) ---
