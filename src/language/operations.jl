@@ -23,8 +23,8 @@
 # view / @view → unsafe_view
 #-----------------------------------------------------------------------------
 
-# Restricted to `Vararg{Union{Colon, UnitRange}, N}`: rank mismatches and
-# unsupported index types (StepRange, Int, CartesianIndex, …) fall through
+# Restricted to `Vararg{SliceIndex, N}`: rank mismatches and unsupported
+# index types (Int, CartesianIndex, non-integer ranges, …) fall through
 # to Base's regular `view` methods (which don't match TileArray) and surface
 # as a codegen-time `IRError`. The error message there is whatever
 # `_throw_method_error`'s formatting produces — cleaner reporting is tied
@@ -33,9 +33,10 @@
 # Throwing from inside `unsafe_view` doesn't work either: a
 # `throw(ArgumentError(...))` reached from inlined kernel code leaks the
 # exception object to codegen, which can't lower String / Exception values.
-Base.maybeview(arr::TileArray{T, N}, inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
+const SliceIndex = Union{Colon, UnitRange{<:Integer}, StepRange{<:Integer, <:Integer}}
+Base.maybeview(arr::TileArray{T, N}, inds::Vararg{SliceIndex, N}) where {T, N} =
     Base.view(arr, inds...)
-function Base.view(arr::TileArray{T, N}, inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N}
+function Base.view(arr::TileArray{T, N}, inds::Vararg{SliceIndex, N}) where {T, N}
     check_slice_bounds(inds)
     unsafe_view(arr, Val(1), inds)
 end
@@ -43,18 +44,24 @@ end
 """
     sliced_arraytype(SrcT) -> Type{<:TileArray}
 
-Result `TileArray` type for a slice of `SrcT`. Conservative ArraySpec:
-drops alignment to 0 and zeros all per-axis `shape_div_by`. Strides and
-contiguity are preserved (slicing doesn't change `stride[1] == 1` for
-column-major arrays). A future divisibility analysis can recover tighter
-facts from the IR.
+Result `TileArray` type for a slice of `SrcT`. Conservative ArraySpec drops
+alignment to 0 and zeros all per-axis `shape_div_by`. Existing stride
+divisibility is preserved. A StepRange on axis 1 clears contiguity; a
+UnitRange and StepRanges on other axes preserve it. A future divisibility
+analysis can recover tighter facts from the IR.
 """
-function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray}))
+function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray});
+                          stepped_axis::Union{Int, Nothing}=nothing)
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
     N = ndims(SrcT)
     spec === nothing && return TileArray{elem_T, N}
-    new_spec = ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, ntuple(_ -> 0, N),
+    # A StepRange scales that axis' element stride. The step is a runtime value
+    # not encoded in the type (`2:1:20` is still a StepRange), so column-major
+    # axis-1 contiguity must be dropped conservatively even when the step
+    # happens to be one; constprop of a literal step could recover it later.
+    new_contiguous = spec.contiguous && stepped_axis !== 1
+    new_spec = ArraySpec{N, 0, new_contiguous, spec.stride_div_by, ntuple(_ -> 0, N),
                          spec.may_alias_internally}()
     return TileArray{elem_T, N, new_spec}
 end
@@ -85,6 +92,24 @@ function unsafe_view(arr::TileArray, ::Val{Axis},
     sub = sliced_arraytype(typeof(arr))(new_base, new_sizes, new_strides)
     unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
 end
+# Positive StepRange: as for a Julia SubArray, the new element stride is the
+# parent stride scaled by the range step. This remains a TensorView; tile-origin
+# striding is a separate StridedView feature.
+function unsafe_view(arr::TileArray, ::Val{Axis},
+                     inds::Tuple{StepRange, Vararg}) where {Axis}
+    r = inds[1]
+    size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
+    start_0 = size_elem_T(first(r)) - size_elem_T(1)
+    new_axis_size = size_elem_T(length(r))
+    range_step = size_elem_T(step(r))
+    offset_elems = start_0 * arr.strides[Axis]
+    new_base = Intrinsics.to_scalar(Intrinsics.offset(Tile(arr.ptr), Tile(offset_elems)))
+    new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
+    new_strides = ntuple(i -> i == Axis ? arr.strides[i] * range_step : arr.strides[i],
+                         Val(ndims(arr)))
+    sub = sliced_arraytype(typeof(arr); stepped_axis=Axis)(new_base, new_sizes, new_strides)
+    unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
+end
 
 # Per-range bounds asserts. The tuple methods recurse via `inds[1]`/`Base.tail`
 # (rather than `foreach`/`map`/`ntuple`) because constprop on `UnitRange`
@@ -105,6 +130,11 @@ end
 check_slice_bounds(::Colon) = nothing
 Base.@constprop :aggressive function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
     Intrinsics.assert(first(r) >= T(1), "@view: slice start must be ≥ 1")
+    return
+end
+Base.@constprop :aggressive function check_slice_bounds(r::StepRange{T, S}) where {T<:Integer, S<:Integer}
+    Intrinsics.assert(first(r) >= T(1), "@view: slice start must be ≥ 1")
+    Intrinsics.assert(step(r) > S(0), "@view: slice step must be positive")
     return
 end
 

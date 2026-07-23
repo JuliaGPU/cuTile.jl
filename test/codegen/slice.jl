@@ -99,6 +99,38 @@ end
     end
 end
 
+@testset "slice — positive StepRange" begin
+    # A stepped range scales the TensorView's element stride. It must not take
+    # the tile-origin StridedView path.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            sub = @view a[2:3:20]
+            t = ct.load(sub, 1, (4,))
+            ct.store(sub, 1, t)
+            return
+        end
+        @check "offset"
+        @check "constant <i32: 3>"
+        @check "muli"
+        @check "make_tensor_view"
+        @check_not "make_strided_view"
+    end
+
+    # A runtime-positive step remains dynamic in the TensorView stride.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, Int32, Int32, Int32}) do a, i, s, j
+            sub = @view a[i:s:j, :]
+            t = ct.load(sub, (1, 1), (4, 4))
+            ct.store(sub, (1, 1), t)
+            return
+        end
+        @check "assert {{.*}}slice step must be positive"
+        @check "make_tensor_view"
+    end
+end
+
 @testset "slice — bounds asserts" begin
     # Static literal bounds that are valid: `start >= 1` folds to `true`, so
     # the AssertOp is elided by the assert intrinsic's Const(true) fast path.
@@ -145,5 +177,19 @@ end
         @check "constant <i1: false>"
         @check "assert {{.*}}slice start must be"
     end
-end
 
+    # Reversed views cannot be represented by Tile IR's positive TensorView
+    # strides. Keep the failure local and explicit instead of emitting invalid
+    # IR or silently materializing a reversal.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            sub = @view a[10:-1:1]
+            t = ct.load(sub, 1, (4,))
+            ct.store(sub, 1, t)
+            return
+        end
+        @check "constant <i1: false>"
+        @check "assert {{.*}}slice step must be positive"
+    end
+end

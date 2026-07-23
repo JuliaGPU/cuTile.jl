@@ -35,6 +35,35 @@ end
     @test Array(b) == Array(a)[10:13]
 end
 
+@testset "slice — 1D stepped copy" begin
+    function kern(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        sub = @view a[2:3:23]
+        t = ct.load(sub, 1, (8,))
+        ct.store(b, 1, t)
+        return
+    end
+
+    a = CUDA.rand(Float32, 24)
+    b = CUDA.zeros(Float32, 8)
+    @cuda backend=cuTile kern(a, b)
+    @test Array(b) == Array(a)[2:3:23]
+end
+
+@testset "slice — 2D stepped copy and nested view" begin
+    function kern(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2}, step::Int32)
+        outer = @view a[2:step:20, 4:2:18]
+        inner = @view outer[2:2:5, :]
+        t = ct.load(inner, (1, 1), (2, 8))
+        ct.store(b, (1, 1), t)
+        return
+    end
+
+    a = CUDA.rand(Float32, 24, 20)
+    b = CUDA.zeros(Float32, 2, 8)
+    @cuda backend=cuTile kern(a, b, Int32(3))
+    @test Array(b) == Array((@view a[2:3:20, 4:2:18])[2:2:5, :])
+end
+
 @testset "slice — 2D row-slice" begin
     # Copy a[r1:r2, :] into b.
     function kern(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
@@ -118,4 +147,3 @@ end
     @cuda backend=cuTile kern(a, b, Int32(3), Int32(6), Int32(2), Int32(5))
     @test Array(b) == Array(a)[3:6, 2:5]
 end
-
