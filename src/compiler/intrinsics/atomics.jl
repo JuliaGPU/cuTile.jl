@@ -158,6 +158,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     # Refine mode for element signedness: float add → ADDF, unsigned
     # max/min → UMAX/UMIN.
     actual_mode = select_rmw_mode(mode, elem_type)
+    check_atomic_bf16_support(cb, actual_mode, elem_type)
 
     # Emit atomic RMW
     mem_ordering = convert_enum(MemoryOrderingSemantics, memory_order)

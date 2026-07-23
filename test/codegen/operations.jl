@@ -2304,6 +2304,27 @@ end
                 return
             end
         end
+
+        # bf16 add uses ADDF and requires bytecode 13.3.
+        spec_bf16 = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(
+                    Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                    bytecode_version=v"13.3") do arr
+                indices = ct.arange(16; dtype=Int)
+                @check "atomic_rmw_tko{{.*}}addf"
+                ct.atomic_add(arr, indices, ct.BFloat16(1))
+                return
+            end
+        end
+        @test_throws "BFloat16 requires Tile IR bytecode ≥ 13.3" code_tiled(
+                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                bytecode_version=v"13.2") do arr
+            indices = ct.arange(16; dtype=Int)
+            ct.atomic_add(arr, indices, ct.BFloat16(1))
+            return
+        end
     end
 
     @testset "atomic_red_view_tko" begin
