@@ -32,7 +32,7 @@ function classify_memory_op(resolved_func)
         return MEM_STORE
     elseif resolved_func === Intrinsics.print_tko
         return MEM_STORE
-    elseif is_atomic_intrinsic(resolved_func)
+    elseif is_atomic_intrinsic(resolved_func) || is_atomic_red_view(resolved_func)
         return MEM_STORE
     else
         return MEM_NONE
@@ -43,6 +43,15 @@ function is_atomic_intrinsic(func)
     isdefined(Intrinsics, :atomic_cas) && func === Intrinsics.atomic_cas && return true
     for op in (:atomic_xchg, :atomic_add, :atomic_max, :atomic_min,
                :atomic_or, :atomic_and, :atomic_xor)
+        isdefined(Intrinsics, op) && func === getfield(Intrinsics, op) && return true
+    end
+    return false
+end
+
+# Relaxed view atomics use ordinary store token ordering.
+function is_atomic_red_view(func)
+    for op in (:atomic_red_view_add, :atomic_red_view_max, :atomic_red_view_min,
+               :atomic_red_view_or, :atomic_red_view_and, :atomic_red_view_xor)
         isdefined(Intrinsics, op) && func === getfield(Intrinsics, op) && return true
     end
     return false

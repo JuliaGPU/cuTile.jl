@@ -368,6 +368,25 @@ end
     @test result == 1
 end
 
+@testset "atomic_max/min UInt32 (unsigned compare)" begin
+    function atomic_umax_kernel(out::ct.TileArray{UInt32,1})
+        ct.atomic_max(out, 1, 0x80000000; memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+    function atomic_umin_kernel(out::ct.TileArray{UInt32,1})
+        ct.atomic_min(out, 1, 0x00000001; memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    out_max = CUDA.fill(0x00000001, 1)
+    @cuda backend=cuTile blocks=8 atomic_umax_kernel(out_max)
+    @test Array(out_max)[1] == 0x80000000
+
+    out_min = CUDA.fill(0x80000000, 1)
+    @cuda backend=cuTile blocks=8 atomic_umin_kernel(out_min)
+    @test Array(out_min)[1] == 0x00000001
+end
+
 @testset "atomic_or Int" begin
     function atomic_or_kernel(out::ct.TileArray{Int,1})
         bid = ct.bid(1)
@@ -407,8 +426,7 @@ end
 @testset "atomic_xor Int" begin
     function atomic_xor_kernel(out::ct.TileArray{Int,1})
         bid = ct.bid(1)
-        # XOR with bid — each bid XORs once
-        ct.atomic_xor(out, 1, bid;
+        ct.atomic_xor(out, 1, Int(bid);
                      memory_order=ct.MemoryOrder.AcqRel)
         return
     end
@@ -422,6 +440,206 @@ end
     expected = reduce(xor, 1:n_blocks)
     result = Array(out)[1]
     @test result == expected
+end
+
+# View-based atomic reductions
+
+@testset "atomic_store reductions (multi-block)" begin
+    N = 16
+    n_blocks = 16
+
+    function k_add(a::ct.TileArray{Int32,1})
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_add(tiles, 1, ct.broadcast_to(ct.Tile(Int32(1)), (16,)))
+        return
+    end
+    a = CUDA.zeros(Int32, N)
+    @cuda backend=cuTile blocks=n_blocks k_add(a)
+    @test all(Array(a) .== n_blocks)
+
+    function k_addf(a::ct.TileArray{Float32,1})
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_add(tiles, 1, ct.broadcast_to(ct.Tile(1.5f0), (16,)))
+        return
+    end
+    af = CUDA.zeros(Float32, N)
+    @cuda backend=cuTile blocks=n_blocks k_addf(af)
+    @test all(isapprox.(Array(af), n_blocks * 1.5f0))
+
+    function k_max(a::ct.TileArray{Int32,1})
+        bid = ct.bid(1)
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_max(tiles, 1, ct.broadcast_to(ct.Tile(Int32(bid)), (16,)))
+        return
+    end
+    a = CUDA.zeros(Int32, N)
+    @cuda backend=cuTile blocks=n_blocks k_max(a)
+    @test all(Array(a) .== n_blocks)
+
+    function k_min(a::ct.TileArray{Int32,1})
+        bid = ct.bid(1)
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_min(tiles, 1, ct.broadcast_to(ct.Tile(Int32(bid)), (16,)))
+        return
+    end
+    a = CUDA.fill(Int32(999), N)
+    @cuda backend=cuTile blocks=n_blocks k_min(a)
+    @test all(Array(a) .== 1)
+
+    function k_or(a::ct.TileArray{Int32,1})
+        bid = ct.bid(1)
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_or(tiles, 1, ct.broadcast_to(ct.Tile(Int32(bid)), (16,)))
+        return
+    end
+    a = CUDA.zeros(Int32, N)
+    @cuda backend=cuTile blocks=n_blocks k_or(a)
+    @test all(Array(a) .== reduce(|, Int32(1):Int32(n_blocks)))
+
+    function k_and(a::ct.TileArray{Int32,1})
+        bid = ct.bid(1)
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_and(tiles, 1, ct.broadcast_to(ct.Tile(Int32(bid)), (16,)))
+        return
+    end
+    a = CUDA.fill(Int32(-1), N)
+    @cuda backend=cuTile blocks=n_blocks k_and(a)
+    @test all(Array(a) .== foldl(&, Int32(1):Int32(n_blocks); init=Int32(-1)))
+
+    function k_xor(a::ct.TileArray{Int32,1})
+        bid = ct.bid(1)
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_xor(tiles, 1, ct.broadcast_to(ct.Tile(Int32(bid)), (16,)))
+        return
+    end
+    a = CUDA.zeros(Int32, N)
+    @cuda backend=cuTile blocks=n_blocks k_xor(a)
+    @test all(Array(a) .== reduce(xor, Int32(1):Int32(n_blocks)))
+end
+
+@testset "atomic_store_add broadcast update shapes" begin
+    function k_scalar(a::ct.TileArray{Float32,2})
+        ct.atomic_store_add(ct.eachtile(a, (16, 16)), (1, 1), ct.Tile(1.0f0))
+        return
+    end
+    function k_row(a::ct.TileArray{Float32,2})
+        ct.atomic_store_add(ct.eachtile(a, (16, 16)), (1, 1),
+                            ct.broadcast_to(ct.Tile(1.0f0), (1, 16)))
+        return
+    end
+    function k_col(a::ct.TileArray{Float32,2})
+        ct.atomic_store_add(ct.eachtile(a, (16, 16)), (1, 1),
+                            ct.broadcast_to(ct.Tile(1.0f0), (16, 1)))
+        return
+    end
+    n_blocks = 8
+    for k in (k_scalar, k_row, k_col)
+        a = CUDA.zeros(Float32, 16, 16)
+        @cuda backend=cuTile blocks=n_blocks k(a)
+        @test all(isapprox.(Array(a), Float32(n_blocks)))
+    end
+end
+
+@testset "atomic_store_add boundary partial tile" begin
+    function k(a::ct.TileArray{Float32,1})
+        tiles = ct.eachtile(a, (16,))
+        ct.atomic_store_add(tiles, 2, ct.broadcast_to(ct.Tile(1.0f0), (16,)))
+        return
+    end
+    a = CUDA.zeros(Float32, 20)
+    @cuda backend=cuTile k(a)
+    r = Array(a)
+    @test all(r[1:16] .== 0)
+    @test all(r[17:20] .== 1)
+end
+
+@testset "atomic_store_add stepped (overlapping) windows" begin
+    function k(a::ct.TileArray{Float32,1})
+        bid = ct.bid(1)
+        tiles = ct.eachtile(a, (16,); step=(8,))
+        ct.atomic_store_add(tiles, bid, ct.broadcast_to(ct.Tile(1.0f0), (16,)))
+        return
+    end
+    a = CUDA.zeros(Float32, 24)
+    @cuda backend=cuTile blocks=3 k(a)
+    r = Array(a)
+    @test all(r[1:8] .== 1)
+    @test all(r[9:24] .== 2)
+end
+
+@testset "atomic_store_add f16/bf16" begin
+    for T in (Float16, ct.BFloat16)
+        T === ct.BFloat16 && capability(device()) < v"9" && continue
+
+        function k(a::ct.TileArray{T,1}) where {T}
+            tiles = ct.eachtile(a, (16,))
+            ct.atomic_store_add(tiles, 1, ct.broadcast_to(ct.Tile(one(eltype(a))), (16,)))
+            return
+        end
+        n_blocks = 8
+        a = CUDA.zeros(T, 16)
+        @cuda backend=cuTile blocks=n_blocks k(a)
+        @test all(Array(a) .== T(n_blocks))
+    end
+end
+
+@testset "@atomic macro" begin
+    function k_stmt(a::ct.TileArray{Float32,1})
+        tiles = ct.eachtile(a, (16,))
+        ct.@atomic tiles[1] += ct.broadcast_to(ct.Tile(1.0f0), (16,))
+        return
+    end
+    a = CUDA.zeros(Float32, 16)
+    @cuda backend=cuTile blocks=10 k_stmt(a)
+    @test all(Array(a) .== 10)
+
+    function k_ordered(c::ct.TileArray{Int,1})
+        ct.@atomic :acquire_release c[1] += 1
+        return
+    end
+    c = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=100 k_ordered(c)
+    @test Array(c)[1] == 100
+
+    function k_sub(c::ct.TileArray{Int,1})
+        ct.@atomic c[1] -= 2
+        return
+    end
+    c = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=10 k_sub(c)
+    @test Array(c)[1] == -20
+
+    function k_max(c::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        ct.@atomic c[1] = max(c[1], bid)
+        return
+    end
+    c = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=50 k_max(c)
+    @test Array(c)[1] == 50
+
+    function k_value(c::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
+        pair = ct.@atomic c[1] + 5
+        ct.store(out, 1, pair.first)
+        ct.store(out, 2, pair.second)
+        return
+    end
+    c = CUDA.fill(Int(7), 1)
+    out = CUDA.zeros(Int, 2)
+    @cuda backend=cuTile k_value(c, out)
+    @test Array(out) == [7, 12]
+    @test Array(c)[1] == 12
+
+    function k_value_convert(c::ct.TileArray{Float32,1}, out::ct.TileArray{Float32,1})
+        pair = ct.@atomic c[1] + 1.0
+        ct.store(out, 1, pair.second)
+        return
+    end
+    c = CUDA.fill(Float32(16777216), 1)
+    out = CUDA.zeros(Float32, 1)
+    @cuda backend=cuTile k_value_convert(c, out)
+    @test Array(c)[1] == Float32(16777216)
+    @test Array(out)[1] == Array(c)[1]
 end
 
 @testset "1D gather - simple" begin

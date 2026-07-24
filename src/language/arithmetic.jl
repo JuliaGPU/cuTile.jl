@@ -89,6 +89,9 @@ public divmod
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.subf(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
 
+@inline Base.:(-)(a::Tile{T}) where {T <: AbstractFloat} = Intrinsics.negf(a)
+@inline Base.:(-)(a::Tile{T}) where {T <: Integer} = Intrinsics.negi(a)
+
 # All other tile arithmetic (*, -, /, ^, comparisons, ifelse, etc.) is handled
 # by the generic Broadcast.copy → map path: scalar @overlay methods or Julia's
 # native implementations provide the element-wise logic, and map handles

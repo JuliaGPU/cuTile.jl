@@ -2304,6 +2304,240 @@ end
                 return
             end
         end
+
+        spec_bf16 = ct.ArraySpec{1}(16, true)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(
+                    Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                    sm_arch=v"9.0",
+                    bytecode_version=v"13.3") do arr
+                indices = ct.arange(16; dtype=Int)
+                @check "atomic_rmw_tko{{.*}}addf"
+                ct.atomic_add(arr, indices, ct.BFloat16(1))
+                return
+            end
+        end
+        @test_throws "requires Hopper (sm_90) or newer, got sm_80" code_tiled(
+                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                sm_arch=v"8.0",
+                bytecode_version=v"13.3") do arr
+            indices = ct.arange(16; dtype=Int)
+            ct.atomic_add(arr, indices, ct.BFloat16(1))
+            return
+        end
+        @test_throws "BFloat16 requires Tile IR bytecode ≥ 13.3" code_tiled(
+                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                sm_arch=v"9.0",
+                bytecode_version=v"13.2") do arr
+            indices = ct.arange(16; dtype=Int)
+            ct.atomic_add(arr, indices, ct.BFloat16(1))
+            return
+        end
+    end
+
+    @testset "atomic_red_view_tko" begin
+        spec2d = ct.ArraySpec{2}(16, true)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tiles = ct.eachtile(a, (16, 16))
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+                @check "make_partition_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, (1, 1), val)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))
+                @check "atomic_red_view_tko relaxed device{{.*}}, add,"
+                ct.atomic_store_add(a, bid, val)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tiles = ct.eachtile(a, (16,); step=(8,))
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+                @check "make_strided_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, 1, val)
+                return
+            end
+        end
+
+        # Atomic views ignore TiledView padding.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tiles = ct.eachtile(a, (16,); padding_mode=ct.PaddingMode.Zero)
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+                @check "make_partition_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, 1, val)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                tiles = ct.eachtile(
+                    a, (16,); step=(8,), padding_mode=ct.PaddingMode.Zero)
+                val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+                @check "make_strided_view"
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.atomic_store_add(tiles, 1, val)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                val = ct.broadcast_to(ct.Tile(UInt32(1)), (16,))
+                @check "atomic_red_view_tko relaxed device{{.*}}umax"
+                ct.atomic_store_max(a, bid, val)
+                return
+            end
+        end
+
+        spec_bf16 = ct.ArraySpec{1}(16, true)
+        @test_throws "requires Hopper (sm_90) or newer, got sm_80" code_tiled(
+                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                sm_arch=v"8.0",
+                bytecode_version=v"13.3") do a
+            val = ct.broadcast_to(ct.Tile(ct.BFloat16(1)), (16,))
+            ct.atomic_store_add(a, 1, val)
+            return
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "store_view_tko{{.*}}token = [[TOK:%[^ ]+]]"
+                ct.store(a, bid, tile)
+                @check "atomic_red_view_tko{{.*}}token ="
+                ct.atomic_store_add(a, bid, tile)
+                return
+            end
+        end
+
+        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+            bid = ct.bid(1)
+            val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))  # Int32 into Int64
+            ct.atomic_store_or(a, bid, val)
+            return
+        end
+
+        @test_throws "expected" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            tiles = ct.eachtile(a, (16, 16))
+            val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+            ct.atomic_store_add(tiles, (1, 1, 1), val)  # 3 indices for a 2D view
+            return
+        end
+    end
+
+    @testset "@atomic macro" begin
+        spec2d = ct.ArraySpec{2}(16, true)
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tiles = ct.eachtile(a, (16, 16))
+                v = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+                @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                ct.@atomic tiles[1, 1] += v
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "atomic_red_view_tko"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko acq_rel"
+                ct.@atomic :acquire_release a[bid] += Int32(1)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko"
+                pair = ct.@atomic a[bid] + Int32(3)
+                Base.donotdelete(pair.first)
+                Base.donotdelete(pair.second)
+                return
+            end
+        end
+
+        @test_throws "sequentially_consistent" macroexpand(@__MODULE__,
+            :(ct.@atomic :sequentially_consistent a[1] += 1))
+        @test_throws "indexed reference" macroexpand(@__MODULE__,
+            :(ct.@atomic a += 1))
+        @test_throws "must reference" macroexpand(@__MODULE__,
+            :(ct.@atomic a[1] = min(b[1], 2)))
+        @test_throws "first argument" macroexpand(@__MODULE__,
+            :(ct.@atomic a[1] = 2 - a[1]))
+        @test_throws "plain" macroexpand(@__MODULE__,
+            :(ct.@atomic a[1] = 2))
+    end
+
+    @testset "unsigned atomic_max/min modes" begin
+        for T in (UInt32, UInt64)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{T,1,spec1d}}) do arr
+                    bid = ct.bid(1)
+                    @check "atomic_rmw_tko{{.*}}umax"
+                    ct.atomic_max(arr, bid, zero(eltype(arr)))
+                    @check "atomic_rmw_tko{{.*}}umin"
+                    ct.atomic_min(arr, bid, zero(eltype(arr)))
+                    return
+                end
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "umax"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do arr
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko{{.*}}max"
+                ct.atomic_max(arr, bid, Int32(0))
+                return
+            end
+        end
+    end
+
+    @testset "reject bitwise atomic dtype mismatch" begin
+        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
+            bid = ct.bid(1)
+            ct.atomic_or(arr, bid, Int32(1))  # Int32 update into Int64 array
+            return
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
+                bid = ct.bid(1)
+                @check "atomic_rmw_tko"
+                ct.atomic_add(arr, bid, Int32(1))
+                return
+            end
+        end
     end
 
     # `weak` ordering is not supported on atomics; reject at the boundary.

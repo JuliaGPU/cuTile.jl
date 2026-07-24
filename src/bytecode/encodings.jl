@@ -102,6 +102,7 @@ module Opcode
     const MmaFScaledOp = 114 # since 13.3
     const MakeGatherScatterViewOp = 115 # since 13.3
     const MakeStridedViewOp = 116 # since 13.3
+    const AtomicRedViewTkoOp = 117 # since 13.3
     const InsertOp = 118     # since 13.4
 end
 
@@ -2123,6 +2124,40 @@ function encode_AtomicRMWPtrOp!(cb::CodeBuilder,
     encode_optional_operand!(cb.buf, token)
 
     return new_op!(cb, 2)
+end
+
+"""
+    encode_AtomicRedViewTkoOp!(cb, token_type, view, index, value;
+                               token, memory_ordering, memory_scope, mode) -> Value
+
+Atomic read-modify-write of `value` into the tile selected by `index` within
+`view`. Returns an ordering token.
+Opcode: 117 (Tile IR v13.3+)
+"""
+function encode_AtomicRedViewTkoOp!(cb::CodeBuilder,
+                                    token_type::TypeId,
+                                    view::Value,
+                                    index::Vector{Value},
+                                    value::Value;
+                                    token::Union{Value, Nothing}=nothing,
+                                    memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Relaxed,
+                                    memory_scope::MemoryScope.T=MemoryScope.Device,
+                                    mode::AtomicRMWMode.T=AtomicRMWMode.ADD)
+    cb.version >= v"13.3" ||
+        throw(IRError("AtomicRedViewTkoOp requires Tile IR v13.3+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.AtomicRedViewTkoOp)
+    encode_typeid_seq!(cb.buf, [token_type])
+    flags = token !== nothing ? 1 : 0
+    encode_varint!(cb.buf, flags)
+    encode_enum!(cb.buf, memory_ordering)
+    encode_enum!(cb.buf, memory_scope)
+    encode_enum!(cb.buf, mode)
+    encode_operand!(cb.buf, view)
+    encode_sized_operands!(cb.buf, index)
+    encode_operand!(cb.buf, value)
+    encode_optional_operand!(cb.buf, token)
+
+    return new_op!(cb)
 end
 
 #=============================================================================
