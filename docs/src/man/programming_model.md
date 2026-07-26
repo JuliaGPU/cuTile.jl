@@ -3,7 +3,7 @@
 A cuTile kernel is a Julia function that executes in parallel on a logical *grid* of
 *blocks*. Each block computes on **tiles**: fixed-shape, multi-dimensional fragments of the
 arrays passed to the kernel. This is the same programming model as the one described in the
-[Tile IR specification](https://docs.nvidia.com/cuda/tile-ir/13.3/prog_model.html), which
+[Tile IR specification](https://docs.nvidia.com/cuda/tile-ir/latest/sections/prog_model.html), which
 cuTile.jl compiles to.
 
 The tile abstraction is what distinguishes this model from ordinary CUDA kernels: you do not

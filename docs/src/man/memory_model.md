@@ -3,7 +3,7 @@
 Atomic operations take `memory_order` and `memory_scope` keyword arguments that control how
 their effects are ordered with respect to other memory operations, and which threads observe
 that ordering. Both map directly onto the Tile IR memory model; the
-[specification](https://docs.nvidia.com/cuda/tile-ir/13.3/memory_model.html) is the
+[specification](https://docs.nvidia.com/cuda/tile-ir/latest/sections/memory_model.html) is the
 authoritative reference for the formal semantics, including token ordering and the
 definition of a data race.
 

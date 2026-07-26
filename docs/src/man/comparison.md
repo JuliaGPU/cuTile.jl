@@ -8,7 +8,7 @@ translation would miss.
 Both implementations target the same Tile IR, so the table below also gives the Tile IR
 operation each construct lowers to. That column is useful when reading `@code_tiled` output
 (see [Debugging](debugging.md)) or the
-[Tile IR operation reference](https://docs.nvidia.com/cuda/tile-ir/13.3/operations.html).
+[Tile IR operation reference](https://docs.nvidia.com/cuda/tile-ir/latest/sections/operations.html).
 
 ## Symbol map
 

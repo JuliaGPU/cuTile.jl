@@ -29,7 +29,7 @@ Hints can also be passed as keyword arguments to `@cuda backend=cuTile` or `ct.c
 which take precedence over `@compiler_options`.
 
 These correspond to the hints described in the Tile IR
-[optimization guide](https://docs.nvidia.com/cuda/tile-ir/13.3/optimization_guide.html),
+[optimization guide](https://docs.nvidia.com/cuda/tile-ir/latest/sections/optimization_guide.html),
 which documents what each one does to code generation.
 
 
