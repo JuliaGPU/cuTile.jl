@@ -1,4 +1,5 @@
 public AbstractTileArray, TileArray, ArraySpec, Tile, Constant, TFloat32, similar_type,
+       bitwidth,
        ScalarInt, ScalarFloat, IntTile, FloatTile, TileOrInt, TileOrFloat,
        TileOrScalar
 

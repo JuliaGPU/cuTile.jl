@@ -6,7 +6,7 @@ independent things: the **bytecode version** in use, and the **compute capabilit
 device. This page collects both.
 
 For what Tile IR itself guarantees across versions, see the specification's
-[stability chapter](https://docs.nvidia.com/cuda/tile-ir/13.3/stability.html).
+[stability chapter](https://docs.nvidia.com/cuda/tile-ir/latest/sections/stability.html).
 
 
 ## Baseline requirements
@@ -72,7 +72,7 @@ Everything not listed here works at v13.1.
 | Feature | Notes |
 |---------|-------|
 | `ct.insert` | Replace a non-overlapping sub-tile |
-| `check_bounds=false` | On `ct.load`, `ct.store`, `ct.gather`, `ct.scatter` |
+| `check_bounds=false` | On `ct.load` and `ct.store` only; on `ct.gather`/`ct.scatter` it merely skips the bounds mask |
 
 
 ## Features by architecture

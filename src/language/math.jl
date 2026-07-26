@@ -1,6 +1,8 @@
 # Math operations
 
-public rsqrt, exp2
+# `exp2` and friends are plain `Base` overlays with no cuTile-owned docstring, so they are
+# not marked `public`: `Base` already exports them.
+public rsqrt
 
 
 ## scalar math

@@ -10,10 +10,10 @@ Kernels move data between global-memory arrays and tiles with `ct.load` and `ct.
 | `ct.gather(arr, indices; ...)` | Gather elements by index tile |
 | `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
 
-`load` and `store` accept keyword arguments `order`, `check_bounds`, `latency`, and
-`allow_tma`; `load` also accepts `padding_mode`. Setting `check_bounds=false` requires Tile
-IR v13.4 or newer. `gather` accepts `mask`, `padding_value`, `check_bounds`, and `latency`.
-`scatter` accepts `mask`, `check_bounds`, and `latency`.
+All four take keyword arguments controlling bounds checking, masking, out-of-bounds padding
+and memory-traffic scheduling; see [`load`](@ref cuTile.load), [`store`](@ref cuTile.store),
+[`gather`](@ref cuTile.gather) and [`scatter`](@ref cuTile.scatter) in the API reference for
+the full sets.
 
 ```julia
 # Gather with user mask and custom padding for masked-out elements
@@ -47,7 +47,6 @@ The `latency` and `allow_tma` hints influence how memory traffic is scheduled; s
 | `arr[i, j, ...] = val` | Store scalar element to `TileArray` |
 | `tile[i, j, ...]` | Extract scalar from `Tile` |
 | `setindex(tile, val, i, j, ...)` | Return new `Tile` with element replaced |
-| `@view arr[r1:r2, :, ...]` / `view(arr, ...)` | Sub-range view of a `TileArray` |
 
 
 ## Views
@@ -113,8 +112,7 @@ tile = overlap[2, 1]
 overlap[2, 1] = tile
 ```
 
-`eachtile` also accepts the same `order` kwarg as `ct.load`/`ct.store` to permute which array
-dimension each tile dimension walks. Use `ct.load` and `ct.store` for `check_bounds`,
-`latency`, and `allow_tma` controls. Equal shape and step use the ordinary Tile IR partition
-view; unequal values require Tile IR bytecode v13.3 or newer. This is distinct from
-`@view a[1:2:end, :]`, which steps individual elements rather than tile origins.
+Equal shape and step use the ordinary Tile IR partition view; unequal values require Tile IR
+bytecode v13.3 or newer. This is distinct from `@view a[1:2:end, :]`, which steps individual
+elements rather than tile origins. See [`eachtile`](@ref cuTile.eachtile) for the remaining
+keyword arguments.

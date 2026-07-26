@@ -181,7 +181,8 @@ there a JAX foreign-function interface (`jax.cutile_call`, `jax.OutputPlaceholde
 ### Tile IR coverage
 
 Of the 100 operations in the Tile IR 13.3 specification, cuTile.jl emits all but
-`cuda_tile.alloca`, and additionally emits `cuda_tile.insert` from v13.4.
+`cuda_tile.alloca`, `cuda_tile.global`, `cuda_tile.get_global` and `cuda_tile.ptr_to_ptr`,
+and additionally emits `cuda_tile.insert` from v13.4.
 
 ## Kernel definition syntax
 
@@ -257,7 +258,7 @@ All index-based operations use Julia's 1-based convention:
 # Python
 bid_x = ct.bid(0)
 bid_y = ct.bid(1)
-permutedims(tile, (2, 0, 1))
+ct.permute(tile, (2, 0, 1))
 ```
 
 ```julia
