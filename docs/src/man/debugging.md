@@ -32,34 +32,29 @@ ct.code_tiled(vadd, Tuple{ct.TileArray{Float32, 1, ct.ArraySpec{1}(128, true, (0
                           ct.Constant{Int64, 16}})
 ```
 
-Since these types are verbose, and are derived from the runtime properties of arrays, it is
-often easier to use the `ct.@code_tiled` macro:
+Spelling out those types is only worth it when you have no GPU, since `code_tiled` does not
+need CUDA.jl. Otherwise let the launch site derive them for you with
+`ct.@device_code_tiled`, described next.
+
+
+## Intercepting a launch
+
+`@device_code_*` macros intercept compilation during a kernel launch, deriving the argument
+types from the actual `CuArray`s:
 
 ```julia-repl
-julia> ct.@code_tiled @cuda backend=cuTile blocks=(cld(vector_size, tile_size), 1, 1) vadd(a, b, c, ct.Constant(tile_size))
-// vadd(cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1}(128, true, (0,), (32,))}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1}(128, true, (0,), (32,))}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1}(128, true, (0,), (32,))}, cuTile.Constant{Int64, 16})
+julia> ct.@device_code_tiled @cuda backend=cuTile blocks=cld(vector_size, tile_size) vadd(a, b, c, ct.Constant(tile_size))
+// vadd(cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,), false}()}, …)
 
 cuda_tile.module @kernels {
-  entry @vadd(...) {
+  entry @vadd(%arg0: tile<ptr<f32>>, …) {
     ...
     return
   }
 }
 ```
 
-The former works on systems without a GPU, since it does not require CUDA.jl; the latter
-needs valid `CuArray`s to pass to the kernel.
-
-
-## Intercepting a launch
-
-`@device_code_*` macros intercept compilation during a kernel launch:
-
-```julia
-ct.@device_code_tiled @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(16))
-ct.@device_code_typed @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(16))
-ct.@device_code_structured @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(16))
-```
+Three are available, corresponding to successive stages of the pipeline:
 
 | Macro | Output |
 |-------|--------|
@@ -67,9 +62,8 @@ ct.@device_code_structured @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Con
 | `ct.@device_code_typed` | Typed Julia IR after overlay resolution |
 | `ct.@device_code_structured` | Structured IR (after control-flow structurization) |
 
-These correspond to successive stages of the compilation pipeline: Julia IR with Tile IR
-intrinsics substituted by the overlay method table, then structured control flow, then
-emitted Tile IR.
+Read top to bottom, they run backwards through the pipeline: Julia IR with Tile IR intrinsics
+substituted by the overlay method table, then structured control flow, then emitted Tile IR.
 
 
 ## Dumping bytecode

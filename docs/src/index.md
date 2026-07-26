@@ -56,6 +56,8 @@ those tiles with standard Julia syntax — `+`, `sum`, `reshape`, broadcasting, 
 ## Where to go next
 
 - [Installation](installation.md) — driver and hardware requirements.
+- [Vector Addition](tutorials/vector_addition.md) — the above kernel, explained line by line.
+- [Matrix Multiplication](tutorials/matmul.md) — a GEMM built up in four steps.
 - [Programming Model](man/programming_model.md) — grids, blocks, arrays and tiles.
 - [Writing Kernels](man/kernels.md) — kernel definition, launching, control flow.
 - [Comparison with cuTile Python](man/comparison.md) — if you are porting from

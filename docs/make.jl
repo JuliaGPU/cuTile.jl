@@ -19,6 +19,10 @@ function main()
         pages = [
             "Home" => "index.md",
             "Installation" => "installation.md",
+            "Tutorials" => [
+                "tutorials/vector_addition.md",
+                "tutorials/matmul.md",
+            ],
             "Manual" => [
                 "man/programming_model.md",
                 "man/types.md",
