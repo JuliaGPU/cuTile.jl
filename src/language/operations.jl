@@ -329,7 +329,8 @@ Base.reshape(arr::TileArray, dims::Int...) = reshape(arr, Val(dims))
  Load/Store
 =============================================================================#
 
-public bid, num_blocks, num_tiles, load, store, gather, scatter, Rounding
+public bid, num_blocks, num_tiles, load, store, gather, scatter,
+       Rounding, PaddingMode
 export eachtile
 
 """

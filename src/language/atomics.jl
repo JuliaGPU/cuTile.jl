@@ -2,7 +2,8 @@
 #
 # Provides atomic compare-and-swap, exchange, and add operations for TileArrays.
 
-public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, atomic_and, atomic_xor
+public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, atomic_and, atomic_xor,
+       MemoryOrder, MemScope
 public atomic_store_add, atomic_store_max, atomic_store_min,
        atomic_store_or, atomic_store_and, atomic_store_xor
 
@@ -306,6 +307,18 @@ for op in (:add, :max, :min, :or, :and, :xor)
     end
     @eval @inline $fname(tiles::TiledView, index::Integer, tile::Tile) =
         $fname(tiles, (index,), tile)
+
+    # `atomic_store_add` carries the family's documentation; give the other
+    # reductions a docstring of their own so each public binding has one.
+    if op !== :add
+        @eval @doc """
+                  $($(string(fname)))(dst, index, update) -> Nothing
+
+              Reduce `update` into a tile of `dst` with `$($(string(op)))`, without
+              returning the previous value. See [`atomic_store_add`](@ref) for the
+              shared semantics and requirements.
+              """ $fname
+    end
 end
 
 # `@atomic`

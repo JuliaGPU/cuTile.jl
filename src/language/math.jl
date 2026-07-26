@@ -6,6 +6,13 @@ public rsqrt, exp2
 ## scalar math
 
 # unary
+"""
+    rsqrt(x)
+
+Reciprocal square root, `1 / sqrt(x)`, computed as a single Tile IR operation
+rather than a division followed by a square root. Broadcast it (`rsqrt.(tile)`)
+to apply it element-wise over a tile.
+"""
 rsqrt(x::T) where {T <: AbstractFloat} = Intrinsics.rsqrt(x)
 for fn in (:ceil, :floor, :exp, :exp2, :log, :log2, :sqrt,
            :sin, :cos, :tan, :sinh, :cosh, :tanh)

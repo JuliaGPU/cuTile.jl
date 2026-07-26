@@ -717,7 +717,7 @@ a = CUDA.zeros(Float32, 1024); b = CUDA.ones(Float32, 1024); c = similar(a)
 
 function vadd_kernel(a::cuTile.TileArray{Float32,1}, b::cuTile.TileArray{Float32,1},
                      c::cuTile.TileArray{Float32,1})
-    pid = cuTile.bid(0)
+    pid = cuTile.bid(1)
     ta = cuTile.load(a, (pid,), (16,))
     tb = cuTile.load(b, (pid,), (16,))
     cuTile.store(c, (pid,), ta + tb)

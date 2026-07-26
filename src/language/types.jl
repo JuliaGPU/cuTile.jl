@@ -1,4 +1,4 @@
-public AbstractTileArray, TileArray, Tile, Constant, TFloat32, similar_type,
+public AbstractTileArray, TileArray, ArraySpec, Tile, Constant, TFloat32, similar_type,
        ScalarInt, ScalarFloat, IntTile, FloatTile, TileOrInt, TileOrFloat,
        TileOrScalar
 
@@ -572,8 +572,24 @@ Base.ndims(::Tile{T, Shape}) where {T, Shape} = ndims(Tile{T, Shape})
 Base.length(::Type{Tile{T, Shape}}) where {T, Shape} = prod(Tuple(Shape.parameters))
 Base.length(t::Tile) = length(typeof(t))
 
-# Reconstruct Tile type with different element type and/or shape. The
-# `<:Tile{T}` overload preserves the unionall: `similar_type(Tile{UInt32, S}
+"""
+    similar_type(::Type{T}, ::Type{U}) -> Type
+    similar_type(::Type{T}, ::Type{U}, new_shape::Tuple) -> Type
+
+Reconstruct a [`Tile`](@ref) type with element type `U`, optionally reshaped to
+`new_shape`. A scalar type `T` maps to the scalar type `U`, so operations that
+must work uniformly on scalars and tiles can compute their result type without
+branching on which they were given.
+
+```julia
+similar_type(Tile{UInt32, Tuple{16}}, Int32)      # Tile{Int32, Tuple{16}}
+similar_type(Tile{UInt32, Tuple{16}}, Int8, (32,)) # Tile{Int8, Tuple{32}}
+similar_type(Float32, Int32)                       # Int32
+```
+"""
+function similar_type end
+
+# The `<:Tile{T}` overload preserves the unionall: `similar_type(Tile{UInt32, S}
 # where S, Int32) = Tile{Int32}` rather than falling through to the scalar
 # fallback (which would otherwise lose the Tile-ness during inference of
 # `bitcast`/`trunci` calls whose source has unbound Shape).

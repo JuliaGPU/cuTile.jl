@@ -1,6 +1,7 @@
 res/
 *.cubin
 Manifest*.toml
+docs/build/
 CLAUDE.md
 AGENTS.md
 TODO.md
