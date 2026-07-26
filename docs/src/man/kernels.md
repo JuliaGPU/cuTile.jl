@@ -23,40 +23,11 @@ function vadd(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
               tile_size::Int) where {T}
 ```
 
-
-## Launching
-
-Kernels are launched through CUDA.jl, which must be imported. cuTile.jl uses the current
-task-bound stream:
-
-```julia
-using CUDA, cuTile
-
-grid = (cld(vector_size, tile_size), 1, 1)
-@cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(tile_size))
-```
-
-`CuArray` arguments are converted to [`ct.TileArray`](types.md) automatically. A functional
-equivalent, `ct.launch(f, grid, args...)`, is also available and takes the same optimization
-hints as keyword arguments; see [Performance](performance.md).
-
-
-## Compile-time constants
-
-Tile shapes must be compile-time values. To choose them on the host, wrap the value in
-`ct.Constant` at the launch site — the kernel signature keeps its plain type:
-
-```julia
-function kernel(a, b, tile_size::Int)
-    tile = ct.load(a; index=1, shape=(tile_size,))
-    ...
-end
-
-@cuda backend=cuTile blocks=grid kernel(a, b, ct.Constant(16))
-```
-
-`ct.Constant` arguments generate no kernel parameter; the value is embedded directly in the
-compiled code. Different constant values therefore produce different kernel specializations.
+Note that `tile_size` is annotated as a plain `Int` even though a tile shape has to be a
+compile-time value. That is because the wrapping happens at the launch site, not in the
+signature: see [compile-time arguments](execution.md#Compile-time-arguments). Launching,
+argument conversion and specialization are all covered in
+[Compiling and Launching](execution.md).
 
 
 ## Control flow

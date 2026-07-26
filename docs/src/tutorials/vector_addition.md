@@ -63,9 +63,9 @@ c = CUDA.zeros(Float32, n)
 ```
 
 `blocks=cld(n, tile_size)` sizes the grid so that there is exactly one block per tile,
-rounding up. `CuArray`s are converted to [`ct.TileArray`](../man/types.md) automatically.
+rounding up. `CuArray`s are converted to [`ct.TileArray`](@ref cuTile.TileArray) automatically.
 
-The one piece of ceremony is [`ct.Constant`](../man/kernels.md#Compile-time-constants). A
+The one piece of ceremony is [`ct.Constant`](../man/execution.md#Compile-time-arguments). A
 tile's shape is part of its type, so `tile_size` has to be known to the compiler, not passed
 as a runtime parameter. Wrapping it at the launch site embeds the value in the compiled code
 — which is why the kernel signature can keep the plain `tile_size::Int` annotation, and why
@@ -100,7 +100,7 @@ numbers.
 `vadd` has no type annotations, so it compiles afresh for each combination of argument types
 it is called with — as any Julia function does. What counts as a distinct type here includes
 more than the element type: a `CuArray`'s alignment, contiguity and divisibility are encoded
-in its [`ct.ArraySpec`](../man/types.md#TileArray), so a contiguous 128-byte-aligned vector
+in its [`ct.ArraySpec`](../man/execution.md#What-makes-a-distinct-kernel), so a contiguous 128-byte-aligned vector
 whose length divides evenly by the tile size compiles to different, faster code than a
 strided view does. You get that specialization without asking for it, which is also why
 passing a `@view` can quietly cost performance.

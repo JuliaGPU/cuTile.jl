@@ -245,4 +245,4 @@ tuned implementation, neither of which changes what it computes:
 `examples/matmul.jl` in the repository is this kernel plus both of those, and
 `examples/batchmatmul.jl` extends it to batched operands using trailing batch dimensions on
 `muladd`. For block-scaled FP8 and FP4 matmuls, see
-[`ct.muladd_scaled`](../man/operations.md#Matrix-multiplication).
+[`ct.muladd_scaled`](../lib/operations.md#Matrix-multiplication).

@@ -339,7 +339,7 @@ rules, where dimensions are matched from the last (rightmost) dimension.
 This means a 1D `(N,)` tile cannot broadcast with a 2D `(M, N)` tile in Julia, because
 dimension 1 has size `N` vs `M`. In NumPy/Python, `(N,)` would be right-aligned to `(1, N)`
 and broadcast to `(M, N)`. Use `reshape` to get the desired alignment, as shown in
-[Operations](operations.md#Broadcasting-shape-alignment).
+[Supported Operations](../lib/operations.md#Broadcasting-shape-alignment).
 
 ## Reductions
 

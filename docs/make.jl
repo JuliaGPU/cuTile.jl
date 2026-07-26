@@ -25,10 +25,10 @@ function main()
             ],
             "Manual" => [
                 "man/programming_model.md",
-                "man/types.md",
                 "man/kernels.md",
+                "man/execution.md",
+                "man/element_types.md",
                 "man/memory.md",
-                "man/operations.md",
                 "man/atomics.md",
                 "man/memory_model.md",
                 "man/random.md",

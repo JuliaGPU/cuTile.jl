@@ -46,9 +46,10 @@ scheduling:
 
 ## Array specialization
 
-Kernels are specialized on the properties encoded in [`ct.ArraySpec`](types.md#TileArray) —
-pointer alignment, contiguity, and stride/shape divisibility — which are derived from each
-`CuArray`'s runtime layout at launch. A contiguous, 128-byte-aligned array whose dimensions
-divide evenly by the tile shape compiles to code without tile-boundary handling and with
-wider vectorized accesses. Views and unusual strides weaken those guarantees, which shows up
-as a different (and slower) specialization rather than as an error.
+Kernels are specialized on each array's layout, as described under
+[what makes a distinct kernel](execution.md#What-makes-a-distinct-kernel). The performance
+consequence is worth stating separately: a contiguous, 128-byte-aligned array whose dimensions
+divide evenly by the tile shape compiles to code without tile-boundary handling and with wider
+vectorized accesses. Views and unusual strides weaken those guarantees, which shows up as a
+different and slower specialization rather than as an error — so a kernel that got slower after
+you started passing it a `@view` has not been mis-tuned, it has been re-specialized.

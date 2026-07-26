@@ -16,23 +16,29 @@ threads, tensor cores and the tensor memory accelerator.
 
 Two data structures show up in every kernel, and the difference between them matters:
 
-**Arrays** ([`ct.TileArray`](types.md)) live in global memory. They are mutable, have a
-strided memory layout, and their shapes are runtime values. Inside a kernel they support only
-a limited set of operations, mostly [loading and storing](memory.md) tiles and deriving
-views. A `CuArray` passed to a kernel arrives as a `TileArray`.
+**Arrays** ([`ct.TileArray{T,N,Spec}`](@ref cuTile.TileArray)) live in global memory. They are
+mutable, have a strided memory layout, and their shapes are *runtime* values. Inside a kernel
+they support only a limited set of operations, mostly [loading and storing](memory.md) tiles
+and deriving views. A `CuArray` passed to a kernel arrives as a `TileArray`, carrying with it
+what the compiler may assume about its layout; see
+[Compiling and Launching](execution.md#Argument-conversion).
 
-**Tiles** ([`ct.Tile`](types.md)) are values without defined storage that exist only inside a
-kernel. Their shapes are compile-time constants, and every dimension must be a power of two.
-Tiles support the bulk of the [operation set](operations.md): element-wise arithmetic, matrix
+**Tiles** ([`ct.Tile{T,Shape}`](@ref cuTile.Tile)) are values without defined storage that
+exist only inside a kernel. Their shapes are *compile-time* constants. Tiles support the bulk
+of the [operation set](../lib/operations.md): element-wise arithmetic, matrix
 multiplication, reductions, shape manipulation, and so on.
 
 ```julia
-function kernel(a)              # a::TileArray — global memory
+function kernel(a)              # a::TileArray — global memory, dynamic shape
     pid = ct.bid(1)
-    tile = ct.load(a; index=pid, shape=(16,))   # tile::Tile — a value
+    tile = ct.load(a; index=pid, shape=(16,))   # tile::Tile — a value, static shape
     ...
 end
 ```
+
+Static versus dynamic shape is the distinction that drives everything else. It is why tile
+shapes have to arrive as [compile-time arguments](execution.md#Compile-time-arguments), and
+why a kernel is specialized on the properties of the arrays you hand it.
 
 
 ## The grid
@@ -60,8 +66,8 @@ Tile shapes are part of the type, which imposes two constraints:
 - **The shape must be type-inferrable.** A shape that Julia's compiler can only infer as a
   union type is rejected; the shape has to be statically known at each use.
 
-Passing tile sizes as [`ct.Constant`](kernels.md) arguments is how you keep them
-compile-time values while still choosing them on the host.
+Passing tile sizes as [`ct.Constant`](execution.md#Compile-time-arguments) arguments is how you
+keep them compile-time values while still choosing them on the host.
 
 
 ## A Julia-native surface
