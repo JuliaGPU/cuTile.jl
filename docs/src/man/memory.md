@@ -63,7 +63,7 @@ The `latency` and `allow_tma` hints influence how memory traffic is scheduled; s
 `CartesianIndex` forms are rejected at compile time. A StepRange changes the element stride
 inside the resulting TileArray. The result can be passed to `ct.load`/`ct.store` (or sliced
 again). Runtime asserts verify that ranges start at ≥ 1 and have a positive step; negative
-steps cannot be represented by Tile IR TensorViews.
+steps cannot be represented.
 
 ```julia
 function rowsum(a, b, r1::Int32, r2::Int32)
@@ -112,7 +112,7 @@ tile = overlap[2, 1]
 overlap[2, 1] = tile
 ```
 
-Equal shape and step use the ordinary Tile IR partition view; unequal values require Tile IR
+Equal shape and step work at any supported bytecode version; unequal values require Tile IR
 bytecode v13.3 or newer. This is distinct from `@view a[1:2:end, :]`, which steps individual
 elements rather than tile origins. See [`eachtile`](@ref cuTile.eachtile) for the remaining
 keyword arguments.

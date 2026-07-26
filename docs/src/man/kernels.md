@@ -67,7 +67,7 @@ operations:
 | Construct | Description |
 |-----------|-------------|
 | `if`/`elseif`/`else` | Conditional branching |
-| `for i in start:stop` | Counted loops (compiled to Tile IR `ForOp`) |
+| `for i in start:stop` | Counted loops |
 | `for i in start:step:stop` | Stepped loops |
 | `while cond ... end` | While loops |
 

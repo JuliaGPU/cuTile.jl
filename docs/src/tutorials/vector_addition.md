@@ -42,7 +42,7 @@ never compute a flat offset yourself. Compare this with a SIMT kernel, where you
 `i = (blockIdx().x - 1) * blockDim().x + threadIdx().x` and index one element.
 
 **`tile_a + tile_b` adds two whole tiles.** Tiles of matching shape support `+` and `-`
-directly. This is one Tile IR `addf` operation on a `tile<128xf32>` value, not a loop.
+directly, as single whole-tile operations rather than loops.
 
 **Kernels must return `nothing`.** A bare `return` is the idiomatic way to say so.
 
@@ -95,32 +95,18 @@ sweep it from the host without touching the kernel. See
 numbers.
 
 
-## Looking at what the compiler produced
+## One kernel per argument type
 
-`ct.@device_code_tiled` prints the Tile IR for a launch:
+`vadd` has no type annotations, so it compiles afresh for each combination of argument types
+it is called with — as any Julia function does. What counts as a distinct type here includes
+more than the element type: a `CuArray`'s alignment, contiguity and divisibility are encoded
+in its [`ct.ArraySpec`](../man/types.md#TileArray), so a contiguous 128-byte-aligned vector
+whose length divides evenly by the tile size compiles to different, faster code than a
+strided view does. You get that specialization without asking for it, which is also why
+passing a `@view` can quietly cost performance.
 
-```julia-repl
-julia> ct.@device_code_tiled @cuda backend=cuTile blocks=cld(n, tile_size) vadd(a, b, c, ct.Constant(tile_size))
-cuda_tile.module @kernels {
-  entry @vadd(%arg0: tile<ptr<f32>>, %arg1: tile<i32>, …) {
-    %blockId_x, %blockId_y, %blockId_z = get_tile_block_id : tile<i32>
-    %tview = make_tensor_view %assume, shape = [%assume_assume], strides = [1] : …
-    %pview = make_partition_view %tview : partition_view<tile=(128), …>
-    %tile, %result_token = load_view_tko weak %pview[%blockId_x] token = %0 : … -> tile<128xf32>, token
-    %tile_9, %result_token_10 = load_view_tko weak %pview_8[%blockId_x] token = %0 : … -> tile<128xf32>, token
-    %1 = addf %tile, %tile_9 : tile<128xf32>
-    %2 = store_view_tko weak %1, %pview_12[%blockId_x] token = %0 : …
-    return
-  }
-}
-```
-
-The three-part shape survives into the generated code: two `load_view_tko`, one `addf` on a
-`tile<128xf32>`, one `store_view_tko`. Note also that the array arguments have been flattened
-— `%arg0` is `a`'s base pointer and `%arg1` its length — and that the loads carry `assume`
-facts about alignment and divisibility derived from the `CuArray`s you passed. Those are what
-let the compiler pick wide vectorized accesses. [Debugging](../man/debugging.md) covers the
-other inspection entry points.
+If you want to see what came out, [Debugging](../man/debugging.md) covers the inspection
+entry points.
 
 
 ## When you don't need a kernel at all

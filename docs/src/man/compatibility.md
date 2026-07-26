@@ -65,7 +65,7 @@ Everything not listed here works at v13.1.
 | `StepRange` views | `@view a[i:s:j, :]` |
 | `eachtile` with `step != shape` | Equal shape and step work at v13.1 |
 | `num_worker_warps` compiler option | |
-| Whole-tile `reinterpret` | Lowers to `cuda_tile.pack` / `cuda_tile.unpack` |
+| Whole-tile `reinterpret` | Between element types of differing width |
 
 ### Requires v13.4
 

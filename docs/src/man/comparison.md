@@ -5,10 +5,9 @@ cuTile.jl follows Julia conventions, which differ from the
 the two APIs onto each other, then explains the semantic differences that a mechanical
 translation would miss.
 
-Both implementations target the same Tile IR, so the table below also gives the Tile IR
-operation each construct lowers to. That column is useful when reading `code_tiled` output
-(see [Debugging](debugging.md)) or the
-[Tile IR operation reference](https://docs.nvidia.com/cuda/tile-ir/latest/sections/operations.html).
+Both implementations target the same Tile IR and expose nearly the same capabilities, so most
+differences are surface ones: naming, argument conventions, and where Julia's own semantics
+take precedence.
 
 ## Symbol map
 
@@ -17,58 +16,58 @@ module; unprefixed names are `Base` functions that cuTile overlays.
 
 ### Load/store
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `bid(i)` | `ct.bid(i+1)` | `get_tile_block_id` |
-| `num_blocks(i)` | `ct.num_blocks(i+1)` | `get_num_tile_blocks` |
-| `num_tiles` | `ct.num_tiles` | `get_index_space_shape` |
-| `load` | `ct.load` | `load_view_tko` |
-| `store` | `ct.store` | `store_view_tko` |
-| `load_advanced_indexing` | `ct.load(@view a[idx, …], shape)` | `make_gather_scatter_view` + `load_view_tko` |
-| `store_advanced_indexing` | `ct.store(@view a[idx, …], tile)` | `make_gather_scatter_view` + `store_view_tko` |
-| `gather` | `ct.gather` | `offset` + `load_ptr_tko` |
-| `scatter` | `ct.scatter` | `offset` + `store_ptr_tko` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `bid(i)` | `ct.bid(i+1)` |
+| `num_blocks(i)` | `ct.num_blocks(i+1)` |
+| `num_tiles` | `ct.num_tiles` |
+| `load` | `ct.load` |
+| `store` | `ct.store` |
+| `load_advanced_indexing` | `ct.load(@view a[idx, …], shape)` |
+| `store_advanced_indexing` | `ct.store(@view a[idx, …], tile)` |
+| `gather` | `ct.gather` |
+| `scatter` | `ct.scatter` |
 
 ### Factory
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `arange` | `ct.arange` | `iota` |
-| `astile` | `ct.Tile(x)` | `constant` |
-| `full` | `fill` | `constant` |
-| `ones` | `ones` | `constant` |
-| `zeros` | `zeros` | `constant` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `arange` | `ct.arange` |
+| `astile` | `ct.Tile(x)` |
+| `full` | `fill` |
+| `ones` | `ones` |
+| `zeros` | `zeros` |
 
 ### Shape and dtype
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `cat` | `ct.cat` | `cat` |
-| `broadcast_to` | `ct.broadcast_to` | `broadcast` |
-| `expand_dims` | `reshape` | `reshape` |
-| `reshape` | `reshape` | `reshape` |
-| `permute` | `permutedims` | `permute` |
-| `transpose` | `transpose` | `permute` |
-| `astype` | `convert(ct.Tile{T}, x)` | `ftof`, `ftoi`, `itof`, `exti`, `trunci` |
-| `bitcast` | `reinterpret` | `bitcast` |
-| `pack_to_bytes` | `reinterpret` | `pack` |
-| `unpack_from_bytes` | `reinterpret` | `unpack` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `cat` | `ct.cat` |
+| `broadcast_to` | `ct.broadcast_to` |
+| `expand_dims` | `reshape` |
+| `reshape` | `reshape` |
+| `permute` | `permutedims` |
+| `transpose` | `transpose` |
+| `astype` | `convert(ct.Tile{T}, x)` |
+| `bitcast` | `reinterpret` |
+| `pack_to_bytes` | `reinterpret` |
+| `unpack_from_bytes` | `reinterpret` |
 
-Julia's `reinterpret` covers all three of Python's reinterpretation functions: it emits a
-`bitcast` when the widths match and `pack`/`unpack` when they don't.
+Julia's `reinterpret` covers all three of Python's reinterpretation functions, dispatching on
+whether the source and target element widths match.
 
 ### Reduction and scan
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `sum` | `sum` | `reduce` |
-| `max` | `maximum` | `reduce` |
-| `min` | `minimum` | `reduce` |
-| `prod` | `prod` | `reduce` |
-| `argmax` / `argmin` | `argmax` / `argmin` | `reduce` |
-| `reduce` | `reduce`, `mapreduce` | `reduce` |
-| `cumsum` / `cumprod` | `cumsum` / `cumprod` | `scan` |
-| `scan` | `accumulate` | `scan` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `sum` | `sum` |
+| `max` | `maximum` |
+| `min` | `minimum` |
+| `prod` | `prod` |
+| `argmax` / `argmin` | `argmax` / `argmin` |
+| `reduce` | `reduce`, `mapreduce` |
+| `cumsum` / `cumprod` | `cumsum` / `cumprod` |
+| `scan` | `accumulate` |
 
 !!! warning "`max` means different things"
     Python's `ct.max`/`ct.min` are *reductions*, and its `ct.maximum`/`ct.minimum` are
@@ -78,71 +77,71 @@ Julia's `reinterpret` covers all three of Python's reinterpretation functions: i
 
 ### Matmul
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `mma` | `muladd` | `mmaf`, `mmai` |
-| `mma_scaled` | `ct.muladd_scaled` | `mmaf_scaled` |
-| `matmul` | `*` | `mmaf`, `mmai` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `mma` | `muladd` |
+| `mma_scaled` | `ct.muladd_scaled` |
+| `matmul` | `*` |
 
 ### Selection
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `where` | `ifelse` | `select` |
-| `extract` | `ct.extract` | `extract` |
-| `insert` | `ct.insert` | `insert` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `where` | `ifelse` |
+| `extract` | `ct.extract` |
+| `insert` | `ct.insert` |
 
 ### Math
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `add`, `sub`, `mul` | `.+`, `.-`, `.*` | `addf`/`addi`, `subf`/`subi`, `mulf`/`muli` |
-| `truediv` | `./` | `divf` |
-| `floordiv` | `fld` | `divi` |
-| `cdiv` | `cld` | `divi` |
-| `pow` | `.^` | `pow` |
-| `atan2(y, x)` | `atan(y, x)` | `atan2` |
-| `mod` | `mod.` | `remf`, `remi` |
-| `divmod` | `ct.divmod` | `divi` + `remi` |
-| `minimum`, `maximum` | `min.`, `max.` | `minf`/`mini`, `maxf`/`maxi` |
-| `negative` | `-` | `negf`, `negi` |
-| `abs` | `abs` | `absf`, `absi` |
-| `isnan` | `isnan` | `cmpf` |
-| `exp`, `exp2`, `log`, `log2` | same | `exp`, `exp2`, `log`, `log2` |
-| `sqrt`, `rsqrt` | same | `sqrt`, `rsqrt` |
-| `sin`, `cos`, `tan` | same | `sin`, `cos`, `tan` |
-| `sinh`, `cosh`, `tanh` | same | `sinh`, `cosh`, `tanh` |
-| `floor`, `ceil` | same | `floor`, `ceil` |
-| — | `fma` | `fma` |
-| — | `mul_hi` | `mulhii` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `add`, `sub`, `mul` | `.+`, `.-`, `.*` |
+| `truediv` | `./` |
+| `floordiv` | `fld` |
+| `cdiv` | `cld` |
+| `pow` | `.^` |
+| `atan2(y, x)` | `atan(y, x)` |
+| `mod` | `mod.` |
+| `divmod` | `ct.divmod` |
+| `minimum`, `maximum` | `min.`, `max.` |
+| `negative` | `-` |
+| `abs` | `abs` |
+| `isnan` | `isnan` |
+| `exp`, `exp2`, `log`, `log2` | same |
+| `sqrt`, `rsqrt` | same |
+| `sin`, `cos`, `tan` | same |
+| `sinh`, `cosh`, `tanh` | same |
+| `floor`, `ceil` | same |
+| — | `fma` |
+| — | `mul_hi` |
 
 ### Bitwise and comparison
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `bitwise_and`, `bitwise_or`, `bitwise_xor` | `&`, `\|`, `xor` | `andi`, `ori`, `xori` |
-| `bitwise_lshift`, `bitwise_rshift` | `<<`, `>>` (`>>>` unsigned) | `shli`, `shri` |
-| `bitwise_not` | `~` | `xori` |
-| `greater`, `greater_equal` | `>`, `>=` | `cmpf`, `cmpi` |
-| `less`, `less_equal` | `<`, `<=` | `cmpf`, `cmpi` |
-| `equal`, `not_equal` | `==`, `!=` | `cmpf`, `cmpi` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `bitwise_and`, `bitwise_or`, `bitwise_xor` | `&`, `\|`, `xor` |
+| `bitwise_lshift`, `bitwise_rshift` | `<<`, `>>` (`>>>` unsigned) |
+| `bitwise_not` | `~` |
+| `greater`, `greater_equal` | `>`, `>=` |
+| `less`, `less_equal` | `<`, `<=` |
+| `equal`, `not_equal` | `==`, `!=` |
 
 ### Atomics
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `atomic_cas` | `ct.atomic_cas` | `atomic_cas_tko` |
-| `atomic_xchg`, `atomic_add`, `atomic_max`, `atomic_min`, `atomic_and`, `atomic_or`, `atomic_xor` | same, `ct.`-prefixed | `atomic_rmw_tko` |
-| — | `ct.atomic_store_*`, `ct.@atomic` | `atomic_red_view_tko` |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `atomic_cas` | `ct.atomic_cas` |
+| `atomic_xchg`, `atomic_add`, `atomic_max`, `atomic_min`, `atomic_and`, `atomic_or`, `atomic_xor` | same, `ct.`-prefixed |
+| — | `ct.atomic_store_*`, `ct.@atomic` |
 
 ### Utility and metaprogramming
 
-| cuTile Python | cuTile.jl | Tile IR |
-|---------------|-----------|---------|
-| `printf`, `print` | `print`, `println` | `print_tko` |
-| `assert_` | `ct.@assert` | `assert` |
-| `assume_divisible_by` | `ct.assume_divisible_by` | `assume` |
-| `static_assert`, `static_eval`, `static_iter` | ordinary Julia code | — |
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `printf`, `print` | `print`, `println` |
+| `assert_` | `ct.@assert` |
+| `assume_divisible_by` | `ct.assume_divisible_by` |
+| `static_assert`, `static_eval`, `static_iter` | ordinary Julia code |
 
 Python needs explicit metaprogramming helpers because its kernels are traced. In Julia,
 compile-time evaluation is what the compiler does by default: a `for` loop over a literal
@@ -178,11 +177,12 @@ there a JAX foreign-function interface (`jax.cutile_call`, `jax.OutputPlaceholde
 | `ct.@atomic` | Julia-style atomic reduction syntax |
 | `repeat`, `dropdims`, `count`, `any`, `all` | Additional `Base` operations |
 
-### Tile IR coverage
+### Coverage
 
-Of the 100 operations in the Tile IR 13.3 specification, cuTile.jl emits all but
-`cuda_tile.alloca`, `cuda_tile.global`, `cuda_tile.get_global` and `cuda_tile.ptr_to_ptr`,
-and additionally emits `cuda_tile.insert` from v13.4.
+Neither implementation is a subset of the other, and both cover essentially the whole
+underlying instruction set: of the 100 operations in the Tile IR 13.3 specification, cuTile.jl
+emits all but four, none of which has a Julia-level surface (stack allocation, module-level
+globals, and pointer-to-pointer casts).
 
 ## Kernel definition syntax
 

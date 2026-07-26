@@ -134,16 +134,15 @@ the launch site, as they already are.
 of `A`, which is `K`. It is `cld(size(A, 2), tk)` — the same rounding-up you did on the host
 to size the grid, done on the device where the array's real size is known.
 
-**`muladd(a, b, acc)` is a multiply-accumulate**, and lowers to the single Tile IR `mmaf`
-operation that a tensor core executes. You could write `a * b + acc` instead and get the same
-code; `muladd` just names the fused operation directly.
+**`muladd(a, b, acc)` is a multiply-accumulate**, the fused operation a tensor core performs
+directly. You could write `a * b + acc` instead and get the same code; `muladd` just names it.
 
 **The accumulator is `Float32` regardless of the input type.** Summing many products in the
 input precision loses accuracy quickly, so accumulating wider is the norm. Here the inputs
 are already `Float32`; step 4 makes the distinction matter.
 
-The `for` loop is not unrolled or traced away — it compiles to a real Tile IR `ForOp`, with
-`acc` carried between iterations. Ordinary Julia control flow works in kernels; see
+The `for` loop is not unrolled or traced away — it compiles to a real counted loop, with `acc`
+carried between iterations. Ordinary Julia control flow works in kernels; see
 [Writing Kernels](../man/kernels.md#Control-flow).
 
 
