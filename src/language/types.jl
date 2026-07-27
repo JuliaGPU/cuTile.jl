@@ -39,8 +39,8 @@ Common alignment values:
 - 128: 128-byte aligned (optimal for TMA on Blackwell)
 
 Divisibility values enable optimizations:
-- stride_div_by[i] = 4 means stride[i] is divisible by 4 (enables vectorized access)
-- shape_div_by[i] = 16 means shape[i] is divisible by 16 (no tile boundary handling needed)
+- `stride_div_by[i] = 4` means `stride[i]` is divisible by 4 (enables vectorized access)
+- `shape_div_by[i] = 16` means `shape[i]` is divisible by 16 (no tile boundary handling needed)
 """
 struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
     # Validate invariants once per concrete spec type (this struct is a
