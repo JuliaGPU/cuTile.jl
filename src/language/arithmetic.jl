@@ -79,6 +79,13 @@ end
 
 public divmod
 
+"""
+    divmod(x, y) -> (q, r)
+
+Floored quotient and remainder, i.e. `(fld(x, y), mod(x, y))`. Accepts integer
+scalars or integer tiles of matching shape, and follows Julia's sign
+conventions: the remainder takes the sign of the divisor.
+"""
 @inline divmod(x::T, y::T) where {T<:Integer} = (div(x, y, RoundDown), mod(x, y))
 @inline divmod(x::Tile{T,S}, y::Tile{T,S}) where {T<:Integer, S} =
     (div.(x, y, RoundDown), mod.(x, y))

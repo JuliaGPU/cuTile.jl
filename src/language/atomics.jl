@@ -2,13 +2,15 @@
 #
 # Provides atomic compare-and-swap, exchange, and add operations for TileArrays.
 
-public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, atomic_and, atomic_xor
+public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, atomic_and, atomic_xor,
+       MemoryOrder, MemScope
 public atomic_store_add, atomic_store_max, atomic_store_min,
        atomic_store_or, atomic_store_and, atomic_store_xor
 
 """
-Memory ordering for atomic operations.
-Use these constants with atomic_cas, atomic_xchg, etc.
+Memory ordering constants. Atomic operations accept `Relaxed`, `Acquire`,
+`Release`, and `AcqRel`. `Weak` is reserved for non-atomic loads and stores and
+is rejected by the atomic APIs.
 """
 @enumx MemoryOrder begin
     Weak = 0
@@ -173,7 +175,8 @@ function atomic_min end
     atomic_or(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic bitwise OR. Atomically replaces the value at `index` with `old | val`
-and returns the original value. Index is 1-indexed.
+and returns the original value. Index is 1-indexed. `val` must already have the
+array's element type; bitwise atomics do not convert implicitly.
 """
 function atomic_or end
 
@@ -181,7 +184,8 @@ function atomic_or end
     atomic_and(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic bitwise AND. Atomically replaces the value at `index` with `old & val`
-and returns the original value. Index is 1-indexed.
+and returns the original value. Index is 1-indexed. `val` must already have the
+array's element type; bitwise atomics do not convert implicitly.
 """
 function atomic_and end
 
@@ -189,7 +193,8 @@ function atomic_and end
     atomic_xor(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic bitwise XOR. Atomically replaces the value at `index` with `old ⊻ val`
-and returns the original value. Index is 1-indexed.
+and returns the original value. Index is 1-indexed. `val` must already have the
+array's element type; bitwise atomics do not convert implicitly.
 """
 function atomic_xor end
 
@@ -234,9 +239,12 @@ Reduce `update` into a tile of `dst` without returning its previous value.
 `dst` may be a `TileArray` or a `TiledView` from [`eachtile`](@ref). Updates
 broadcast to the tile shape. The operation uses relaxed, device-wide ordering.
 
+Addition supports `Int32`, `Int64`, `UInt32`, `UInt64`, `Float16`, `BFloat16`,
+`Float32` and `Float64`.
+
 Also available: `atomic_store_max`, `atomic_store_min`, `atomic_store_or`,
-`atomic_store_and`, and `atomic_store_xor`. Bitwise updates must have the
-destination element type.
+`atomic_store_and`, and `atomic_store_xor`, which support the four integer
+types only. Bitwise updates must have the destination element type.
 
 Requires Tile IR bytecode ≥ 13.3. `BFloat16` addition requires Hopper (sm_90)
 or newer.
@@ -306,6 +314,18 @@ for op in (:add, :max, :min, :or, :and, :xor)
     end
     @eval @inline $fname(tiles::TiledView, index::Integer, tile::Tile) =
         $fname(tiles, (index,), tile)
+
+    # `atomic_store_add` carries the family's documentation; give the other
+    # reductions a docstring of their own so each public binding has one.
+    if op !== :add
+        @eval @doc """
+                  $($(string(fname)))(dst, index, update) -> Nothing
+
+              Reduce `update` into a tile of `dst` with `$($(string(op)))`, without
+              returning the previous value. See [`atomic_store_add`](@ref) for the
+              shared semantics and requirements.
+              """ $fname
+    end
 end
 
 # `@atomic`

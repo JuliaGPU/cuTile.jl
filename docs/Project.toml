@@ -1,0 +1,12 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+Microfloats = "31c70f10-a750-4521-b13c-797315ae2933"
+cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"
+
+[sources]
+cuTile = {path = ".."}
+
+[compat]
+Documenter = "1"

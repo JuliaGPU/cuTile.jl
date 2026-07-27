@@ -1,4 +1,5 @@
-public AbstractTileArray, TileArray, Tile, Constant, TFloat32, similar_type,
+public AbstractTileArray, TileArray, ArraySpec, Tile, Constant, TFloat32, similar_type,
+       bitwidth,
        ScalarInt, ScalarFloat, IntTile, FloatTile, TileOrInt, TileOrFloat,
        TileOrScalar
 
@@ -38,8 +39,8 @@ Common alignment values:
 - 128: 128-byte aligned (optimal for TMA on Blackwell)
 
 Divisibility values enable optimizations:
-- stride_div_by[i] = 4 means stride[i] is divisible by 4 (enables vectorized access)
-- shape_div_by[i] = 16 means shape[i] is divisible by 16 (no tile boundary handling needed)
+- `stride_div_by[i] = 4` means `stride[i]` is divisible by 4 (enables vectorized access)
+- `shape_div_by[i] = 16` means `shape[i]` is divisible by 16 (no tile boundary handling needed)
 """
 struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
     # Validate invariants once per concrete spec type (this struct is a
@@ -522,21 +523,21 @@ gather_scatter_sparse_dim(view::GatherScatterTileView) = gather_scatter_sparse_d
 """
     Constant{T, V}
 
-Compile-time constant with element type `T` and value `V`.
-This is a ghost type (zero-size) - the value is encoded in the type parameter
-and extracted at compile time.
+Zero-size launch wrapper that makes a kernel argument a compile-time constant.
+Construct one at the launch site; the kernel receives the wrapped value with
+its ordinary type.
 
-Use `c[]` to access the constant value in kernel code.
-
-# Example
 ```julia
-function kernel(a::Ptr{T}, tile::Constant{Int}) where {T}
-    data = ct.load(a, ct.bid(0), (tile[],))  # tile[] extracts the value
+function kernel(a, tile_size::Int)
+    tile = ct.load(a; index=ct.bid(1), shape=(tile_size,))
+    return
 end
 
-# Compile with specific constant value
-argtypes = Tuple{Ptr{Float32}, Constant{Int, 16}}
+@cuda backend=cuTile blocks=grid kernel(a, ct.Constant(16))
 ```
+
+The value is encoded in `Constant`'s type and generates no runtime kernel
+parameter. Each distinct value produces a separate kernel specialization.
 """
 struct Constant{T, V}
     function Constant{T, V}() where {T, V}
@@ -572,8 +573,24 @@ Base.ndims(::Tile{T, Shape}) where {T, Shape} = ndims(Tile{T, Shape})
 Base.length(::Type{Tile{T, Shape}}) where {T, Shape} = prod(Tuple(Shape.parameters))
 Base.length(t::Tile) = length(typeof(t))
 
-# Reconstruct Tile type with different element type and/or shape. The
-# `<:Tile{T}` overload preserves the unionall: `similar_type(Tile{UInt32, S}
+"""
+    similar_type(::Type{T}, ::Type{U}) -> Type
+    similar_type(::Type{T}, ::Type{U}, new_shape::Tuple) -> Type
+
+Reconstruct a [`Tile`](@ref) type with element type `U`, optionally reshaped to
+`new_shape`. A scalar type `T` maps to the scalar type `U`, so operations that
+must work uniformly on scalars and tiles can compute their result type without
+branching on which they were given.
+
+```julia
+similar_type(Tile{UInt32, Tuple{16}}, Int32)      # Tile{Int32, Tuple{16}}
+similar_type(Tile{UInt32, Tuple{16}}, Int8, (32,)) # Tile{Int8, Tuple{32}}
+similar_type(Float32, Int32)                       # Int32
+```
+"""
+function similar_type end
+
+# The `<:Tile{T}` overload preserves the unionall: `similar_type(Tile{UInt32, S}
 # where S, Int32) = Tile{Int32}` rather than falling through to the scalar
 # fallback (which would otherwise lose the Tile-ness during inference of
 # `bitcast`/`trunci` calls whose source has unbound Shape).
