@@ -523,21 +523,21 @@ gather_scatter_sparse_dim(view::GatherScatterTileView) = gather_scatter_sparse_d
 """
     Constant{T, V}
 
-Compile-time constant with element type `T` and value `V`.
-This is a ghost type (zero-size) - the value is encoded in the type parameter
-and extracted at compile time.
+Zero-size launch wrapper that makes a kernel argument a compile-time constant.
+Construct one at the launch site; the kernel receives the wrapped value with
+its ordinary type.
 
-Use `c[]` to access the constant value in kernel code.
-
-# Example
 ```julia
-function kernel(a::Ptr{T}, tile::Constant{Int}) where {T}
-    data = ct.load(a, ct.bid(0), (tile[],))  # tile[] extracts the value
+function kernel(a, tile_size::Int)
+    tile = ct.load(a; index=ct.bid(1), shape=(tile_size,))
+    return
 end
 
-# Compile with specific constant value
-argtypes = Tuple{Ptr{Float32}, Constant{Int, 16}}
+@cuda backend=cuTile blocks=grid kernel(a, ct.Constant(16))
 ```
+
+The value is encoded in `Constant`'s type and generates no runtime kernel
+parameter. Each distinct value produces a separate kernel specialization.
 """
 struct Constant{T, V}
     function Constant{T, V}() where {T, V}

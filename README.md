@@ -46,6 +46,9 @@ julia> import Pkg; Pkg.add("cuTile")
 ```
 
 Launching kernels additionally requires CUDA.jl to be imported.
+[CUDA.jl's documentation](https://cuda.juliagpu.org/stable/) covers driver and
+toolkit setup, `CuArray`s, streams and device management; cuTile's
+documentation focuses on the tile programming model.
 
 
 ## Quick start

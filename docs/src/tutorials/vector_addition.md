@@ -1,5 +1,12 @@
 # Vector Addition
 
+```@meta
+DocTestSetup = quote
+    using CUDA, cuTile
+    import cuTile as ct
+end
+```
+
 Almost every cuTile kernel has the same three-part shape:
 
 1. load one or more tiles from global memory,
@@ -12,17 +19,14 @@ start.
 
 ## The kernel
 
-```julia
-using CUDA, cuTile
-import cuTile as ct
-
-function vadd(a, b, c, tile_size::Int)
-    i = ct.bid(1)
-    tile_a = ct.load(a; index=i, shape=(tile_size,))
-    tile_b = ct.load(b; index=i, shape=(tile_size,))
-    ct.store(c; index=i, tile=tile_a + tile_b)
-    return
-end
+```jldoctest vector_addition
+julia> function vadd(a, b, c, tile_size::Int)
+           i = ct.bid(1)
+           tile_a = ct.load(a; index=i, shape=(tile_size,))
+           tile_b = ct.load(b; index=i, shape=(tile_size,))
+           ct.store(c; index=i, tile=tile_a + tile_b)
+           return
+       end;
 ```
 
 That is the whole kernel. A few things are worth pointing out, because they are
@@ -51,17 +55,20 @@ so.
 
 ## Launching it
 
-```julia
-n = 1_000_000
-tile_size = 128
+```jldoctest vector_addition
+julia> n = 1_000_000;
 
-a = CUDA.rand(Float32, n)
-b = CUDA.rand(Float32, n)
-c = CUDA.zeros(Float32, n)
+julia> tile_size = 128;
 
-@cuda backend=cuTile blocks=cld(n, tile_size) vadd(a, b, c, ct.Constant(tile_size))
+julia> a = CUDA.rand(Float32, n);
 
-@assert Array(c) == Array(a) .+ Array(b)
+julia> b = CUDA.rand(Float32, n);
+
+julia> c = CUDA.zeros(Float32, n);
+
+julia> @cuda backend=cuTile blocks=cld(n, tile_size) vadd(a, b, c, ct.Constant(tile_size));
+
+julia> @assert Array(c) == Array(a) .+ Array(b)
 ```
 
 `blocks=cld(n, tile_size)` sizes the grid so that there is exactly one block per
@@ -124,8 +131,10 @@ inspection entry points.
 Element-wise work on whole `CuArray`s does not require writing a kernel. cuTile
 can generate and launch one from a broadcast expression:
 
-```julia
-ct.@. c = a + b
+```jldoctest vector_addition
+julia> ct.@. c = a + b;
+
+julia> @assert c == a .+ b
 ```
 
 The entire expression is fused into a single cuTile kernel, with tile sizes

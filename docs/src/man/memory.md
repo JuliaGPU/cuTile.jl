@@ -10,10 +10,11 @@ Kernels move data between global-memory arrays and tiles with `ct.load` and
 | `ct.gather(arr, indices; ...)` | Gather elements by index tile |
 | `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
 
-All four take keyword arguments controlling bounds checking, masking,
-out-of-bounds padding and memory-traffic scheduling; see [`load`](@ref
-cuTile.load), [`store`](@ref cuTile.store), [`gather`](@ref cuTile.gather) and
-[`scatter`](@ref cuTile.scatter) in the API reference for the full sets.
+Their keyword arguments differ: `load` controls padding and both `load` and
+`store` accept an axis order and TMA hint; `gather` and `scatter` accept a
+per-element mask. All four support bounds checking and a latency hint. See
+[`load`](@ref cuTile.load), [`store`](@ref cuTile.store), [`gather`](@ref
+cuTile.gather) and [`scatter`](@ref cuTile.scatter) for the exact signatures.
 
 ```julia
 # Gather with user mask and custom padding for masked-out elements
@@ -23,9 +24,10 @@ tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 ct.scatter(arr, indices, tile; mask=active_mask)
 ```
 
-The `latency` and `allow_tma` hints influence how memory traffic is scheduled;
-see [Performance](performance.md). Version requirements mentioned on this page
-are collected in [Compatibility](compatibility.md).
+The `latency` hint, and the `allow_tma` hint on loads and stores, influence how
+memory traffic is scheduled; see [Performance](performance.md). Version
+requirements mentioned on this page are collected in
+[Compatibility](compatibility.md).
 
 
 ## Automatic rank matching

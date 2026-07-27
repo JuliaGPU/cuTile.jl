@@ -1,5 +1,12 @@
 # Matrix Multiplication
 
+```@meta
+DocTestSetup = quote
+    using CUDA, cuTile
+    import cuTile as ct
+end
+```
+
 Matrix multiplication is where the tile-based model earns its keep: a tile is
 exactly the operand shape a tensor core wants, so `a * b` on two tiles is a
 single Tile IR instruction rather than a hand-written blocking scheme.
@@ -19,28 +26,27 @@ the last section says what that is.
 Start with the smallest possible problem: matrices exactly one tile in each
 dimension, so a single block does all the work.
 
-```julia
-using CUDA, cuTile
-import cuTile as ct
-
-function matmul_one_tile(A, B, C, tm::Int, tn::Int, tk::Int)
-    a = ct.load(A; index=(1, 1), shape=(tm, tk))
-    b = ct.load(B; index=(1, 1), shape=(tk, tn))
-    ct.store(C; index=(1, 1), tile=a * b)
-    return
-end
+```jldoctest matmul_tutorial
+julia> function matmul_one_tile(A, B, C, tm::Int, tn::Int, tk::Int)
+           a = ct.load(A; index=(1, 1), shape=(tm, tk))
+           b = ct.load(B; index=(1, 1), shape=(tk, tn))
+           ct.store(C; index=(1, 1), tile=a * b)
+           return
+       end;
 ```
 
-```julia
-tm = tn = tk = 64
-A, B = CUDA.rand(Float32, tm, tk), CUDA.rand(Float32, tk, tn)
-C = CUDA.zeros(Float32, tm, tn)
+```jldoctest matmul_tutorial
+julia> tm = tn = tk = 64;
 
-@cuda(backend=cuTile, blocks=1,
-      matmul_one_tile(A, B, C,
-                      ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)))
+julia> A, B = CUDA.rand(Float32, tm, tk), CUDA.rand(Float32, tk, tn);
 
-@assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-4)
+julia> C = CUDA.zeros(Float32, tm, tn);
+
+julia> @cuda(backend=cuTile, blocks=1,
+             matmul_one_tile(A, B, C,
+                             ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)));
+
+julia> @assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-4)
 ```
 
 The shape is the same load–compute–store as [vector
@@ -64,25 +70,30 @@ Nothing about `matmul_one_tile` scales: it computes tile `(1, 1)` and ignores
 the rest. Since each output tile depends on no other output tile, they can all
 be computed in parallel, one block each, on a two-dimensional grid.
 
-```julia
-function matmul_grid(A, B, C, tm::Int, tn::Int, tk::Int)
-    i, j = ct.bid(1), ct.bid(2)
-    a = ct.load(A; index=(i, 1), shape=(tm, tk))
-    b = ct.load(B; index=(1, j), shape=(tk, tn))
-    ct.store(C; index=(i, j), tile=a * b)
-    return
-end
+```jldoctest matmul_tutorial
+julia> function matmul_grid(A, B, C, tm::Int, tn::Int, tk::Int)
+           i, j = ct.bid(1), ct.bid(2)
+           a = ct.load(A; index=(i, 1), shape=(tm, tk))
+           b = ct.load(B; index=(1, j), shape=(tk, tn))
+           ct.store(C; index=(i, j), tile=a * b)
+           return
+       end;
 ```
 
-```julia
-M, N, K = 256, 128, 64      # K is still a single tile
-tm, tn, tk = 64, 64, 64
-A, B = CUDA.rand(Float32, M, K), CUDA.rand(Float32, K, N)
-C = CUDA.zeros(Float32, M, N)
+```jldoctest matmul_tutorial
+julia> M, N, K = 256, 128, 64;
 
-@cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
-      matmul_grid(A, B, C,
-                  ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)))
+julia> tm, tn, tk = 64, 64, 64;
+
+julia> A, B = CUDA.rand(Float32, M, K), CUDA.rand(Float32, K, N);
+
+julia> C = CUDA.zeros(Float32, M, N);
+
+julia> @cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
+             matmul_grid(A, B, C,
+                         ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)));
+
+julia> @assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-4)
 ```
 
 Block `(i, j)` now computes output tile `(i, j)`, reading tile `(i, 1)` of `A`
@@ -98,35 +109,36 @@ between this and a general GEMM.
 For larger `K`, an output tile is a sum of products over all the `K`-tiles:
 `C[i,j] = Σₖ A[i,k] * B[k,j]`. That sum is a loop with an accumulator.
 
-```julia
-function matmul_kloop(A, B, C, tm::Int, tn::Int, tk::Int)
-    i, j = ct.bid(1), ct.bid(2)
-
-    acc = zeros(Float32, tm, tn)
-    for k in 1:ct.num_tiles(A, 2, (tm, tk))
-        a = ct.load(A; index=(i, k), shape=(tm, tk))
-        b = ct.load(B; index=(k, j), shape=(tk, tn))
-        acc = muladd(a, b, acc)
-    end
-
-    ct.store(C; index=(i, j), tile=acc)
-    return
-end
+```jldoctest matmul_tutorial
+julia> function matmul_kloop(A, B, C, tm::Int, tn::Int, tk::Int)
+           i, j = ct.bid(1), ct.bid(2)
+           acc = zeros(Float32, tm, tn)
+           for k in 1:ct.num_tiles(A, 2, (tm, tk))
+               a = ct.load(A; index=(i, k), shape=(tm, tk))
+               b = ct.load(B; index=(k, j), shape=(tk, tn))
+               acc = muladd(a, b, acc)
+           end
+           ct.store(C; index=(i, j), tile=acc)
+           return
+       end;
 ```
 
 `K` is now unconstrained, and the launch is the one from step 2 with a larger `K`:
 
-```julia
-M, N, K = 256, 128, 512
-tm, tn, tk = 64, 64, 64
-A, B = CUDA.rand(Float32, M, K), CUDA.rand(Float32, K, N)
-C = CUDA.zeros(Float32, M, N)
+```jldoctest matmul_tutorial
+julia> M, N, K = 256, 128, 512;
 
-@cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
-      matmul_kloop(A, B, C,
-                   ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)))
+julia> tm, tn, tk = 64, 64, 64;
 
-@assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-4)
+julia> A, B = CUDA.rand(Float32, M, K), CUDA.rand(Float32, K, N);
+
+julia> C = CUDA.zeros(Float32, M, N);
+
+julia> @cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
+             matmul_kloop(A, B, C,
+                          ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)));
+
+julia> @assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-4)
 ```
 
 Four things to note.
@@ -139,8 +151,9 @@ like `ones` and `fill`. Its shape is static, so `tm` and `tn` must be
 it is `cld(size(A, 2), tk)`, the same rounding-up we did on the host to size the grid, done on the device where the array's real size is known.
 
 **`muladd(a, b, acc)` is a multiply-accumulate**, the fused operation a tensor
-core performs directly. You could write `a * b + acc` instead and get the same
-code; `muladd` just names it.
+core performs directly. Write `muladd` here rather than `a * b + acc`: `a * b`
+is itself a complete matrix multiplication with a zero accumulator, so adding
+`acc` afterward expresses a second operation.
 
 **The accumulator is `Float32` regardless of the input type.** Summing many
 products in the input precision loses accuracy quickly, so accumulating wider is
@@ -158,21 +171,19 @@ in kernels; see [Writing Kernels](../man/kernels.md#Control-flow).
 in is `TFloat32`, a 32-bit format with a truncated 10-bit mantissa, which trades
 some precision for a large throughput gain:
 
-```julia
-function matmul(A, B, C, tm::Int, tn::Int, tk::Int)
-    i, j = ct.bid(1), ct.bid(2)
-
-    acc = zeros(Float32, tm, tn)
-    for k in 1:ct.num_tiles(A, 2, (tm, tk))
-        a = ct.load(A; index=(i, k), shape=(tm, tk), padding_mode=ct.PaddingMode.Zero)
-        b = ct.load(B; index=(k, j), shape=(tk, tn), padding_mode=ct.PaddingMode.Zero)
-        acc = muladd(convert(ct.Tile{ct.TFloat32}, a),
-                     convert(ct.Tile{ct.TFloat32}, b), acc)
-    end
-
-    ct.store(C; index=(i, j), tile=acc)
-    return
-end
+```jldoctest matmul_tutorial
+julia> function matmul(A, B, C, tm::Int, tn::Int, tk::Int)
+           i, j = ct.bid(1), ct.bid(2)
+           acc = zeros(Float32, tm, tn)
+           for k in 1:ct.num_tiles(A, 2, (tm, tk))
+               a = ct.load(A; index=(i, k), shape=(tm, tk), padding_mode=ct.PaddingMode.Zero)
+               b = ct.load(B; index=(k, j), shape=(tk, tn), padding_mode=ct.PaddingMode.Zero)
+               acc = muladd(convert(ct.Tile{ct.TFloat32}, a),
+                            convert(ct.Tile{ct.TFloat32}, b), acc)
+           end
+           ct.store(C; index=(i, j), tile=acc)
+           return
+       end;
 ```
 
 `convert(ct.Tile{ct.TFloat32}, a)` narrows the operands while the accumulator
@@ -180,28 +191,32 @@ stays `Float32`, which is exactly why the accumulator's type was worth being
 explicit about. Because `TFloat32` is a lossy format, verify against a looser
 tolerance:
 
-```julia
-@assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-2)
+```jldoctest matmul_tutorial
+julia> fill!(C, 0);
+
+julia> @cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
+             matmul(A, B, C,
+                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)));
+
+julia> @assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-2)
 ```
 
 `Float16` and `BFloat16` inputs are already tensor-core operand formats and need
 no conversion. Keep the `Float32` accumulator and convert on the way out
 instead:
 
-```julia
-function matmul_f16(A, B, C, tm::Int, tn::Int, tk::Int)
-    i, j = ct.bid(1), ct.bid(2)
-
-    acc = zeros(Float32, tm, tn)
-    for k in 1:ct.num_tiles(A, 2, (tm, tk))
-        a = ct.load(A; index=(i, k), shape=(tm, tk), padding_mode=ct.PaddingMode.Zero)
-        b = ct.load(B; index=(k, j), shape=(tk, tn), padding_mode=ct.PaddingMode.Zero)
-        acc = muladd(a, b, acc)          # Float16 × Float16 → Float32
-    end
-
-    ct.store(C; index=(i, j), tile=convert(ct.Tile{Float16}, acc))
-    return
-end
+```jldoctest matmul_tutorial
+julia> function matmul_f16(A, B, C, tm::Int, tn::Int, tk::Int)
+           i, j = ct.bid(1), ct.bid(2)
+           acc = zeros(Float32, tm, tn)
+           for k in 1:ct.num_tiles(A, 2, (tm, tk))
+               a = ct.load(A; index=(i, k), shape=(tm, tk), padding_mode=ct.PaddingMode.Zero)
+               b = ct.load(B; index=(k, j), shape=(tk, tn), padding_mode=ct.PaddingMode.Zero)
+               acc = muladd(a, b, acc)          # Float16 × Float16 → Float32
+           end
+           ct.store(C; index=(i, j), tile=convert(ct.Tile{Float16}, acc))
+           return
+       end;
 ```
 
 The other new argument is `padding_mode`, which the next section explains.
@@ -224,17 +239,20 @@ contribute nothing to a sum of products, so the ragged iteration adds exactly
 the partial products that should be there. With it in place, the step 4 kernel
 handles sizes that divide by nothing:
 
-```julia
-M, N, K = 200, 100, 300     # none of them a multiple of 64
-tm, tn, tk = 64, 64, 64
-A, B = CUDA.rand(Float32, M, K), CUDA.rand(Float32, K, N)
-C = CUDA.zeros(Float32, M, N)
+```jldoctest matmul_tutorial
+julia> M, N, K = 200, 100, 300;
 
-@cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
-      matmul(A, B, C,
-             ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)))
+julia> tm, tn, tk = 64, 64, 64;
 
-@assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-2)
+julia> A, B = CUDA.rand(Float32, M, K), CUDA.rand(Float32, K, N);
+
+julia> C = CUDA.zeros(Float32, M, N);
+
+julia> @cuda(backend=cuTile, blocks=(cld(M, tm), cld(N, tn)),
+             matmul(A, B, C,
+                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk)));
+
+julia> @assert isapprox(Array(C), Array(A) * Array(B); rtol=1e-2)
 ```
 
 The rule generalizes past GEMM: when out-of-bounds lanes feed a reduction whose

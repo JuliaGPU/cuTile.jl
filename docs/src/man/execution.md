@@ -29,7 +29,9 @@ is easier to call from generated code or when the argument list is built
 programmatically. Both accept the optimization hints described in
 [Performance](performance.md), and both use the current task-bound CUDA stream;
 cuTile has no stream argument of its own. To run a kernel on a different stream,
-set the task's stream as you would for any CUDA.jl operation.
+set the task's stream as you would for any CUDA.jl operation; see CUDA.jl's
+[task and stream
+documentation](https://cuda.juliagpu.org/stable/usage/multitasking/).
 
 `blocks` sizes the grid, in up to three dimensions. It counts *blocks*, so it is
 almost always a ceiling division of the problem size by the tile shape. Inside
@@ -45,13 +47,12 @@ first:
 | Host argument | Kernel parameter |
 |---------------|------------------|
 | `CuArray{T,N}` | [`ct.TileArray{T,N,Spec}`](programming_model.md#Arrays-and-tiles) |
-| `ct.Constant(x)` | `ct.Constant{typeof(x), x}`, and no kernel parameter at all |
+| `ct.Constant(x)` | `x` with its ordinary type, and no runtime parameter |
 | other `isbits` values | themselves, as a by-value parameter |
 
 A `TileArray` is then flattened further: its base pointer, sizes and strides
 each become a separate kernel parameter. This is why a kernel taking three
-vectors and a tile size has ten parameters in the generated code rather than
-four.
+vectors and a constant tile size has nine runtime parameters rather than four.
 
 
 ## Compile-time arguments
@@ -128,7 +129,8 @@ normal use.
 
 Within a session, a compiled kernel is attached to the underlying Julia
 `CodeInstance`, so invalidation rides on Julia's ordinary method-invalidation
-machinery: redefining the kernel function recompiles it, and nothing else does.
+machinery: redefining the kernel or a method it depends on invalidates the
+corresponding compiled result.
 
 Across sessions, the Tile IR → CUBIN step is cached on disk, so the second run
 of a program skips the `tileiras` invocation entirely. The cache is

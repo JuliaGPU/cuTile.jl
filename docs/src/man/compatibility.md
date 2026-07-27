@@ -60,6 +60,7 @@ Everything not listed here works at v13.1.
 | `Float4_E2M1FN` | Element type |
 | `ct.muladd_scaled` | Also requires Blackwell |
 | `muladd(a, b, acc; fast_acc=true)` | FP8 inputs only; only takes effect on Hopper |
+| `exp` with approximate rounding | `ct.@fpmode rounding_mode=ct.Rounding.Approx` |
 | `ct.atomic_store_*` | View-based atomic reductions |
 | Atomic add on `BFloat16` | Also requires Hopper (sm_90) or newer |
 | Sparse views | `@view a[tile_of_indices, ...]`, consumed by `ct.load`/`ct.store` |

@@ -15,7 +15,7 @@ end
 
 | Option | Description | Valid values |
 |--------|-------------|--------------|
-| `num_ctas` | Number of CTAs in a CGA | Powers of 2 |
+| `num_ctas` | Number of CTAs in a CGA | Powers of 2 from 1 to 16 |
 | `occupancy` | Target concurrent CTAs per SM | 1–32 |
 | `opt_level` | Optimization level | 0–3 |
 | `num_worker_warps` | Worker warps per CTA in a warp-specialized kernel | 4 or 8 |

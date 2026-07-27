@@ -151,9 +151,9 @@ This differs from NumPy's (and cuTile Python's) right-aligned rules; see
 
 | Operation | Description |
 |-----------|-------------|
-| `<`, `>`, `<=`, `>=` | Comparison (returns `Bool` tile when broadcast) |
-| `==`, `!=` | Equality |
-| `ifelse(cond, x, y)` | Conditional selection |
+| `.<`, `.>`, `.<=`, `.>=` | Element-wise comparison (returns a `Bool` tile) |
+| `.==`, `.!=` | Element-wise equality |
+| `ifelse.(cond, x, y)` | Element-wise conditional selection |
 
 
 ## Integer and bitwise
@@ -164,8 +164,8 @@ This differs from NumPy's (and cuTile Python's) right-aligned rules; see
 | `fld(a, b)` | Floor division |
 | `div(a, b)` | Truncating division |
 | `mul_hi(a, b)` | High bits of integer multiply (`Base.mul_hi` on Julia 1.13+) |
-| `~x` | Bitwise NOT |
-| `&`, `\|`, `xor` | Bitwise AND, OR, XOR |
+| `.~x` | Element-wise bitwise NOT |
+| `.&`, `.\|`, `xor.` | Element-wise bitwise AND, OR, XOR |
 
 
 ## Type conversion

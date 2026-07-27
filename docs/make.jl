@@ -49,13 +49,12 @@ function main()
                 "lib/reflection.md",
             ],
         ],
-        # Most examples are kernels that need a GPU to run; doctests are enabled
-        # per-page as their output is made reproducible.
-        doctest = false,
+        doctest = true,
         # Only `public`/`export`ed symbols are API; everything else is internal, and
         # deliberately undocumented here.
         checkdocs = :public,
-        warnonly = [:missing_docs],
+        checkdocs_ignored_modules = [cuTile.DiskCache, cuTile.MemoryOrderingSemantics,
+                                     cuTile.MemoryScope],
     )
 
     if ci

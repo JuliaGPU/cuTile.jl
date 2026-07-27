@@ -8,8 +8,9 @@ public atomic_store_add, atomic_store_max, atomic_store_min,
        atomic_store_or, atomic_store_and, atomic_store_xor
 
 """
-Memory ordering for atomic operations.
-Use these constants with atomic_cas, atomic_xchg, etc.
+Memory ordering constants. Atomic operations accept `Relaxed`, `Acquire`,
+`Release`, and `AcqRel`. `Weak` is reserved for non-atomic loads and stores and
+is rejected by the atomic APIs.
 """
 @enumx MemoryOrder begin
     Weak = 0

@@ -56,8 +56,11 @@ a = ct.load(A; index=(bid_m, k), shape=(tm, tk))
 a_tf32 = convert(ct.Tile{ct.TFloat32}, a)
 ```
 
-`reinterpret` covers both same-width bit reinterpretation and, for differing widths, the
-packing described above.
+`reinterpret` covers same-width bit reinterpretation directly. When the element
+width changes, it preserves the total bit count by scaling the first tile
+dimension; for example, reinterpreting a `(16,)` `UInt16` tile as `UInt8`
+produces a `(32,)` tile. Differing-width reinterpretation requires Tile IR
+v13.3 or newer.
 
 !!! note
 

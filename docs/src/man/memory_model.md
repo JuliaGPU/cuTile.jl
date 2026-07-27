@@ -1,9 +1,9 @@
 # Memory Model
 
-Atomic operations take `memory_order` and `memory_scope` keyword arguments that
-control how their effects are ordered with respect to other memory operations,
-and which threads observe that ordering. Both map directly onto the Tile IR
-memory model; the
+Read-modify-write atomic operations take `memory_order` and `memory_scope`
+keyword arguments that control how their effects are ordered with respect to
+other memory operations, and which threads observe that ordering. Both map
+directly onto the Tile IR memory model; the
 [specification](https://docs.nvidia.com/cuda/tile-ir/latest/sections/memory_model.html)
 is the authoritative reference for the formal semantics, including token
 ordering and the definition of a data race.
@@ -15,15 +15,16 @@ ordering and the definition of a data race.
 
 | Value | Meaning |
 |-------|---------|
-| `Weak` | No concurrent accesses to the location |
 | `Relaxed` | There may be concurrent accesses, but this one establishes no happens-before relationship |
 | `Release` | If this release is observed by an acquire, happens-before is established |
 | `Acquire` | If this acquire observes a release, happens-before is established |
 | `AcqRel` | Both a release and an acquire |
 
+`MemoryOrder.Weak` exists because the underlying Tile IR load/store model uses
+it for non-atomic accesses, but cuTile's atomic APIs reject it. Use `Relaxed`
+when an atomic value need not establish a happens-before relationship.
 Synchronizing through memory is a two-party process: it takes a releaser and an
-acquirer observing the same location. Any ordering other than `Weak` requires a
-scope.
+acquirer observing the same location, at compatible scopes.
 
 The `atomic_*` functions default to `ct.MemoryOrder.AcqRel`, which is the safe
 choice: it orders surrounding memory traffic in both directions. Weakening it to

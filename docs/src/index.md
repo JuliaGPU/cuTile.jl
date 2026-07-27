@@ -2,6 +2,13 @@
 
 *Tile-based GPU programming in Julia.*
 
+```@meta
+DocTestSetup = quote
+    using CUDA, cuTile
+    import cuTile as ct
+end
+```
+
 cuTile.jl compiles Julia functions to [Tile
 IR](https://docs.nvidia.com/cuda/tile-ir/), NVIDIA's portable tile-based
 instruction set. Rather than writing kernels that describe what a single GPU
@@ -12,7 +19,7 @@ including tensor cores and the tensor memory accelerator.
 !!! warning "This package is in beta"
 
     Most Tile IR features are implemented, and the package has been verified on
-    bthe enchmarks and tests included in the repository. Interfaces and APIs may
+    the benchmarks and tests included in the repository. Interfaces and APIs may
     still change without notice. See [Compatibility](man/compatibility.md) for
     what is and isn't guaranteed.
 
@@ -21,32 +28,30 @@ including tensor cores and the tensor memory accelerator.
 
 A vector addition kernel:
 
-```julia
-using CUDA, cuTile
-import cuTile as ct
+```jldoctest quick_start
+julia> function vadd(a, b, c, tile_size::Int)
+           pid = ct.bid(1)
+           tile_a = ct.load(a; index=pid, shape=(tile_size,))
+           tile_b = ct.load(b; index=pid, shape=(tile_size,))
+           ct.store(c; index=pid, tile=tile_a + tile_b)
+           return
+       end;
 
-# Define kernel
-function vadd(a, b, c, tile_size::Int)
-    pid = ct.bid(1)
-    tile_a = ct.load(a; index=pid, shape=(tile_size,))
-    tile_b = ct.load(b; index=pid, shape=(tile_size,))
-    ct.store(c; index=pid, tile=tile_a + tile_b)
-    return
-end
+julia> vector_size = 2^20;
 
-# Launch
-vector_size = 2^20
-tile_size = 16
+julia> tile_size = 16;
 
-blocks = cld(vector_size, tile_size)
-grid = (blocks, 1, 1)
+julia> blocks = cld(vector_size, tile_size);
 
-a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size)
-c = CUDA.zeros(Float32, vector_size)
+julia> grid = (blocks, 1, 1);
 
-@cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(tile_size))
+julia> a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size);
 
-@assert c == a .+ b
+julia> c = CUDA.zeros(Float32, vector_size);
+
+julia> @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(tile_size));
+
+julia> @assert c == a .+ b
 ```
 
 Kernels are ordinary Julia functions: no decorator or macro is needed, though
@@ -54,6 +59,11 @@ they must return `nothing`. They take array arguments, use
 [`ct.load`](man/memory.md) and [`ct.store`](man/memory.md) to move data between
 global memory and tiles, and operate on those tiles with standard Julia syntax:
 `+`, `sum`, `reshape`, broadcasting, and so on.
+
+cuTile.jl builds on [CUDA.jl](https://cuda.juliagpu.org/stable/), which owns
+device selection, streams, `CuArray` allocation and the rest of the Julia CUDA
+environment. This manual focuses on the tile programming model and refers to
+CUDA.jl's documentation for that shared functionality.
 
 
 ## Where to go next

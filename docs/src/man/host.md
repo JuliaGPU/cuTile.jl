@@ -1,7 +1,16 @@
 # Host-level Operations
 
+```@meta
+DocTestSetup = quote
+    using CUDA, Random
+    import cuTile as ct
+end
+```
+
 cuTile.jl provides a limited set of host-level APIs to use cuTile without
-writing custom kernels.
+writing custom kernels. CUDA.jl remains the general-purpose home for `CuArray`
+operations, allocation, streams and device management; this page only covers
+the small host surface implemented directly by cuTile.
 
 !!! note
 
@@ -14,22 +23,24 @@ writing custom kernels.
 For element-wise operations on `CuArray`s, cuTile can automatically generate and
 launch a fused kernel using Julia's broadcast machinery:
 
-```julia
-using CUDA
-import cuTile as ct
+```jldoctest host_broadcast
+julia> A = CUDA.rand(Float32, 1024);
 
-A = CUDA.rand(Float32, 1024)
-B = CUDA.rand(Float32, 1024)
-C = CUDA.zeros(Float32, 1024)
+julia> B = CUDA.rand(Float32, 1024);
 
-# Wrap arrays in Tiled() to route through cuTile
-ct.Tiled(C) .= ct.Tiled(A) .+ ct.Tiled(B)
+julia> C = CUDA.zeros(Float32, 1024);
 
-# Or use the @. macro for convenience
-ct.@. C = A + sin(B)
+julia> ct.Tiled(C) .= ct.Tiled(A) .+ ct.Tiled(B);
 
-# Allocating form (returns a new CuArray)
-D = ct.@. A + B
+julia> @assert C == A .+ B
+
+julia> ct.@. C = A + sin(B);
+
+julia> @assert C == A .+ sin.(B)
+
+julia> D = ct.@. A + B;
+
+julia> @assert D == A .+ B
 ```
 
 The entire broadcast expression is fused into a single cuTile kernel. Tile sizes
@@ -48,23 +59,28 @@ destination array.
 `cuTile.RNG` fills `CuArray`s on the device using the same Philox2x32-7
 generator as the in-kernel `rand` / `randn` / `randexp`:
 
-```julia
-using CUDA
-import cuTile as ct
+```jldoctest host_random
+julia> A = CUDA.zeros(Float32, 1024);
 
-A = CUDA.zeros(Float32, 1024)
-rng = ct.RNG(42)
-rand!(rng, A)                  # `Random.rand!`, uniform in-place
-randn!(rng, A)                 # `Random.randn!`, standard normal
-randexp!(rng, A)               # `Random.randexp!`, standard exponential
-B = rand(rng, Float64, 16)     # out-of-place
-N = randn(rng, Float32, 1024)  # out-of-place normal
+julia> rng = ct.RNG(42);
 
-# Or via the global helpers (match CUDA.rand! / CUDA.seed!)
-ct.rand!(A)
-ct.randn!(A)
-ct.randexp!(A)
-ct.seed!(0xdeadbeef)
+julia> rand!(rng, A);
+
+julia> randn!(rng, A);
+
+julia> randexp!(rng, A);
+
+julia> B = rand(rng, Float64, 16);
+
+julia> N = randn(rng, Float32, 1024);
+
+julia> ct.rand!(A);
+
+julia> ct.randn!(A);
+
+julia> ct.randexp!(A);
+
+julia> ct.seed!(0xdeadbeef);
 ```
 
 Supports the same output types as the [in-kernel API](random.md). The counter is

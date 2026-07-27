@@ -97,7 +97,8 @@ bid_y = ct.bid(2)
 permutedims(tile, (3, 1, 2))
 ```
 
-This applies to `bid`, `num_blocks`, `permutedims`, `reshape`, dimension arguments, etc.
+This applies to `bid`, `num_blocks`, `permutedims`, reduction dimensions and
+other axis or index arguments.
 
 
 ## Compile-time constants
@@ -256,8 +257,13 @@ in cuTile Python's operation reference.
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
+| `array.tiled_view(tile_shape, traversal_steps=...)` | `eachtile(array, tile_shape; step=...)` |
 | `load_advanced_indexing` | `ct.load(@view a[idx, …], shape)` |
 | `store_advanced_indexing` | `ct.store(@view a[idx, …], tile)` |
+
+`eachtile` returns the same kind of device-side tiled view. Its indices and
+dimension arguments are 1-based, and `step` is cuTile.jl's name for Python's
+`traversal_steps`.
 
 ### Factory
 
@@ -278,6 +284,8 @@ in cuTile Python's operation reference.
 
 Julia's `reinterpret` covers all three of Python's reinterpretation functions,
 dispatching on whether the source and target element widths match.
+Unlike Python's `reshape`, Julia's tile `reshape` does not accept `-1` as an
+inferred dimension; compute and pass every output dimension explicitly.
 
 ### Reduction and scan
 
@@ -337,12 +345,16 @@ Python (`@` is matrix multiply), matrix multiply in Julia.
 |---------------|-----------|
 | `printf`, `print` | `print`, `println` |
 | `assert_` | `ct.@assert` |
-| `static_assert`, `static_eval`, `static_iter` | ordinary Julia code |
+| `static_eval` | compile-time propagation from `ct.Constant` arguments |
+| `static_assert` | `Base.@assert` in generated/host code, or `ct.@assert` in a kernel |
+| `static_iter` | generated Julia code when unrolling is required; otherwise a normal loop |
 
-Python needs explicit metaprogramming helpers because its kernels are traced. In
-Julia, compile-time evaluation is what the compiler does by default: a `for`
-loop over a literal range unrolls, `@assert` on a constant folds away, and
-`ct.Constant` values participate in inference.
+Python needs explicit metaprogramming helpers because its kernels are traced.
+Julia inference propagates `ct.Constant` values through ordinary expressions,
+so many `static_eval` uses need no wrapper. A normal Julia `for` loop still
+compiles to a Tile IR loop; it is not implicitly unrolled merely because its
+bounds are literals. Use a generated function or another Julia
+code-generation construct when compile-time unrolling is actually required.
 
 ### Types and enums
 

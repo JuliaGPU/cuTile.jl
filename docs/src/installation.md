@@ -27,7 +27,10 @@ julia> import Pkg; Pkg.add("cuTile")
   type and the `@cuda backend=cuTile` launch path.
 
 You do not need to install the CUDA toolkit yourself: CUDA.jl downloads the
-appropriate artifacts automatically.
+appropriate artifacts automatically. See the [CUDA.jl installation
+guide](https://cuda.juliagpu.org/stable/installation/overview/) for driver,
+toolkit-selection and troubleshooting details; cuTile.jl does not duplicate
+that setup here.
 
 
 ## Checking your setup
@@ -52,10 +55,12 @@ documented in [Compatibility](man/compatibility.md).
 
 To run the test suite:
 
-```julia
-using Pkg
-Pkg.test("cuTile")
+```julia-repl
+julia> using Pkg
+
+julia> Pkg.test("cuTile")
 ```
 
-The `device` and `host` test groups are skipped automatically when CUDA is not
-functional, so the suite still runs (in reduced form) on machines without a GPU.
+The test suite requires a functional CUDA GPU and exits immediately when
+`CUDA.functional()` is false. Building the documentation and using
+`ct.code_tiled` with explicit argument types do not require a GPU.
