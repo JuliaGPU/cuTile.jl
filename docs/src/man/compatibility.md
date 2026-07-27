@@ -1,9 +1,9 @@
 # Compatibility
 
-cuTile.jl emits [Tile IR](https://docs.nvidia.com/cuda/tile-ir/) bytecode, which `tileiras`
-compiles for a specific GPU architecture. Feature availability therefore depends on two
-independent things: the **bytecode version** in use, and the **compute capability** of the
-device. This page collects both.
+cuTile.jl emits [Tile IR](https://docs.nvidia.com/cuda/tile-ir/) bytecode, which
+`tileiras` compiles for a specific GPU architecture. Feature availability
+therefore depends on two independent things: the **bytecode version** in use,
+and the **compute capability** of the device. This page collects both.
 
 For what Tile IR itself guarantees across versions, see the specification's
 [stability chapter](https://docs.nvidia.com/cuda/tile-ir/latest/sections/stability.html).
@@ -17,18 +17,19 @@ For what Tile IR itself guarantees across versions, see the specification's
 | NVIDIA driver | 580 (CUDA 13) |
 | Compute capability | 8.0 (Ampere) |
 
-CUDA.jl must be imported to launch kernels; it supplies the CUDA toolkit artifacts, including
-`tileiras`.
+CUDA.jl must be imported to launch kernels; it supplies the CUDA toolkit
+artifacts, including `tileiras`.
 
 
 ## Bytecode versions
 
-cuTile.jl can emit bytecode versions **v13.1 through v13.4**. By default it probes the
-`tileiras` binary in use and emits the newest version that binary accepts; the
-`bytecode_version` preference overrides this. `cuTile.versioninfo()` reports what will be
-used.
+cuTile.jl can emit bytecode versions **v13.1 through v13.4**. By default it
+probes the `tileiras` binary in use and emits the newest version that binary
+accepts; the `bytecode_version` preference overrides this.
+`cuTile.versioninfo()` reports what will be used.
 
-Each architecture has a minimum bytecode version below which Tile IR is not supported at all:
+Each architecture has a minimum bytecode version below which Tile IR is not
+supported at all:
 
 | Architecture | Compute capability | Minimum bytecode |
 |--------------|--------------------|------------------|
@@ -37,8 +38,8 @@ Each architecture has a minimum bytecode version below which Tile IR is not supp
 | Ampere / Ada | 8.0 – 8.9 | v13.2 |
 | older | < 8.0 | unsupported |
 
-cuTile checks this at launch and reports an error naming both the detected version and the
-requirement.
+cuTile checks this at launch and reports an error naming both the detected
+version and the requirement.
 
 
 ## Features by bytecode version
@@ -83,16 +84,17 @@ Everything not listed here works at v13.1.
 | Atomic add on `BFloat16` | Hopper (≥ sm_90) | Error |
 | `fast_acc=true` | Hopper (sm_90) | Silently ignored |
 
-`fast_acc` is the exception to the pattern: it is a throughput hint rather than a capability,
-so on architectures where it does nothing, it is accepted and ignored rather than rejected.
-It is still an error to pass it with non-FP8 inputs on any architecture.
+`fast_acc` is the exception to the pattern: it is a throughput hint rather than
+a capability, so on architectures where it does nothing, it is accepted and
+ignored rather than rejected. It is still an error to pass it with non-FP8
+inputs on any architecture.
 
 
 ## API stability
 
-cuTile.jl is in beta. Most Tile IR features are implemented, and the package is verified
-against the benchmarks and tests in the repository, but interfaces may change without notice
-between releases. Pin a version if you need stability.
+cuTile.jl is in beta. Most Tile IR features are implemented, and the package is
+verified against the benchmarks and tests in the repository, but interfaces may
+change without notice between releases. Pin a version if you need stability.
 
-Symbols are marked `public` or `export`ed when they are intended for use; anything else is
-internal, and will change without a deprecation cycle.
+Symbols are marked `public` or `export`ed when they are intended for use;
+anything else is internal, and will change without a deprecation cycle.

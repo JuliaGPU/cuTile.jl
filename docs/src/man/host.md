@@ -1,13 +1,18 @@
 # Host-level Operations
 
-cuTile.jl provides a limited set of host-level APIs to use cuTile without writing custom
-kernels.
+cuTile.jl provides a limited set of host-level APIs to use cuTile without
+writing custom kernels.
+
+!!! note
+
+    These implementations are temporary, and will disappear in the future once
+    they get folded into CUDA.jl itself.
 
 
 ## Fused broadcast
 
-For element-wise operations on `CuArray`s, cuTile can automatically generate and launch a
-fused kernel using Julia's broadcast machinery:
+For element-wise operations on `CuArray`s, cuTile can automatically generate and
+launch a fused kernel using Julia's broadcast machinery:
 
 ```julia
 using CUDA
@@ -27,20 +32,21 @@ ct.@. C = A + sin(B)
 D = ct.@. A + B
 ```
 
-The entire broadcast expression is fused into a single cuTile kernel. Tile sizes are
-automatically chosen based on array dimensions (power-of-2, budget-based). Works with 1D
-through N-dimensional arrays.
+The entire broadcast expression is fused into a single cuTile kernel. Tile sizes
+are automatically chosen based on array dimensions (power-of-2, budget-based).
+Works with 1D through N-dimensional arrays.
 
-Standard broadcast shape semantics apply: size-1 dimensions are expanded to the destination's
-size (`Tiled(C) .= Tiled(row) .+ Tiled(B)` with a `(1, N)` row), scalars fill the destination
-(`Tiled(C) .= 0`), and incompatible shapes throw a `DimensionMismatch`. For in-place
-assignment, `ct.@.` returns the original destination array.
+Standard broadcast shape semantics apply: size-1 dimensions are expanded to the
+destination's size (`Tiled(C) .= Tiled(row) .+ Tiled(B)` with a `(1, N)` row),
+scalars fill the destination (`Tiled(C) .= 0`), and incompatible shapes throw a
+`DimensionMismatch`. For in-place assignment, `ct.@.` returns the original
+destination array.
 
 
 ## Random number generation
 
-`cuTile.RNG` fills `CuArray`s on the device using the same Philox2x32-7 generator as the
-in-kernel `rand` / `randn` / `randexp`:
+`cuTile.RNG` fills `CuArray`s on the device using the same Philox2x32-7
+generator as the in-kernel `rand` / `randn` / `randexp`:
 
 ```julia
 using CUDA
@@ -62,5 +68,5 @@ ct.seed!(0xdeadbeef)
 ```
 
 Supports the same output types as the [in-kernel API](random.md). The counter is
-auto-advanced after each fill, so consecutive calls on the same `RNG` produce disjoint
-streams.
+auto-advanced after each fill, so consecutive calls on the same `RNG` produce
+disjoint streams.

@@ -117,6 +117,3 @@ chapter](https://juliagpu.github.io/cuTile.jl/stable/man/performance/) of the do
 
 cuTile.jl is inspired by [cuTile-Python](https://github.com/NVIDIA/cutile-python/),
 licensed under Apache 2.0 by NVIDIA Corporation & Affiliates.
-
-The IRStructurizer component is based on [SPIRV.jl](https://github.com/serenity4/SPIRV.jl)
-by [Cédric Belmant](https://github.com/serenity4).

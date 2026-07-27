@@ -1,19 +1,19 @@
 # Memory
 
-Kernels move data between global-memory arrays and tiles with `ct.load` and `ct.store`.
+Kernels move data between global-memory arrays and tiles with `ct.load` and
+`ct.store`.
 
 | Operation | Description |
 |-----------|-------------|
 | `ct.load(arr; index, shape, ...)` | Load a tile from array |
 | `ct.store(arr; index, tile, ...)` | Store a tile to array |
-| `eachtile(arr, shape; step=...)` | Array-of-tiles view with controllable tile origins |
 | `ct.gather(arr, indices; ...)` | Gather elements by index tile |
 | `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
 
-All four take keyword arguments controlling bounds checking, masking, out-of-bounds padding
-and memory-traffic scheduling; see [`load`](@ref cuTile.load), [`store`](@ref cuTile.store),
-[`gather`](@ref cuTile.gather) and [`scatter`](@ref cuTile.scatter) in the API reference for
-the full sets.
+All four take keyword arguments controlling bounds checking, masking,
+out-of-bounds padding and memory-traffic scheduling; see [`load`](@ref
+cuTile.load), [`store`](@ref cuTile.store), [`gather`](@ref cuTile.gather) and
+[`scatter`](@ref cuTile.scatter) in the API reference for the full sets.
 
 ```julia
 # Gather with user mask and custom padding for masked-out elements
@@ -23,20 +23,21 @@ tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 ct.scatter(arr, indices, tile; mask=active_mask)
 ```
 
-The `latency` and `allow_tma` hints influence how memory traffic is scheduled; see
-[Performance](performance.md). Version requirements mentioned on this page are collected in
-[Compatibility](compatibility.md).
+The `latency` and `allow_tma` hints influence how memory traffic is scheduled;
+see [Performance](performance.md). Version requirements mentioned on this page
+are collected in [Compatibility](compatibility.md).
 
 
 ## Automatic rank matching
 
 `ct.load` and `ct.store` automatically match the tile rank to that of the target:
 
-- **Lower rank**: trailing `1`s are appended. Loading `(M, N)` from a 4D array internally
-  uses `(M, N, 1, 1)`. Storing a scalar tile into a 2D array pads to `(1, 1)`.
-- **Higher rank**: trailing `1`s are stripped. Storing `(M, 1)` into a 1D array reshapes to
-  `(M,)`. Non-trailing singletons (e.g. from `sum(tile; dims=1)`) require explicit
-  `dropdims`.
+- **Lower rank**: trailing `1`s are appended. Loading `(M, N)` from a 4D array
+  internally uses `(M, N, 1, 1)`. Storing a scalar tile into a 2D array pads to
+  `(1, 1)`.
+- **Higher rank**: trailing `1`s are stripped. Storing `(M, 1)` into a 1D array
+  reshapes to `(M,)`. Non-trailing singletons (e.g. from `sum(tile; dims=1)`)
+  require explicit `dropdims`.
 
 
 ## Indexing
@@ -58,12 +59,13 @@ The `latency` and `allow_tma` hints influence how memory traffic is scheduled; s
 | `transpose(arr)` | 2D transpose (`permutedims(arr, (2, 1))`) |
 | `reshape(arr, dims)` | Column-major reshape, requires contiguous source |
 
-`@view` and `view` derive a sub-range `TileArray` from an existing one. Each index must be
-`:`, a `UnitRange` (e.g. `i:j`), or a positive `StepRange` (e.g. `i:s:j`); scalar `Int` and
-`CartesianIndex` forms are rejected at compile time. A StepRange changes the element stride
-inside the resulting TileArray. The result can be passed to `ct.load`/`ct.store` (or sliced
-again). Runtime asserts verify that ranges start at ≥ 1 and have a positive step; negative
-steps cannot be represented.
+`@view` and `view` derive a sub-range `TileArray` from an existing one. Each
+index must be `:`, a `UnitRange` (e.g. `i:j`), or a positive `StepRange` (e.g.
+`i:s:j`); scalar `Int` and `CartesianIndex` forms are rejected at compile time.
+A StepRange changes the element stride inside the resulting TileArray. The
+result can be passed to `ct.load`/`ct.store` (or sliced again). Runtime asserts
+verify that ranges start at ≥ 1 and have a positive step; negative steps cannot
+be represented.
 
 ```julia
 function rowsum(a, b, r1::Int32, r2::Int32)
@@ -76,11 +78,11 @@ end
 
 ### Sparse views
 
-For a 2D-or-higher array, one 1D integer `Tile` index plus integer unit ranges (or `:`) in
-every other dimension creates a sparse view consumed only by `ct.load` and `ct.store`. Public
-indices are one-based; the load shape is explicit and static while range starts may be
-runtime values. A `:` dense dimension starts at element 1 and takes its extent from the load
-shape.
+For a 2D-or-higher array, one 1D integer `Tile` index plus integer unit ranges
+(or `:`) in every other dimension creates a sparse view consumed only by
+`ct.load` and `ct.store`. Public indices are one-based; the load shape is
+explicit and static while range starts may be runtime values. A `:` dense
+dimension starts at element 1 and takes its extent from the load shape.
 
 ```julia
 rows = ct.arange(4; start=1, step=2)
@@ -89,19 +91,21 @@ tile = ct.load(selected, (4, 4); padding_mode=ct.PaddingMode.Zero)
 ct.store(selected, tile)
 ```
 
-Sparse loads apply the requested padding and stores clip partially out-of-bounds elements.
-Repeated sparse indices are valid for loads, but conflicting stores are undefined. This
-requires Tile IR v13.3. Direct bracket access, view atomics, and Python-style
-advanced-indexing function names are intentionally not provided.
+Sparse loads apply the requested padding and stores clip partially out-of-bounds
+elements. Repeated sparse indices are valid for loads, but conflicting stores
+are undefined. This requires Tile IR v13.3. Direct bracket access, view atomics,
+and Python-style advanced-indexing function names are intentionally not
+provided.
 
 
 ## Tile windows
 
-`eachtile` creates a small, indexable device-side collection of fixed-shape tiles. Its
-indices are 1-based and `step` (one entry per tile dimension) controls tile origins, not the
-element stride inside a tile. `size(tiles, d)` is the number of tiles along `d`: on the host
-it computes `cld(size(a, d), step[d])` for launch-grid sizing, while inside a kernel it
-queries the Tile IR backend for the authoritative index-space count:
+`eachtile` creates a small, indexable device-side collection of fixed-shape
+tiles. Its indices are 1-based and `step` (one entry per tile dimension)
+controls tile origins, not the element stride inside a tile. `size(tiles, d)` is
+the number of tiles along `d`: on the host it computes `cld(size(a, d),
+step[d])` for launch-grid sizing, while inside a kernel it queries the Tile IR
+backend for the authoritative index-space count:
 
 ```julia
 adjacent = eachtile(a, (8, 8))              # default: step == (8, 8)
@@ -112,7 +116,7 @@ tile = overlap[2, 1]
 overlap[2, 1] = tile
 ```
 
-Equal shape and step work at any supported bytecode version; unequal values require Tile IR
-bytecode v13.3 or newer. This is distinct from `@view a[1:2:end, :]`, which steps individual
-elements rather than tile origins. See [`eachtile`](@ref cuTile.eachtile) for the remaining
-keyword arguments.
+Equal shape and step work at any supported bytecode version; unequal values
+require Tile IR bytecode v13.3 or newer. This is distinct from `@view a[1:2:end,
+:]`, which steps individual elements rather than tile origins. See
+[`eachtile`](@ref cuTile.eachtile) for the remaining keyword arguments.

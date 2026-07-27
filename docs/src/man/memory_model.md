@@ -1,11 +1,12 @@
 # Memory Model
 
-Atomic operations take `memory_order` and `memory_scope` keyword arguments that control how
-their effects are ordered with respect to other memory operations, and which threads observe
-that ordering. Both map directly onto the Tile IR memory model; the
-[specification](https://docs.nvidia.com/cuda/tile-ir/latest/sections/memory_model.html) is the
-authoritative reference for the formal semantics, including token ordering and the
-definition of a data race.
+Atomic operations take `memory_order` and `memory_scope` keyword arguments that
+control how their effects are ordered with respect to other memory operations,
+and which threads observe that ordering. Both map directly onto the Tile IR
+memory model; the
+[specification](https://docs.nvidia.com/cuda/tile-ir/latest/sections/memory_model.html)
+is the authoritative reference for the formal semantics, including token
+ordering and the definition of a data race.
 
 
 ## Ordering
@@ -20,13 +21,14 @@ definition of a data race.
 | `Acquire` | If this acquire observes a release, happens-before is established |
 | `AcqRel` | Both a release and an acquire |
 
-Synchronizing through memory is a two-party process: it takes a releaser and an acquirer
-observing the same location. Any ordering other than `Weak` requires a scope.
+Synchronizing through memory is a two-party process: it takes a releaser and an
+acquirer observing the same location. Any ordering other than `Weak` requires a
+scope.
 
-The `atomic_*` functions default to `ct.MemoryOrder.AcqRel`, which is the safe choice: it
-orders surrounding memory traffic in both directions. Weakening it to `Relaxed` is worthwhile
-when an atomic is used purely as a counter or accumulator whose result nothing else is
-synchronized against.
+The `atomic_*` functions default to `ct.MemoryOrder.AcqRel`, which is the safe
+choice: it orders surrounding memory traffic in both directions. Weakening it to
+`Relaxed` is worthwhile when an atomic is used purely as a counter or
+accumulator whose result nothing else is synchronized against.
 
 
 ## Scope
@@ -39,9 +41,9 @@ synchronized against.
 | `Device` | All threads on the same GPU |
 | `System` | All threads in the system, including other GPUs and the host |
 
-The default is `ct.MemScope.Device`. Narrowing to `Block` is cheaper when the communication
-is genuinely block-local; widening to `System` is required when the host or a peer GPU reads
-the result concurrently.
+The default is `ct.MemScope.Device`. Narrowing to `Block` is cheaper when the
+communication is genuinely block-local; widening to `System` is required when
+the host or a peer GPU reads the result concurrently.
 
 
 ## Defaults by operation
@@ -53,10 +55,11 @@ the result concurrently.
 | `ct.@atomic` statement form | `:monotonic` (relaxed) | `Device` |
 | `ct.@atomic` value form | `:acquire_release` | `Device` |
 
-The view-based `atomic_store_*` reductions do not accept ordering arguments: they are always
-relaxed and device-wide. The statement form of `ct.@atomic` defaults to relaxed because it
-discards the old value, so there is usually nothing to synchronize against; the value form
-returns `old => new` and therefore defaults to the stronger ordering.
+The view-based `atomic_store_*` reductions do not accept ordering arguments:
+they are always relaxed and device-wide. The statement form of `ct.@atomic`
+defaults to relaxed because it discards the old value, so there is usually
+nothing to synchronize against; the value form returns `old => new` and
+therefore defaults to the stronger ordering.
 
 See [Atomics](atomics.md) for the operations themselves.
 
