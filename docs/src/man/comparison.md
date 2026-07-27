@@ -223,47 +223,58 @@ rules are documented under [Memory](memory.md#Automatic-rank-matching).
 
 ## Operations
 
-Grouped as in cuTile Python's operation reference. `ct.` on the Julia side means
-the cuTile module; unprefixed names are `Base` functions that cuTile overlays.
+Both packages are conventionally imported as `ct` (`import cuda.tile as ct`,
+`import cuTile as ct`), so most operations are spelled identically on both
+sides: `ct.bid`, `ct.num_blocks`, `ct.num_tiles`, `ct.load`, `ct.store`,
+`ct.gather`, `ct.scatter`, `ct.arange`, `ct.cat`, `ct.broadcast_to`,
+`ct.extract`, `ct.insert`, `ct.divmod`, `ct.assume_divisible_by` and the
+`ct.atomic_*` family all keep their names, and so do their keyword arguments
+(`index`, `shape`, `order`, `padding_mode`, `padding_value`, `check_bounds`,
+`latency`, `memory_order`, `memory_scope`, `mask`).
+
+Two rules cover most of the rest:
+
+- **What `Base` already provides is used unprefixed.** cuTile.jl overlays the
+  `Base` function instead of adding a `ct.` one, so `ct.sum(x, axis=0)` becomes
+  `sum(x; dims=1)`. The same holds for `prod`, `argmax`, `argmin`, `reduce`,
+  `cumsum`, `cumprod`, `reshape`, `transpose`, `abs`, `isnan`, `mod`, `exp`,
+  `exp2`, `log`, `log2`, `sqrt`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`,
+  `floor` and `ceil`. `ct.rsqrt` is the exception, as `Base` has no `rsqrt`.
+- **Element-wise application needs a dot.** Python's operators and math
+  functions map over tiles implicitly; in Julia that is broadcast syntax, so
+  `ct.exp(t)` is `exp.(t)`, and `ct.mod(a, b)` is `mod.(a, b)`. See
+  [Broadcasting and math functions](#Broadcasting-and-math-functions).
+
+Axis and dimension arguments are 1-based, as described
+[above](#1-based-indexing). That also shifts `ct.arange`'s `start` keyword,
+which defaults to `1` in Julia and to `0` in Python.
+
+What follows are the operations that don't fall out of those rules, grouped as
+in cuTile Python's operation reference.
 
 ### Load/store
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
-| `bid(i)` | `ct.bid(i+1)` |
-| `num_blocks(i)` | `ct.num_blocks(i+1)` |
-| `num_tiles` | `ct.num_tiles` |
-| `load` | `ct.load` |
-| `store` | `ct.store` |
 | `load_advanced_indexing` | `ct.load(@view a[idx, …], shape)` |
 | `store_advanced_indexing` | `ct.store(@view a[idx, …], tile)` |
-| `gather` | `ct.gather` |
-| `scatter` | `ct.scatter` |
 
 ### Factory
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
-| `arange` | `ct.arange` |
-| `astile` | `ct.Tile(x)` |
-| `full` | `fill` |
-| `ones` | `ones` |
-| `zeros` | `zeros` |
+| `astile(value, dtype=T)` | `ct.Tile(x)` (scalars only; there is no tuple-literal form) |
+| `full(shape, value, dtype)` | `fill(value, dims)` |
+| `ones(shape, dtype)` / `zeros(shape, dtype)` | `ones(T, dims)` / `zeros(T, dims)` |
 
 ### Shape and dtype
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
-| `cat` | `ct.cat` |
-| `broadcast_to` | `ct.broadcast_to` |
 | `expand_dims` | `reshape` |
-| `reshape` | `reshape` |
 | `permute` | `permutedims` |
-| `transpose` | `transpose` |
 | `astype` | `convert(ct.Tile{T}, x)` |
-| `bitcast` | `reinterpret` |
-| `pack_to_bytes` | `reinterpret` |
-| `unpack_from_bytes` | `reinterpret` |
+| `bitcast`, `pack_to_bytes`, `unpack_from_bytes` | `reinterpret` |
 
 Julia's `reinterpret` covers all three of Python's reinterpretation functions,
 dispatching on whether the source and target element widths match.
@@ -272,13 +283,8 @@ dispatching on whether the source and target element widths match.
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
-| `sum` | `sum` |
-| `max` | `maximum` |
-| `min` | `minimum` |
-| `prod` | `prod` |
-| `argmax` / `argmin` | `argmax` / `argmin` |
+| `max` / `min` | `maximum` / `minimum` |
 | `reduce` | `reduce`, `mapreduce` |
-| `cumsum` / `cumprod` | `cumsum` / `cumprod` |
 | `scan` | `accumulate` |
 
 !!! warning "`max` means different things"
@@ -288,64 +294,42 @@ dispatching on whether the source and target element widths match.
     reduce, `max`/`min` are element-wise. Translating `ct.max(tile, axis=0)` to `max` rather
     than `maximum` compiles and computes the wrong thing.
 
+Julia's reductions also keep the reduced dimension, as covered under
+[Reductions](#Reductions).
+
 ### Matmul
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
 | `mma` | `muladd` |
 | `mma_scaled` | `ct.muladd_scaled` |
-| `matmul` | `*` |
+| `matmul`, `x @ y` | `*` |
 
 ### Selection
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
-| `where` | `ifelse` |
-| `extract` | `ct.extract` |
-| `insert` | `ct.insert` |
+| `where` | `ifelse.` |
 
-### Math
+### Math, bitwise and comparison
 
-| cuTile Python | cuTile.jl |
-|---------------|-----------|
-| `add`, `sub`, `mul` | `.+`, `.-`, `.*` |
-| `truediv` | `./` |
-| `floordiv` | `fld` |
-| `cdiv` | `cld` |
-| `pow` | `.^` |
-| `atan2(y, x)` | `atan(y, x)` |
-| `mod` | `mod.` |
-| `divmod` | `ct.divmod` |
-| `minimum`, `maximum` | `min.`, `max.` |
-| `negative` | `-` |
-| `abs` | `abs` |
-| `isnan` | `isnan` |
-| `exp`, `exp2`, `log`, `log2` | same |
-| `sqrt`, `rsqrt` | same |
-| `sin`, `cos`, `tan` | same |
-| `sinh`, `cosh`, `tanh` | same |
-| `floor`, `ceil` | same |
-| — | `fma` |
-| — | `mul_hi` |
-
-### Bitwise and comparison
+Python offers both operators and named functions here; Julia has only the
+operators, broadcast:
 
 | cuTile Python | cuTile.jl |
 |---------------|-----------|
-| `bitwise_and`, `bitwise_or`, `bitwise_xor` | `&`, `\|`, `xor` |
-| `bitwise_lshift`, `bitwise_rshift` | `<<`, `>>` (`>>>` unsigned) |
-| `bitwise_not` | `~` |
-| `greater`, `greater_equal` | `>`, `>=` |
-| `less`, `less_equal` | `<`, `<=` |
-| `equal`, `not_equal` | `==`, `!=` |
+| `add`, `sub`, `mul`, `truediv`, `pow` | `.+`, `.-`, `.*`, `./`, `.^` |
+| `negative` | `-` (no dot needed) |
+| `floordiv`, `cdiv` | `fld.`, `cld.` |
+| `minimum`, `maximum` (element-wise) | `min.`, `max.` |
+| `atan2(y, x)` | `atan.(y, x)` |
+| `bitwise_and`, `bitwise_or`, `bitwise_xor`, `bitwise_not` | `.&`, `.\|`, `xor.`, `.~` |
+| `bitwise_lshift`, `bitwise_rshift` | `.<<`, `.>>` (`.>>>` shifts in zeros) |
+| `greater`, `greater_equal`, `less`, `less_equal` | `.>`, `.>=`, `.<`, `.<=` |
+| `equal`, `not_equal` | `.==`, `.!=` |
 
-### Atomics
-
-| cuTile Python | cuTile.jl |
-|---------------|-----------|
-| `atomic_cas` | `ct.atomic_cas` |
-| `atomic_xchg`, `atomic_add`, `atomic_max`, `atomic_min`, `atomic_and`, `atomic_or`, `atomic_xor` | same, `ct.`-prefixed |
-| — | `ct.atomic_store_*`, `ct.@atomic` |
+`*` is the one operator that means something different: element-wise multiply in
+Python (`@` is matrix multiply), matrix multiply in Julia.
 
 ### Utility and metaprogramming
 
@@ -353,7 +337,6 @@ dispatching on whether the source and target element widths match.
 |---------------|-----------|
 | `printf`, `print` | `print`, `println` |
 | `assert_` | `ct.@assert` |
-| `assume_divisible_by` | `ct.assume_divisible_by` |
 | `static_assert`, `static_eval`, `static_iter` | ordinary Julia code |
 
 Python needs explicit metaprogramming helpers because its kernels are traced. In
@@ -369,30 +352,11 @@ loop over a literal range unrolls, `@assert` on a constant folds away, and
 | `TiledView` | result of `eachtile` |
 | `Slice` | result of `@view` / `view` |
 | `RoundingMode` | `ct.Rounding` |
-| `PaddingMode` | `ct.PaddingMode` |
+| `MemoryScope` | `ct.MemScope` |
 
-### Not available in cuTile.jl
-
-`tune.exhaustive_search`, `tune.TuningResult`, `tune.Measurement`, `kernel.replace_hints`
-and `compiler_timeout` have no equivalent: there is no autotuning interface. Neither is
-there a JAX foreign-function interface (`jax.cutile_call`, `jax.OutputPlaceholder`,
-`jax.InputOutput`).
-
-### Not available in cuTile Python
-
-| cuTile.jl | Description |
-|-----------|-------------|
-| `eachtile` | Indexable device-side collection of tile windows, with controllable step |
-| `rand`, `randn`, `randexp`, `ct.DeviceRNG` | In-kernel random numbers ([Random Numbers](random.md)) |
-| `ct.RNG`, `ct.rand!` | Host-side array filling with the same generator |
-| `ct.Tiled`, `ct.@.` | Fused broadcast over `CuArray`s without writing a kernel ([Host-level Operations](host.md)) |
-| `map`, `reduce`, `mapreduce`, `accumulate` with closures | Arbitrary Julia functions, not a fixed operator set |
-| `ct.@atomic` | Julia-style atomic reduction syntax |
-| `repeat`, `dropdims`, `count`, `any`, `all` | Additional `Base` operations |
-
-### Coverage
-
-Neither implementation is a subset of the other, and both cover essentially the
-whole underlying instruction set: of the 100 operations in the Tile IR 13.3
-specification, cuTile.jl emits all but four, none of which has a Julia-level
-surface (stack allocation, module-level globals, and pointer-to-pointer casts).
+Enum members follow Julia's capitalization: `PaddingMode.NEG_ZERO` is
+`ct.PaddingMode.NegZero`, `MemoryOrder.ACQ_REL` is `ct.MemoryOrder.AcqRel`, and
+`RoundingMode.RN`/`RZ`/`RM`/`RP` are
+`ct.Rounding.NearestEven`/`Zero`/`NegInf`/`PosInf`. Julia exposes no equivalent
+of `RoundingMode.FULL` or `.RZI`, nor of `MemoryScope.NONE`, while weak ordering
+is expressed through `memory_order` instead.
