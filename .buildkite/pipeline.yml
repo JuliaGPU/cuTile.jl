@@ -47,6 +47,7 @@ steps:
         include("docs/make.jl")'
     agents:
       queue: "cuda"
+      gpu: "a100"
     if: |
       build.message =~ /\[only docs\]/ ||
       build.message !~ /\[only/ && !build.pull_request.draft &&
