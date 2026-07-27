@@ -7,8 +7,6 @@ steps:
               version: "{{matrix.julia}}"
           - JuliaCI/julia-test#v1:
               coverage: false
-        commands: |
-          unset LD_LIBRARY_PATH
         agents:
           queue: "cuda"
           gpu: "a100"
@@ -34,7 +32,6 @@ steps:
       - JuliaCI/julia#v1:
           version: "1.12"
     commands: |
-      unset LD_LIBRARY_PATH
       julia --project -e '
         println("--- :julia: Instantiating project")
         using Pkg
@@ -47,6 +44,7 @@ steps:
         include("docs/make.jl")'
     agents:
       queue: "cuda"
+      gpu: "a100"
     if: |
       build.message =~ /\[only docs\]/ ||
       build.message !~ /\[only/ && !build.pull_request.draft &&
