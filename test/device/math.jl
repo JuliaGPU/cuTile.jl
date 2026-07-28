@@ -68,6 +68,28 @@ end
     @test Array(c) == Array(a) .⊻ Array(b)
 end
 
+@testset "not_int on scalars" begin
+    # `!` on a Bool and `~` on an integer both lower through `not_int`, which
+    # needs a per-type all-ones constant — so unlike the binary ops above, its
+    # rules are type-directed and have to cover the scalar form explicitly.
+    function scalar_not_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1})
+        pid = ct.bid(1)
+        flag = pid > Int32(1)
+        value = a[pid]
+        ct.store(b, pid, (!flag ? Int32(1) : Int32(0)) + ~value)
+        return
+    end
+
+    n = 64
+    a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
+    b = CUDA.zeros(Int32, n)
+
+    @cuda backend=cuTile blocks=n scalar_not_kernel(a, b)
+
+    expected = (.~Array(a)) .+ Int32[i == 1 for i in 1:n]
+    @test Array(b) == expected
+end
+
 @testset "shli (shift left)" begin
     function shift_left_kernel(a::ct.TileArray{Int32,1}, b::ct.TileArray{Int32,1})
         pid = ct.bid(1)
