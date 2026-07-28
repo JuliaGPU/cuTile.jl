@@ -75,28 +75,28 @@ ct.is_restricted_float(::Type{<:Microfloats.Microfloat}) = true
 # Float32 too, but losslessly, and cuTile Python allows them as well.
 for op in (:+, :-, :*, :/, :\, :^)
     @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:Microfloats.Microfloat} =
-        ct.check_arithmetic(Base.$op, T)
+        ct.check_arithmetic(T)
 end
 Base.Experimental.@overlay ct.cuTileMethodTable Base.:^(a::T, b::Integer) where {T<:Microfloats.Microfloat} =
-    ct.check_arithmetic(Base.:^, T)
+    ct.check_arithmetic(T)
 for op in (:sin, :cos, :tan, :asin, :acos, :atan, :sinh, :cosh, :tanh, :asinh,
            :acosh, :atanh, :exp, :exp2, :exp10, :expm1, :log, :log2, :log10,
            :sqrt, :cbrt, :log1p, :modf, :mod2pi)
     @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T) where {T<:Microfloats.Microfloat} =
-        ct.check_arithmetic(Base.$op, T)
+        ct.check_arithmetic(T)
 end
 for op in (:atan, :hypot)
     @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:Microfloats.Microfloat} =
-        ct.check_arithmetic(Base.$op, T)
+        ct.check_arithmetic(T)
 end
 for op in (:frexp, :ldexp)
     @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::Int) where {T<:Microfloats.Microfloat} =
-        ct.check_arithmetic(Base.$op, T)
+        ct.check_arithmetic(T)
 end
 # Unary negation is an exact sign-bit flip upstream, so it would compile — but
 # the tile-level `-(::Tile{T})` is blocked (it lowers to `negf`), and `-x` and
 # `(-).(x)` disagreeing on the same tile is worse than rejecting both.
 Base.Experimental.@overlay ct.cuTileMethodTable Base.:(-)(a::T) where {T<:Microfloats.Microfloat} =
-    ct.check_arithmetic(Base.:(-), T)
+    ct.check_arithmetic(T)
 
 end

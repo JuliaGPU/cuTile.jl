@@ -90,45 +90,40 @@ conventions: the remainder takes the sign of the divisor.
 @inline divmod(x::Tile{T,S}, y::Tile{T,S}) where {T<:Integer, S} =
     (div.(x, y, RoundDown), mod.(x, y))
 
-# Kernel-side throws only report their message when it reconstructs to a
-# compile-time constant (see `throw_constant` in transform/throws.jl): a message
-# assembled at run time from `op` and `T` degrades to "ArgumentError was thrown".
-# Keep one constant message; the collected diagnostic's stacktrace already names
-# the operator and element type through `check_arithmetic`'s own frame.
-const RESTRICTED_ARITHMETIC_MESSAGE =
-    "arithmetic on a restricted float element type is not supported; " *
-    "perform an explicit cast instead, e.g. convert(Tile{Float32}, x)"
-
 """
-    check_arithmetic(op, T)
+    check_arithmetic(T)
 
-Reject `op` on a restricted float element type `T`. Restricted floats
-(`TFloat32`, and the FP8/FP4 types registered by the package extensions) are
-storage and tensor-core operand formats: the elementwise float intrinsics only
-accept f16/bf16/f32/f64, so an unguarded `op` produces an opaque tileiras
-verifier failure. Fail early with an actionable error instead.
+Reject arithmetic on a restricted float element type `T` (`TFloat32`, and the
+FP8/FP4 types registered by the package extensions): the elementwise float
+intrinsics only accept f16/bf16/f32/f64, so an unguarded operation produces an
+opaque tileiras verifier failure. Fail early with an actionable error instead;
+the collected diagnostic's stacktrace names the offending operator. The check
+folds away for arithmetic floats.
 
-`op` is unused beyond naming the offending operator in the error's stacktrace.
-The check folds away for arithmetic floats, so it must be called directly (not
-through `invokelatest`) to stay free on the common path.
+The message must stay a compile-time constant (see `throw_constant` in
+transform/throws.jl): one assembled at run time from `T` degrades to
+"ArgumentError was thrown".
 """
-function check_arithmetic(op, ::Type{T}) where {T}
+function check_arithmetic(::Type{T}) where {T}
     if is_restricted_float(T)
         throw(ArgumentError(RESTRICTED_ARITHMETIC_MESSAGE))
     end
     return nothing
 end
+const RESTRICTED_ARITHMETIC_MESSAGE =
+    "arithmetic on a restricted float element type is not supported; " *
+    "perform an explicit cast instead, e.g. convert(Tile{Float32}, x)"
 
 # direct operators (same shape required)
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} =
-    (check_arithmetic(+, T); Intrinsics.addf(a, b))
+    (check_arithmetic(T); Intrinsics.addf(a, b))
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.addi(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} =
-    (check_arithmetic(-, T); Intrinsics.subf(a, b))
+    (check_arithmetic(T); Intrinsics.subf(a, b))
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
 
 @inline Base.:(-)(a::Tile{T}) where {T <: AbstractFloat} =
-    (check_arithmetic(-, T); Intrinsics.negf(a))
+    (check_arithmetic(T); Intrinsics.negf(a))
 @inline Base.:(-)(a::Tile{T}) where {T <: Integer} = Intrinsics.negi(a)
 
 # All other tile arithmetic (*, -, /, ^, comparisons, ifelse, etc.) is handled
@@ -150,8 +145,8 @@ end
 
 # direct operators (tile * scalar, tile / scalar)
 @inline Base.:(*)(a::Tile{T}, b::Number) where {T <: AbstractFloat} =
-    (check_arithmetic(*, T); Intrinsics.mulf(a, broadcast_to(Tile(T(b)), size(a))))
+    (check_arithmetic(T); Intrinsics.mulf(a, broadcast_to(Tile(T(b)), size(a))))
 @inline Base.:(*)(a::Number, b::Tile{T}) where {T <: AbstractFloat} =
-    (check_arithmetic(*, T); Intrinsics.mulf(broadcast_to(Tile(T(a)), size(b)), b))
+    (check_arithmetic(T); Intrinsics.mulf(broadcast_to(Tile(T(a)), size(b)), b))
 @inline Base.:(/)(a::Tile{T}, b::Number) where {T <: AbstractFloat} =
-    (check_arithmetic(/, T); Intrinsics.divf(a, broadcast_to(Tile(T(b)), size(a))))
+    (check_arithmetic(T); Intrinsics.divf(a, broadcast_to(Tile(T(b)), size(a))))

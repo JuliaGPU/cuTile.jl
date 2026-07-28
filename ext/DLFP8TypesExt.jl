@@ -74,18 +74,18 @@ ct.is_restricted_float(::Type{<:DLFP8Types.FP8}) = true
 # inconsistent with the shadowed method. Host-side FP8 arithmetic is untouched.
 for op in (:+, :-, :*, :/, :\, :^)
     @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:DLFP8Types.FP8} =
-        ct.check_arithmetic(Base.$op, T)
+        ct.check_arithmetic(T)
 end
 for op in (:sin, :cos, :tan, :asin, :acos, :atan, :sinh, :cosh, :tanh, :asinh,
            :acosh, :atanh, :exp, :exp2, :exp10, :expm1, :log, :log2, :log10,
            :sqrt, :cbrt, :log1p)
     @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T) where {T<:DLFP8Types.FP8} =
-        ct.check_arithmetic(Base.$op, T)
+        ct.check_arithmetic(T)
 end
 # Unary negation is an exact sign-bit flip upstream, so it would compile — but
 # the tile-level `-(::Tile{T})` is blocked (it lowers to `negf`), and `-x` and
 # `(-).(x)` disagreeing on the same tile is worse than rejecting both.
 Base.Experimental.@overlay ct.cuTileMethodTable Base.:(-)(a::T) where {T<:DLFP8Types.FP8} =
-    ct.check_arithmetic(Base.:(-), T)
+    ct.check_arithmetic(T)
 
 end
