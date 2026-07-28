@@ -96,9 +96,68 @@ end
     (a, _broadcast_all(S, rest...)...)
 
 # Convert args to scalars, apply f, wrap result back into a Tile.
+#
+# Restricted floats (FP8/FP4/TFloat32) are gated here rather than by shadowing
+# the upstream scalar methods one by one: kernels can only ever obtain a
+# restricted-float scalar through this function (and `map`), so this is the one
+# choke point that covers every present and future upstream method. Only
+# conversion, selection and comparison are let through; everything else —
+# arithmetic, math functions, user lambdas — is rejected before dispatch, so no
+# upstream fallback implementation is ever consulted.
 @inline function _apply_broadcast(f, args...)
-    Intrinsics.from_scalar(f(map(_to_scalar, args)...), _result_shape(args...))
+    if _restricted_args(args...)
+        _restricted_broadcast(f, args...)
+    else
+        _broadcast_scalars(f, args...)
+    end
 end
+
+@inline _broadcast_scalars(f, args...) =
+    Intrinsics.from_scalar(f(map(_to_scalar, args)...), _result_shape(args...))
+
+# Does any Tile argument have a restricted float element type? Tuple peeling
+# rather than `any` with a closure: the argument tuple is heterogeneous (Tiles
+# and Refs). Folds to `false` at inference time for arithmetic element types,
+# keeping the common path branch-free. `is_restricted_float` is called directly,
+# not through `invokelatest`: kernel inference sees the extension methods, and
+# the fold depends on it.
+@inline _restricted_args() = false
+@inline _restricted_args(a::Tile, rest...) =
+    is_restricted_float(eltype(a)) || _restricted_args(rest...)
+@inline _restricted_args(a, rest...) = _restricted_args(rest...)
+
+const ComparisonOps = Union{typeof(<), typeof(<=), typeof(>), typeof(>=),
+                            typeof(==), typeof(!=), typeof(isless)}
+
+# Explicit element-type conversion (`Float32.(tile)`, `convert.(Float32, tile)`,
+# and `convert(Tile{T}, tile)` via `map`) is the sanctioned escape hatch: pass it
+# through to the constructor overlays, which lower it to a single `ftof`.
+@inline _restricted_broadcast(f::Union{Type,typeof(convert)}, args...) =
+    _broadcast_scalars(f, args...)
+
+# `ifelse` selects between unmodified values and lowers via `Core.ifelse`, so no
+# upstream restricted-float method is involved.
+@inline _restricted_broadcast(f::typeof(ifelse), args...) =
+    _broadcast_scalars(f, args...)
+
+# Comparisons stay available (as they do in cuTile Python), but Tile IR has no
+# native fp8/fp4 comparison: upcast the restricted operands to Float32 and
+# re-apply. That is exact and injective for every restricted format (NaN → NaN,
+# ±0 preserved), so the result matches the host's ordering. Going through the
+# upcast rather than the upstream scalar `<` also keeps their implementation
+# details (bit tricks, `isnan` guards) out of the kernel.
+@inline _restricted_broadcast(f::ComparisonOps, args...) =
+    _apply_broadcast(f, map(_upcast_restricted, args)...)
+
+# Everything else — arithmetic, math functions, user lambdas — is rejected.
+# Upstream implements scalar arithmetic on these formats as a Float32 round-trip,
+# which would otherwise compile into a silent ftof/op/ftof with an extra rounding
+# per operation, and no hint that a cast happened.
+@inline _restricted_broadcast(f, args...) = throw(ArgumentError(RESTRICTED_ARITHMETIC_MESSAGE))
+
+@inline _upcast_restricted(a::Tile{T}) where {T} =
+    is_restricted_float(T) ? convert(Tile{Float32}, a) : a
+@inline _upcast_restricted(a) = a
 
 # Reinterpret arguments as scalars for broadcast application: Tiles via
 # to_scalar, Refs via their contents. The Ref{Type{T}} method recovers the

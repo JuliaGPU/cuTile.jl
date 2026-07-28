@@ -2046,9 +2046,10 @@ end
                 return
             end, Tuple{AT, AT})
 
-        # The broadcast path never had a TFloat32 scalar method to begin with,
-        # so it keeps failing through Base's `no_op_err`.
-        @test_throws "+ not defined for" code_tiled(devnull,
+        # The broadcast path is gated before scalar dispatch, so it reports the
+        # same error as the direct operators (it used to fall through to Base's
+        # `no_op_err`, TFloat32 having no scalar `+` to begin with).
+        @test_throws "restricted float" code_tiled(devnull,
             (a, b, c) -> begin
                 pid = ct.bid(1)
                 ct.store(c, pid, ct.load(a, pid, (16,)) .+ ct.load(b, pid, (16,)))

@@ -100,9 +100,8 @@ opaque tileiras verifier failure. Fail early with an actionable error instead;
 the collected diagnostic's stacktrace names the offending operator. The check
 folds away for arithmetic floats.
 
-The message must stay a compile-time constant (see `throw_constant` in
-transform/throws.jl): one assembled at run time from `T` degrades to
-"ArgumentError was thrown".
+This guards the direct tile operators below; the broadcast and `map` paths are
+gated in `_apply_broadcast` (language/broadcast.jl), which shares the message.
 """
 function check_arithmetic(::Type{T}) where {T}
     if is_restricted_float(T)
@@ -110,8 +109,12 @@ function check_arithmetic(::Type{T}) where {T}
     end
     return nothing
 end
+
+# The message must stay a compile-time constant (see `throw_constant` in
+# transform/throws.jl): one assembled at run time from `T` degrades to
+# "ArgumentError was thrown". The stacktrace names the offending operation.
 const RESTRICTED_ARITHMETIC_MESSAGE =
-    "arithmetic on a restricted float element type is not supported; " *
+    "operations on a restricted float element type are not supported; " *
     "perform an explicit cast instead, e.g. convert(Tile{Float32}, x)"
 
 # direct operators (same shape required)

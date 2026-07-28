@@ -688,9 +688,10 @@ const ScalarFloat = Union{Float16, BFloat16, Float32, Float64, TFloat32}
 
 True if `T` is a restricted float: a storage / tensor-core operand format whose
 op coverage is intentionally limited (no general arithmetic, reductions or
-scans). Used by `reduce` / `scan` and by the tile arithmetic guards
-([`check_arithmetic`](@ref)) to reject unsupported element types early with a
-clear error rather than letting tileiras fail downstream.
+scans). Used by the broadcast / `map` gate, by `reduce` / `scan`, and by the
+tile arithmetic guards ([`check_arithmetic`](@ref)) to reject unsupported
+element types early with a clear error rather than letting tileiras fail
+downstream.
 
 `TFloat32` is built in; package extensions register their own types by adding
 methods (e.g. `DLFP8TypesExt` for `Float8_E4M3FN`). Mirrors cuTile Python's
