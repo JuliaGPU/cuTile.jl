@@ -164,3 +164,70 @@ end
 
     @test Array(out) == Float32.(isnan.(Array(a)))
 end
+
+# `x ^ n` with a runtime integer exponent. Used to fail codegen outright: the
+# overlay branched on the exponent, which is control flow once it is a tile.
+@testset "float ^ integer exponent" begin
+    function pow_int_kernel(a::ct.TileArray{Float32,1}, e::ct.TileArray{Int32,1},
+                            out::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ct.store(out, pid, ct.load(a, pid, (16,)) .^ ct.load(e, pid, (16,)))
+        return
+    end
+
+    # Negative bases, signed zero, infinities and NaN — Base defines all of
+    # these for an integer exponent, including `x^0 == 1` for any `x`.
+    bases = Float32[2, -2, 0.5, -0.5, 0, -0.0, 1, -1, 3, -3, Inf, -Inf, NaN, 7, -7, 1f10]
+    exps = Int32[0, 1, 2, 3, -1, -2, 5, -3, 0, 4, 0, 3, 0, 7, 7, 3]
+
+    a = CuArray(bases)
+    e = CuArray(exps)
+    out = CUDA.zeros(Float32, 16)
+
+    @cuda backend=cuTile pow_int_kernel(a, e, out)
+
+    got = Array(out)
+    want = bases .^ exps
+    @test all(got[i] === want[i] || (isnan(got[i]) && isnan(want[i])) ||
+              isapprox(got[i], want[i]; rtol=1f-5) for i in eachindex(got))
+end
+
+@testset "float ^ Int64 exponent" begin
+    # Int64 is Julia's default integer, so it is the common case here.
+    function pow_int64_kernel(a::ct.TileArray{Float32,1}, e::ct.TileArray{Int64,1},
+                              out::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ct.store(out, pid, ct.load(a, pid, (16,)) .^ ct.load(e, pid, (16,)))
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n) .+ 0.5f0
+    e = CuArray(rand(-4:8, n))
+    out = CUDA.zeros(Float32, n)
+
+    @cuda backend=cuTile blocks=cld(n, 16) pow_int64_kernel(a, e, out)
+
+    @test Array(out) ≈ Array(a) .^ Array(e) rtol=1f-4
+end
+
+# fpowi is cheaper than converting and calling pow, but drifts for large
+# exponents, so `^` does not use it; check the intrinsic itself still works.
+@testset "Intrinsics.powi" begin
+    function powi_kernel(a::ct.TileArray{Float32,1}, e::ct.TileArray{Int32,1},
+                         out::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ct.store(out, pid, ct.Intrinsics.powi(ct.load(a, pid, (16,)),
+                                              ct.load(e, pid, (16,))))
+        return
+    end
+
+    n = 256
+    a = CUDA.rand(Float32, n) .+ 0.5f0
+    e = CuArray(Int32.(rand(-4:8, n)))
+    out = CUDA.zeros(Float32, n)
+
+    @cuda backend=cuTile blocks=cld(n, 16) powi_kernel(a, e, out)
+
+    @test Array(out) ≈ Array(a) .^ Array(e) rtol=1f-3
+end

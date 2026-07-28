@@ -1979,6 +1979,47 @@ end
                 return
             end
         end
+
+        # A runtime integer exponent converts and uses `pow`, matching Base's
+        # accuracy; `fpowi` drifts too far for large exponents to stand in.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Int32,1,spec1d}}) do a, e
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                exponent = ct.load(e, pid, (16,))
+                @check "itof"
+                @check "pow"
+                @check_not "fpowi"
+                Base.donotdelete(tile .^ exponent)
+                return
+            end
+        end
+
+        # `fpowi` itself is available as an intrinsic (Tile IR v13.4+)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Int32,1,spec1d}}) do a, e
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                exponent = ct.load(e, pid, (16,))
+                @check "fpowi"
+                Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+                return
+            end
+        end
+
+        @test_throws "cuda_tile.fpowi requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}};
+            bytecode_version=v"13.3") do a, e
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            exponent = ct.load(e, pid, (16,))
+            Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+            return
+        end
     end
 
     @testset "scalar math functions" begin

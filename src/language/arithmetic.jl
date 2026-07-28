@@ -42,22 +42,21 @@ end
 # float-by-integer power. Base's `^(::Float, ::Int)` calls `power_by_squaring`,
 # whose `trailing_zeros` loop emits `cttz_int` (no Tile IR equivalent) for
 # runtime exponents and refuses to const-fold for literal exponents on 1.11.
-@overlay function Base.:^(x::Float32, y::Int64)
-    y == -1 && return inv(x)
-    y == 0 && return one(x)
-    y == 1 && return x
-    y == 2 && return x*x
-    y == 3 && return x*x*x
-    x ^ Float32(y)
-end
-@overlay function Base.:^(x::Float64, y::Int64)
-    y == -1 && return inv(x)
-    y == 0 && return one(x)
-    y == 1 && return x
-    y == 2 && return x*x
-    y == 3 && return x*x*x
-    x ^ Float64(y)
-end
+#
+# The old branch ladder here (`y == 2 && return x*x`, ...) only ever folded
+# away for a compile-time `y`; with a tile exponent the comparisons became
+# control flow and codegen failed outright. Convert and defer to `pow`, which
+# IEEE-defines a negative base raised to an integral exponent just as Julia's
+# `^(::Float, ::Integer)` does.
+#
+# Tile IR v13.4 grew `fpowi` for exactly this case, and cuTile Python routes
+# integer exponents to it, but it is not what Base does: `pow_body` widens to
+# Float64 for a Float32 base and uses compensated squaring for a Float64 one,
+# so `fpowi` drifts to ~20 ulp (f32) / ~100 ulp (f64) for large exponents where
+# `pow` stays under 1. `Intrinsics.powi` exposes it for callers that want the
+# cheaper op. Literal exponents never reach here — `x .^ 2` goes through
+# `Base.literal_pow`.
+@overlay Base.:^(x::T, y::ScalarInt) where {T <: ScalarFloat} = Intrinsics.pow(x, T(y))
 
 # integer != (Julia expands to not_int(===) — 2 ops; overlay gives 1 op)
 @overlay Base.:(!=)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, ComparisonPredicate.NotEqual, Signedness.Signed)
