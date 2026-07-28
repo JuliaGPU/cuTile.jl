@@ -109,6 +109,26 @@ AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
         return
     end, Tuple{AT, AT, AT, AT})
 
+# reduce and scan check `is_restricted_float` at codegen time, which must
+# resolve in the latest world to see the extension's method (`invokelatest`
+# in `emit_reduce!`/`emit_intrinsic!`; a frozen-world call would miss it and
+# fall through to an opaque failure in the reduce body).
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        s = mapreduce(identity, max, ta; dims=1, init=Float8_E4M3FN(0.0f0))
+        ct.store(b, pid, ct.broadcast_to(s, (16,)))
+        return
+    end, Tuple{AT, AT})
+
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, cumsum(ct.load(a, pid, (16,)); dims=1))
+        return
+    end, Tuple{AT, AT})
+
 # The overlays live in cuTile's method table, so host arithmetic is untouched.
 @test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
 @test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
