@@ -322,6 +322,20 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        # Insert a slice back into the tile it was extracted from (v13.4+)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 8))
+                @check "extract"
+                extracted = ct.extract(tile, (2, 2), (2, 4))
+                @check "insert"
+                ct.store(b, pid, ct.insert(tile, (1, 1), extracted))
+                return
+            end
+        end
+
         # Scalar tile getindex
         @test @filecheck begin
             @check_label "entry"
@@ -376,6 +390,32 @@ spec4d = ct.ArraySpec{4}(16, true)
             tile = ct.load(a, 1, (16,))
             ct.store(a, 1, tile; check_bounds=false)
             return
+        end
+
+        # On v13.4+ the promise is carried as an `inbounds` flag per dimension.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                @check "load_view{{.*}}inbounds = [true]"
+                tile = ct.load(a, pid, (16,); check_bounds=false)
+                @check "store_view{{.*}}inbounds = [true]"
+                ct.store(a, pid, tile; check_bounds=false)
+                return
+            end
+        end
+
+        # Bounds-checked accesses (the default) carry no `inbounds` flag.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                @check "load_view"
+                @check_not "inbounds"
+                tile = ct.load(a, pid, (16,))
+                ct.store(a, pid, tile)
+                return
+            end
         end
     end
 
