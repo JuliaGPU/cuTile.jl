@@ -60,6 +60,62 @@ end
 
 end
 
+# FP8 is a restricted float: a storage / tensor-core operand format without
+# general arithmetic. DLFP8Types' scalar fallbacks would otherwise let the
+# broadcast path compile into a silent ftof/op/ftof round-trip, and the direct
+# tile operators into an `addf` the tileiras verifier rejects.
+@testset "restricted arithmetic" begin
+
+AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
+
+# broadcast (upstream's Float32 round-trip fallback)
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b, c) -> begin
+        pid = ct.bid(1)
+        ct.store(c, pid, ct.load(a, pid, (16,)) .+ ct.load(b, pid, (16,)))
+        return
+    end, Tuple{AT, AT, AT})
+
+# direct tile operator (previously an MLIR verifier failure)
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b, c) -> begin
+        pid = ct.bid(1)
+        ct.store(c, pid, ct.load(a, pid, (16,)) + ct.load(b, pid, (16,)))
+        return
+    end, Tuple{AT, AT, AT})
+
+# unary math via broadcast
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, sqrt.(ct.load(a, pid, (16,))))
+        return
+    end, Tuple{AT, AT})
+
+# tile × scalar (the mixed-arithmetic guard)
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, ct.load(a, pid, (16,)) * 2.0f0)
+        return
+    end, Tuple{AT, AT})
+
+# broadcast `muladd` expands to the scalar `x * y + z`
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b, c, d) -> begin
+        pid = ct.bid(1)
+        ct.store(d, pid, muladd.(ct.load(a, pid, (16,)), ct.load(b, pid, (16,)),
+                                 ct.load(c, pid, (16,))))
+        return
+    end, Tuple{AT, AT, AT, AT})
+
+# The overlays live in cuTile's method table, so host arithmetic is untouched.
+@test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
+@test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
+@test sqrt(Float8_E4M3FN(4.0f0)) == Float8_E4M3FN(2.0f0)
+
+end
+
 # Execution kernels are plain top-level functions, each defined next to the
 # test that exercises it. Kernels parametric on accumulator dtype must stay at
 # top level — defining them inside a testset scope boxes them into closures.

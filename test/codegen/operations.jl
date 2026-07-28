@@ -2001,6 +2001,60 @@ end
             end
         end
     end
+
+    # TFloat32 is a restricted float: a tensor-core operand format the
+    # elementwise float ops do not accept. The direct tile operators used to
+    # emit `addf`/`subf`/`negf`/`mulf`/`divf` on it anyway, which failed the
+    # tileiras verifier; they now reject it up front.
+    @testset "restricted float arithmetic" begin
+        spec_tf32 = ct.ArraySpec{1}(16, true)
+        AT = ct.TileArray{ct.TFloat32,1,spec_tf32}
+
+        @test_throws "restricted float" code_tiled(devnull,
+            (a, b, c) -> begin
+                pid = ct.bid(1)
+                ct.store(c, pid, ct.load(a, pid, (16,)) + ct.load(b, pid, (16,)))
+                return
+            end, Tuple{AT, AT, AT})
+
+        @test_throws "restricted float" code_tiled(devnull,
+            (a, b, c) -> begin
+                pid = ct.bid(1)
+                ct.store(c, pid, ct.load(a, pid, (16,)) - ct.load(b, pid, (16,)))
+                return
+            end, Tuple{AT, AT, AT})
+
+        @test_throws "restricted float" code_tiled(devnull,
+            (a, b) -> begin
+                pid = ct.bid(1)
+                ct.store(b, pid, -ct.load(a, pid, (16,)))
+                return
+            end, Tuple{AT, AT})
+
+        # tile × scalar and tile / scalar take the mixed-arithmetic path
+        @test_throws "restricted float" code_tiled(devnull,
+            (a, b) -> begin
+                pid = ct.bid(1)
+                ct.store(b, pid, ct.load(a, pid, (16,)) * 2.0f0)
+                return
+            end, Tuple{AT, AT})
+
+        @test_throws "restricted float" code_tiled(devnull,
+            (a, b) -> begin
+                pid = ct.bid(1)
+                ct.store(b, pid, ct.load(a, pid, (16,)) / 2.0f0)
+                return
+            end, Tuple{AT, AT})
+
+        # The broadcast path never had a TFloat32 scalar method to begin with,
+        # so it keeps failing through Base's `no_op_err`.
+        @test_throws "+ not defined for" code_tiled(devnull,
+            (a, b, c) -> begin
+                pid = ct.bid(1)
+                ct.store(c, pid, ct.load(a, pid, (16,)) .+ ct.load(b, pid, (16,)))
+                return
+            end, Tuple{AT, AT, AT})
+    end
 end
 
 #=========================================================================
