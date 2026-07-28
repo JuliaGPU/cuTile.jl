@@ -1,6 +1,7 @@
 module DLFP8TypesExt
 
 import cuTile as ct
+import DLFP8Types
 
 using DLFP8Types: Float8_E4M3FN, Float8_E5M2
 
@@ -41,5 +42,36 @@ for F8 in FP8Types
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F8(x::$F8b) = ct.Intrinsics.ftof(x, $F8)
     end
 end
+
+# FP8 is a storage / tensor-core operand format, not an arithmetic type: the
+# Tile IR elementwise float ops only accept f16/bf16/f32/f64. Registered for
+# every `FP8` subtype, not just the two with a Tile IR dtype, so the blocking
+# overlays below cover exactly the methods DLFP8Types defines.
+ct.is_restricted_float(::Type{<:DLFP8Types.FP8}) = true
+
+# DLFP8Types implements scalar arithmetic as a Float32 round-trip
+# (`T(op(Float32(a), Float32(b)))`, src/DLFP8Types.jl). Combined with our `ftof`
+# constructor overlays above, a kernel-side `f8_tile .+ f8_tile` would compile
+# silently into ftof → addf → ftof: an implicit upcast with an extra rounding
+# per operation, and no hint that a cast happened. Shadow those methods so the
+# broadcast path reports the same error as the tile-level operators.
+#
+# Plain `@overlay`, not `@consistent_overlay`: throwing is deliberately
+# inconsistent with the shadowed method. Host-side FP8 arithmetic is untouched.
+for op in (:+, :-, :*, :/, :\, :^)
+    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:DLFP8Types.FP8} =
+        ct.check_arithmetic(Base.$op, T)
+end
+for op in (:sin, :cos, :tan, :asin, :acos, :atan, :sinh, :cosh, :tanh, :asinh,
+           :acosh, :atanh, :exp, :exp2, :exp10, :expm1, :log, :log2, :log10,
+           :sqrt, :cbrt, :log1p)
+    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T) where {T<:DLFP8Types.FP8} =
+        ct.check_arithmetic(Base.$op, T)
+end
+# Unary negation is an exact sign-bit flip upstream, so it would compile — but
+# the tile-level `-(::Tile{T})` is blocked (it lowers to `negf`), and `-x` and
+# `(-).(x)` disagreeing on the same tile is worse than rejecting both.
+Base.Experimental.@overlay ct.cuTileMethodTable Base.:(-)(a::T) where {T<:DLFP8Types.FP8} =
+    ct.check_arithmetic(Base.:(-), T)
 
 end

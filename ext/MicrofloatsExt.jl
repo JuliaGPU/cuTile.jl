@@ -56,4 +56,47 @@ for MF in MicrofloatTypes
     end
 end
 
+# Microfloats are storage / tensor-core operand formats, not arithmetic types:
+# the Tile IR elementwise float ops only accept f16/bf16/f32/f64. Registered for
+# every `Microfloat`, not just the four with a Tile IR dtype, so the blocking
+# overlays below cover exactly the methods Microfloats defines.
+ct.is_restricted_float(::Type{<:Microfloats.Microfloat}) = true
+
+# Microfloats implements scalar arithmetic as a Float32 round-trip
+# (`T(op(Float32(a), Float32(b)))`, src/ops.jl). Combined with our `ftof`
+# constructor overlays above, a kernel-side `f8_tile .+ f8_tile` would compile
+# silently into ftof → addf → ftof: an implicit upcast with an extra rounding
+# per operation, and no hint that a cast happened. Shadow those methods so the
+# broadcast path reports the same error as the tile-level operators.
+#
+# Plain `@overlay`, not `@consistent_overlay`: throwing is deliberately
+# inconsistent with the shadowed method. Host-side microfloat arithmetic is
+# untouched. Comparisons (`< <= == isless`) are left alone — they upcast to
+# Float32 too, but losslessly, and cuTile Python allows them as well.
+for op in (:+, :-, :*, :/, :\, :^)
+    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:Microfloats.Microfloat} =
+        ct.check_arithmetic(Base.$op, T)
+end
+Base.Experimental.@overlay ct.cuTileMethodTable Base.:^(a::T, b::Integer) where {T<:Microfloats.Microfloat} =
+    ct.check_arithmetic(Base.:^, T)
+for op in (:sin, :cos, :tan, :asin, :acos, :atan, :sinh, :cosh, :tanh, :asinh,
+           :acosh, :atanh, :exp, :exp2, :exp10, :expm1, :log, :log2, :log10,
+           :sqrt, :cbrt, :log1p, :modf, :mod2pi)
+    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T) where {T<:Microfloats.Microfloat} =
+        ct.check_arithmetic(Base.$op, T)
+end
+for op in (:atan, :hypot)
+    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:Microfloats.Microfloat} =
+        ct.check_arithmetic(Base.$op, T)
+end
+for op in (:frexp, :ldexp)
+    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::Int) where {T<:Microfloats.Microfloat} =
+        ct.check_arithmetic(Base.$op, T)
+end
+# Unary negation is an exact sign-bit flip upstream, so it would compile — but
+# the tile-level `-(::Tile{T})` is blocked (it lowers to `negf`), and `-x` and
+# `(-).(x)` disagreeing on the same tile is worse than rejecting both.
+Base.Experimental.@overlay ct.cuTileMethodTable Base.:(-)(a::T) where {T<:Microfloats.Microfloat} =
+    ct.check_arithmetic(Base.:(-), T)
+
 end
