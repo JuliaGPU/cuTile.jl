@@ -278,8 +278,9 @@ end
             return
         end, Tuple{AT, AT})
 
-    # The overlays dispatch on `Microfloat`, so every variant is covered, not
-    # just the two FP8 types DLFP8Types also provides.
+    # The gate is trait-based (`is_restricted_float`, registered for the whole
+    # `Microfloat` supertype), so every variant is covered with no per-type
+    # code — not just the two FP8 types DLFP8Types also provides.
     F4 = ct.TileArray{Float4_E2M1FN,1,spec1d}
     @test_throws "restricted float" code_tiled(devnull,
         (a, b, c) -> begin
@@ -288,9 +289,10 @@ end
             return
         end, Tuple{F4, F4, F4}; bytecode_version=v"13.3")
 
-    # Comparisons stay allowed (cuTile Python allows them too): upstream
-    # implements them as a Float32 upcast, which is lossless without a result
-    # to round, so they lower to `ftof` + `cmpf`.
+    # Comparisons stay allowed: the gate upcasts the operands to Float32, which
+    # is lossless without a result to round, so they lower to `ftof` + `cmpf`.
+    # cuTile Python's frontend accepts them too, but has no such upcast and dies
+    # in tileiras — Tile IR cannot compare fp8 natively.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}) do a, b, c
@@ -304,7 +306,7 @@ end
         end
     end
 
-    # The overlays live in cuTile's method table, so host arithmetic is untouched.
+    # The gate only applies inside kernels, so host arithmetic is untouched.
     @test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
     @test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
     @test sqrt(Float8_E4M3FN(4.0f0)) == Float8_E4M3FN(2.0f0)

@@ -43,49 +43,13 @@ for F8 in FP8Types
     end
 end
 
-# DLFP8Types implements comparisons at the bit level (`bitcast`, `_fpint`, with
-# `isnan`/`iszero` guards), which does not compile in kernels: the guards
-# bitcast broadcast scalars, tripping a tile shape mismatch in codegen. Route
-# them through an exact Float32 upcast instead, like Microfloats' upstream
-# definitions. The results are identical: f8 → f32 conversion is exact and
-# injective (NaNs map to NaN), so IEEE comparison on the upcast values matches
-# the bit-level ordering, including the NaN and ±0 cases. `<=` has no upstream
-# method (Base's `Real` fallback composes it from `<` and `==`); the direct
-# overlay compares once instead of twice.
-for op in (:(<), :(<=), :(==), :isless)
-    @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:DLFP8Types.FP8} =
-        Base.$op(Float32(a), Float32(b))
-end
-
 # FP8 is a storage / tensor-core operand format, not an arithmetic type: the
 # Tile IR elementwise float ops only accept f16/bf16/f32/f64. Registered for
-# every `FP8` subtype, not just the two with a Tile IR dtype, so the blocking
-# overlays below cover exactly the methods DLFP8Types defines.
+# every `FP8` subtype, not just the two with a Tile IR dtype, so that the
+# broadcast/map gate and the tile-level guards recognize them all. The gate
+# rejects the operations up front, so DLFP8Types' own scalar implementations —
+# the Float32 round-trip arithmetic and the bit-level comparisons — are never
+# consulted in a kernel; host-side FP8 stays untouched.
 ct.is_restricted_float(::Type{<:DLFP8Types.FP8}) = true
-
-# DLFP8Types implements scalar arithmetic as a Float32 round-trip
-# (`T(op(Float32(a), Float32(b)))`, src/DLFP8Types.jl). Combined with our `ftof`
-# constructor overlays above, a kernel-side `f8_tile .+ f8_tile` would compile
-# silently into ftof → addf → ftof: an implicit upcast with an extra rounding
-# per operation, and no hint that a cast happened. Shadow those methods so the
-# broadcast path reports the same error as the tile-level operators.
-#
-# Plain `@overlay`, not `@consistent_overlay`: throwing is deliberately
-# inconsistent with the shadowed method. Host-side FP8 arithmetic is untouched.
-for op in (:+, :-, :*, :/, :\, :^)
-    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:DLFP8Types.FP8} =
-        ct.check_arithmetic(T)
-end
-for op in (:sin, :cos, :tan, :asin, :acos, :atan, :sinh, :cosh, :tanh, :asinh,
-           :acosh, :atanh, :exp, :exp2, :exp10, :expm1, :log, :log2, :log10,
-           :sqrt, :cbrt, :log1p)
-    @eval Base.Experimental.@overlay ct.cuTileMethodTable Base.$op(a::T) where {T<:DLFP8Types.FP8} =
-        ct.check_arithmetic(T)
-end
-# Unary negation is an exact sign-bit flip upstream, so it would compile — but
-# the tile-level `-(::Tile{T})` is blocked (it lowers to `negf`), and `-x` and
-# `(-).(x)` disagreeing on the same tile is worse than rejecting both.
-Base.Experimental.@overlay ct.cuTileMethodTable Base.:(-)(a::T) where {T<:DLFP8Types.FP8} =
-    ct.check_arithmetic(T)
 
 end

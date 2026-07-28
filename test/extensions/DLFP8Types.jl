@@ -131,8 +131,8 @@ AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
 
 # Comparisons stay allowed (cuTile Python allows them too). DLFP8Types
 # implements them at the bit level, which does not compile in kernels; the
-# extension overlays them as a lossless Float32 upcast, so they lower to
-# `ftof` + `cmpf` like Microfloats' upstream definitions.
+# broadcast gate never consults that, upcasting the operands to Float32
+# instead, so they lower to `ftof` + `cmpf`.
 @test @filecheck begin
     @check_label "entry"
     code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}) do a, b, c
@@ -146,9 +146,8 @@ AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
     end
 end
 
-# The remaining comparison overlays, compile-only: `<=` additionally covers
-# Base's `Real` fallback being shadowed by the direct overlay. The function
-# barrier keeps the kernel closure's captured `f` a concrete singleton.
+# The remaining comparisons, compile-only. The function barrier keeps the
+# kernel closure's captured `f` a concrete singleton.
 function compiles_cmp(f)
     isnothing(code_tiled(devnull,
         (a, b, c) -> begin
@@ -163,11 +162,11 @@ end
 @test compiles_cmp(==)
 # `isless` forwards to `isless(::Float32, ::Float32)`, whose Base definition
 # does not compile under broadcast for any float tile yet (its `isnan` guard
-# trips a scalar-vs-tile shape mismatch in cmpf). The overlay is still what
-# makes FP8 reach that point; this flips when the underlying issue is fixed.
+# trips a scalar-vs-tile shape mismatch in cmpf). The gate's upcast is what
+# gets FP8 to exactly that point; this flips when the underlying issue is fixed.
 @test_broken compiles_cmp(isless)
 
-# The overlays live in cuTile's method table, so host arithmetic is untouched.
+# The gate only applies inside kernels, so host arithmetic is untouched.
 @test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
 @test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
 @test sqrt(Float8_E4M3FN(4.0f0)) == Float8_E4M3FN(2.0f0)
