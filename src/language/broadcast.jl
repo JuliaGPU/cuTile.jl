@@ -43,8 +43,9 @@ Base.Broadcast.broadcastable(t::Tile) = t
 # This handles all element-wise operations: scalar @overlay methods provide
 # the implementation for overlaid ops, while Julia's native scalar functions
 # (compiled to Core intrinsics) handle the rest. Mixed-type and type-changing
-# operations (comparisons, ifelse) are supported by the mixed-type map methods
-# in operations.jl.
+# operations (comparisons, ifelse) need nothing extra — `f` decides the result
+# element type. `Base.map` (operations.jl) enters the same path at
+# `_apply_broadcast`, its tiles already sharing a shape.
 @inline function Base.copy(bc::Broadcasted{TileStyle})
     args = _materialize_args(bc.args)
     promoted = _promote_to_tiles(args...)
