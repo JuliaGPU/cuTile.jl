@@ -43,6 +43,20 @@ for F8 in FP8Types
     end
 end
 
+# DLFP8Types implements comparisons at the bit level (`bitcast`, `_fpint`, with
+# `isnan`/`iszero` guards), which does not compile in kernels: the guards
+# bitcast broadcast scalars, tripping a tile shape mismatch in codegen. Route
+# them through an exact Float32 upcast instead, like Microfloats' upstream
+# definitions. The results are identical: f8 → f32 conversion is exact and
+# injective (NaNs map to NaN), so IEEE comparison on the upcast values matches
+# the bit-level ordering, including the NaN and ±0 cases. `<=` has no upstream
+# method (Base's `Real` fallback composes it from `<` and `==`); the direct
+# overlay compares once instead of twice.
+for op in (:(<), :(<=), :(==), :isless)
+    @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.$op(a::T, b::T) where {T<:DLFP8Types.FP8} =
+        Base.$op(Float32(a), Float32(b))
+end
+
 # FP8 is a storage / tensor-core operand format, not an arithmetic type: the
 # Tile IR elementwise float ops only accept f16/bf16/f32/f64. Registered for
 # every `FP8` subtype, not just the two with a Tile IR dtype, so the blocking

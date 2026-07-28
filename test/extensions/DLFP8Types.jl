@@ -129,10 +129,49 @@ AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
         return
     end, Tuple{AT, AT})
 
+# Comparisons stay allowed (cuTile Python allows them too). DLFP8Types
+# implements them at the bit level, which does not compile in kernels; the
+# extension overlays them as a lossless Float32 upcast, so they lower to
+# `ftof` + `cmpf` like Microfloats' upstream definitions.
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}) do a, b, c
+        ta = ct.load(a, ct.bid(1), (16,))
+        tb = ct.load(b, ct.bid(1), (16,))
+        @check "ftof"
+        @check "ftof"
+        @check "cmpf"
+        ct.store(c, ct.bid(1), ifelse.(ta .< tb, Int32(1), Int32(0)))
+        return
+    end
+end
+
+# The remaining comparison overlays, compile-only: `<=` additionally covers
+# Base's `Real` fallback being shadowed by the direct overlay. The function
+# barrier keeps the kernel closure's captured `f` a concrete singleton.
+function compiles_cmp(f)
+    isnothing(code_tiled(devnull,
+        (a, b, c) -> begin
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            ct.store(c, pid, ifelse.(f.(ta, tb), Int32(1), Int32(0)))
+            return
+        end, Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}))
+end
+@test compiles_cmp(<=)
+@test compiles_cmp(==)
+# `isless` forwards to `isless(::Float32, ::Float32)`, whose Base definition
+# does not compile under broadcast for any float tile yet (its `isnan` guard
+# trips a scalar-vs-tile shape mismatch in cmpf). The overlay is still what
+# makes FP8 reach that point; this flips when the underlying issue is fixed.
+@test_broken compiles_cmp(isless)
+
 # The overlays live in cuTile's method table, so host arithmetic is untouched.
 @test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
 @test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
 @test sqrt(Float8_E4M3FN(4.0f0)) == Float8_E4M3FN(2.0f0)
+@test Float8_E4M3FN(1.0f0) < Float8_E4M3FN(2.0f0)
 
 end
 
