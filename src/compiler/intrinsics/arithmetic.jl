@@ -2,20 +2,26 @@
 
 ## Helpers
 
+# Broadcast `tv` to `target_shape`, keeping its own element type.
+function broadcast_to_shape!(cb, tt, tv::CGVal, target_shape)
+    elem_type = eltype(CC.widenconst(tv.jltype))
+    dtype = lookup_dtype!(tt, elem_type)
+    bv = broadcast_tile_to_shape!(cb, tt, tv, target_shape, dtype)
+    jltype = similar_type(CC.widenconst(tv.jltype), elem_type, Tuple(target_shape))
+    CGVal(bv, tile_type!(tt, dtype, target_shape), jltype, target_shape,
+          nothing, tv.constant, nothing)
+end
+
 # Broadcast the smaller-shaped operand to match the larger when shapes differ.
 # This handles 0D constants meeting shaped tiles after constant folding.
-function _broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
+# Operands may differ in element type (`fpowi` takes an integer exponent), so
+# each side is broadcast under its own dtype.
+function broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
     lhs.shape == rhs.shape && return (lhs, rhs)
-    elem_type = eltype(CC.widenconst(lhs.jltype))
-    dtype = lookup_dtype!(tt, elem_type)
     if length(lhs.shape) < length(rhs.shape)
-        bv = broadcast_tile_to_shape!(cb, tt, lhs, rhs.shape, dtype)
-        lhs = CGVal(bv, tile_type!(tt, dtype, rhs.shape), rhs.jltype, rhs.shape,
-                    nothing, lhs.constant, nothing)
+        lhs = broadcast_to_shape!(cb, tt, lhs, rhs.shape)
     else
-        bv = broadcast_tile_to_shape!(cb, tt, rhs, lhs.shape, dtype)
-        rhs = CGVal(bv, tile_type!(tt, dtype, lhs.shape), lhs.jltype, lhs.shape,
-                    nothing, rhs.constant, nothing)
+        rhs = broadcast_to_shape!(cb, tt, rhs, lhs.shape)
     end
     return (lhs, rhs)
 end
@@ -79,7 +85,7 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
 
     # Broadcast smaller-shaped operand to match the larger (e.g., 0D constant
     # meeting a shaped tile after constant folding removes reshape/broadcast)
-    lhs_tv, rhs_tv = _broadcast_match_shapes!(cb, tt, lhs_tv, rhs_tv)
+    lhs_tv, rhs_tv = broadcast_match_shapes!(cb, tt, lhs_tv, rhs_tv)
     result_shape = lhs_tv.shape
     result_jltype = lhs_tv.jltype
 
@@ -191,7 +197,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     signedness = @something get_constant(ctx, args[4]) throw(IRError("cmpi: requires compile-time signedness"))
 
     # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
-    lhs, rhs = _broadcast_match_shapes!(cb, tt, lhs, rhs)
+    lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
 
     result_shape = lhs.shape
 
@@ -475,7 +481,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     end
 
     # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
-    lhs, rhs = _broadcast_match_shapes!(cb, tt, lhs, rhs)
+    lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
 
     result_shape = lhs.shape
 
