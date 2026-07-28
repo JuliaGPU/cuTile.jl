@@ -33,8 +33,8 @@ reductions or scans.
 Operations that need those reject a numeric float up front with an error, rather
 than letting it fail deeper down in `tileiras`. To compute with such values
 element-wise, convert to an arithmetic float first. For example, `x .+ y` on two
-`Float8_E4M3FN` tiles fails at kernel compile time with *"arithmetic on a
-restricted float element type is not supported"*; casting first is what makes
+`Float8_E4M3FN` tiles fails at kernel compile time with *"operations on a
+restricted float element type are not supported"*; casting first is what makes
 the intermediate precision explicit:
 
 ```julia
@@ -42,8 +42,14 @@ f32(t) = convert(ct.Tile{Float32}, t)
 sum = f32(x) .+ f32(y)
 ```
 
-Comparisons on the FP8 and FP4 types are the exception, and stay available:
-they upcast losslessly, having no result to round.
+Comparisons and `ifelse` selection are the exceptions, and stay available:
+comparisons upcast losslessly, having no result to round, and selection leaves
+the values themselves alone.
+
+The rejection is per operation, not per function: applying a custom function
+element-wise (`map`, or broadcasting a lambda) over a numeric-float tile is
+rejected as well, even when every step inside it is a cast. Convert the tile
+with `convert(ct.Tile{T}, tile)` or `T.(tile)` instead.
 
 This is why a `Float32` matmul that wants tensor cores converts its *operands*
 to `TFloat32` while leaving the accumulator `Float32`: the operands only ever
