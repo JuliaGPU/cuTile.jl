@@ -322,7 +322,6 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # Insert a slice back into the tile it was extracted from (v13.4+)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
@@ -392,7 +391,6 @@ spec4d = ct.ArraySpec{4}(16, true)
             return
         end
 
-        # On v13.4+ the promise is carried as an `inbounds` flag per dimension.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -405,7 +403,6 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # Bounds-checked accesses (the default) carry no `inbounds` flag.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -1996,7 +1993,6 @@ end
             end
         end
 
-        # `fpowi` itself is available as an intrinsic (Tile IR v13.4+)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},

@@ -189,7 +189,6 @@ end
 end
 
 @testset "float ^ Int64 exponent" begin
-    # Int64 is Julia's default integer, so it is the common case here.
     function pow_int64_kernel(a::ct.TileArray{Float32,1}, e::ct.TileArray{Int64,1},
                               out::ct.TileArray{Float32,1})
         pid = ct.bid(1)

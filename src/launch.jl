@@ -170,14 +170,8 @@ end
 """
     tileir_disassembler(; debuginfo=false) -> Union{Cmd, Nothing}
 
-Command that disassembles a Tile IR bytecode file to MLIR, or `nothing` when
-no usable disassembler is available.
-
-A disassembler can only read bytecode up to its own version, so it has to come
-from the same toolkit as `tileiras`. With the `tileiras` preference set we use
-the `tileirdisasm` sitting next to it; CUDA 13.4 introduced that binary to
-replace `cuda-tile-translate`, which is what `CUDA_Tile_jll` still ships and
-what we fall back to without an override.
+Return a disassembler matching the selected `tileiras`. An override requires
+`tileirdisasm` in the same directory.
 """
 function tileir_disassembler(; debuginfo::Bool=false)
     if tileiras_override !== nothing

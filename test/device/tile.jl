@@ -824,13 +824,11 @@ end
     end
 end
 
-# `insert` is the inverse of `extract` and needs Tile IR v13.4+ (opcode 118).
 @testset "insert" begin
     @testset "insert replaces one slice" begin
         function insert_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             tile = ct.load(x, (bid, 1), (8, 8))
-            # Scale the bottom-right quadrant of the 2x2 slice grid in place
             quadrant = ct.extract(tile, (2, 2), (4, 4))
             ct.store(y, (bid, 1), ct.insert(tile, (2, 2), quadrant .* 10f0))
             return
@@ -868,8 +866,6 @@ end
     end
 
     @testset "insert of a scalar writes a single element" begin
-        # A scalar value becomes a 0-d tile, so the slice grid is per-element
-        # and `index` addresses one element rather than a subtile.
         function insert_scalar_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             tile = ct.load(x, (bid, 1), (8, 8))

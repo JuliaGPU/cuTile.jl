@@ -75,6 +75,7 @@ Everything not listed here works at v13.1.
 |---------|-------|
 | `ct.insert` | Replace a non-overlapping sub-tile |
 | `check_bounds=false` | On `ct.load` and `ct.store` only; on `ct.gather`/`ct.scatter` it merely skips the bounds mask |
+| `ct.Intrinsics.powi` | Integer exponents through `cuda_tile.fpowi` |
 
 
 ## Features by architecture

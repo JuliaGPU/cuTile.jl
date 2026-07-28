@@ -265,8 +265,6 @@ end
     @test Array(b) ≈ Array(a)
 end
 
-# `check_bounds=false` promises the whole tile is in bounds, and lowers to the
-# per-dimension `inbounds` flag on load_view/store_view (Tile IR v13.4+).
 @testset "load/store with check_bounds=false" begin
     function vadd_unchecked(a::ct.TileArray{Float32,1},
                             b::ct.TileArray{Float32,1},
@@ -278,7 +276,6 @@ end
         return nothing
     end
 
-    # Exactly divisible by the tile shape, so no access is ever out of bounds
     n = 1024
     a = CUDA.rand(Float32, n)
     b = CUDA.rand(Float32, n)
