@@ -166,6 +166,53 @@ end
 # gets FP8 to exactly that point; this flips when the underlying issue is fixed.
 @test_broken compiles_cmp(isless)
 
+# Explicit conversion is the sanctioned escape hatch, in both directions: it
+# passes through the gate to the constructor overlays and lowers to one `ftof`.
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{AT, ct.TileArray{Float32,1,spec1d}}) do a, b
+        pid = ct.bid(1)
+        @check "ftof"
+        @check_not "ftof"
+        ct.store(b, pid, Float32.(ct.load(a, pid, (16,))))
+        return
+    end
+end
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, AT}) do a, b
+        pid = ct.bid(1)
+        @check "ftof"
+        @check_not "ftof"
+        ct.store(b, pid, Float8_E4M3FN.(ct.load(a, pid, (16,))))
+        return
+    end
+end
+
+# `ifelse` selects between unmodified values, so it stays available too and
+# lowers to a plain `select` — no conversion in sight.
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}, AT}) do a, b, m, c
+        pid = ct.bid(1)
+        mask = ct.load(m, pid, (16,)) .> Int32(0)
+        @check "select"
+        @check_not "ftof"
+        ct.store(c, pid, ifelse.(mask, ct.load(a, pid, (16,)), ct.load(b, pid, (16,))))
+        return
+    end
+end
+
+# Element-wise application of anything else is rejected, even a lambda whose
+# body is only a cast: cuTile Python has no per-element operations on restricted
+# types either. `convert(Tile{Float32}, tile)` is the supported spelling.
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, map(x -> Float32(x), ct.load(a, pid, (16,))))
+        return
+    end, Tuple{AT, ct.TileArray{Float32,1,spec1d}})
+
 # The gate only applies inside kernels, so host arithmetic is untouched.
 @test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
 @test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
