@@ -165,8 +165,6 @@ end
     @test Array(out) == Float32.(isnan.(Array(a)))
 end
 
-# `x ^ n` with a runtime integer exponent. Used to fail codegen outright: the
-# overlay branched on the exponent, which is control flow once it is a tile.
 @testset "float ^ integer exponent" begin
     function pow_int_kernel(a::ct.TileArray{Float32,1}, e::ct.TileArray{Int32,1},
                             out::ct.TileArray{Float32,1})
@@ -175,10 +173,8 @@ end
         return
     end
 
-    # Negative bases, signed zero, infinities and NaN — Base defines all of
-    # these for an integer exponent, including `x^0 == 1` for any `x`.
-    bases = Float32[2, -2, 0.5, -0.5, 0, -0.0, 1, -1, 3, -3, Inf, -Inf, NaN, 7, -7, 1f10]
-    exps = Int32[0, 1, 2, 3, -1, -2, 5, -3, 0, 4, 0, 3, 0, 7, 7, 3]
+    bases = Float32[2, -2, 0.5, -0.5, 0, -0.0, 1, -1, 3, -3, Inf, -Inf, NaN, 7, -7, -1]
+    exps = Int32[0, 1, 2, 3, -1, -2, 5, -3, 0, 4, 0, 3, 0, 7, 7, 16_777_217]
 
     a = CuArray(bases)
     e = CuArray(exps)
@@ -211,8 +207,6 @@ end
     @test Array(out) ≈ Array(a) .^ Array(e) rtol=1f-4
 end
 
-# fpowi is cheaper than converting and calling pow, but drifts for large
-# exponents, so `^` does not use it; check the intrinsic itself still works.
 @testset "Intrinsics.powi" begin
     function powi_kernel(a::ct.TileArray{Float32,1}, e::ct.TileArray{Int32,1},
                          out::ct.TileArray{Float32,1})

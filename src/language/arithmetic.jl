@@ -39,24 +39,11 @@ end
 # float power (expands to dozens of intrinsics in Julia — complex)
 @overlay Base.:^(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.pow(x, y)
 
-# float-by-integer power. Base's `^(::Float, ::Int)` calls `power_by_squaring`,
-# whose `trailing_zeros` loop emits `cttz_int` (no Tile IR equivalent) for
-# runtime exponents and refuses to const-fold for literal exponents on 1.11.
-#
-# The old branch ladder here (`y == 2 && return x*x`, ...) only ever folded
-# away for a compile-time `y`; with a tile exponent the comparisons became
-# control flow and codegen failed outright. Convert and defer to `pow`, which
-# IEEE-defines a negative base raised to an integral exponent just as Julia's
-# `^(::Float, ::Integer)` does.
-#
-# Tile IR v13.4 grew `fpowi` for exactly this case, and cuTile Python routes
-# integer exponents to it, but it is not what Base does: `pow_body` widens to
-# Float64 for a Float32 base and uses compensated squaring for a Float64 one,
-# so `fpowi` drifts to ~20 ulp (f32) / ~100 ulp (f64) for large exponents where
-# `pow` stays under 1. `Intrinsics.powi` exposes it for callers that want the
-# cheaper op. Literal exponents never reach here — `x .^ 2` goes through
-# `Base.literal_pow`.
-@overlay Base.:^(x::T, y::ScalarInt) where {T <: ScalarFloat} = Intrinsics.pow(x, T(y))
+# Use `pow` for accuracy and restore the sign from the integer exponent.
+@overlay function Base.:^(x::T, y::ScalarInt) where {T <: ScalarFloat}
+    magnitude = Intrinsics.pow(abs(x), T(y))
+    ifelse(signbit(x) & isodd(y), -magnitude, magnitude)
+end
 
 # integer != (Julia expands to not_int(===) — 2 ops; overlay gives 1 op)
 @overlay Base.:(!=)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, ComparisonPredicate.NotEqual, Signedness.Signed)
