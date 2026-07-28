@@ -167,6 +167,28 @@ function tileiras_cmd(args...)
     return addenv(cmd, "CUDA_ROOT" => tileiras_root())
 end
 
+"""
+    tileir_disassembler(; debuginfo=false) -> Union{Cmd, Nothing}
+
+Command that disassembles a Tile IR bytecode file to MLIR, or `nothing` when
+no usable disassembler is available.
+
+A disassembler can only read bytecode up to its own version, so it has to come
+from the same toolkit as `tileiras`. With the `tileiras` preference set we use
+the `tileirdisasm` sitting next to it; CUDA 13.4 introduced that binary to
+replace `cuda-tile-translate`, which is what `CUDA_Tile_jll` still ships and
+what we fall back to without an override.
+"""
+function tileir_disassembler(; debuginfo::Bool=false)
+    if tileiras_override !== nothing
+        disasm = joinpath(dirname(tileiras_override), "tileirdisasm")
+        isfile(disasm) || return nothing
+        return debuginfo ? `$disasm --print-debug-info` : `$disasm`
+    end
+    translate = `$(CUDA_Tile_jll.cuda_tile_translate()) --cudatilebc-to-mlir`
+    return debuginfo ? `$translate --mlir-print-debuginfo` : translate
+end
+
 function run_and_collect(cmd)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
