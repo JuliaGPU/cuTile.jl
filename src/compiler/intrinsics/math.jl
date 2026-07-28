@@ -224,15 +224,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
 end
 
 """
-    Intrinsics.powi(x::Tile{T}, n::Tile{<:Integer}) -> Tile{T}  where {T<:AbstractFloat}
+    Intrinsics.powi(x::Tile{T}, n::Tile{I}) -> Tile{T}
+        where {T<:AbstractFloat, I<:Union{Bool,Int8,UInt8,Int16,UInt16,Int32}}
 
 Element-wise exponentiation by an integer power (`x^n`); lowers to
 `cuda_tile.fpowi` (Tile IR v13.4+).
 
-Cheaper than [`Intrinsics.pow`](@ref), which needs the exponent converted to
-floating point, but computed by repeated squaring at the working precision:
-expect it to drift for large `|n|` where `pow` stays within an ulp. `^` uses
-`pow` for that reason, so reach for this only when the speed is worth it.
+`UInt8` and `UInt16` exponents are widened to a signed type. Wider integer
+types are not supported by Tile IR.
 
 Also invocable with scalars, promoted to 0-D tiles before codegen.
 Mismatched-shape operands are broadcast to a common shape.
@@ -247,7 +246,18 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.powi), args)
     exponent = emit_value!(ctx, args[2])
     (base === nothing || exponent === nothing) && return missing
 
-    # The operands differ in element type, so only the shapes are matched up.
+    exponent_type = eltype(CC.widenconst(exponent.jltype))
+    if exponent_type === UInt8 || exponent_type === UInt16
+        target_type = exponent_type === UInt8 ? Int16 : Int32
+        result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), exponent.shape)
+        result_v = encode_ExtIOp!(cb, result_type_id, exponent.v;
+                                 signedness=Signedness.Unsigned)
+        jltype = similar_type(CC.widenconst(exponent.jltype), target_type)
+        exponent = CGVal(result_v, result_type_id, jltype, exponent.shape)
+    elseif !(exponent_type <: Union{Bool,Int8,Int16,Int32})
+        throw(IRError("cuda_tile.fpowi does not support $exponent_type exponents"))
+    end
+
     base, exponent = broadcast_match_shapes!(cb, tt, base, exponent)
 
     elem_type = eltype(CC.widenconst(base.jltype))

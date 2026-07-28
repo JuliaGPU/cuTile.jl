@@ -1980,8 +1980,6 @@ end
             end
         end
 
-        # A runtime integer exponent converts and uses `pow`, matching Base's
-        # accuracy; `fpowi` drifts too far for large exponents to stand in.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
@@ -1992,6 +1990,7 @@ end
                 @check "itof"
                 @check "pow"
                 @check_not "fpowi"
+                @check "select"
                 Base.donotdelete(tile .^ exponent)
                 return
             end
@@ -2019,6 +2018,31 @@ end
             exponent = ct.load(e, pid, (16,))
             Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
             return
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{UInt16,1,spec1d}}) do a, e
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                exponent = ct.load(e, pid, (16,))
+                @check "exti"
+                @check "fpowi"
+                Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+                return
+            end
+        end
+
+        for T in (Int64, UInt32, UInt64)
+            @test_throws "does not support $T exponents" code_tiled(
+                Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{T,1,spec1d}}) do a, e
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                exponent = ct.load(e, pid, (16,))
+                Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+                return
+            end
         end
     end
 
