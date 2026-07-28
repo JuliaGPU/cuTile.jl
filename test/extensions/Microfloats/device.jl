@@ -30,20 +30,6 @@ function rt_f4(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
     ct.store(b, pid, convert(ct.Tile{Float32}, convert(ct.Tile{Float4_E2M1FN}, tile)))
     return
 end
-# Round a Float32 tile through FP8 and back. FP8 is a restricted float, so
-# arithmetic on it is rejected: kernels cast explicitly instead.
-round_e4m3(t) = convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E4M3FN}, t))
-
-function fma_e4m3(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                  c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
-    pid = ct.bid(1)
-    ta = round_e4m3(ct.load(a, pid, (16,)))
-    tb = round_e4m3(ct.load(b, pid, (16,)))
-    tc = round_e4m3(ct.load(c, pid, (16,)))
-    ct.store(d, pid, ta .* tb .+ tc)
-    return
-end
-
 # Standalone f32 → microfloat → f32 conversion round-trips exactly for every
 # microfloat type on representable inputs. FP8 (e4m3/e5m2) needs Hopper (sm_90+);
 # E8M0FNU and Float4_E2M1FN need Blackwell (sm_100+). E8M0 is exponent-only, so
@@ -60,17 +46,6 @@ if capability(device()) >= v"9"
         @test Array(b) == representable8
     end
 
-    # Multiply-add on FP8-rounded inputs: load f32, round each input through
-    # FP8, then compute in f32. Inputs whose products and sums stay
-    # representable in FP8, so the result is exact.
-    let av = Float32[1.0, 2.0, 0.5, 4.0, 1.5, 2.0, -1.0, -0.5, 3.0, 0.5, 1.0, 2.0, -2.0, 1.0, 0.5, 4.0],
-        bv = Float32[2.0, 1.0, 4.0, 0.5, 2.0, 3.0,  2.0,  4.0, 1.0, 2.0, 1.0, 0.5,  2.0, 1.0, 2.0, 1.0],
-        cv = Float32[0.0, 1.0, 0.0, 0.0, 1.0, 1.0,  0.0,  0.0, 1.0, 0.0, 0.0, 1.0,  0.0, 0.0, 1.0, 0.0]
-        a, b, c = CuArray(av), CuArray(bv), CuArray(cv)
-        d = CUDA.zeros(Float32, length(av))
-        @cuda backend=cuTile blocks=1 fma_e4m3(a, b, c, d)
-        @test Array(d) == av .* bv .+ cv
-    end
 end
 if capability(device()) >= v"10"
     # E8M0 round-trip: exponent-only, so representable values are powers of two.

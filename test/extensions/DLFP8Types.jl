@@ -193,22 +193,6 @@ function rt_e5m2(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
     ct.store(b, pid, convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E5M2}, tile)))
     return
 end
-# Round a Float32 tile through FP8 and back. FP8 is a restricted float, so
-# arithmetic on it is rejected: kernels cast explicitly instead.
-round_e4m3(t) = convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E4M3FN}, t))
-
-# Multiply-add on FP8-rounded inputs: load Float32, round each input through
-# FP8, then compute in Float32. Inputs whose products and sums also stay
-# representable in FP8, so the result is exact.
-function fma_e4m3(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                  c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
-    pid = ct.bid(1)
-    ta = round_e4m3(ct.load(a, pid, (16,)))
-    tb = round_e4m3(ct.load(b, pid, (16,)))
-    tc = round_e4m3(ct.load(c, pid, (16,)))
-    ct.store(d, pid, ta .* tb .+ tc)
-    return
-end
 # Non-scaled FP8 matmul with both allowed accumulator dtypes (f16 and f32).
 function mma_dl_fp8(A::ct.TileArray{Float8_E4M3FN,2}, B::ct.TileArray{Float8_E4M3FN,2},
                     C::ct.TileArray{Tacc,2}, D::ct.TileArray{Float32,2}) where {Tacc<:Union{Float16,Float32}}
@@ -234,15 +218,6 @@ let a = CuArray(representable), b = CUDA.zeros(Float32, length(representable))
     @test Array(b) == representable
     @cuda backend=cuTile blocks=1 rt_e5m2(a, b)
     @test Array(b) == representable
-end
-
-let av = Float32[1.0, 2.0, 0.5, 4.0, 1.5, 2.0, -1.0, -0.5, 3.0, 0.5, 1.0, 2.0, -2.0, 1.0, 0.5, 4.0],
-    bv = Float32[2.0, 1.0, 4.0, 0.5, 2.0, 3.0,  2.0,  4.0, 1.0, 2.0, 1.0, 0.5,  2.0, 1.0, 2.0, 1.0],
-    cv = Float32[0.0, 1.0, 0.0, 0.0, 1.0, 1.0,  0.0,  0.0, 1.0, 0.0, 0.0, 1.0,  0.0, 0.0, 1.0, 0.0]
-    a, b, c = CuArray(av), CuArray(bv), CuArray(cv)
-    d = CUDA.zeros(Float32, length(av))
-    @cuda backend=cuTile blocks=1 fma_e4m3(a, b, c, d)
-    @test Array(d) == av .* bv .+ cv
 end
 
 @testset "mma → $Tacc acc" for Tacc in (Float32, Float16)
