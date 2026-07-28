@@ -78,15 +78,20 @@ function rt_e5m2(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
     ct.store(b, pid, convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E5M2}, tile)))
     return
 end
-# FMA in FP8: load Float32, convert to FP8, multiply-add in FP8, convert back.
-# Inputs whose products and sums also stay representable, so the result is exact.
+# Round a Float32 tile through FP8 and back. FP8 is a restricted float, so
+# arithmetic on it is rejected: kernels cast explicitly instead.
+round_e4m3(t) = convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E4M3FN}, t))
+
+# Multiply-add on FP8-rounded inputs: load Float32, round each input through
+# FP8, then compute in Float32. Inputs whose products and sums also stay
+# representable in FP8, so the result is exact.
 function fma_e4m3(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                   c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
     pid = ct.bid(1)
-    ta = convert(ct.Tile{Float8_E4M3FN}, ct.load(a, pid, (16,)))
-    tb = convert(ct.Tile{Float8_E4M3FN}, ct.load(b, pid, (16,)))
-    tc = convert(ct.Tile{Float8_E4M3FN}, ct.load(c, pid, (16,)))
-    ct.store(d, pid, convert(ct.Tile{Float32}, muladd.(ta, tb, tc)))
+    ta = round_e4m3(ct.load(a, pid, (16,)))
+    tb = round_e4m3(ct.load(b, pid, (16,)))
+    tc = round_e4m3(ct.load(c, pid, (16,)))
+    ct.store(d, pid, ta .* tb .+ tc)
     return
 end
 # Non-scaled FP8 matmul with both allowed accumulator dtypes (f16 and f32).
