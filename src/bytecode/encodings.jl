@@ -104,6 +104,9 @@ module Opcode
     const MakeStridedViewOp = 116 # since 13.3
     const AtomicRedViewTkoOp = 117 # since 13.3
     const InsertOp = 118     # since 13.4
+    # 119-121, 128-129 (Gdc*, Multimem*) not implemented
+    const FPowIOp = 130      # since 13.4
+    # 131 (MemoryFenceAliasTkoOp) not implemented
 end
 
 # Enums for operation attributes
@@ -894,6 +897,22 @@ Opcode: 84
 """
 function encode_PowOp!(cb::CodeBuilder, result_type::TypeId, base::Value, exponent::Value)
     encode_varint!(cb.buf, Opcode.PowOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, base)
+    encode_operand!(cb.buf, exponent)
+    return new_op!(cb)
+end
+
+"""
+    encode_FPowIOp!(cb, result_type, base, exponent) -> Value
+
+Floating-point power with an integer exponent (base^exponent).
+Opcode: 130
+"""
+function encode_FPowIOp!(cb::CodeBuilder, result_type::TypeId, base::Value, exponent::Value)
+    cb.version >= v"13.4" ||
+        throw(IRError("cuda_tile.fpowi requires Tile IR v13.4+, got v$(cb.version)"))
+    encode_varint!(cb.buf, Opcode.FPowIOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, base)
     encode_operand!(cb.buf, exponent)

@@ -6,14 +6,13 @@ export code_tiled
 public code_typed, code_ircode, code_structured
 
 function disassemble_tileir(bytecode::Vector{UInt8}; debuginfo::Bool=false)::String
+    disasm = @something tileir_disassembler(; debuginfo) throw(ErrorException(
+        "no `tileirdisasm` next to $(tileiras_path()); disassembling Tile IR " *
+        "requires a CUDA 13.4+ toolkit when the `tileiras` preference is set"))
     mktempdir() do dir
         input_path = joinpath(dir, "kernel.tile")
         write(input_path, bytecode)
-        flags = `--cudatilebc-to-mlir`
-        if debuginfo
-            flags = `$flags --mlir-print-debuginfo`
-        end
-        read(`$(cuda_tile_translate()) $flags $input_path`, String)
+        read(`$disasm $input_path`, String)
     end
 end
 

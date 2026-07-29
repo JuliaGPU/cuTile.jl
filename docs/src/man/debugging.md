@@ -76,7 +76,14 @@ Setting `JULIA_CUTILE_DUMP_BYTECODE` writes the emitted Tile IR bytecode to disk
 Dumping TILEIR bytecode to file: /tmp/julia_tiles/example.ln42.cutile
 ```
 
-The resulting files can be disassembled with NVIDIA's `cuda-tile-translate`:
+The resulting files can be disassembled with NVIDIA's `tileirdisasm`:
+
+```
+❯ tileirdisasm /tmp/julia_tiles/example.ln42.cutile
+```
+
+CUDA toolkits older than 13.4 ship `cuda-tile-translate` instead, which needs an
+explicit flag and cannot read bytecode newer than its own version:
 
 ```
 ❯ cuda-tile-translate --cudatilebc-to-mlir /tmp/julia_tiles/example.ln42.cutile

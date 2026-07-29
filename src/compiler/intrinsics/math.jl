@@ -224,6 +224,50 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
 end
 
 """
+    Intrinsics.powi(x::Tile{T}, n::Tile{I}) -> Tile{T}
+        where {T<:AbstractFloat, I<:Union{Bool,Int8,UInt8,Int16,UInt16,Int32}}
+
+Element-wise exponentiation by an integer power (`x^n`); lowers to
+`cuda_tile.fpowi` (Tile IR v13.4+).
+
+`UInt8` and `UInt16` exponents are widened to a signed type. Wider integer
+types are not supported by Tile IR.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
+@intrinsic powi(x::T, n::Integer) where {T<:AbstractFloat}
+@intrinsic powi(x::Tile{T}, n::Tile{<:Integer}) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.powi), @nospecialize(x), @nospecialize(n)) = CC.widenconst(x)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.powi), args)
+    cb, tt = ctx.cb, ctx.tt
+
+    base = emit_value!(ctx, args[1])
+    exponent = emit_value!(ctx, args[2])
+    (base === nothing || exponent === nothing) && return missing
+
+    exponent_type = eltype(CC.widenconst(exponent.jltype))
+    if exponent_type === UInt8 || exponent_type === UInt16
+        target_type = exponent_type === UInt8 ? Int16 : Int32
+        result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), exponent.shape)
+        result_v = encode_ExtIOp!(cb, result_type_id, exponent.v;
+                                 signedness=Signedness.Unsigned)
+        jltype = similar_type(CC.widenconst(exponent.jltype), target_type)
+        exponent = CGVal(result_v, result_type_id, jltype, exponent.shape)
+    elseif !(exponent_type <: Union{Bool,Int8,Int16,Int32})
+        throw(IRError("cuda_tile.fpowi does not support $exponent_type exponents"))
+    end
+
+    base, exponent = broadcast_match_shapes!(cb, tt, base, exponent)
+
+    elem_type = eltype(CC.widenconst(base.jltype))
+    result_type_id = tile_type!(tt, lookup_dtype!(tt, elem_type), base.shape)
+    result_v = encode_FPowIOp!(cb, result_type_id, base.v, exponent.v)
+
+    CGVal(result_v, result_type_id, base.jltype, base.shape)
+end
+
+"""
     Intrinsics.atan2(x::Tile{T}, y::Tile{T}) -> Tile{T}  where {T<:AbstractFloat}
 
 Element-wise principal-value `atan2(x, y)`; lowers to `cuda_tile.atan2`

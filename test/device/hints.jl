@@ -265,4 +265,44 @@ end
     @test Array(b) ≈ Array(a)
 end
 
+if cuTile.bytecode_version() >= v"13.4"
+@testset "load/store with check_bounds=false" begin
+    function vadd_unchecked(a::ct.TileArray{Float32,1},
+                            b::ct.TileArray{Float32,1},
+                            c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,); check_bounds=false)
+        tb = ct.load(b, pid, (16,); check_bounds=false)
+        ct.store(c, pid, ta + tb; check_bounds=false)
+        return nothing
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    @cuda backend=cuTile blocks=64 vadd_unchecked(a, b, c)
+
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
+@testset "2D load/store with check_bounds=false" begin
+    function copy_unchecked(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (32, 32); check_bounds=false)
+        ct.store(b, (pid, 1), tile; check_bounds=false)
+        return nothing
+    end
+
+    m, n = 128, 32
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m, n)
+
+    @cuda backend=cuTile blocks=cld(m, 32) copy_unchecked(a, b)
+
+    @test Array(b) ≈ Array(a)
+end
+end
+
 end

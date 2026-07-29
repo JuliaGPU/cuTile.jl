@@ -39,24 +39,11 @@ end
 # float power (expands to dozens of intrinsics in Julia — complex)
 @overlay Base.:^(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.pow(x, y)
 
-# float-by-integer power. Base's `^(::Float, ::Int)` calls `power_by_squaring`,
-# whose `trailing_zeros` loop emits `cttz_int` (no Tile IR equivalent) for
-# runtime exponents and refuses to const-fold for literal exponents on 1.11.
-@overlay function Base.:^(x::Float32, y::Int64)
-    y == -1 && return inv(x)
-    y == 0 && return one(x)
-    y == 1 && return x
-    y == 2 && return x*x
-    y == 3 && return x*x*x
-    x ^ Float32(y)
-end
-@overlay function Base.:^(x::Float64, y::Int64)
-    y == -1 && return inv(x)
-    y == 0 && return one(x)
-    y == 1 && return x
-    y == 2 && return x*x
-    y == 3 && return x*x*x
-    x ^ Float64(y)
+# Use `pow` for accuracy and restore the sign from the integer exponent.
+@overlay function Base.:^(x::T, y::ScalarInt) where {T <: ScalarFloat}
+    magnitude = Intrinsics.pow(abs(x), T(y))
+    odd = (y & one(y)) != zero(y)
+    ifelse(signbit(x) & odd, -magnitude, magnitude)
 end
 
 # integer != (Julia expands to not_int(===) — 2 ops; overlay gives 1 op)

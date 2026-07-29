@@ -824,6 +824,71 @@ end
     end
 end
 
+if cuTile.bytecode_version() >= v"13.4"
+@testset "insert" begin
+    @testset "insert replaces one slice" begin
+        function insert_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (8, 8))
+            quadrant = ct.extract(tile, (2, 2), (4, 4))
+            ct.store(y, (bid, 1), ct.insert(tile, (2, 2), quadrant .* 10f0))
+            return
+        end
+
+        m, n = 64, 8
+        x = CUDA.rand(Float32, m, n)
+        y = CUDA.zeros(Float32, m, n)
+
+        @cuda backend=cuTile blocks=cld(m, 8) insert_kernel(x, y)
+
+        expected = Array(x)
+        for tilestart in 1:8:m
+            rows = tilestart+4 : tilestart+7
+            expected[rows, 5:8] .*= 10f0
+        end
+        @test Array(y) ≈ expected
+    end
+
+    @testset "insert of a full-shape slice is identity" begin
+        function insert_identity_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (4, 8))
+            ct.store(y, (bid, 1), ct.insert(tile, (1, 1), tile))
+            return
+        end
+
+        m, n = 64, 8
+        x = CUDA.rand(Float32, m, n)
+        y = CUDA.zeros(Float32, m, n)
+
+        @cuda backend=cuTile blocks=cld(m, 4) insert_identity_kernel(x, y)
+
+        @test Array(y) ≈ Array(x)
+    end
+
+    @testset "insert of a scalar writes a single element" begin
+        function insert_scalar_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (8, 8))
+            ct.store(y, (bid, 1), ct.insert(tile, (3, 2), 7f0))
+            return
+        end
+
+        m, n = 64, 8
+        x = CUDA.rand(Float32, m, n)
+        y = CUDA.zeros(Float32, m, n)
+
+        @cuda backend=cuTile blocks=cld(m, 8) insert_scalar_kernel(x, y)
+
+        expected = Array(x)
+        for tilestart in 1:8:m
+            expected[tilestart+2, 2] = 7f0
+        end
+        @test Array(y) ≈ expected
+    end
+end
+end
+
 @testset "scalar tile getindex" begin
     function tile_getindex_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,1})
         tile = ct.load(x, 1, (8,))

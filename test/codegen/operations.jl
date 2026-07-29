@@ -322,6 +322,21 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        if ct.bytecode_version() >= v"13.4"
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 8))
+                    @check "extract"
+                    extracted = ct.extract(tile, (2, 2), (2, 4))
+                    @check "insert"
+                    ct.store(b, pid, ct.insert(tile, (1, 1), extracted))
+                    return
+                end
+            end
+        end
+
         # Scalar tile getindex
         @test @filecheck begin
             @check_label "entry"
@@ -376,6 +391,32 @@ spec4d = ct.ArraySpec{4}(16, true)
             tile = ct.load(a, 1, (16,))
             ct.store(a, 1, tile; check_bounds=false)
             return
+        end
+
+        if ct.bytecode_version() >= v"13.4"
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    @check "load_view{{.*}}inbounds = [true]"
+                    tile = ct.load(a, pid, (16,); check_bounds=false)
+                    @check "store_view{{.*}}inbounds = [true]"
+                    ct.store(a, pid, tile; check_bounds=false)
+                    return
+                end
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                @check "load_view"
+                @check_not "inbounds"
+                tile = ct.load(a, pid, (16,))
+                ct.store(a, pid, tile)
+                return
+            end
         end
     end
 
@@ -1936,6 +1977,75 @@ end
                 @check "mulf"
                 @check_not "pow"
                 Base.donotdelete(tile .^ 2.0)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Int32,1,spec1d}}) do a, e
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                exponent = ct.load(e, pid, (16,))
+                @check "itof"
+                @check "pow"
+                @check_not "fpowi"
+                @check "andi"
+                @check "select"
+                Base.donotdelete(tile .^ exponent)
+                return
+            end
+        end
+
+        if ct.bytecode_version() >= v"13.4"
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                                 ct.TileArray{Int32,1,spec1d}}) do a, e
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    exponent = ct.load(e, pid, (16,))
+                    @check "fpowi"
+                    Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+                    return
+                end
+            end
+        end
+
+        @test_throws "cuda_tile.fpowi requires Tile IR v13.4+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}};
+            bytecode_version=v"13.3") do a, e
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            exponent = ct.load(e, pid, (16,))
+            Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+            return
+        end
+
+        if ct.bytecode_version() >= v"13.4"
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                                 ct.TileArray{UInt16,1,spec1d}}) do a, e
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    exponent = ct.load(e, pid, (16,))
+                    @check "exti"
+                    @check "fpowi"
+                    Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
+                    return
+                end
+            end
+        end
+
+        for T in (Int64, UInt32, UInt64)
+            @test_throws "does not support $T exponents" code_tiled(
+                Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{T,1,spec1d}}) do a, e
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                exponent = ct.load(e, pid, (16,))
+                Base.donotdelete(ct.Intrinsics.powi(tile, exponent))
                 return
             end
         end

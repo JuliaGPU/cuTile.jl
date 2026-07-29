@@ -167,6 +167,22 @@ function tileiras_cmd(args...)
     return addenv(cmd, "CUDA_ROOT" => tileiras_root())
 end
 
+"""
+    tileir_disassembler(; debuginfo=false) -> Union{Cmd, Nothing}
+
+Return a disassembler matching the selected `tileiras`. An override requires
+`tileirdisasm` in the same directory.
+"""
+function tileir_disassembler(; debuginfo::Bool=false)
+    if tileiras_override !== nothing
+        disasm = joinpath(dirname(tileiras_override), "tileirdisasm")
+        isfile(disasm) || return nothing
+        return debuginfo ? `$disasm --print-debug-info` : `$disasm`
+    end
+    translate = `$(CUDA_Tile_jll.cuda_tile_translate()) --cudatilebc-to-mlir`
+    return debuginfo ? `$translate --mlir-print-debuginfo` : translate
+end
+
 function run_and_collect(cmd)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
