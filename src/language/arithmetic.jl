@@ -42,7 +42,8 @@ end
 # Use `pow` for accuracy and restore the sign from the integer exponent.
 @overlay function Base.:^(x::T, y::ScalarInt) where {T <: ScalarFloat}
     magnitude = Intrinsics.pow(abs(x), T(y))
-    ifelse(signbit(x) & isodd(y), -magnitude, magnitude)
+    odd = (y & one(y)) != zero(y)
+    ifelse(signbit(x) & odd, -magnitude, magnitude)
 end
 
 # integer != (Julia expands to not_int(===) — 2 ops; overlay gives 1 op)

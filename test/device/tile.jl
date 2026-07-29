@@ -824,6 +824,7 @@ end
     end
 end
 
+if cuTile.bytecode_version() >= v"13.4"
 @testset "insert" begin
     @testset "insert replaces one slice" begin
         function insert_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
@@ -885,6 +886,7 @@ end
         end
         @test Array(y) ≈ expected
     end
+end
 end
 
 @testset "scalar tile getindex" begin

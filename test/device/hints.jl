@@ -265,6 +265,7 @@ end
     @test Array(b) ≈ Array(a)
 end
 
+if cuTile.bytecode_version() >= v"13.4"
 @testset "load/store with check_bounds=false" begin
     function vadd_unchecked(a::ct.TileArray{Float32,1},
                             b::ct.TileArray{Float32,1},
@@ -301,6 +302,7 @@ end
     @cuda backend=cuTile blocks=cld(m, 32) copy_unchecked(a, b)
 
     @test Array(b) ≈ Array(a)
+end
 end
 
 end
