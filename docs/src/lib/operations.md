@@ -38,17 +38,7 @@ between two tiles is matrix multiplication, not an element-wise product.
 | `fill(value, dims...)` | Constant-filled tile |
 | `ct.arange(n; dtype, start, step)` | Configurable arithmetic sequence (defaults to `1:n`) |
 | `[1, 2, 3, 4]`, `[x 3; 2 y]`, `[1; 2;; 3; 4]` | Array construction syntax (incl. `T[...]` typed forms) builds tiles |
-| `[q1; q2]`, `[t1 t2; t3 t4]`, `[t1;;; t2]` | Bracket syntax over tiles concatenates them |
-| `[x [y z]; t M]` | Blocks mix tiles and scalars (scalars become 1×1 blocks) |
-
-Bracket syntax follows Julia's usual semantics, including element type
-promotion. Scalar elements that fold to compile-time constants become a
-single dense constant; runtime scalars are broadcast and concatenated.
-Every dimension of the result — and of any intermediate concatenation —
-must be a power of two (so `[1, 2, 3]` is rejected, as is `[a; b; c]` for
-same-length tiles, and mixed-size blocks only fit along dimensions where
-the sizes agree). Comma syntax over tiles (`[t1, t2]`, Julia's `Vector`
-collection) has no tile equivalent and is rejected.
+| `[q1; q2]`, `[t1;;; t2]`, `[x [y z]; t M]` | Bracket syntax concatenates tiles and scalars |
 
 ## Shape
 
