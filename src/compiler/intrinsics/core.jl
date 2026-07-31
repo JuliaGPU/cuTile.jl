@@ -253,18 +253,26 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
 end
 
 #=============================================================================
- Array literals ([1,2,3,4], [1 3; 2 4], hvncat syntax)
+ Array construction syntax ([1,2,3,4], [x 3; 2 y], hvncat syntax)
 
  Backed by overlays on Base.vect/hvcat/hvncat & friends (see
- language/overlays.jl) that funnel into the three intrinsics below. All
- element-ordering and validation logic lives here in codegen, where errors
- surface as clean compile-time IRErrors.
+ language/overlays.jl) that funnel scalar elements into the three intrinsics
+ below; tile elements are concatenated at the language level instead (see the
+ cat-tree helpers next to the overlays). All element-ordering and validation
+ logic lives here in codegen, where errors surface as clean compile-time
+ IRErrors.
+
+ Elements that fold to compile-time constants become a single dense
+ `ConstantOp`; runtime scalars are broadcast to unit tiles and merged with a
+ balanced tree of `CatOp`s (balanced so every intermediate keeps
+ power-of-two dimensions).
 =============================================================================#
 
 # Extract (eltype, count) from the lattice element of a homogeneous element
 # tuple, or return nothing (overlays promote/convert elements up front, so a
-# heterogeneous or unknown-length tuple means inference couldn't fold the
-# literal — the tfunc then declines and emit reports the error).
+# heterogeneous or unknown-length tuple means inference couldn't determine
+# the element type or count — the tfunc then declines and emit reports the
+# error).
 function literal_tuple_info(@nospecialize(elements_lat))
     tt = CC.widenconst(elements_lat)
     (tt isa DataType && tt <: Tuple) || return nothing
@@ -272,37 +280,37 @@ function literal_tuple_info(@nospecialize(elements_lat))
     isempty(params) && return nothing
     T = params[1]
     all(p -> p === T, params) || return nothing
-    T isa Type && isconcretetype(T) || return nothing
+    T isa Type && isconcretetype(T) && T <: Number || return nothing
     return (T, length(params))
 end
 
 """
-    Intrinsics.vect_literal(elements::NTuple{N, T}) -> Tile{T, Tuple{N}}
+    Intrinsics.vect(elements::NTuple{N, T}) -> Tile{T, Tuple{N}}
 
-Backs `[a, b, ...]` vector literals (`Base.vect` / `Base.vcat` / `T[...]`)
-in kernel code. Emits a single dense `ConstantOp`; all elements must be
-compile-time constants and `N` must be a power of two.
+Backs `[a, b, ...]` vector construction (`Base.vect` / `Base.vcat` /
+`T[...]`) in kernel code. `N` must be a power of two; constant elements
+emit a single dense `ConstantOp`, runtime elements a balanced cat tree.
 """
-@intrinsic vect_literal(elements)
-function tfunc(𝕃, ::typeof(Intrinsics.vect_literal), @nospecialize(elements_lat))
+@intrinsic vect(elements)
+function tfunc(𝕃, ::typeof(Intrinsics.vect), @nospecialize(elements_lat))
     info = literal_tuple_info(elements_lat)
     info === nothing && return nothing
     T, N = info
     return Tile{T, Tuple{N}}
 end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.vect_literal), args)
-    emit_tile_literal!(ctx, args[1], nothing, false, "array literal")
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.vect), args)
+    emit_tile_construction!(ctx, args[1], nothing, false, "array literal")
 end
 
 """
-    Intrinsics.hvcat_literal(rows::Tuple, elements::NTuple{N, T}) -> Tile{T, Tuple{nrows, ncols}}
+    Intrinsics.hvcat(rows::Tuple, elements::NTuple{N, T}) -> Tile{T, Tuple{nrows, ncols}}
 
-Backs `[a b; c d]` matrix literals (`Base.hvcat` / `Base.typed_hvcat`).
-`rows` gives the length of each row and `elements` are listed row-major,
-as produced by Julia's lowering.
+Backs `[a b; c d]` matrix construction (`Base.hvcat` / `Base.typed_hvcat`)
+with scalar elements. `rows` gives the length of each row and `elements`
+are listed row-major, as produced by Julia's lowering.
 """
-@intrinsic hvcat_literal(rows, elements)
-function tfunc(𝕃, ::typeof(Intrinsics.hvcat_literal), @nospecialize(rows_lat), @nospecialize(elements_lat))
+@intrinsic hvcat(rows, elements)
+function tfunc(𝕃, ::typeof(Intrinsics.hvcat), @nospecialize(rows_lat), @nospecialize(elements_lat))
     isa(rows_lat, CC.Const) || return nothing
     rows = rows_lat.val
     rows isa Tuple || return nothing
@@ -312,7 +320,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.hvcat_literal), @nospecialize(rows_lat)
     T, _ = info
     return Tile{T, Tuple{length(rows), rows[1]}}
 end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.hvcat_literal), args)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.hvcat), args)
     rows = @something get_constant(ctx, args[1]) throw(IRError(
         "matrix literal: row layout must be a compile-time constant"))
     rows isa Tuple || throw(IRError("matrix literal: row layout must be a tuple, got $(typeof(rows))"))
@@ -320,88 +328,169 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.hvcat_literal), args)
     all(==(rows[1]), rows) || throw(IRError(
         "matrix literal: all rows must have the same length, got row lengths $rows"))
     # hvcat lists elements row-major: identical to hvncat with row_first=true
-    emit_tile_literal!(ctx, args[2], (length(rows), Int(rows[1])), true, "matrix literal")
+    emit_tile_construction!(ctx, args[2], (length(rows), Int(rows[1])), true, "matrix literal")
 end
 
 """
-    Intrinsics.hvncat_literal(dims::Tuple, row_first::Bool, elements::NTuple{N, T}) -> Tile{T, Tuple{dims...}}
+    Intrinsics.hvncat(dims::Tuple, row_first::Bool, elements::NTuple{N, T}) -> Tile{T, Tuple{dims...}}
 
-Backs `[a; b;; c; d]`-style N-dimensional literals (`Base.hvncat` /
-`Base.typed_hvncat`, balanced form) as well as `[a b c]` row literals
-(`Base.hcat`). With `row_first=true` elements are listed with dimension 2
-varying fastest, then dimension 1, then dimensions 3+; with `row_first=false`
-they are listed in column-major order.
+Backs `[a; b;; c; d]`-style N-dimensional construction (`Base.hvncat` /
+`Base.typed_hvncat`, balanced form) as well as `[a b c]` row construction
+(`Base.hcat`) with scalar elements. With `row_first=true` elements are
+listed with dimension 2 varying fastest, then dimension 1, then dimensions
+3+; with `row_first=false` they are listed in column-major order.
 """
-@intrinsic hvncat_literal(dims, row_first, elements)
-function tfunc(𝕃, ::typeof(Intrinsics.hvncat_literal), @nospecialize(dims_lat), @nospecialize(row_first), @nospecialize(elements_lat))
+@intrinsic hvncat(dims, row_first, elements)
+function tfunc(𝕃, ::typeof(Intrinsics.hvncat), @nospecialize(dims_lat), @nospecialize(row_first), @nospecialize(elements_lat))
     isa(dims_lat, CC.Const) || return nothing
     dims = dims_lat.val
     dims isa Tuple || return nothing
     info = literal_tuple_info(elements_lat)
     info === nothing && return nothing
-    T, _ = info
-    return Tile{T, Tuple{dims...}}
+    T, N = info
+    all(d -> d isa Int, dims) && return Tile{T, Tuple{dims...}}
+    # Tuple-of-tuples shape descriptor: derive the geometry from Base's own
+    # hvncat by probing with linear indices (declining on invalid shapes so
+    # emit can report Julia's error).
+    isa(row_first, CC.Const) && row_first.val isa Bool || return nothing
+    probe = try
+        Base.hvncat(dims, row_first.val, 1:N...)
+    catch
+        return nothing
+    end
+    return Tile{T, Tuple{size(probe)...}}
 end
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.hvncat_literal), args)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.hvncat), args)
     dims = @something get_constant(ctx, args[1]) throw(IRError(
         "array literal: shape must be a compile-time constant"))
     dims isa Tuple || throw(IRError("array literal: shape must be a tuple, got $(typeof(dims))"))
     row_first = @something get_constant(ctx, args[2]) throw(IRError(
         "array literal: element order must be a compile-time constant"))
-    emit_tile_literal!(ctx, args[3], map(Int, dims), row_first::Bool, "array literal")
+    emit_tile_construction!(ctx, args[3], dims, row_first::Bool, "array literal")
 end
 
 """
-    emit_tile_literal!(ctx, elements_ref, dims, row_first, context) -> CGVal
+    emit_tile_construction!(ctx, elements_ref, dims, row_first, context) -> CGVal
 
-Shared emission for array-literal intrinsics: reorders the constant element
-tuple into column-major order and emits one dense `ConstantOp`. `dims` of
-`nothing` means a 1-D literal shaped by the element count. Serializing in
-Julia column-major order matches Tile IR's row-major layout over the
-reversed (Tile IR order) shape.
+Shared emission for array-construction intrinsics: reorders the element
+tuple into column-major order, then emits one dense `ConstantOp` when every
+element is a compile-time constant, or — for runtime elements — broadcasts
+each scalar to a unit tile and merges them with a balanced tree of `CatOp`s
+(one dimension at a time, so every intermediate keeps power-of-two dims).
+`dims` of `nothing` means a 1-D result shaped by the element count.
+Serializing in Julia column-major order matches Tile IR's row-major layout
+over the reversed (Tile IR order) shape.
 """
-function emit_tile_literal!(ctx::CGCtx, @nospecialize(elements_ref),
-                            dims::Union{Nothing, Tuple{Vararg{Int}}},
-                            row_first::Bool, context::String)
-    elements = @something get_constant(ctx, elements_ref) throw(IRError(
-        "$context: all elements must be compile-time constants " *
-        "(runtime values in array literals are not supported)"))
-    elements isa Tuple || throw(IRError("$context: elements must be a tuple, got $(typeof(elements))"))
-    isempty(elements) && throw(IRError("$context: empty literals are not supported"))
+function emit_tile_construction!(ctx::CGCtx, @nospecialize(elements_ref),
+                                 dims::Union{Nothing, Tuple},
+                                 row_first::Bool, context::String)
+    tvs = resolve_tuple(ctx, elements_ref, context)
+    isempty(tvs) && throw(IRError("$context: empty literals are not supported"))
+    n = length(tvs)
 
-    shape = something(dims, (length(elements),))
-    n = prod(shape)
-    n == length(elements) || throw(IRError(
-        "$context: shape $shape needs $n elements, got $(length(elements))"))
+    # Scalars appear as 0-D tiles in kernel IR; unwrap to the element type
+    # (like emit_constant!) and reject anything non-scalar. Non-0-D tiles
+    # can only get here via comma collection ([t1, t2]) or as blocks in
+    # mixed-notation hvncat syntax — neither has a tile equivalent.
+    function scalar_elem_type(tv::CGVal)
+        T = CC.widenconst(tv.jltype)
+        T <: Tile || return T
+        length(tv.shape) == 0 || throw(IRError(
+            "$context: elements must be scalar values, got a tile of shape " *
+            "$(Tuple(tv.shape)); combine tiles with concatenation syntax " *
+            "([a; b], [a b; c d]) — commas collect into a Vector, which has " *
+            "no tile equivalent"))
+        return eltype(T)
+    end
+    elem_type = scalar_elem_type(tvs[1])
+    all(tv -> scalar_elem_type(tv) === elem_type, tvs) || throw(IRError(
+        "$context: elements must have a uniform type after promotion"))
+    elem_type <: Number || throw(IRError(
+        "$context: elements must be scalar numbers, got $elem_type"))
+
+    if dims isa Tuple && !all(d -> d isa Int, dims)
+        # Tuple-of-tuples shape descriptor from ragged/mixed N-D syntax
+        # ([1 2; 3;;; 4 5; 6]): let Base's own hvncat decide validity,
+        # geometry, and element order by probing with linear indices on the
+        # host — invalid literals get Julia's exact error.
+        probe = try
+            Base.hvncat(dims, row_first, 1:n...)
+        catch err
+            throw(IRError("$context: " * sprint(showerror, err)))
+        end
+        shape = size(probe)
+        ordered = CGVal[tvs[i] for i in vec(probe)]
+    else
+        shape = map(Int, something(dims, (n,)))
+        prod(shape) == n || throw(IRError(
+            "$context: shape $shape needs $(prod(shape)) elements, got $n"))
+
+        # Reorder from listing order to column-major destination order.
+        # row_first listing varies dimension 2 fastest, then 1, then 3+:
+        # dest (i1, i2, hi) at source position i2 + d2*(i1 + d1*hi), where hi
+        # is the column-major linear index over dimensions 3+.
+        ordered = if row_first && length(shape) >= 2
+            d1, d2 = shape[1], shape[2]
+            CGVal[
+                let i1 = (k - 1) % d1, rest = (k - 1) ÷ d1,
+                    i2 = rest % d2, hi = rest ÷ d2
+                    tvs[i2 + d2 * (i1 + d1 * hi) + 1]
+                end
+                for k in 1:n
+            ]
+        else
+            tvs
+        end
+    end
     validate_tile_shape(collect(Int, shape), context)
 
-    elem_type = typeof(elements[1])
-    all(x -> typeof(x) === elem_type, elements) || throw(IRError(
-        "$context: elements must have a uniform type after promotion"))
-
-    # Reorder from listing order to column-major destination order.
-    # row_first listing varies dimension 2 fastest, then 1, then 3+:
-    # dest (i1, i2, hi) at source position i2 + d2*(i1 + d1*hi), where hi is
-    # the column-major linear index over dimensions 3+.
-    ordered = if row_first && length(shape) >= 2
-        d1, d2 = shape[1], shape[2]
-        ntuple(n) do k
-            i1, rest = (k - 1) % d1, (k - 1) ÷ d1
-            i2, hi = rest % d2, rest ÷ d2
-            elements[i2 + d2 * (i1 + d1 * hi) + 1]
-        end
-    else
-        elements
-    end
-
+    rank = length(shape)
     tile_shape = RowMajorShape(ColMajorShape(shape))
     dtype = lookup_dtype!(ctx.tt, elem_type)
     tile_type = tile_type!(ctx.tt, dtype, tile_shape)
-    value_bytes = n == 1 ? constant_to_bytes(ordered[1], elem_type) :
-                           dense_constants_to_bytes(ordered, elem_type)
-    result = encode_ConstantOp!(ctx.cb, tile_type, value_bytes)
 
-    CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
+    if all(tv -> tv.constant !== nothing, ordered)
+        # All-constant fast path: a single dense ConstantOp
+        values = Any[something(tv.constant) for tv in ordered]
+        value_bytes = n == 1 ? constant_to_bytes(values[1], elem_type) :
+                               dense_constants_to_bytes(values, elem_type)
+        result = encode_ConstantOp!(ctx.cb, tile_type, value_bytes)
+        return CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
+    end
+
+    # Runtime path: splat every element to a rank-matching unit tile
+    unit_shape = RowMajorShape(fill(1, rank))
+    unit_type = tile_type!(ctx.tt, dtype, unit_shape)
+    vals = Value[
+        if tv.constant !== nothing
+            encode_ConstantOp!(ctx.cb, unit_type,
+                               constant_to_bytes(something(tv.constant), elem_type))
+        else
+            tv.v === nothing && throw(IRError("$context: cannot resolve element value"))
+            broadcast_tile_to_shape!(ctx.cb, ctx.tt, tv, unit_shape, dtype)
+        end
+        for tv in ordered
+    ]
+
+    # Merge column-major-ordered unit tiles dimension by dimension. Each
+    # pairwise round doubles the current dimension; consecutive pairs always
+    # belong to the same destination group because completed group sizes are
+    # powers of two.
+    cur_shape = fill(1, rank)
+    for d in 1:rank
+        tir_axis = rank - d
+        sz = 1
+        while sz < shape[d]
+            sz *= 2
+            cur_shape[tir_axis + 1] = sz
+            out_type = tile_type!(ctx.tt, dtype, RowMajorShape(copy(cur_shape)))
+            vals = Value[encode_CatOp!(ctx.cb, out_type, vals[i], vals[i + 1], tir_axis)
+                         for i in 1:2:length(vals)]
+        end
+    end
+    @assert length(vals) == 1
+
+    CGVal(vals[1], tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
 end
 
 # TODO: cuda_tile.entry
