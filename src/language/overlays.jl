@@ -169,3 +169,51 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
     _full(one(T), T, dims)
 
 
+#=============================================================================
+ Array Literals
+
+ Array literal syntax builds constant Tiles in kernel context:
+
+     [1, 2, 3, 4]     -> Base.vect    -> Tile{Int64, Tuple{4}}
+     [1; 2; 3; 4]     -> Base.vcat    -> Tile{Int64, Tuple{4}}
+     [1 2 3 4]        -> Base.hcat    -> Tile{Int64, Tuple{1, 4}}
+     [1 3; 2 4]       -> Base.hvcat   -> Tile{Int64, Tuple{2, 2}}
+     [1; 2;; 3; 4]    -> Base.hvncat  -> Tile{Int64, Tuple{2, 2}}
+
+ plus the `T[...]` typed variants. Elements must be compile-time constants
+ and every dimension must be a power of two; violations are reported as
+ compile-time errors by the literal intrinsics (see intrinsics/core.jl).
+ Marked non-foldable like fill/zeros/ones because they return Tiles.
+
+ Every overlay requires at least one element (`x, xs...` rather than plain
+ `xs...`): Base code reachable from kernels calls `Base.vect()` on dead
+ error paths, and hijacking the zero-element case turns its concrete
+ `Vector{Any}` return type into `Any`, derailing downstream inference.
+=============================================================================#
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vect(x::Number, xs::Number...) =
+    Intrinsics.vect_literal(promote(x, xs...))
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.getindex(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
+    Intrinsics.vect_literal(map(T, (x, xs...)))
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vcat(x::Number, xs::Number...) =
+    Intrinsics.vect_literal(promote(x, xs...))
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_vcat(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
+    Intrinsics.vect_literal(map(T, (x, xs...)))
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hcat(x::Number, xs::Number...) =
+    Intrinsics.hvncat_literal((1, 1 + length(xs)), true, promote(x, xs...))
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hcat(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
+    Intrinsics.hvncat_literal((1, 1 + length(xs)), true, map(T, (x, xs...)))
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvcat(rows::Tuple{Vararg{Int}}, x::Number, xs::Number...) =
+    Intrinsics.hvcat_literal(rows, promote(x, xs...))
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::Number, xs::Number...) where {T<:Number} =
+    Intrinsics.hvcat_literal(rows, map(T, (x, xs...)))
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dims::Tuple{Vararg{Int}}, row_first::Bool, x::Number, xs::Number...) =
+    Intrinsics.hvncat_literal(dims, row_first, promote(x, xs...))
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dims::Tuple{Vararg{Int}}, row_first::Bool, x::Number, xs::Number...) where {T<:Number} =
+    Intrinsics.hvncat_literal(dims, row_first, map(T, (x, xs...)))
+
+

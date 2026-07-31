@@ -664,6 +664,116 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "array literals" begin
+        # [a, b, ...] (Base.vect) -> one dense ConstantOp
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+                @check "constant <i64: [1, 2, 3, 4]> : tile<4xi64>"
+                tile = [1, 2, 3, 4]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # T[a, b, ...] typed literal (Base.getindex) converts elements
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                @check "constant <f32: [1.500000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]> : tile<4xf32>"
+                tile = Float32[1.5, 2, 3, 4]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # heterogeneous elements promote (Base.vect semantics)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
+                @check "constant <f64: [1.000000e+00, 2.500000e+00, 3.000000e+00, 4.000000e+00]> : tile<4xf64>"
+                tile = [1, 2.5, 3, 4]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # [a b; c d] (Base.hvcat) lists row-major; dense data is column-major
+        # (Tile IR row-major over the reversed shape)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+                @check "constant <i32: [{{\\[}}1, 2], [3, 4]]> : tile<2x2xi32>"
+                tile = Int32[1 3; 2 4]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # [a b c d] (Base.hcat) -> 1xN tile
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
+                @check "constant <i64: [{{\\[}}1], [2], [3], [4]]> : tile<4x1xi64>"
+                tile = [1 2 3 4]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # [a; b;; c; d] (Base.hvncat, column-first)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
+                @check "constant <i64: [{{\\[}}1, 2], [3, 4]]> : tile<2x2xi64>"
+                tile = [1; 2;; 3; 4]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # 3-D hvncat literal (row_first element order)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int64,3,spec3d}}) do a
+                @check "constant <i64: [{{\\[\\[}}1, 3], [2, 4]], {{\\[\\[}}5, 7], [6, 8]]]> : tile<2x2x2xi64>"
+                tile = [1 2; 3 4;;; 5 6; 7 8]
+                ct.store(a, ct.bid(1), tile)
+                return
+            end
+        end
+
+        # errors: non-power-of-2 length
+        @test_throws "power of 2" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+            tile = [1, 2, 3]
+            ct.store(a, ct.bid(1), tile)
+            return
+        end
+
+        # errors: ragged rows
+        @test_throws "same length" code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
+            tile = [1 2; 3]
+            ct.store(a, ct.bid(1), tile)
+            return
+        end
+
+        # errors: runtime elements
+        @test_throws "compile-time constants" code_tiled(
+                Tuple{ct.TileArray{Float64,1,spec1d}, Float64}) do a, x
+            tile = [x, x, 2.0, 4.0]
+            ct.store(a, ct.bid(1), tile)
+            return
+        end
+
+        # empty literals fall through to Base.vect (the overlays require at
+        # least one element, see overlays.jl) and fail like any other Array
+        # allocation
+        @test_throws "memorynew" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+            Base.donotdelete([])
+            return
+        end
+    end
+
     @testset "get_num_tile_blocks" begin
         @test @filecheck begin
             @check_label "entry"

@@ -37,7 +37,7 @@ between two tiles is matrix multiplication, not an element-wise product.
 | `ones(T, dims...)` | One-filled tile |
 | `fill(value, dims...)` | Constant-filled tile |
 | `ct.arange(n; dtype, start, step)` | Configurable arithmetic sequence (defaults to `1:n`) |
-
+| `[1, 2, 3, 4]`, `[1 3; 2 4]`, `[1; 2;; 3; 4]` | Array literals (incl. `T[...]` typed forms) build tiles |
 
 ## Shape
 
