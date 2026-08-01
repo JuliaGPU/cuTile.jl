@@ -902,8 +902,9 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         # empty literals fall through to Base.vect (the overlays require at
         # least one element, see overlays.jl) and fail like any other Array
-        # allocation
-        @test_throws "memorynew" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+        # allocation ("Unsupported function call: memorynew" on 1.12+,
+        # "Unsupported value type: Memory{Any}" on 1.11)
+        @test_throws "Unsupported" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
             Base.donotdelete([])
             return
         end
