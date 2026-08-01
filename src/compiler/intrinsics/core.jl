@@ -488,7 +488,9 @@ function emit_tile_construction!(ctx::CGCtx, @nospecialize(elements_ref),
                          for i in 1:2:length(vals)]
         end
     end
-    @assert length(vals) == 1
+    # Base-qualified: a bare @assert here would resolve Base's binding in the
+    # module and break the later `macro assert` (ct.@assert) definition on 1.11
+    Base.@assert length(vals) == 1
 
     CGVal(vals[1], tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
 end
