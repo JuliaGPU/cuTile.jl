@@ -1097,6 +1097,11 @@ public cat, broadcast_to
 Concatenate two tiles along the specified axis (1-indexed).
 Supports negative axis (e.g., -1 for last dimension).
 
+!!! warning "Deprecated"
+    Use `Base.cat(a, b; dims)` (or bracket syntax like `[a; b]`) instead;
+    this tuple form is kept for backwards compatibility. Note that
+    `ct.cat` is a distinct function from `Base.cat`.
+
 # Example
 ```julia
 tile_a = ct.load(arr_a, (1,), (4, 8))  # Shape (4, 8)

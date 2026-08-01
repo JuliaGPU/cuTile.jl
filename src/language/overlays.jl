@@ -292,7 +292,7 @@ end
 
 # hvncat(dim, ...) concatenates along `dim`, lifting inputs to at least
 # `dim` dimensions with trailing singletons (e.g. [t1;;; t2] stacks to 3-D).
-Base.@constprop :aggressive @inline _lift_nd(::Val{D}, x::Number) where {D} =
+@inline _lift_nd(::Val{D}, x::Number) where {D} =
     _full(x, typeof(x), ntuple(_ -> 1, Val(D)))
 @inline _lift_nd(::Val{D}, t::Tile) where {D} = t
 @generated function _hvncat_tiles(::Val{dim}, xs::Tile...) where {dim}
@@ -310,10 +310,37 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vcat(x::Til
     _cat_tiles(Val(0), _promote_tiles(map(_lift_1d, (x, xs...))...)...)
 Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hcat(x::TileElem, xs::TileElem...) =
     _cat_tiles(Val(1), _promote_tiles(map(_lift_2d, (x, xs...))...)...)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.@constprop :aggressive @inline Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
     _hvcat_tiles(Val(rows), _promote_tiles(map(_lift_2d, (x, xs...))...)...)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.@constprop :aggressive @inline Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
     _hvncat_tiles(Val(dim), _promote_tiles(map(Base.Fix1(_lift_nd, Val(dim)), (x, xs...))...)...)
+
+# Base.cat with the dims keyword — the generic entry point behind vcat/hcat.
+# Scalars lift to unit tiles as in bracket syntax; `dims` must fold to a
+# compile-time constant (a literal or Val). No @constprop needed: @inline
+# frames with a literal kwarg const-prop through the kwcall wrapper on
+# their own (verified by the construction tests).
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.cat(x::TileElem, xs::TileElem...; dims) =
+    _cat_dims(dims, x, xs...)
+
+@inline _cat_dims(::Val{D}, xs::TileElem...) where {D} = _cat_dims(Int(D), xs...)
+@inline function _cat_dims(dims::Integer, xs::TileElem...)
+    d = Int(dims)
+    _hvncat_tiles(Val(d), _promote_tiles(map(Base.Fix1(_lift_nd, Val(d)), xs)...)...)
+end
+
+# T[...] typed concatenation converts every element (scalar or Tile) to T
+@inline _convert_elem(::Type{T}, x::Number) where {T} = T(x)
+@inline _convert_elem(::Type{T}, t::Tile) where {T} = convert(Tile{T}, t)
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_vcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
+    _cat_tiles(Val(0), map(e -> _lift_1d(_convert_elem(T, e)), (x, xs...))...)
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
+    _cat_tiles(Val(1), map(e -> _lift_2d(_convert_elem(T, e)), (x, xs...))...)
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) where {T<:Number} =
+    _hvcat_tiles(Val(rows), map(e -> _lift_2d(_convert_elem(T, e)), (x, xs...))...)
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dim::Int, x::TileElem, xs::TileElem...) where {T<:Number} =
+    _hvncat_tiles(Val(dim), map(e -> _lift_nd(Val(dim), _convert_elem(T, e)), (x, xs...))...)
 
 # Commas collect into a Vector on the host, which has no tile equivalent —
 # route tile-containing [a, b] / hvncat-shape-form calls into the scalar
@@ -323,5 +350,7 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vect(x::Til
     Intrinsics.vect((x, xs...))
 Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dims::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) =
     Intrinsics.hvncat(dims, row_first, (x, xs...))
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dims::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) where {T<:Number} =
+    Intrinsics.hvncat(dims, row_first, map(Base.Fix1(_convert_elem, T), (x, xs...)))
 
 

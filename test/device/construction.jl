@@ -223,6 +223,16 @@ end
     out = CUDA.zeros(Float64, 2, 2)
     @cuda backend=cuTile blocks=1 mixed_hvcat_kernel(out, 7.5f0)
     @test Array(out) == [7.5 1.0; 2.0 7.5]
+
+    # typed T[...] blocks convert scalars and tiles and allow ragged row
+    # counts as long as row widths agree
+    function typed_mixed_kernel(out::ct.TileArray{Float32,2}, x::Float64)
+        ct.store(out, ct.bid(1), Float32[x [2]; [3 4]])
+        return
+    end
+    out = CUDA.zeros(Float32, 2, 2)
+    @cuda backend=cuTile blocks=1 typed_mixed_kernel(out, 1.5)
+    @test Array(out) == Float32[1.5 2; 3 4]
 end
 
 @testset "literals in arithmetic" begin

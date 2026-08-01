@@ -815,6 +815,29 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        # Base.cat with the dims keyword (variadic, scalars lift). Note the
+        # scalars come first: the ordered sizes (1, 1, 2) admit a pow2 cat
+        # tree while (1, 2, 1) does not (1+2=3 either way).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
+                @check "cat {{.*}}-> tile<4xf32>"
+                t = ct.load(a, ct.bid(1), (2,))
+                ct.store(a, ct.bid(1), cat(x, x, t; dims=1))
+                return
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+                             ct.TileArray{Float32,3,spec3d}}) do a, b
+                @check "cat {{.*}}-> tile<2x2x2xf32>"
+                t = ct.load(a, ct.bid(1), (2, 2))
+                ct.store(b, ct.bid(1), cat(t, t; dims=3))
+                return
+            end
+        end
+
         # errors: non-power-of-2 length
         @test_throws "power of 2" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
             tile = [1, 2, 3]
@@ -862,6 +885,17 @@ spec4d = ct.ArraySpec{4}(16, true)
             code_tiled(Tuple{ct.TileArray{Float64,2,spec2d}, Float32}) do a, x
                 @check "cat {{.*}}-> tile<2x2xf64>"
                 ct.store(a, ct.bid(1), [x [1.0]; [2.0] [x]])
+                return
+            end
+        end
+
+        # typed T[...] concatenation converts scalars and tiles alike; row
+        # counts may be ragged as long as row widths agree (Base semantics)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, Float64}) do a, x
+                @check "cat {{.*}}-> tile<2x2xf32>"
+                ct.store(a, ct.bid(1), Float32[x [2]; [3 4]])
                 return
             end
         end
