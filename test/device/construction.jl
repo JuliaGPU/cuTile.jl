@@ -203,6 +203,29 @@ end
     @test Array(out) == cat(host[1:2, :], host[3:4, :]; dims=3)
 end
 
+@testset "empty literals" begin
+    # T[] is a ghost zero-length tile; concatenation drops it
+    function empty_vcat_kernel(a::ct.TileArray{Float32,1}, out::ct.TileArray{Float32,1})
+        t = ct.load(a, ct.bid(1), (4,))
+        ct.store(out, ct.bid(1), [Float32[]; t; Float32[]])
+        return
+    end
+    a = CuArray(Float32[1, 2, 3, 4])
+    out = CUDA.zeros(Float32, 4)
+    @cuda backend=cuTile blocks=1 empty_vcat_kernel(a, out)
+    @test Array(out) == Float32[1, 2, 3, 4]
+
+    # like Base, an empty operand still participates in eltype promotion
+    function empty_promote_kernel(a::ct.TileArray{Float32,1}, out::ct.TileArray{Float64,1})
+        t = ct.load(a, ct.bid(1), (4,))
+        ct.store(out, ct.bid(1), [Float64[]; t])
+        return
+    end
+    out64 = CUDA.zeros(Float64, 4)
+    @cuda backend=cuTile blocks=1 empty_promote_kernel(a, out64)
+    @test Array(out64) == Float64[1, 2, 3, 4]
+end
+
 @testset "mixed scalar/tile blocks" begin
     # scalars lift to unit tiles ([x; t] etc.)
     function mixed_vcat_kernel(a::ct.TileArray{Float32,1}, out::ct.TileArray{Float32,1}, x::Float32)

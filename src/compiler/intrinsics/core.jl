@@ -370,6 +370,33 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.hvncat), args)
 end
 
 """
+    Intrinsics.empty_tile(::Type{T}) -> Tile{T, Tuple{0}}
+
+Backs empty typed literals (`T[]`). The result is a ghost — it has no Tile
+IR representation and can only be consumed by concatenation, where
+zero-length operands are dropped (though their element type still
+participates in promotion). `Any` is rejected as a guard; untyped `[]`
+never gets here — its overlay throws directly (see overlays.jl).
+"""
+@intrinsic empty_tile(T)
+function tfunc(𝕃, ::typeof(Intrinsics.empty_tile), @nospecialize(type_arg))
+    T = instanceof_tfunc(type_arg)
+    T === nothing && return nothing
+    T === Any && return Union{}
+    return Tile{T, Tuple{0}}
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.empty_tile), args)
+    T = @something get_constant(ctx, args[1]) throw(IRError(
+        "empty literal: element type must be a compile-time constant"))
+    T === Any && throw(IRError(
+        "empty array literal `[]`: cannot infer an element type; use a typed " *
+        "literal like `Float32[]`"))
+    T isa Type && T <: Number || throw(IRError(
+        "empty literal: unsupported element type $T"))
+    ghost_value(Tile{T, Tuple{0}})
+end
+
+"""
     emit_tile_construction!(ctx, elements_ref, dims, row_first, context) -> CGVal
 
 Shared emission for array-construction intrinsics: reorders the element

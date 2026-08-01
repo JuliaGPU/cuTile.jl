@@ -900,13 +900,25 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # empty literals fall through to Base.vect (the overlays require at
-        # least one element, see overlays.jl) and fail like any other Array
-        # allocation ("Unsupported function call: memorynew" on 1.12+,
-        # "Unsupported value type: Memory{Any}" on 1.11)
-        @test_throws "Unsupported" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+        # untyped empty literals cannot infer an element type; the overlay
+        # throws and an unconditional `[]` surfaces at compile time
+        @test_throws "cannot infer an element" code_tiled(
+                Tuple{ct.TileArray{Int64,1,spec1d}}) do a
             Base.donotdelete([])
             return
+        end
+
+        # typed empty literals are ghost tiles, dropped by concatenation
+        # (no cat op needed) while still participating in eltype promotion
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                             ct.TileArray{Float64,1,spec1d}}) do a, b
+                @check "ftof {{.*}}-> tile<4xf64>"
+                t = ct.load(a, ct.bid(1), (4,))
+                ct.store(b, ct.bid(1), [Float64[]; t])
+                return
+            end
         end
     end
 

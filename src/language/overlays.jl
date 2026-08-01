@@ -192,11 +192,24 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type
  must be a power of two; violations are compile-time errors.
  Marked non-foldable like fill/zeros/ones because they return Tiles.
 
- Every overlay requires at least one element (`x, xs...` rather than plain
- `xs...`): Base code reachable from kernels calls `Base.vect()` on dead
- error paths, and hijacking the zero-element case turns its concrete
- `Vector{Any}` return type into `Any`, derailing downstream inference.
+ Element-taking overlays require at least one element (`x, xs...` rather
+ than plain `xs...`) so that the zero-element case can be handled
+ separately: `T[]` builds a ghost zero-length tile (usable in
+ concatenation, where empty operands are dropped), while an untyped `[]`
+ throws — an unconditional `[]` surfaces as a compile-time diagnostic via
+ the throw lowering, a conditional one as a device-side trap. The throw
+ also keeps Base internals safe: kernel-reachable Base code calls
+ `Base.vect()` on dead error paths, and an overlay returning `Any` there
+ once derailed inference; a throwing body infers as `Union{}`, which
+ narrows instead and keeps those dead paths dead.
 =============================================================================#
+
+## empty literals
+
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.getindex(::Type{T}) where {T<:Number} =
+    Intrinsics.empty_tile(T)
+Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vect() =
+    throw(ArgumentError("empty array literal `[]`: cannot infer an element type; use a typed literal like `Float32[]`"))
 
 ## scalar elements
 
@@ -256,15 +269,26 @@ function _cat_tree_expr(leaves::Vector{Any}, axis0::Int)
     tree(1, length(leaves))
 end
 
+# Shape tuple of a concrete Tile type (generator-side helper)
+_tile_type_shape(@nospecialize(x)) = Tuple(x.parameters[2].parameters)
+_is_empty_tile(@nospecialize(x)) = 0 in _tile_type_shape(x)
+
 @generated function _cat_tiles(::Val{axis0}, xs::Tile...) where {axis0}
+    # zero-length operands are dropped: n + 0 = n, so pow2 math is unaffected
+    keep = [i for i in 1:length(xs) if !_is_empty_tile(xs[i])]
+    isempty(keep) && return Expr(:block, Expr(:meta, :inline), :(xs[1]))
     Expr(:block, Expr(:meta, :inline),
-         _cat_tree_expr(Any[:(xs[$i]) for i in 1:length(xs)], axis0))
+         _cat_tree_expr(Any[:(xs[$i]) for i in keep], axis0))
 end
 
-# Concatenation requires a common element type; promote like Base's cat
+# Concatenation requires a common element type; promote like Base's cat.
+# Empty tiles contribute their element type to promotion (Julia:
+# vcat(Float64[], Float32[1]) isa Vector{Float64}) but stay unconverted —
+# they are ghosts and get dropped by the tree builders.
 @generated function _promote_tiles(xs::Tile...)
     T = mapreduce(eltype, promote_type, xs)
-    elems = Any[eltype(x) === T ? :(xs[$i]) : :(convert(Tile{$T}, xs[$i]))
+    elems = Any[(_is_empty_tile(x) || eltype(x) === T) ? :(xs[$i]) :
+                :(convert(Tile{$T}, xs[$i]))
                 for (i, x) in enumerate(xs)]
     Expr(:block, Expr(:meta, :inline), Expr(:tuple, elems...))
 end
@@ -275,6 +299,7 @@ end
 
 # hcat/hvcat treat scalars as 1x1 blocks and vectors as columns
 @inline _lift_2d(x::Number) = _full(x, typeof(x), (1, 1))
+@inline _lift_2d(t::Tile{T, Tuple{0}}) where {T} = t  # ghost; dropped by the tree
 @inline _lift_2d(t::Tile{T, Tuple{N}}) where {T, N} = Intrinsics.broadcast(t, (N, 1))
 @inline _lift_2d(t::Tile) = t
 
@@ -296,12 +321,13 @@ end
     _full(x, typeof(x), ntuple(_ -> 1, Val(D)))
 @inline _lift_nd(::Val{D}, t::Tile) where {D} = t
 @generated function _hvncat_tiles(::Val{dim}, xs::Tile...) where {dim}
-    shapes = [Tuple(x.parameters[2].parameters) for x in xs]
-    rank = max(dim, maximum(length, shapes))
+    keep = [(i, _tile_type_shape(xs[i])) for i in 1:length(xs) if !_is_empty_tile(xs[i])]
+    isempty(keep) && return Expr(:block, Expr(:meta, :inline), :(xs[1]))
+    rank = max(dim, maximum(length(s) for (_, s) in keep))
     leaves = Any[
         length(s) == rank ? :(xs[$i]) :
             :(Intrinsics.broadcast(xs[$i], $((s..., ntuple(_ -> 1, rank - length(s))...))))
-        for (i, s) in enumerate(shapes)
+        for (i, s) in keep
     ]
     Expr(:block, Expr(:meta, :inline), _cat_tree_expr(leaves, dim - 1))
 end
