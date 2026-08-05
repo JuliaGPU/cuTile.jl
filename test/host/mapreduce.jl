@@ -27,6 +27,45 @@ using CUDA
         @test Array(R) ≈ Array(sum(A; dims=2))
     end
 
+    @testset "sum 2D dims=(1,2)" begin
+        A = CUDA.rand(Float32, 128, 256)
+        R = sum(ct.Tiled(A); dims=(1, 2))
+        @test size(R) == (1, 1)
+        @test Array(R) ≈ Array(sum(A; dims=(1, 2)))
+    end
+
+    @testset "sum 2D dims=(2,)" begin
+        A = CUDA.rand(Float32, 128, 256)
+        R = sum(ct.Tiled(A); dims=(2,))
+        @test size(R) == (128, 1)
+        @test Array(R) ≈ Array(sum(A; dims=2))
+    end
+
+    @testset "sum 2D dims=()" begin
+        A = CUDA.rand(Float32, 128, 256)
+        R = sum(ct.Tiled(A); dims=())
+        @test size(R) == (128, 256)
+        @test Array(R) ≈ Array(A)
+    end
+
+    @testset "dims beyond ndims (Base parity)" begin
+        A = CUDA.rand(Float32, 64, 32)
+        R = sum(ct.Tiled(A); dims=3)
+        @test size(R) == (64, 32)
+        @test Array(R) ≈ Array(A)
+        R = sum(ct.Tiled(A); dims=(2, 3))
+        @test size(R) == (64, 1)
+        @test Array(R) ≈ Array(sum(A; dims=2))
+        @test_throws ArgumentError sum(ct.Tiled(A); dims=0)
+    end
+
+    @testset "maximum 3D dims=(1,3)" begin
+        A = CUDA.rand(Float32, 32, 16, 8)
+        R = maximum(ct.Tiled(A); dims=(1, 3))
+        @test size(R) == (1, 16, 1)
+        @test Array(R) ≈ Array(maximum(A; dims=(1, 3)))
+    end
+
     @testset "sum 2D full" begin
         A = CUDA.rand(Float32, 128, 256)
         @test sum(ct.Tiled(A)) ≈ sum(A)

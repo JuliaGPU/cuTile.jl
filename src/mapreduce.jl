@@ -80,6 +80,14 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
         pad_mode = PaddingMode.Zero
     end
 
+    # dims=(): nothing to reduce; each block maps its tile through op(init, f(x))
+    if isempty(reduce_dims)
+        grid = ntuple(d -> cld(size(A, d), ts[d]), N)
+        reduce_stride = ntuple(d -> Int32(1), N)
+        return _launch_mapreduce!(grid, cuTileconvert(R), src_ta, f, op, ts, reduce_dims,
+                                  init, pad_mode, reduce_stride, nothing)
+    end
+
     # Pick the largest reduced dim for potential parallelization
     non_reduce_blocks = prod(cld(size(A, d), ts[d]) for d in 1:N if !(d in reduce_dims); init=1)
     par_dim = reduce_dims[argmax(map(d -> cld(size(A, d), ts[d]), reduce_dims))]
@@ -142,6 +150,10 @@ function _mapreduce(f, op, A::AbstractArray; dims, init)
 
     reduce_dims = dims === Colon() ? ntuple(identity, N) :
                   dims isa Integer ? (dims,) : Tuple(dims)
+    all(>=(1), reduce_dims) ||
+        throw(ArgumentError("region dimension(s) must be ≥ 1, got $dims"))
+    # Following Base, dims beyond ndims are implicit size-1 dimensions: no-op
+    reduce_dims = filter(<=(N), reduce_dims)
     out_size = ntuple(d -> d in reduce_dims ? 1 : size(A, d), N)
     R = similar(A, ET, out_size)
     _mapreducedim!(f, op, R, A, reduce_dims; init=neutral)

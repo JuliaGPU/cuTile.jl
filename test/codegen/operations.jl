@@ -1025,6 +1025,42 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        # Tuple dims lower to one reduce per axis
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                @check "reduce"
+                @check "reduce"
+                Base.donotdelete(sum(tile; dims=(1, 2)))
+                return
+            end
+        end
+
+        # dims=() and axes beyond ndims reduce nothing (Base parity)
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                @check_not "reduce"
+                Base.donotdelete(sum(tile; dims=()))
+                Base.donotdelete(sum(tile; dims=3))
+                Base.donotdelete(sum(tile; dims=(3, 4)))
+                return
+            end
+        end
+
+        # dims < 1 is a compile-time error
+        @test_throws "reduce() dimension must be in 1:2" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(sum(tile; dims=0))
+            return
+        end
+
         # any
         @test @filecheck begin
             @check_label "entry"

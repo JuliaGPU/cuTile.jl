@@ -797,6 +797,8 @@ function emit_reduce!(ctx::CGCtx, args)
 
     # Flip axis from Julia 0-indexed to Tile IR order
     ndim = length(input_shape)
+    0 <= julia_axis < ndim ||
+        throw(IRError("reduce() dimension must be in 1:$ndim; got $(julia_axis + 1)"))
     axis = ndim - 1 - julia_axis
 
     # ReduceOp removes the dimension; we'll reshape after to reintroduce it as size 1
