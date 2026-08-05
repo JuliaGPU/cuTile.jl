@@ -1025,15 +1025,25 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # Tuple dims lower to one reduce per axis
+        # Tuple dims are sorted and deduplicated before lowering
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
-                @check "reduce"
-                @check "reduce"
-                Base.donotdelete(sum(tile; dims=(1, 2)))
+                @check "reduce {{.*}} dim=1"
+                @check "reduce {{.*}} dim=0"
+                Base.donotdelete(sum(tile; dims=(2, 1)))
+                return
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            @check_count 1 "reduce"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                Base.donotdelete(sum(tile; dims=(1, 1)))
                 return
             end
         end

@@ -1406,13 +1406,21 @@ const ReduceDims = Union{Integer, Tuple{Vararg{Integer}}}
 @inline _reduce_dims_tuple(dims::Integer) = (dims,)
 @inline _reduce_dims_tuple(dims::Tuple{Vararg{Integer}}) = dims
 
-Base.@constprop :aggressive @inline _drop_implicit_dims(::Tuple{}, n::Int) = ()
-Base.@constprop :aggressive @inline _drop_implicit_dims(dims::Tuple, n::Int) =
-    first(dims) <= n ? (first(dims), _drop_implicit_dims(Base.tail(dims), n)...) :
-    _drop_implicit_dims(Base.tail(dims), n)
+Base.@constprop :aggressive @inline _insert_reduce_dim(d, ::Tuple{}) = (d,)
+Base.@constprop :aggressive @inline function _insert_reduce_dim(d, dims::Tuple)
+    head = first(dims)
+    d == head && return dims
+    d < head ? (d, dims...) : (head, _insert_reduce_dim(d, Base.tail(dims))...)
+end
+
+Base.@constprop :aggressive @inline _canonical_reduce_dims(::Tuple{}, n::Int) = ()
+Base.@constprop :aggressive @inline function _canonical_reduce_dims(dims::Tuple, n::Int)
+    tail = _canonical_reduce_dims(Base.tail(dims), n)
+    first(dims) <= n ? _insert_reduce_dim(first(dims), tail) : tail
+end
 
 Base.@constprop :aggressive @inline _canon_reduce_dims(dims::ReduceDims, n::Int) =
-    _drop_implicit_dims(_reduce_dims_tuple(dims), n)
+    _canonical_reduce_dims(_reduce_dims_tuple(dims), n)
 
 Base.@constprop :aggressive @inline _reduce_tiles(tiles::Tuple, ::Tuple{}, f, init::Tuple) = tiles
 Base.@constprop :aggressive @inline _reduce_tiles(tiles::Tuple, dims::Tuple, f, init::Tuple) =

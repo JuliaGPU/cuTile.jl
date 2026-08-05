@@ -152,6 +152,15 @@ end
         return
     end
 
+    function sum_dims_order_kernel(a::ct.TileArray{Float32,2},
+                                   b12::ct.TileArray{Float32,2},
+                                   b21::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (2, 2))
+        ct.store(b12, (1, 1), sum(tile; dims=(1, 2)))
+        ct.store(b21, (1, 1), sum(tile; dims=(2, 1)))
+        return
+    end
+
     m, n = 8, 16
     a = CUDA.rand(Float32, m, n)
     a_cpu = Array(a)
@@ -167,6 +176,12 @@ end
     b = CUDA.zeros(Float32, m, n)
     @cuda backend=cuTile sum_dims_empty_kernel(a, b)
     @test Array(b) == a_cpu
+
+    order_input = CuArray(Float32[-1.0f10 -1; 1.0f10 -1])
+    b12 = CUDA.zeros(Float32, 1, 1)
+    b21 = similar(b12)
+    @cuda backend=cuTile sum_dims_order_kernel(order_input, b12, b21)
+    @test Array(b12) == Array(b21) == sum(Array(order_input); dims=(1, 2))
 
     # Base parity: axes beyond ndims are size-1, reducing them is a no-op
     function sum_dims23_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
