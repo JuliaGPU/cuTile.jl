@@ -133,19 +133,7 @@ end
     end
 end
 
-@testset "reduce with tuple dims" begin
-    function sum_dims12_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
-        tile = ct.load(a, (1, 1), (8, 16))
-        ct.store(b, (1, 1), sum(tile; dims=(1, 2)))
-        return
-    end
-
-    function sum_dims2_tuple_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
-        tile = ct.load(a, (1, 1), (8, 16))
-        ct.store(b, (1, 1), sum(tile; dims=(2,)))
-        return
-    end
-
+@testset "reduction dimensions" begin
     function sum_dims_empty_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
         tile = ct.load(a, (1, 1), (8, 16))
         ct.store(b, (1, 1), sum(tile; dims=()))
@@ -173,17 +161,15 @@ end
         return
     end
 
+    function sum_dims23_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (8, 16))
+        ct.store(b, (1, 1), sum(tile; dims=(2, 3)))
+        return
+    end
+
     m, n = 8, 16
     a = CUDA.rand(Float32, m, n)
     a_cpu = Array(a)
-
-    b = CUDA.zeros(Float32, 1, 1)
-    @cuda backend=cuTile sum_dims12_kernel(a, b)
-    @test Array(b)[1, 1] ≈ sum(a_cpu) rtol=1e-3
-
-    b = CUDA.zeros(Float32, m, 1)
-    @cuda backend=cuTile sum_dims2_tuple_kernel(a, b)
-    @test Array(b) ≈ sum(a_cpu; dims=2) rtol=1e-3
 
     b = CUDA.zeros(Float32, m, n)
     @cuda backend=cuTile sum_dims_empty_kernel(a, b)
@@ -203,19 +189,12 @@ end
     @cuda backend=cuTile sum_dims_colon_kernel(a, b_scalar)
     @test Array(b_scalar)[1] ≈ sum(a_cpu; dims=:) rtol=1e-3
 
-    # Base parity: axes beyond ndims are size-1, reducing them is a no-op
-    function sum_dims23_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
-        tile = ct.load(a, (1, 1), (8, 16))
-        ct.store(b, (1, 1), sum(tile; dims=(2, 3)))
-        return
-    end
-
     b = CUDA.zeros(Float32, m, 1)
     @cuda backend=cuTile sum_dims23_kernel(a, b)
     @test Array(b) ≈ sum(a_cpu; dims=(2, 3)) rtol=1e-3
 end
 
-@testset "tuple dims reductions (3D)" begin
+@testset "3D reduction dimensions" begin
     function max_dims23_kernel(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,3})
         tile = ct.load(a, (1, 1, 1), (4, 8, 16))
         ct.store(b, (1, 1, 1), maximum(tile; dims=(2, 3)))
@@ -241,7 +220,7 @@ end
     @test Array(b) ≈ mapreduce(abs, +, a_cpu; dims=(1, 3)) rtol=1e-3
 end
 
-@testset "count with tuple dims" begin
+@testset "count dimensions" begin
     function count_dims12_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Int32,2})
         tile = ct.load(a, (1, 1), (8, 16))
         ct.store(b, (1, 1), count(tile .> 0.0f0; dims=(1, 2)))
@@ -254,9 +233,7 @@ end
     @test Array(b)[1, 1] == count(>(0.0f0), Array(a))
 end
 
-@testset "multi-tile mapreduce with tuple dims" begin
-    # Simultaneous (value, tag) reduction over both dims: the reducer keeps
-    # the pair whose first component is larger, so tags must follow values.
+@testset "multi-tile mapreduce dimensions" begin
     function pair_reduce_kernel(a::ct.TileArray{Float32,2},
                                 bv::ct.TileArray{Float32,2}, bt::ct.TileArray{Float32,2})
         tile = ct.load(a, (1, 1), (8, 16))

@@ -71,7 +71,7 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
     dim_order = (filter(d -> d in reduce_dims, 1:N)..., filter(d -> !(d in reduce_dims), 1:N)...)
     ts = _compute_tile_sizes(size(A), dim_order)
 
-    # dims=(): nothing to reduce; each block maps its tile through op(init, f(x))
+    # No reduced dimensions: map each tile independently.
     if isempty(reduce_dims)
         grid = ntuple(d -> cld(size(A, d), ts[d]), N)
         reduce_stride = ntuple(d -> Int32(1), N)
@@ -148,14 +148,13 @@ function _mapreduce(f, op, A::AbstractArray; dims, init)
     neutral = neutral_element(op, ET)
     N = ndims(A)
 
-    reduce_dims = dims === Colon() ? ntuple(identity, N) :
-                  dims isa Integer ? (dims,) : Tuple(dims)
-    for d in reduce_dims
+    region = dims === Colon() ? ntuple(identity, N) :
+             dims isa Integer ? (dims,) : Tuple(dims)
+    for d in region
         d isa Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
-        Int(d) < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $d"))
+        d < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $d"))
     end
-    # Following Base, dims beyond ndims are implicit size-1 dimensions: no-op
-    reduce_dims = filter(<=(N), reduce_dims)
+    reduce_dims = Tuple(d for d in 1:N if d in region)
     out_size = ntuple(d -> d in reduce_dims ? 1 : size(A, d), N)
     R = similar(A, ET, out_size)
     _mapreducedim!(f, op, R, A, reduce_dims; init=neutral)

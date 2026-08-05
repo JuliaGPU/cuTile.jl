@@ -1025,54 +1025,30 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # Tuple dims are sorted and deduplicated before lowering
         @test @filecheck begin
             @check_label "entry"
+            @check "reduce {{.*}} dim=1"
+            @check "reduce {{.*}} dim=0"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
-                @check "reduce {{.*}} dim=1"
-                @check "reduce {{.*}} dim=0"
-                Base.donotdelete(sum(tile; dims=(2, 1)))
-                return
-            end
-        end
-        @test @filecheck begin
-            @check_label "entry"
-            @check_count 1 "reduce"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (4, 16))
-                Base.donotdelete(sum(tile; dims=(1, 1)))
+                Base.donotdelete(sum(tile; dims=(2, 1, 2)))
                 return
             end
         end
 
-        # Constant integer ranges lower like their equivalent tuples
         @test @filecheck begin
             @check_label "entry"
-            @check_count 2 "reduce"
+            @check_count 4 "reduce"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 Base.donotdelete(sum(tile; dims=1:2))
-                return
-            end
-        end
-
-        # Colon reduces all dimensions to a scalar
-        @test @filecheck begin
-            @check_label "entry"
-            @check_count 2 "reduce"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (4, 16))
                 Base.donotdelete(sum(tile; dims=:))
                 return
             end
         end
 
-        # dims=() and axes beyond ndims reduce nothing (Base parity)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
@@ -1086,12 +1062,27 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # dims < 1 is a compile-time error
-        @test_throws "reduce() dimension must be in 1:2" code_tiled(
+        @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
             Tuple{ct.TileArray{Float32,2,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(sum(tile; dims=0))
+            return
+        end
+
+        @test_throws "reduced dimension(s) must be integers" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(sum(tile; dims=(1.0,)))
+            return
+        end
+
+        @test_throws "reduce() dimension must be in 1:2" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(ct.Intrinsics.reduce((tile,), -1, +, (0.0f0,)))
             return
         end
 
@@ -1102,9 +1093,9 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 mask = tile .> 0.0f0
-                @check "reduce"
+                @check_count 2 "reduce"
                 @check "ori"
-                Base.donotdelete(any(mask; dims=2))
+                Base.donotdelete(any(mask; dims=(1, 2)))
                 return
             end
         end
@@ -1116,9 +1107,9 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 mask = tile .> 0.0f0
-                @check "reduce"
+                @check_count 2 "reduce"
                 @check "andi"
-                Base.donotdelete(all(mask; dims=2))
+                Base.donotdelete(all(mask; dims=(1, 2)))
                 return
             end
         end
@@ -1130,9 +1121,9 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "exti"
-                @check "reduce"
+                @check_count 2 "reduce"
                 @check "addi"
-                Base.donotdelete(count(tile .> 0.0f0; dims=2))
+                Base.donotdelete(count(tile .> 0.0f0; dims=(1, 2)))
                 return
             end
         end

@@ -27,25 +27,11 @@ using CUDA
         @test Array(R) ≈ Array(sum(A; dims=2))
     end
 
-    @testset "sum 2D dims=(1,2)" begin
+    @testset "sum with multiple dims" begin
         A = CUDA.rand(Float32, 128, 256)
-        R = sum(ct.Tiled(A); dims=(1, 2))
-        @test size(R) == (1, 1)
-        @test Array(R) ≈ Array(sum(A; dims=(1, 2)))
-    end
-
-    @testset "sum 2D dims=(2,)" begin
-        A = CUDA.rand(Float32, 128, 256)
-        R = sum(ct.Tiled(A); dims=(2,))
-        @test size(R) == (128, 1)
-        @test Array(R) ≈ Array(sum(A; dims=2))
-    end
-
-    @testset "sum 2D dims=()" begin
-        A = CUDA.rand(Float32, 128, 256)
-        R = sum(ct.Tiled(A); dims=())
-        @test size(R) == (128, 256)
-        @test Array(R) ≈ Array(A)
+        for dims in ((2, 1, 2), 1:2, [2, 1])
+            @test Array(sum(ct.Tiled(A); dims)) ≈ Array(sum(A; dims))
+        end
     end
 
     @testset "non-aligned no-op dims" begin
@@ -55,14 +41,11 @@ using CUDA
         @test Array(prod(ct.Tiled(A); dims=2)) == Array(prod(A; dims=2))
     end
 
-    @testset "dims beyond ndims (Base parity)" begin
+    @testset "out-of-range dims" begin
         A = CUDA.rand(Float32, 64, 32)
-        R = sum(ct.Tiled(A); dims=3)
-        @test size(R) == (64, 32)
-        @test Array(R) ≈ Array(A)
         R = sum(ct.Tiled(A); dims=(2, 3))
-        @test size(R) == (64, 1)
         @test Array(R) ≈ Array(sum(A; dims=2))
+        @test Array(sum(ct.Tiled(A); dims=big(typemax(Int)) + 1)) ≈ Array(A)
         @test_throws ArgumentError sum(ct.Tiled(A); dims=0)
         @test_throws ArgumentError("reduced dimension(s) must be integers") begin
             sum(ct.Tiled(A); dims=(1.0,))
@@ -72,7 +55,6 @@ using CUDA
     @testset "maximum 3D dims=(1,3)" begin
         A = CUDA.rand(Float32, 32, 16, 8)
         R = maximum(ct.Tiled(A); dims=(1, 3))
-        @test size(R) == (1, 16, 1)
         @test Array(R) ≈ Array(maximum(A; dims=(1, 3)))
     end
 

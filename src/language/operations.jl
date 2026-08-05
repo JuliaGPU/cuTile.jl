@@ -1397,60 +1397,38 @@ result = map(+, a, b)            # Element-wise addition (same shape required)
     Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), S)
 end
 
-# `dims` for tile reductions: a 1-indexed axis, a tuple or integer range of axes,
-# or `:`.
-# Each effective axis lowers to one `cuda_tile.reduce`; an empty region reduces
-# nothing. Following Base, axes beyond `ndims` are implicit size-1 dimensions
-# and reduce as a no-op; axes < 1 error during codegen.
-const ReduceDims = Union{Integer, Tuple{Vararg{Integer}}, AbstractRange{<:Integer}}
-const ReduceRegion = Union{Colon, ReduceDims}
-_reduce_dims_tuple(dims::Integer) = (dims,)
-_reduce_dims_tuple(dims::Tuple{Vararg{Integer}}) = dims
-
-_insert_reduce_dim(d, ::Tuple{}) = (d,)
-function _insert_reduce_dim(d, dims::Tuple)
-    head = first(dims)
-    d == head && return dims
-    d < head ? (d, dims...) : (head, _insert_reduce_dim(d, Base.tail(dims))...)
+function reduction_dims(dims, n)
+    isempty(dims) && return ()
+    eltype(dims) <: Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
+    invalid = minimum(dims; init=1)
+    invalid < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $invalid"))
+    foldl(1:n; init=()) do region, dim
+        dim in dims ? (region..., dim) : region
+    end
 end
+reduction_dims(::Colon, _) = Colon()
 
-_canonical_reduce_dims(::Tuple{}, n::Int) = ()
-function _canonical_reduce_dims(dims::Tuple, n::Int)
-    tail = _canonical_reduce_dims(Base.tail(dims), n)
-    first(dims) <= n ? _insert_reduce_dim(first(dims), tail) : tail
+function reduce_tiles(tiles::Tuple, dims::Tuple, f, init::Tuple)
+    foldl(dims; init=tiles) do reduced, dim
+        Intrinsics.reduce(reduced, dim - 1, f, init)
+    end
 end
-
-_canon_reduce_dims(dims::ReduceDims, n::Int) =
-    _canonical_reduce_dims(_reduce_dims_tuple(dims), n)
-function _canon_reduce_dims(dims::AbstractRange{<:Integer}, n::Int)
-    invalid = !isempty(dims) && min(first(dims), last(dims)) < 1
-    invalid && return (min(first(dims), last(dims)),)
-    candidates = ntuple(d -> d in dims ? d : n + 1, n)
-    _canonical_reduce_dims(candidates, n)
-end
-_canon_reduce_dims(::Colon, ::Int) = Colon()
-
-_reduce_tiles(tiles::Tuple, ::Tuple{}, f, init::Tuple) = tiles
-_reduce_tiles(tiles::Tuple, dims::Tuple, f, init::Tuple) =
-    _reduce_tiles(Intrinsics.reduce(tiles, first(dims) - 1, f, init),
-                  Base.tail(dims), f, init)
-_reduction_scalar(tile::Tile) = Intrinsics.to_scalar(reshape(tile, ()))
-function _reduce_tiles(tiles::Tuple, ::Colon, f, init::Tuple)
-    dims = ntuple(identity, ndims(first(tiles)))
-    map(_reduction_scalar, _reduce_tiles(tiles, dims, f, init))
+function reduce_tiles(tiles::Tuple, ::Colon, f, init::Tuple)
+    reduced = reduce_tiles(tiles, ntuple(identity, ndims(first(tiles))), f, init)
+    map(tile -> Intrinsics.to_scalar(reshape(tile, ())), reduced)
 end
 
 """
-    mapreduce(identity, f, tile::Tile{T,S}; dims, init) -> Tile or scalar
-    mapreduce(f, op, tile::Tile{T,S}; dims, init) -> Tile or scalar
-    mapreduce(identity, f, tile1, tile2, ...; dims, init) -> Tuple{Tile...}
+    mapreduce(identity, f, tile::Tile{T,S}; dims, init)
+    mapreduce(f, op, tile::Tile{T,S}; dims, init)
+    mapreduce(identity, f, tile1, tile2, ...; dims, init)
 
 Reduce one or more tiles along `dims` using binary function `f`.
 
-`dims` is a 1-indexed axis, a tuple or integer range of axes, or `:`. Each
-reduced axis becomes size 1 (Julia semantics). `dims=:` reduces all axes and
-returns a scalar. `dims=()` reduces nothing and returns the (mapped) input
-unchanged.
+`dims` must be a compile-time constant and may be an integer, an iterable of
+integers, or `:`. Dimensions form a region, so order and repetitions do not
+matter and dimensions above `ndims(tile)` are no-ops. Reduced dimensions are
+retained with size 1; `:` returns a scalar.
 
 The single-tile form reduces a single tile along `dims` with identity element
 `init`. The multi-tile form reduces several same-shaped tiles simultaneously:
@@ -1474,35 +1452,32 @@ vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
 ```
 """
 @inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
-                                dims::ReduceRegion, init) where {T<:Number, S}
-    _reduce_tiles((tile,), _canon_reduce_dims(dims, ndims(tile)), f, (T(init),))[1]
+                                dims, init) where {T<:Number, S}
+    reduce_tiles((tile,), reduction_dims(dims, ndims(tile)), f, (T(init),))[1]
 end
 
 @inline function Base.mapreduce(f, op, tile::Tile{T,S};
-                                dims::ReduceRegion, init) where {T<:Number, S}
+                                dims, init) where {T<:Number, S}
     reduce(op, map(f, tile); dims, init)
 end
 
 @inline function Base.mapreduce(::typeof(identity), f,
                                 tile1::Tile{<:Any,S}, tile2::Tile{<:Any,S},
                                 tiles::Tile{<:Any,S}...;
-                                dims::ReduceRegion,
+                                dims,
                                 init::Tuple{Any, Any, Vararg{Any}}) where {S}
     all_tiles = (tile1, tile2, tiles...)
     function _combiner(args...)
         f(_deinterleave_accs(args...), _deinterleave_elems(args...))
     end
-    _reduce_tiles(all_tiles, _canon_reduce_dims(dims, ndims(tile1)), _combiner, init)
+    reduce_tiles(all_tiles, reduction_dims(dims, ndims(tile1)), _combiner, init)
 end
 
 """
-    reduce(f, tile::Tile{T,S}; dims, init) -> Tile or scalar
+    reduce(f, tile::Tile{T,S}; dims, init)
 
 Reduce a tile along the specified dimensions using binary function `f` with
-identity element `init`. `dims` is a 1-indexed axis, a tuple or integer range
-of axes, or `:`. Each reduced axis becomes size 1 (Julia semantics). `dims=:`
-reduces all axes and returns a scalar. `dims=()` reduces nothing and returns
-the tile unchanged.
+identity element `init`. See [`mapreduce`](@ref) for supported `dims` values.
 
 Supported functions: `+`, `*`, `max`, `min`.
 
@@ -1512,7 +1487,7 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
 total = reduce(+, tile; dims=(1, 2), init=zero(Float32))
 ```
 """
-@inline function Base.reduce(f, tile::Tile{T,S}; dims::ReduceRegion, init) where {T<:Number, S}
+@inline function Base.reduce(f, tile::Tile{T,S}; dims, init) where {T<:Number, S}
     mapreduce(identity, f, tile; dims, init)
 end
 
@@ -1539,9 +1514,9 @@ for (f, dim_helper, all_helper, ignore_op, propagate_op, integer_op, init_expr) 
     (:minimum, :_minimum_dim, :_minimum_all,
      :_min_ignore_nan, :_min_propagate_nan, :min, :(typemax(T))),
 ]
-    @eval @inline $dim_helper(tile::Tile{T}, dims::ReduceRegion, ::Val{P}) where {T<:AbstractFloat, P} =
+    @eval @inline $dim_helper(tile::Tile{T}, dims, ::Val{P}) where {T<:AbstractFloat, P} =
         reduce(P ? $propagate_op : $ignore_op, tile; dims, init=$init_expr)
-    @eval @inline $dim_helper(tile::Tile{T}, dims::ReduceRegion, ::Val) where {T<:Integer} =
+    @eval @inline $dim_helper(tile::Tile{T}, dims, ::Val) where {T<:Integer} =
         reduce($integer_op, tile; dims, init=$init_expr)
 
     @eval @inline $all_helper(tile::Tile{T,Tuple{}}, ::Val) where {T<:Number} =
@@ -1570,38 +1545,33 @@ for f in (:sum, :prod)
 end
 
 """
-    any(tile::Tile{Bool,S}; dims) -> Tile or Bool
+    any(tile::Tile{Bool,S}; dims)
 
-Logical OR reduction over `dims`, which accepts a 1-indexed axis, a tuple or
-integer range of axes, or `:`. Reduced dimensions become size 1; `dims=:`
-returns a scalar.
+Logical OR reduction over `dims`.
 """
-@inline Base.any(tile::Tile{Bool,S}; dims::ReduceRegion) where {S} =
+@inline Base.any(tile::Tile{Bool,S}; dims) where {S} =
     reduce(|, tile; dims, init=false)
 
 """
-    all(tile::Tile{Bool,S}; dims) -> Tile or Bool
+    all(tile::Tile{Bool,S}; dims)
 
-Logical AND reduction over `dims`, which accepts a 1-indexed axis, a tuple or
-integer range of axes, or `:`. Reduced dimensions become size 1; `dims=:`
-returns a scalar.
+Logical AND reduction over `dims`.
 """
-@inline Base.all(tile::Tile{Bool,S}; dims::ReduceRegion) where {S} =
+@inline Base.all(tile::Tile{Bool,S}; dims) where {S} =
     reduce(&, tile; dims, init=true)
 
 """
-    count(tile::Tile{Bool,S}; dims) -> Tile or Int32
+    count(tile::Tile{Bool,S}; dims)
 
-Count true elements along `dims`, which accepts a 1-indexed axis, a tuple or
-integer range of axes, or `:`. Apply predicates via broadcasting before
-calling count:
+Count true elements along `dims`. Apply predicates via broadcasting before
+calling `count`:
 
 # Example
 ```julia
 n_positive = count(tile .> 0.0f0; dims=1)
 ```
 """
-@inline function Base.count(tile::Tile{Bool,S}; dims::ReduceRegion) where {S}
+@inline function Base.count(tile::Tile{Bool,S}; dims) where {S}
     sum(convert(Tile{Int32}, tile); dims)
 end
 

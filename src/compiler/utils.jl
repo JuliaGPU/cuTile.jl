@@ -587,18 +587,15 @@ function resolve_tuple(ctx::CGCtx, @nospecialize(arg), name::AbstractString)
         ]
     end
 
-    # Multi-value tuple result consumed whole (e.g. one intrinsic's tuple
-    # output fed into another, as in chained reduce): split into component
-    # CGVals the same way getfield extraction does.
     if tv.v isa Vector{Value}
         T_jl = CC.widenconst(tv.jltype)
         T_jl isa DataType && T_jl <: Tuple || throw(IRError("$name must be a tuple"))
         return CGVal[
-            let elem_type = T_jl.parameters[i]
-                CGVal(tv.v[i], tile_type_for_julia!(ctx, elem_type), elem_type,
-                      RowMajorShape(extract_tile_shape(elem_type)))
+            let elem_T = T_jl.parameters[i]
+                CGVal(tv.v[i], tile_type_for_julia!(ctx, elem_T), elem_T,
+                      RowMajorShape(extract_tile_shape(elem_T)))
             end
-            for i in 1:length(tv.v)
+            for i in eachindex(tv.v)
         ]
     end
 

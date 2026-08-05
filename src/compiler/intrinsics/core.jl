@@ -795,7 +795,7 @@ function emit_reduce!(ctx::CGCtx, args)
     input_shape = tile_tvs[1].shape
     isempty(input_shape) && throw(IRError("Cannot reduce scalar tile"))
 
-    # Flip axis from Julia 0-indexed to Tile IR order
+    # Julia and Tile IR use opposite dimension orders.
     ndim = length(input_shape)
     0 <= julia_axis < ndim ||
         throw(IRError("reduce() dimension must be in 1:$ndim; got $(julia_axis + 1)"))
