@@ -1048,6 +1048,30 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        # Constant integer ranges lower like their equivalent tuples
+        @test @filecheck begin
+            @check_label "entry"
+            @check_count 2 "reduce"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                Base.donotdelete(sum(tile; dims=1:2))
+                return
+            end
+        end
+
+        # Colon reduces all dimensions to a scalar
+        @test @filecheck begin
+            @check_label "entry"
+            @check_count 2 "reduce"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                Base.donotdelete(sum(tile; dims=:))
+                return
+            end
+        end
+
         # dims=() and axes beyond ndims reduce nothing (Base parity)
         @test @filecheck begin
             @check_label "entry"
