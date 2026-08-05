@@ -345,11 +345,16 @@ Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dim:
 # Scalars lift to unit tiles as in bracket syntax; `dims` must fold to a
 # compile-time constant (a literal or Val). No @constprop needed: @inline
 # frames with a literal kwarg const-prop through the kwcall wrapper on
-# their own (verified by the construction tests).
+# their own (verified by the construction tests). Single-element tuple dims
+# normalize like Base's; multi-dim tuples mean block-diagonal concatenation
+# with zero padding, which has no tile lowering and throws.
 Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.cat(x::TileElem, xs::TileElem...; dims) =
     _cat_dims(dims, x, xs...)
 
-@inline _cat_dims(::Val{D}, xs::TileElem...) where {D} = _cat_dims(Int(D), xs...)
+@inline _cat_dims(::Val{D}, xs::TileElem...) where {D} = _cat_dims(D, xs...)
+@inline _cat_dims(dims::Tuple{Any}, xs::TileElem...) = _cat_dims(dims[1], xs...)
+@inline _cat_dims(dims::Tuple, xs::TileElem...) =
+    throw(ArgumentError("cat with multiple dims concatenates block-diagonally, padding with zeros; that has no tile equivalent — build the blocks explicitly, e.g. [a zeros(T, size_a); zeros(T, size_b) b]"))
 @inline function _cat_dims(dims::Integer, xs::TileElem...)
     d = Int(dims)
     _hvncat_tiles(Val(d), _promote_tiles(map(Base.Fix1(_lift_nd, Val(d)), xs)...)...)

@@ -838,6 +838,37 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        # dims normalizes through Val and single-element tuples like Base's
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+                             ct.TileArray{Float32,3,spec3d}}) do a, b
+                @check "cat {{.*}}-> tile<2x2x2xf32>"
+                t = ct.load(a, ct.bid(1), (2, 2))
+                ct.store(b, ct.bid(1), cat(t, t; dims=Val(3)))
+                return
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+                             ct.TileArray{Float32,3,spec3d}}) do a, b
+                @check "cat {{.*}}-> tile<2x2x2xf32>"
+                t = ct.load(a, ct.bid(1), (2, 2))
+                ct.store(b, ct.bid(1), cat(t, t; dims=(3,)))
+                return
+            end
+        end
+
+        # errors: multi-dim tuple dims is Base's block-diagonal cat, which
+        # pads with zeros and has no tile equivalent
+        @test_throws "block-diagonally" code_tiled(
+                Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            t = ct.load(a, ct.bid(1), (2, 2))
+            Base.donotdelete(cat(t, t; dims=(1, 2)))
+            return
+        end
+
         # errors: non-power-of-2 length
         @test_throws "power of 2" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
             tile = [1, 2, 3]
