@@ -184,7 +184,6 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "dropdims" begin
-        # dropdims on dim 1: (1, 8) -> dropdims(; dims=2) -> (8,)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
@@ -197,7 +196,6 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # dropdims on dim 2: (8, 1) -> dropdims(; dims=2) -> (8,)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
@@ -208,6 +206,23 @@ spec4d = ct.ArraySpec{4}(16, true)
                 ct.store(b, pid, squeezed)
                 return
             end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tile = ct.load(a, (1, 1), (1, 1))
+                @check "reshape"
+                Base.donotdelete(dropdims(tile; dims=(2, 1)))
+                return
+            end
+        end
+
+        @test_throws "dropped dims must be unique" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            tile = ct.load(a, (1, 1), (1, 1))
+            Base.donotdelete(dropdims(tile; dims=(1, 1)))
+            return
         end
     end
 

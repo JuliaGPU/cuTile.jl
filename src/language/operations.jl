@@ -1668,25 +1668,34 @@ end
 end
 
 
+check_drop_dims(::Tile, ::Tuple{}, ::Any) = nothing
+function check_drop_dims(tile::Tile, dims::Tuple, seen=())
+    dim = first(dims)
+    1 <= dim <= ndims(tile) ||
+        throw(ArgumentError("dropped dims must be in range 1:ndims(A)"))
+    size(tile, dim) == 1 || throw(ArgumentError("dropped dims must all be size 1"))
+    dim in seen && throw(ArgumentError("dropped dims must be unique"))
+    check_drop_dims(tile, Base.tail(dims), (seen..., dim))
+end
+
 """
     dropdims(tile::Tile{T,S}; dims) -> Tile{T, squeezed_shape}
 
-Remove singleton dimensions from a tile. The specified dimensions must have
-size 1. This is the inverse of the dimension-preserving behavior of `sum`,
-`prod`, `maximum`, and `minimum`.
+Remove the singleton dimensions in `dims` from a tile.
 
 # Example
 ```julia
-sums = sum(tile; dims=2)           # (64, 1)
-squeezed = dropdims(sums; dims=2)  # (64,)
+sums = sum(tile; dims=(1, 2))
+scalar_tile = dropdims(sums; dims=(1, 2))
 ```
 """
-@inline Base.dropdims(tile::Tile; dims::Integer) =
-    _dropdims(tile, Val(dims))
-
-@inline function _dropdims(tile::Tile, ::Val{D}) where {D}
-    new_shape = ntuple(i -> i < D ? size(tile, i) : size(tile, i + 1), Val(ndims(tile) - 1))
-    reshape(tile, new_shape)
+function Base.dropdims(tile::Tile; dims::Union{Integer,Dims})
+    region = dims isa Integer ? (Int(dims),) : dims
+    check_drop_dims(tile, region)
+    shape = foldl(1:ndims(tile); init=()) do shape, dim
+        dim in region ? shape : (shape..., size(tile, dim))
+    end
+    reshape(tile, shape)
 end
 
 #=============================================================================
