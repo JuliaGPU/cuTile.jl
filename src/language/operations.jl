@@ -1401,8 +1401,9 @@ reduction_dims(dim::Integer, ::Tuple) = dim
 function reduction_dims(dims, shape::Tuple)
     isempty(dims) && return ()
     eltype(dims) <: Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
-    invalid = minimum(dims; init=1)
-    invalid < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $invalid"))
+    invalid = minimum(dims)
+    # Pass invalid dimensions through to Intrinsics.reduce for validation.
+    invalid < 1 && return invalid
     reduction_dims(dims, shape, 1)
 end
 reduction_dims(::Colon, ::Tuple) = Colon()
