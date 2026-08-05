@@ -71,6 +71,14 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
     dim_order = (filter(d -> d in reduce_dims, 1:N)..., filter(d -> !(d in reduce_dims), 1:N)...)
     ts = _compute_tile_sizes(size(A), dim_order)
 
+    # dims=(): nothing to reduce; each block maps its tile through op(init, f(x))
+    if isempty(reduce_dims)
+        grid = ntuple(d -> cld(size(A, d), ts[d]), N)
+        reduce_stride = ntuple(d -> Int32(1), N)
+        return _launch_mapreduce!(grid, cuTileconvert(R), src_ta, f, op, ts, reduce_dims,
+                                  init, PaddingMode.Zero, reduce_stride, nothing)
+    end
+
     pad_mode = _padding_for_neutral(init)
     if pad_mode === nothing
         has_oob = any(i -> size(A, i) % ts[i] != 0, 1:N)
@@ -78,14 +86,6 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
                          "(each dimension divisible by tile size) because no safe padding mode exists. " *
                          "Supported without alignment: +, max/min (float), |.")
         pad_mode = PaddingMode.Zero
-    end
-
-    # dims=(): nothing to reduce; each block maps its tile through op(init, f(x))
-    if isempty(reduce_dims)
-        grid = ntuple(d -> cld(size(A, d), ts[d]), N)
-        reduce_stride = ntuple(d -> Int32(1), N)
-        return _launch_mapreduce!(grid, cuTileconvert(R), src_ta, f, op, ts, reduce_dims,
-                                  init, pad_mode, reduce_stride, nothing)
     end
 
     # Pick the largest reduced dim for potential parallelization

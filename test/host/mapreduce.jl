@@ -48,6 +48,13 @@ using CUDA
         @test Array(R) ≈ Array(A)
     end
 
+    @testset "non-aligned no-op dims" begin
+        A = CUDA.fill(Int32(2), 17)
+        @test Array(prod(ct.Tiled(A); dims=())) == Array(prod(A; dims=()))
+        @test Array(maximum(ct.Tiled(A); dims=())) == Array(maximum(A; dims=()))
+        @test Array(prod(ct.Tiled(A); dims=2)) == Array(prod(A; dims=2))
+    end
+
     @testset "dims beyond ndims (Base parity)" begin
         A = CUDA.rand(Float32, 64, 32)
         R = sum(ct.Tiled(A); dims=3)
