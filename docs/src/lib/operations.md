@@ -51,7 +51,7 @@ between two tiles is matrix multiplication, not an element-wise product.
 | `ct.insert(tile, index, value)` | Replace a non-overlapping sub-tile (Tile IR v13.4+) |
 | `ct.cat((a, b), axis)` | Concatenate tiles |
 | `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
-| `dropdims(tile; dims)` | Remove singleton dimensions |
+| `dropdims(tile; dims)` | Remove one or more singleton dimensions |
 
 
 ## Matrix multiplication
@@ -83,20 +83,23 @@ Requires Blackwell. The supported operand/scale/accumulator dtypes and block siz
 
 | Operation | Description |
 |-----------|-------------|
-| `sum(tile; dims)` | Sum along axis |
-| `prod(tile; dims)` | Product along axis |
-| `maximum(tile; dims, propagate_nan)` | Maximum along axis |
-| `minimum(tile; dims, propagate_nan)` | Minimum along axis |
-| `any(tile; dims)` | Logical OR along axis |
-| `all(tile; dims)` | Logical AND along axis |
-| `count(tile; dims)` | Count `true` elements along axis |
+| `sum(tile; dims)` | Sum over dimensions |
+| `prod(tile; dims)` | Product over dimensions |
+| `maximum(tile; dims, propagate_nan)` | Maximum over dimensions |
+| `minimum(tile; dims, propagate_nan)` | Minimum over dimensions |
+| `any(tile; dims)` | Logical OR over dimensions |
+| `all(tile; dims)` | Logical AND over dimensions |
+| `count(tile; dims)` | Count `true` elements over dimensions |
 | `argmax(tile; dims, propagate_nan)` | 1-based index of maximum along axis |
 | `argmin(tile; dims, propagate_nan)` | 1-based index of minimum along axis |
 | `cumsum(tile; dims, rev)` | Cumulative sum |
 | `cumprod(tile; dims, rev)` | Cumulative product |
 
-Following `Base` semantics, reductions keep the reduced dimension as size 1. Use `dropdims`
-to remove it.
+`dims` must be a compile-time constant. It may be an integer, an iterable of integers, or `:`;
+order and repetitions do not matter. Following `Base` semantics, reductions retain reduced
+dimensions with size 1. `dims=:` instead returns a scalar. Use `dropdims` with an integer or
+tuple of integers to remove retained dimensions. `argmax`, `argmin`, and scans remain
+single-axis operations.
 
 
 ## Higher-order functions
@@ -105,8 +108,8 @@ to remove it.
 |-----------|-------------|
 | `map(f, tiles...)` | Apply function element-wise (same shape) |
 | `f.(tiles...)`, `broadcast(f, tiles...)` | Apply function with shape broadcasting |
-| `reduce(f, tile; dims, init)` | Reduction with arbitrary function |
-| `mapreduce(f, op, tile; dims, init)` | Map then reduce |
+| `reduce(f, tile; dims, init)` | Reduction over dimensions with arbitrary function |
+| `mapreduce(f, op, tile; dims, init)` | Map then reduce over dimensions |
 | `accumulate(f, tile; dims, init, rev)` | Scan/prefix-sum with arbitrary function |
 
 Any function that works on scalars "just works" when broadcast over tiles, so these cover
