@@ -1397,26 +1397,40 @@ result = map(+, a, b)            # Element-wise addition (same shape required)
     Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), S)
 end
 
-function reduction_dims(dims, n)
+reduction_dims(dim::Integer, ::Tuple) = dim
+function reduction_dims(dims, shape::Tuple)
     isempty(dims) && return ()
     eltype(dims) <: Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
     invalid = minimum(dims; init=1)
     invalid < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $invalid"))
-    foldl(1:n; init=()) do region, dim
-        dim in dims ? (region..., dim) : region
-    end
+    reduction_dims(dims, shape, 1)
 end
-reduction_dims(::Colon, _) = Colon()
+reduction_dims(::Colon, ::Tuple) = Colon()
+reduction_dims(::Any, ::Tuple{}, ::Integer) = ()
+function reduction_dims(dims, shape::Tuple, dim::Integer)
+    rest = reduction_dims(dims, Base.tail(shape), dim + 1)
+    dim in dims ? (dim, rest...) : rest
+end
 
-function reduce_tiles(tiles::Tuple, dims::Tuple, f, init::Tuple)
-    foldl(dims; init=tiles) do reduced, dim
-        Intrinsics.reduce(reduced, dim - 1, f, init)
-    end
+function reduce_tiles(tiles::Tuple, dim::Integer, f, init::Tuple)
+    dim > ndims(first(tiles)) && return tiles
+    Intrinsics.reduce(tiles, dim - 1, f, init)
 end
+reduce_tiles(tiles::Tuple, ::Tuple{}, ::Any, ::Tuple) = tiles
+reduce_tiles(tiles::Tuple, dims::Tuple, f, init::Tuple) =
+    reduce_tiles(Intrinsics.reduce(tiles, first(dims) - 1, f, init),
+                 Base.tail(dims), f, init)
 function reduce_tiles(tiles::Tuple, ::Colon, f, init::Tuple)
-    reduced = reduce_tiles(tiles, ntuple(identity, ndims(first(tiles))), f, init)
+    shape = size(first(tiles))
+    reduced = reduce_tiles(tiles, reduction_dims(1:length(shape), shape), f, init)
     map(tile -> Intrinsics.to_scalar(reshape(tile, ())), reduced)
 end
+
+function reduce_tile(tile::Tile, dim::Integer, f, init)
+    dim > ndims(tile) && return tile
+    Intrinsics.reduce((tile,), dim - 1, f, (init,))[1]
+end
+reduce_tile(tile::Tile, dims, f, init) = reduce_tiles((tile,), dims, f, (init,))[1]
 
 """
     mapreduce(identity, f, tile::Tile{T,S}; dims, init)
@@ -1453,7 +1467,7 @@ vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
 """
 @inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
                                 dims, init) where {T<:Number, S}
-    reduce_tiles((tile,), reduction_dims(dims, ndims(tile)), f, (T(init),))[1]
+    reduce_tile(tile, reduction_dims(dims, size(tile)), f, T(init))
 end
 
 @inline function Base.mapreduce(f, op, tile::Tile{T,S};
@@ -1470,7 +1484,7 @@ end
     function _combiner(args...)
         f(_deinterleave_accs(args...), _deinterleave_elems(args...))
     end
-    reduce_tiles(all_tiles, reduction_dims(dims, ndims(tile1)), _combiner, init)
+    reduce_tiles(all_tiles, reduction_dims(dims, size(tile1)), _combiner, init)
 end
 
 """
@@ -1668,14 +1682,22 @@ end
 end
 
 
-check_drop_dims(::Tile, ::Tuple{}, ::Any) = nothing
-function check_drop_dims(tile::Tile, dims::Tuple, seen=())
+check_drop_dims(tile::Tile, dims::Tuple) = check_drop_dims(tile, dims, ())
+check_drop_dims(::Tile, ::Tuple{}, ::Tuple) = nothing
+function check_drop_dims(tile::Tile, dims::Tuple, seen::Tuple)
     dim = first(dims)
     1 <= dim <= ndims(tile) ||
         throw(ArgumentError("dropped dims must be in range 1:ndims(A)"))
     size(tile, dim) == 1 || throw(ArgumentError("dropped dims must all be size 1"))
     dim in seen && throw(ArgumentError("dropped dims must be unique"))
     check_drop_dims(tile, Base.tail(dims), (seen..., dim))
+end
+
+drop_shape(shape::Tuple, dims::Tuple) = drop_shape(shape, dims, 1)
+drop_shape(::Tuple{}, ::Tuple, ::Integer) = ()
+function drop_shape(shape::Tuple, dims::Tuple, dim::Integer)
+    rest = drop_shape(Base.tail(shape), dims, dim + 1)
+    dim in dims ? rest : (first(shape), rest...)
 end
 
 """
@@ -1692,10 +1714,7 @@ scalar_tile = dropdims(sums; dims=(1, 2))
 function Base.dropdims(tile::Tile; dims::Union{Integer,Dims})
     region = dims isa Integer ? (Int(dims),) : dims
     check_drop_dims(tile, region)
-    shape = foldl(1:ndims(tile); init=()) do shape, dim
-        dim in region ? shape : (shape..., size(tile, dim))
-    end
-    reshape(tile, shape)
+    reshape(tile, drop_shape(size(tile), region))
 end
 
 #=============================================================================

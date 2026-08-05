@@ -1093,11 +1093,19 @@ spec4d = ct.ArraySpec{4}(16, true)
             return
         end
 
-        @test_throws "reduce() dimension must be in 1:2" code_tiled(
+        @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
             Tuple{ct.TileArray{Float32,2,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(ct.Intrinsics.reduce((tile,), -1, +, (0.0f0,)))
+            return
+        end
+
+        @test_throws "reduce() dimension must be in 1:2; got 3" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(ct.Intrinsics.reduce((tile,), 2, +, (0.0f0,)))
             return
         end
 

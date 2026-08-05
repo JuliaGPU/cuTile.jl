@@ -797,7 +797,9 @@ function emit_reduce!(ctx::CGCtx, args)
 
     # Julia and Tile IR use opposite dimension orders.
     ndim = length(input_shape)
-    0 <= julia_axis < ndim ||
+    julia_axis >= 0 ||
+        throw(IRError("region dimension(s) must be ≥ 1, got $(julia_axis + 1)"))
+    julia_axis < ndim ||
         throw(IRError("reduce() dimension must be in 1:$ndim; got $(julia_axis + 1)"))
     axis = ndim - 1 - julia_axis
 

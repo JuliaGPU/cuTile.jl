@@ -207,6 +207,12 @@ end
         return
     end
 
+    function sum_dims_colon_3d_kernel(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,1})
+        tile = ct.load(a, (1, 1, 1), (4, 8, 16))
+        b[1] = sum(tile; dims=:)
+        return
+    end
+
     d1, d2, d3 = 4, 8, 16
     a = CUDA.rand(Float32, d1, d2, d3) .- 0.5f0
     a_cpu = Array(a)
@@ -218,6 +224,10 @@ end
     b = CUDA.zeros(Float32, 1, d2, 1)
     @cuda backend=cuTile mapreduce_dims13_kernel(a, b)
     @test Array(b) ≈ mapreduce(abs, +, a_cpu; dims=(1, 3)) rtol=1e-3
+
+    b = CUDA.zeros(Float32, 1)
+    @cuda backend=cuTile sum_dims_colon_3d_kernel(a, b)
+    @test Array(b)[1] ≈ sum(a_cpu) rtol=1e-3
 end
 
 @testset "count dimensions" begin
