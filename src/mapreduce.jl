@@ -150,8 +150,10 @@ function _mapreduce(f, op, A::AbstractArray; dims, init)
 
     reduce_dims = dims === Colon() ? ntuple(identity, N) :
                   dims isa Integer ? (dims,) : Tuple(dims)
-    all(>=(1), reduce_dims) ||
-        throw(ArgumentError("region dimension(s) must be ≥ 1, got $dims"))
+    for d in reduce_dims
+        d isa Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
+        Int(d) < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $d"))
+    end
     # Following Base, dims beyond ndims are implicit size-1 dimensions: no-op
     reduce_dims = filter(<=(N), reduce_dims)
     out_size = ntuple(d -> d in reduce_dims ? 1 : size(A, d), N)

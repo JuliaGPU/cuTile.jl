@@ -64,6 +64,9 @@ using CUDA
         @test size(R) == (64, 1)
         @test Array(R) ≈ Array(sum(A; dims=2))
         @test_throws ArgumentError sum(ct.Tiled(A); dims=0)
+        @test_throws ArgumentError("reduced dimension(s) must be integers") begin
+            sum(ct.Tiled(A); dims=(1.0,))
+        end
     end
 
     @testset "maximum 3D dims=(1,3)" begin
