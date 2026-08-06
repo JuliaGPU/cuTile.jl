@@ -741,6 +741,19 @@ function is_ghost_type(@nospecialize(T))
     end
 end
 
+function is_empty_tile_type(T)
+    T isa DataType && T <: Tile && isconcretetype(T) && 0 in size(T)
+end
+
+function contains_empty_tile_type(T)
+    is_empty_tile_type(T) && return true
+    T isa DataType && T <: Tuple || return false
+    for parameter in T.parameters
+        is_empty_tile_type(parameter) && return true
+    end
+    return false
+end
+
 
 """
     flat_field_count(T) -> Int

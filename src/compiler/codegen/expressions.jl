@@ -40,12 +40,13 @@ end
 
 Emit bytecode for a `:new` expression (struct construction).
 
-In Tile IR codegen, only ghost types (zero-size immutables like `Val{V}`,
-`Constant{T,V}`) are supported — these have no runtime representation.
+In Tile IR codegen, ghost types and zero-volume tiles have no runtime
+representation. Other struct construction is unsupported.
 """
 function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     T = CC.widenconst(result_type)
     is_ghost_type(T) && return ghost_value(T)
+    is_empty_tile_type(T) && return ghost_value(T)
     # On older Julia versions, method errors are emitted as
     # %new(MethodError, func, args_tuple, world) instead of Core.throw_methoderror
     if T === MethodError
@@ -53,6 +54,16 @@ function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         _throw_method_error(ctx, expr.args[2:end-1])
     end
     throw(IRError("Struct construction not supported in Tile IR: $T"))
+end
+
+function check_no_empty_tile_operands(ctx::CGCtx, func, call_args)
+    parentmodule(typeof(func)) === Intrinsics || return
+    for arg in call_args
+        T = CC.widenconst(argextype(ctx, arg))
+        contains_empty_tile_type(T) || continue
+        throw(IRError("unsupported operation on an empty tile: tiles with a zero extent " *
+                      "support only concatenation, element-type conversion, and shape queries"))
+    end
 end
 
 function emit_assignment!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
@@ -117,6 +128,7 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         return emit_getglobal!(ctx, call_args)
     end
 
+    check_no_empty_tile_operands(ctx, func, call_args)
     result = emit_intrinsic!(ctx, func, call_args)
     result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
@@ -142,6 +154,7 @@ function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         return emit_getglobal!(ctx, call_args)
     end
 
+    check_no_empty_tile_operands(ctx, func, call_args)
     result = emit_intrinsic!(ctx, func, call_args)
     result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
