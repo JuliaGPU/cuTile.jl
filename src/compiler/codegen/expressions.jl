@@ -59,7 +59,7 @@ end
 function check_no_empty_tile_operands(ctx::CGCtx, func, call_args)
     parentmodule(typeof(func)) === Intrinsics || return
     for arg in call_args
-        T = CC.widenconst(argextype(ctx, arg))
+        T = value_type(ctx.current_block, arg)
         contains_empty_tile_type(T) || continue
         throw(IRError("unsupported operation on an empty tile: tiles with a zero extent " *
                       "support only concatenation, element-type conversion, and shape queries"))
