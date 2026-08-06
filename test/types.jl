@@ -34,6 +34,15 @@ end
     @test length(ct.Tile{Float32, Tuple{16}}) == 16
     @test length(ct.Tile{Float32, Tuple{16, 32}}) == 512
 
+    for Shape in (Tuple{4}, Tuple{4, 0, 8})
+        T = ct.Tile{Float32, Shape}
+        @test typeof(T()) === T
+        @test isbitstype(T)
+        @test !Base.issingletontype(T)
+        @test sizeof(T) == 1
+        @test fieldcount(T) == 0
+    end
+
     # similar_type tests
     @test ct.similar_type(ct.Tile{Float32, Tuple{16}}, Float64) == ct.Tile{Float64, Tuple{16}}
     @test ct.similar_type(ct.Tile{Float32, Tuple{16}}, Int32, (8, 8)) == ct.Tile{Int32, Tuple{8, 8}}
