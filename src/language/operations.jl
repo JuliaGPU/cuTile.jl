@@ -1397,11 +1397,11 @@ result = map(+, a, b)            # Element-wise addition (same shape required)
     Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), S)
 end
 
-reduction_dims(dim::Integer, ::Tuple) = dim
+reduction_dims(dim::Integer, ::Tuple) = Int(dim)
 function reduction_dims(dims, shape::Tuple)
     isempty(dims) && return ()
     eltype(dims) <: Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
-    invalid = minimum(dims)
+    invalid = min(Int(minimum(dims)), Int(maximum(dims)))
     # Pass invalid dimensions through to Intrinsics.reduce for validation.
     invalid < 1 && return invalid
     reduction_dims(dims, shape, 1)

@@ -45,7 +45,7 @@ using CUDA
         A = CUDA.rand(Float32, 64, 32)
         R = sum(ct.Tiled(A); dims=(2, 3))
         @test Array(R) ≈ Array(sum(A; dims=2))
-        @test Array(sum(ct.Tiled(A); dims=big(typemax(Int)) + 1)) ≈ Array(A)
+        @test_throws InexactError sum(ct.Tiled(A); dims=big(typemax(Int)) + 1)
         @test_throws ArgumentError sum(ct.Tiled(A); dims=0)
         @test_throws ArgumentError("reduced dimension(s) must be integers") begin
             sum(ct.Tiled(A); dims=(1.0,))

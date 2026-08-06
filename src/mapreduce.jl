@@ -152,7 +152,7 @@ function _mapreduce(f, op, A::AbstractArray; dims, init)
              dims isa Integer ? (dims,) : Tuple(dims)
     for d in region
         d isa Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
-        d < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $d"))
+        Int(d) < 1 && throw(ArgumentError("region dimension(s) must be ≥ 1, got $d"))
     end
     reduce_dims = Tuple(d for d in 1:N if d in region)
     out_size = ntuple(d -> d in reduce_dims ? 1 : size(A, d), N)
