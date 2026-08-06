@@ -498,17 +498,17 @@ given padding mode on loads and clipped stores.
     build_tiled_view(a, Val(tile_shape), Val(step), Val(padding_mode), Val(order))
 end
 
-@inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Shape, Padding}) where
-        {A, RequestedShape, Shape, Padding}
+@inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Shape, Padding},
+                                padding=Padding) where {A, RequestedShape, Shape, Padding}
     parent = tiles.parent
     tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
-    Intrinsics.make_partition_view(tv, tiled_view_shape(tiles), Padding, tiled_view_order(tiles))
+    Intrinsics.make_partition_view(tv, tiled_view_shape(tiles), padding, tiled_view_order(tiles))
 end
-@inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Step, Padding}) where
-        {A, RequestedShape, Shape, Step, Padding}
+@inline function make_tile_view(tiles::TiledView{A, RequestedShape, Shape, Step, Padding},
+                                padding=Padding) where {A, RequestedShape, Shape, Step, Padding}
     parent = tiles.parent
     tv = Intrinsics.make_tensor_view(typeof(parent), parent.ptr, parent.sizes, parent.strides)
-    Intrinsics.make_strided_view(tv, tiled_view_shape(tiles), tiled_view_step(tiles), Padding,
+    Intrinsics.make_strided_view(tv, tiled_view_shape(tiles), tiled_view_step(tiles), padding,
                                  tiled_view_order(tiles))
 end
 
@@ -526,7 +526,8 @@ end
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing) where {A, N}
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
-    view = make_tile_view(tiles)
+    view = check_bounds ? make_tile_view(tiles) :
+                          make_tile_view(tiles, PaddingMode.Undetermined)
     tile = load_tile_view(view, latency, allow_tma, promote(index...) .- One(), check_bounds)
     reshape(tile, tiled_view_requested_shape(tiles))
 end
@@ -631,7 +632,9 @@ tile = ct.load(arr, (bidy, bidx), (TN, TM); order=(2, 1))
                       allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
-    pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
+    pv = check_bounds ?
+         Intrinsics.make_partition_view(tv, matched, padding_mode, order) :
+         Intrinsics.make_partition_view(tv, matched, PaddingMode.Undetermined, order)
     tile = Intrinsics.load_partition_view(
         pv, latency, allow_tma, promote(index...) .- One(), check_bounds)
     reshape(tile, shape)
@@ -709,8 +712,11 @@ The sparse tile index and dense range starts are one-based at this boundary.
     parent_array = parent(view)
     tensor_view = Intrinsics.make_tensor_view(typeof(parent_array), parent_array.ptr,
                                               parent_array.sizes, parent_array.strides)
-    gather_view = Intrinsics.make_gather_scatter_view(
-        tensor_view, shape, gather_scatter_sparse_dim(view), padding_mode)
+    sparse_dim = gather_scatter_sparse_dim(view)
+    gather_view = check_bounds ?
+        Intrinsics.make_gather_scatter_view(tensor_view, shape, sparse_dim, padding_mode) :
+        Intrinsics.make_gather_scatter_view(tensor_view, shape, sparse_dim,
+                                            PaddingMode.Undetermined)
     Intrinsics.load_gather_scatter_view(
         gather_view, latency, allow_tma, _gather_scatter_indices(view), check_bounds)
 end
