@@ -504,6 +504,15 @@ spec4d = ct.ArraySpec{4}(16, true)
                 return
             end
         end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: [{{\\[}}1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00], [1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]]> : tile<2x4xf32>"
+            code_tiled(Tuple{}) do
+                Base.donotdelete(ct.broadcast_to(Float32[1, 2, 3, 4], (4, 2)))
+                return
+            end
+        end
     end
 
     @testset "literal pow" begin
@@ -1980,24 +1989,36 @@ end
     end
 
     @testset "scalar broadcast" begin
-        # Distinct constants per line so CSE doesn't fold the broadcasts.
+        # Distinct constants per line so CSE doesn't fold them. Constant
+        # scalars broadcast as shaped splat ConstantOps, not BroadcastOps.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
-                @check "broadcast"
+                @check "constant <f32: 1.000000e+00> : tile<16xf32>"
                 @check "addf"
                 Base.donotdelete(tile .+ 1.0f0)
-                @check "broadcast"
+                @check "constant <f32: 1.500000e+00> : tile<16xf32>"
                 @check "subf"
                 Base.donotdelete(1.5f0 .- tile)
-                @check "broadcast"
+                @check "constant <f32: 2.000000e+00> : tile<16xf32>"
                 @check "mulf"
                 Base.donotdelete(tile .* 2.0f0)
-                @check "broadcast"
+                @check "constant <f32: 3.000000e+00> : tile<16xf32>"
                 @check "divf"
                 Base.donotdelete(tile ./ 3.0f0)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: 0.000000e+00> : tile<4xf32>"
+            @check "constant <f32: 1.000000e+00> : tile<4xf32>"
+            @check "addf {{.*}} : tile<4xf32>"
+            code_tiled(Tuple{}) do
+                Base.donotdelete(zeros(Float32, (4,)) + ones(Float32, (4,)))
                 return
             end
         end
@@ -2935,6 +2956,18 @@ end
         end
     end
 
+    @testset "print constant tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: 0.000000e+00> : tile<4xf32>"
+            @check "print_tko \"%f\"{{.*}}tile<4xf32>"
+            code_tiled(Tuple{}) do
+                print(zeros(Float32, (4,)))
+                return
+            end
+        end
+    end
+
     @testset "println with tile" begin
         @test @filecheck begin
             @check_label "entry"
@@ -3076,11 +3109,50 @@ end
         end
     end
 
+    # All-constant literals fold to one dense ConstantOp. [a b; c d] lists
+    # row-major; dense data is column-major (Tile IR row-major over the
+    # reversed shape).
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
-            @check "cat {{.*}}-> tile<2x4xf32>"
+            @check "constant <f32: [{{\\[}}1.000000e+00, 3.000000e+00, 5.000000e+00, 7.000000e+00], [2.000000e+00, 4.000000e+00, 6.000000e+00, 8.000000e+00]]> : tile<2x4xf32>"
             ct.store(a, ct.bid(1), Float32[1 2; 3 4; 5 6; 7 8])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f64: [1.000000e+00, 2.500000e+00, 3.000000e+00, 4.000000e+00]> : tile<4xf64>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete([1, 2.5, 3, 4])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <i32: [{{\\[\\[}}1, 3], [2, 4]], {{\\[\\[}}5, 7], [6, 8]]]> : tile<2x2x2xi32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(Int32[1 2; 3 4;;; 5 6; 7 8])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <i1: [true, false, false, true]> : tile<4xi1>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(Bool[true, false, false, true])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f32: 0.000000e+00> : tile<4xf32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(vcat(zeros(Float32, (2,)), zeros(Float32, (2,))))
             return
         end
     end

@@ -20,6 +20,22 @@ using CUDA
     @test Array(cube) == Int32[1 2; 3 4;;; 5 6; 7 8]
 end
 
+@testset "constant literals" begin
+    function constant_literals_kernel(flags::ct.TileArray{Bool,1},
+                                      filled::ct.TileArray{Float32,1})
+        ct.store(flags, 1, Bool[true, false, false, true])
+        ct.store(filled, 1, vcat(zeros(Float32, (2,)), ones(Float32, (2,))))
+        return
+    end
+
+    flags = CUDA.zeros(Bool, 4)
+    filled = CUDA.zeros(Float32, 4)
+    @cuda backend=cuTile blocks=1 constant_literals_kernel(flags, filled)
+
+    @test Array(flags) == Bool[true, false, false, true]
+    @test Array(filled) == Float32[0, 0, 1, 1]
+end
+
 @testset "tile concatenation" begin
     function tile_concatenation_kernel(input::ct.TileArray{Float32,2},
                                        block::ct.TileArray{Float32,2},
