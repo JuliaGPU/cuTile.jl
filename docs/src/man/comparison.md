@@ -270,6 +270,10 @@ in cuTile Python's operation reference.
 dimension arguments are 1-based, and `step` is cuTile.jl's name for Python's
 `traversal_steps`.
 
+Both APIs keep tile loads and stores checked by default: partial loads use their
+requested padding and partial stores clip to the array. In both, an explicit
+`check_bounds=false` is the unsafe promise that the whole tile is in bounds.
+
 ### Factory
 
 | cuTile Python | cuTile.jl |

@@ -45,14 +45,6 @@ operations:
 
 ## Differences from Julia
 
-### Some operations are non-throwing
-
-cuTile kernels cannot throw Julia exceptions. Operations that would throw in standard Julia
-silently produce truncated or wrapped results instead:
-
-- **Float-to-integer conversions:** `Int32(x)`, `trunc(Int32, x)`, and
-  `round(Int32, x, RoundToZero)` silently truncate toward zero rather than throwing
-  `InexactError` for non-integer or out-of-range values. Use `unsafe_trunc` for the explicit
-  non-throwing primitive.
-
-Use `ct.@assert` to add runtime checks in kernels; see [Debugging](debugging.md).
+Kernels compile with Julia semantics wherever Tile IR can express them, but
+exceptions, some conversions, and bounds handling need different machinery.
+See [Differences from Julia](julia_differences.md).

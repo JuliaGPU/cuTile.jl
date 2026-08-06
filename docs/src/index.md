@@ -78,6 +78,8 @@ CUDA.jl's documentation for that shared functionality.
   flow.
 - [Comparison with cuTile Python](man/comparison.md) — if you are porting from
   `cuda.tile`, start here.
+- [Differences from Julia](man/julia_differences.md) — where kernel semantics
+  diverge from host Julia.
 - [Debugging](man/debugging.md) — inspecting generated Tile IR.
 
 The [Tile IR specification](https://docs.nvidia.com/cuda/tile-ir/) is the

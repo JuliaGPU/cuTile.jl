@@ -30,6 +30,21 @@ requirements mentioned on this page are collected in
 [Compatibility](compatibility.md).
 
 
+## Bounds checking
+
+`ct.load` and `ct.store` are bounds-checked by default: a tile that partially
+extends past the array is padded on load (per `padding_mode`) and clipped on
+store. Set `check_bounds=false` only when every element of the tile is in the
+underlying array. That is an unsafe full-tile promise: it drops load padding,
+emits Tile IR's `inbounds` attribute, and requires bytecode v13.4 or newer.
+
+Tile memory bounds handling is not Julia's protective bounds checking.
+`@inbounds` and `--check-bounds=yes|no` affect real Julia `@boundscheck`
+blocks, but do not change the padding, clipping, masks, or Tile IR attributes
+of `ct.load`, `ct.store`, `eachtile`, sparse views, gathers, scatters, or
+atomics. Use the explicit keyword when the stronger full-tile promise holds.
+
+
 ## Automatic rank matching
 
 `ct.load` and `ct.store` automatically match the tile rank to that of the target:

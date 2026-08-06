@@ -66,4 +66,4 @@ v13.3 or newer.
 
     Float-to-integer conversions do not throw in kernels; they truncate toward
     zero rather than raising `InexactError`. See [Differences from
-    Julia](kernels.md#Differences-from-Julia).
+    Julia](julia_differences.md#Some-operations-are-non-throwing).
