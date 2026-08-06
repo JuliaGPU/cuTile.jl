@@ -3188,6 +3188,17 @@ end
         end
     end
 
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <i32: 0> : tile<8x8xi32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(cat(zeros(Int32, (1, 1)), zeros(Int32, (1, 1)),
+                                  zeros(Int32, (2, 2)), zeros(Int32, (4, 4));
+                                  dims=(2, 1)))
+            return
+        end
+    end
+
     @test_throws "positive integers" code_tiled(
             Tuple{ct.TileArray{Float32,1,spec1d}}) do a
         t = ct.load(a, ct.bid(1), (2,))

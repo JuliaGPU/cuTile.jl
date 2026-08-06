@@ -364,7 +364,7 @@ cat_dimensions(tiles, dims::Tuple{Vararg{Integer}}) =
     isempty(dims) && return :(throw(ArgumentError("cat dimensions cannot be empty")))
     any(<=(0), dims) && return :(throw(ArgumentError(
         "All cat dimensions must be positive integers, but got $dims")))
-    canonical = Tuple(unique(Int[dims...]))
+    canonical = Tuple(sort!(unique(Int[dims...])))
     length(canonical) == 1 && return :(cat_tiles(tiles, $(only(canonical))))
 
     types = tiles.parameters
