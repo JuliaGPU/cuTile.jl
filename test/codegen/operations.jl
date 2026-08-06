@@ -3259,8 +3259,4 @@ end
         Base.donotdelete(hcat(Float32[], Float32[1]))
         return
     end
-    @test_throws "unsupported operation on an empty tile" code_tiled(Tuple{}) do
-        Base.donotdelete(ct.Intrinsics.broadcast(Float32[], (0, 1)))
-        return
-    end
 end

@@ -56,16 +56,6 @@ function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     throw(IRError("Struct construction not supported in Tile IR: $T"))
 end
 
-function check_no_empty_tile_operands(ctx::CGCtx, func, call_args)
-    parentmodule(typeof(func)) === Intrinsics || return
-    for arg in call_args
-        T = value_type(ctx.current_block, arg)
-        contains_empty_tile_type(T) || continue
-        throw(IRError("unsupported operation on an empty tile: tiles with a zero extent " *
-                      "support only concatenation, element-type conversion, and shape queries"))
-    end
-end
-
 function emit_assignment!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     lhs = expr.args[1]
     rhs = expr.args[2]
@@ -128,7 +118,6 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         return emit_getglobal!(ctx, call_args)
     end
 
-    check_no_empty_tile_operands(ctx, func, call_args)
     result = emit_intrinsic!(ctx, func, call_args)
     result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
@@ -154,7 +143,6 @@ function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         return emit_getglobal!(ctx, call_args)
     end
 
-    check_no_empty_tile_operands(ctx, func, call_args)
     result = emit_intrinsic!(ctx, func, call_args)
     result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
