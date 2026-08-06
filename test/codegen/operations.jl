@@ -664,295 +664,6 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
-    @testset "array construction" begin
-        # [a, b, ...] (Base.vect) -> one dense ConstantOp
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
-                @check "constant <i64: [1, 2, 3, 4]> : tile<4xi64>"
-                tile = [1, 2, 3, 4]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # T[a, b, ...] typed literal (Base.getindex) converts elements
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
-                @check "constant <f32: [1.500000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]> : tile<4xf32>"
-                tile = Float32[1.5, 2, 3, 4]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # heterogeneous elements promote (Base.vect semantics)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
-                @check "constant <f64: [1.000000e+00, 2.500000e+00, 3.000000e+00, 4.000000e+00]> : tile<4xf64>"
-                tile = [1, 2.5, 3, 4]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # [a b; c d] (Base.hvcat) lists row-major; dense data is column-major
-        # (Tile IR row-major over the reversed shape)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
-                @check "constant <i32: [{{\\[}}1, 2], [3, 4]]> : tile<2x2xi32>"
-                tile = Int32[1 3; 2 4]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # [a b c d] (Base.hcat) -> 1xN tile
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
-                @check "constant <i64: [{{\\[}}1], [2], [3], [4]]> : tile<4x1xi64>"
-                tile = [1 2 3 4]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # [a; b;; c; d] (Base.hvncat, column-first)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
-                @check "constant <i64: [{{\\[}}1, 2], [3, 4]]> : tile<2x2xi64>"
-                tile = [1; 2;; 3; 4]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # 3-D hvncat literal (row_first element order)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,3,spec3d}}) do a
-                @check "constant <i64: [{{\\[\\[}}1, 3], [2, 4]], {{\\[\\[}}5, 7], [6, 8]]]> : tile<2x2x2xi64>"
-                tile = [1 2; 3 4;;; 5 6; 7 8]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # [a;; b] single-dim syntax (Base.hvncat with an Int dim) -> 1x2 tile
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
-                @check "constant <i64: [{{\\[}}1], [2]]> : tile<2x1xi64>"
-                tile = [1;; 2]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # runtime elements: scalars are reshaped to unit tiles and merged
-        # with a balanced cat tree (mixed with constants here)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}, Float64}) do a, x
-                @check "reshape"
-                @check "cat"
-                @check "cat"
-                @check "cat {{.*}}-> tile<4xf64>"
-                tile = [x, x, 2.0, 4.0]
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-        end
-
-        # tile elements: bracket syntax concatenates ([t; t] == ct.cat)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
-                @check "cat {{.*}}-> tile<8xf32>"
-                t = ct.load(a, ct.bid(1), (4,))
-                ct.store(a, ct.bid(1), [t; t])
-                return
-            end
-        end
-
-        # tile hcat treats vectors as columns: (4,) tiles -> (4, 2)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                             ct.TileArray{Float32,2,spec2d}}) do a, b
-                @check "cat {{.*}}-> tile<2x4xf32>"
-                t = ct.load(a, ct.bid(1), (4,))
-                ct.store(b, ct.bid(1), [t t])
-                return
-            end
-        end
-
-        # tile hvcat builds block matrices
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
-                @check "cat {{.*}}-> tile<4x4xf32>"
-                t = ct.load(a, ct.bid(1), (2, 2))
-                ct.store(a, ct.bid(1), [t t; t t])
-                return
-            end
-        end
-
-        # tile hvncat(dim) stacks along a new trailing dimension
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
-                             ct.TileArray{Float32,3,spec3d}}) do a, b
-                @check "cat {{.*}}-> tile<2x2x2xf32>"
-                t = ct.load(a, ct.bid(1), (2, 2))
-                ct.store(b, ct.bid(1), [t;;; t])
-                return
-            end
-        end
-
-        # Base.cat with the dims keyword (variadic, scalars lift). Note the
-        # scalars come first: the ordered sizes (1, 1, 2) admit a pow2 cat
-        # tree while (1, 2, 1) does not (1+2=3 either way).
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
-                @check "cat {{.*}}-> tile<4xf32>"
-                t = ct.load(a, ct.bid(1), (2,))
-                ct.store(a, ct.bid(1), cat(x, x, t; dims=1))
-                return
-            end
-        end
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
-                             ct.TileArray{Float32,3,spec3d}}) do a, b
-                @check "cat {{.*}}-> tile<2x2x2xf32>"
-                t = ct.load(a, ct.bid(1), (2, 2))
-                ct.store(b, ct.bid(1), cat(t, t; dims=3))
-                return
-            end
-        end
-
-        # dims normalizes through Val and single-element tuples like Base's
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
-                             ct.TileArray{Float32,3,spec3d}}) do a, b
-                @check "cat {{.*}}-> tile<2x2x2xf32>"
-                t = ct.load(a, ct.bid(1), (2, 2))
-                ct.store(b, ct.bid(1), cat(t, t; dims=Val(3)))
-                return
-            end
-        end
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
-                             ct.TileArray{Float32,3,spec3d}}) do a, b
-                @check "cat {{.*}}-> tile<2x2x2xf32>"
-                t = ct.load(a, ct.bid(1), (2, 2))
-                ct.store(b, ct.bid(1), cat(t, t; dims=(3,)))
-                return
-            end
-        end
-
-        # errors: multi-dim tuple dims is Base's block-diagonal cat, which
-        # pads with zeros and has no tile equivalent
-        @test_throws "block-diagonally" code_tiled(
-                Tuple{ct.TileArray{Float32,2,spec2d}}) do a
-            t = ct.load(a, ct.bid(1), (2, 2))
-            Base.donotdelete(cat(t, t; dims=(1, 2)))
-            return
-        end
-
-        # errors: non-power-of-2 length
-        @test_throws "power of 2" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
-            tile = [1, 2, 3]
-            ct.store(a, ct.bid(1), tile)
-            return
-        end
-
-        # errors: ragged rows
-        @test_throws "same length" code_tiled(Tuple{ct.TileArray{Int64,2,spec2d}}) do a
-            tile = [1 2; 3]
-            ct.store(a, ct.bid(1), tile)
-            return
-        end
-
-        # errors: ragged N-dimensional syntax surfaces Julia's own
-        # DimensionMismatch (via a host probe of Base.hvncat)
-        @test_throws "mismatched number of elements" code_tiled(
-                Tuple{ct.TileArray{Int64,3,spec3d}}) do a
-            tile = [1 2; 3;;; 4 5; 6]
-            ct.store(a, ct.bid(1), tile)
-            return
-        end
-
-        # errors: commas collect tiles into a Vector; suggest concatenation
-        @test_throws "concatenation syntax" code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
-            t = ct.load(a, ct.bid(1), (4,))
-            Base.donotdelete([t, t])
-            return
-        end
-
-        # mixed scalars and tiles: scalars lift to unit tiles and concatenate
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
-                @check "cat {{.*}}-> tile<2xf32>"
-                t = ct.load(a, ct.bid(1), (1,))
-                ct.store(a, ct.bid(1), [x; t])
-                return
-            end
-        end
-
-        # block matrices with 1x1 scalar blocks; eltypes promote across blocks
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float64,2,spec2d}, Float32}) do a, x
-                @check "cat {{.*}}-> tile<2x2xf64>"
-                ct.store(a, ct.bid(1), [x [1.0]; [2.0] [x]])
-                return
-            end
-        end
-
-        # typed T[...] concatenation converts scalars and tiles alike; row
-        # counts may be ragged as long as row widths agree (Base semantics)
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, Float64}) do a, x
-                @check "cat {{.*}}-> tile<2x2xf32>"
-                ct.store(a, ct.bid(1), Float32[x [2]; [3 4]])
-                return
-            end
-        end
-
-        # untyped empty literals cannot infer an element type; the overlay
-        # throws and an unconditional `[]` surfaces at compile time
-        @test_throws "cannot infer an element" code_tiled(
-                Tuple{ct.TileArray{Int64,1,spec1d}}) do a
-            Base.donotdelete([])
-            return
-        end
-
-        # typed empty literals are ghost tiles, dropped by concatenation
-        # (no cat op needed) while still participating in eltype promotion
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                             ct.TileArray{Float64,1,spec1d}}) do a, b
-                @check "ftof {{.*}}-> tile<4xf64>"
-                t = ct.load(a, ct.bid(1), (4,))
-                ct.store(b, ct.bid(1), [Float64[]; t])
-                return
-            end
-        end
-    end
-
     @testset "get_num_tile_blocks" begin
         @test @filecheck begin
             @check_label "entry"
@@ -3356,5 +3067,81 @@ end
                 return
             end
         end
+    end
+end
+
+@testset "array construction" begin
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}, Float64}) do a, x
+            @check "cat {{.*}}-> tile<4xf64>"
+            ct.store(a, ct.bid(1), [x, 2, 3, 4])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            @check "cat {{.*}}-> tile<2x4xf32>"
+            ct.store(a, ct.bid(1), Float32[1 2; 3 4; 5 6; 7 8])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
+            @check "cat {{.*}}-> tile<4xf32>"
+            t = ct.load(a, ct.bid(1), (2,))
+            ct.store(a, ct.bid(1), cat(t, x, x; dims=1))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+                         ct.TileArray{Float32,3,spec3d}}) do a, b
+            t = ct.load(a, ct.bid(1), (2, 2))
+            @check "cat {{.*}}-> tile<2x4x2xf32>"
+            ct.store(b, ct.bid(1), [t t;;; t t])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            t = ct.load(a, ct.bid(1), (2, 2))
+            @check "cat {{.*}}-> tile<4x4xf32>"
+            Base.donotdelete(cat(t, t; dims=(1, 2)))
+            return
+        end
+    end
+
+    @test_throws "positive integers" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        t = ct.load(a, ct.bid(1), (2,))
+        Base.donotdelete(cat(t, t; dims=0))
+        return
+    end
+
+    @test_throws "empty tile literals" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        Base.donotdelete(Float32[])
+        return
+    end
+    @test_throws "empty tile literals" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        Base.donotdelete([])
+        return
+    end
+
+    @test_throws "concatenation syntax" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        t = ct.load(a, ct.bid(1), (4,))
+        Base.donotdelete([t, t])
+        return
     end
 end

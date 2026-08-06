@@ -159,229 +159,227 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(xs...) =
  Tile Constructors
 =============================================================================#
 
-# Base.fill/zeros/ones return Tiles in kernel context, matching Julia's standard API.
-# Marked non-foldable because they return differently-typed objects.
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.fill(v, dims::NTuple{N, Int}) where {N} =
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.fill(v, dims::NTuple{N, Int}) where {N} =
     _full(v, typeof(v), dims)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.zeros(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.zeros(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
     _full(zero(T), T, dims)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.ones(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.ones(::Type{T}, dims::NTuple{N, Int}) where {T, N} =
     _full(one(T), T, dims)
 
 
 #=============================================================================
- Array construction syntax
-
- Bracket syntax builds Tiles in kernel context:
-
-     [1, 2, 3, 4]     -> Base.vect    -> Tile{Int64, Tuple{4}}
-     [1; 2; 3; 4]     -> Base.vcat    -> Tile{Int64, Tuple{4}}
-     [1 2 3 4]        -> Base.hcat    -> Tile{Int64, Tuple{1, 4}}
-     [1 3; 2 4]       -> Base.hvcat   -> Tile{Int64, Tuple{2, 2}}
-     [1;; 2]          -> Base.hvncat  -> Tile{Int64, Tuple{1, 2}}   (dim::Int form)
-     [1; 2;; 3; 4]    -> Base.hvncat  -> Tile{Int64, Tuple{2, 2}}   (dims::Tuple form)
-
- plus the `T[...]` typed variants, and the same bracket forms over Tile
- elements (`[q1; q2]`, `[t1 t2; t3 t4]`, …), which concatenate.
-
- Scalar elements funnel into the construction intrinsics (see
- intrinsics/core.jl): compile-time-constant elements emit one dense
- ConstantOp, runtime scalars a balanced cat tree. Tile elements lower to
- balanced `Intrinsics.cat` trees right here at the language level.
- Every dimension of the result (and of every intermediate concatenation)
- must be a power of two; violations are compile-time errors.
- Marked non-foldable like fill/zeros/ones because they return Tiles.
-
- Element-taking overlays require at least one element (`x, xs...` rather
- than plain `xs...`) so that the zero-element case can be handled
- separately: `T[]` builds a ghost zero-length tile (usable in
- concatenation, where empty operands are dropped), while an untyped `[]`
- throws — an unconditional `[]` surfaces as a compile-time diagnostic via
- the throw lowering, a conditional one as a device-side trap. The throw
- also keeps Base internals safe: kernel-reachable Base code calls
- `Base.vect()` on dead error paths, and an overlay returning `Any` there
- once derailed inference; a throwing body infers as `Union{}`, which
- narrows instead and keeps those dead paths dead.
+ Array construction
 =============================================================================#
 
 ## empty literals
 
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.getindex(::Type{T}) where {T<:Number} =
-    Intrinsics.empty_tile(T)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vect() =
-    throw(ArgumentError("empty array literal `[]`: cannot infer an element type; use a typed literal like `Float32[]`"))
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.getindex(::Type{T}) where {T<:Number} =
+    throw(ArgumentError("empty tile literals are not supported"))
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.vect() =
+    throw(ArgumentError("empty tile literals are not supported"))
 
-## scalar elements
+## tile and scalar concatenation
 
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vect(x::Number, xs::Number...) =
-    Intrinsics.vect(promote(x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.getindex(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
-    Intrinsics.vect(map(T, (x, xs...)))
-
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vcat(x::Number, xs::Number...) =
-    Intrinsics.vect(promote(x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_vcat(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
-    Intrinsics.vect(map(T, (x, xs...)))
-
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hcat(x::Number, xs::Number...) =
-    Intrinsics.hvncat((1, 1 + length(xs)), true, promote(x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hcat(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
-    Intrinsics.hvncat((1, 1 + length(xs)), true, map(T, (x, xs...)))
-
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvcat(rows::Tuple{Vararg{Int}}, x::Number, xs::Number...) =
-    Intrinsics.hvcat(rows, promote(x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::Number, xs::Number...) where {T<:Number} =
-    Intrinsics.hvcat(rows, map(T, (x, xs...)))
-
-# `dims::Tuple` deliberately also matches the tuple-of-tuples shape descriptor
-# that ragged/mixed N-D syntax lowers to ([1 2; 3;;; 4 5; 6]); the intrinsic
-# decodes it by probing Base's own hvncat on the host, so invalid literals
-# get Julia's exact error instead of Base's array code derailing the compiler.
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dims::Tuple, row_first::Bool, x::Number, xs::Number...) =
-    Intrinsics.hvncat(dims, row_first, promote(x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dims::Tuple, row_first::Bool, x::Number, xs::Number...) where {T<:Number} =
-    Intrinsics.hvncat(dims, row_first, map(T, (x, xs...)))
-
-# Single-dim syntax like [1;; 2] lowers to hvncat(dim::Int, xs...): the result
-# has `dim` dimensions, all singleton except the last.
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dim::Int, x::Number, xs::Number...) =
-    Intrinsics.hvncat(ntuple(i -> i == dim ? 1 + length(xs) : 1, dim), false, promote(x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dim::Int, x::Number, xs::Number...) where {T<:Number} =
-    Intrinsics.hvncat(ntuple(i -> i == dim ? 1 + length(xs) : 1, dim), false, map(T, (x, xs...)))
-
-## tile (and mixed tile/scalar) elements: bracket syntax concatenates
-
-# Tile/scalar element for the concatenating overlays below. Scalars are
-# lifted to unit tiles, so block forms like [x [y z]; [u, v] M] work (Base
-# semantics; though under Tile IR's power-of-two rule mixed-size blocks
-# only fit in dimensions where all blocks are the same size).
 const TileElem = Union{Tile, Number}
 
-# Build a balanced pairwise `Intrinsics.cat` tree over `leaves` along the
-# 0-indexed Julia axis `axis0`. Balanced (rather than a linear fold) so that
-# equal-sized inputs keep every intermediate dimension a power of two.
-function _cat_tree_expr(leaves::Vector{Any}, axis0::Int)
-    function tree(lo::Int, hi::Int)
-        lo == hi && return leaves[lo]
-        mid = (lo + hi) >> 1
-        :(Intrinsics.cat(($(tree(lo, mid)), $(tree(mid + 1, hi))), $axis0))
+@generated function promote_tile_elements(xs::Tuple)
+    types = xs.parameters
+    T = mapreduce(type -> type <: Tile ? eltype(type) : type, promote_type, types)
+    elements = Any[]
+    for i in eachindex(types)
+        push!(elements, :(convert(Tile{$T}, xs[$i])))
     end
-    tree(1, length(leaves))
+    Expr(:tuple, elements...)
 end
 
-# Shape tuple of a concrete Tile type (generator-side helper)
-_tile_type_shape(@nospecialize(x)) = Tuple(x.parameters[2].parameters)
-_is_empty_tile(@nospecialize(x)) = 0 in _tile_type_shape(x)
+typed_tile_elements(::Type{T}, xs) where {T} =
+    map(x -> convert(Tile{T}, x), xs)
 
-@generated function _cat_tiles(::Val{axis0}, xs::Tile...) where {axis0}
-    # zero-length operands are dropped: n + 0 = n, so pow2 math is unaffected
-    keep = [i for i in 1:length(xs) if !_is_empty_tile(xs[i])]
-    isempty(keep) && return Expr(:block, Expr(:meta, :inline), :(xs[1]))
-    Expr(:block, Expr(:meta, :inline),
-         _cat_tree_expr(Any[:(xs[$i]) for i in keep], axis0))
+function pad_tile(tile::Tile, rank)
+    shape = size(tile)
+    length(shape) == rank && return tile
+    Intrinsics.broadcast(tile, (shape..., ntuple(_ -> 1, rank - length(shape))...))
 end
 
-# Concatenation requires a common element type; promote like Base's cat.
-# Empty tiles contribute their element type to promotion (Julia:
-# vcat(Float64[], Float32[1]) isa Vector{Float64}) but stay unconverted —
-# they are ghosts and get dropped by the tree builders.
-@generated function _promote_tiles(xs::Tile...)
-    T = mapreduce(eltype, promote_type, xs)
-    elems = Any[(_is_empty_tile(x) || eltype(x) === T) ? :(xs[$i]) :
-                :(convert(Tile{$T}, xs[$i]))
-                for (i, x) in enumerate(xs)]
-    Expr(:block, Expr(:meta, :inline), Expr(:tuple, elems...))
+function cat_split(widths, target, i=1, total=0)
+    i == length(widths) && return length(widths) ÷ 2
+    total += widths[i]
+    total == target ? i : cat_split(widths, target, i + 1, total)
 end
 
-# vcat treats scalars as length-1 vectors
-@inline _lift_1d(x::Number) = _full(x, typeof(x), (1,))
-@inline _lift_1d(t::Tile) = t
+cat_tree(tiles, dim) = cat_tree(tiles, Val(dim))
 
-# hcat/hvcat treat scalars as 1x1 blocks and vectors as columns
-@inline _lift_2d(x::Number) = _full(x, typeof(x), (1, 1))
-@inline _lift_2d(t::Tile{T, Tuple{0}}) where {T} = t  # ghost; dropped by the tree
-@inline _lift_2d(t::Tile{T, Tuple{N}}) where {T, N} = Intrinsics.broadcast(t, (N, 1))
-@inline _lift_2d(t::Tile) = t
+@generated function cat_tree(tiles::Tuple, ::Val{dim}) where {dim}
+    widths = map(type -> size(type, dim), tiles.parameters)
 
-@generated function _hvcat_tiles(::Val{rows}, xs::Tile...) where {rows}
-    off = 0
-    row_exprs = Any[]
-    for k in rows
-        push!(row_exprs, _cat_tree_expr(Any[:(xs[$(off + j)]) for j in 1:k], 1))
-        off += k
+    function tree(first, last)
+        first == last && return :(tiles[$first])
+        split = first - 1 + cat_split(widths[first:last], sum(widths[first:last]) ÷ 2)
+        :(Intrinsics.cat(($(tree(first, split)), $(tree(split + 1, last))), $(dim - 1)))
     end
-    off == length(xs) ||
-        error("hvcat: row layout $rows does not match $(length(xs)) elements")
-    Expr(:block, Expr(:meta, :inline), _cat_tree_expr(row_exprs, 0))
+
+    tree(1, length(widths))
 end
 
-# hvncat(dim, ...) concatenates along `dim`, lifting inputs to at least
-# `dim` dimensions with trailing singletons (e.g. [t1;;; t2] stacks to 3-D).
-@inline _lift_nd(::Val{D}, x::Number) where {D} =
-    _full(x, typeof(x), ntuple(_ -> 1, Val(D)))
-@inline _lift_nd(::Val{D}, t::Tile) where {D} = t
-@generated function _hvncat_tiles(::Val{dim}, xs::Tile...) where {dim}
-    keep = [(i, _tile_type_shape(xs[i])) for i in 1:length(xs) if !_is_empty_tile(xs[i])]
-    isempty(keep) && return Expr(:block, Expr(:meta, :inline), :(xs[1]))
-    rank = max(dim, maximum(length(s) for (_, s) in keep))
-    leaves = Any[
-        length(s) == rank ? :(xs[$i]) :
-            :(Intrinsics.broadcast(xs[$i], $((s..., ntuple(_ -> 1, rank - length(s))...))))
-        for (i, s) in keep
-    ]
-    Expr(:block, Expr(:meta, :inline), _cat_tree_expr(leaves, dim - 1))
+function cat_tiles(tiles, dim)
+    dim > 0 || throw(ArgumentError("concatenation dimension must be positive"))
+    rank = max(dim, maximum(ndims, tiles))
+    cat_tree(map(tile -> pad_tile(tile, rank), tiles), dim)
 end
 
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vcat(x::TileElem, xs::TileElem...) =
-    _cat_tiles(Val(0), _promote_tiles(map(_lift_1d, (x, xs...))...)...)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hcat(x::TileElem, xs::TileElem...) =
-    _cat_tiles(Val(1), _promote_tiles(map(_lift_2d, (x, xs...))...)...)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
-    _hvcat_tiles(Val(rows), _promote_tiles(map(_lift_2d, (x, xs...))...)...)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
-    _hvncat_tiles(Val(dim), _promote_tiles(map(Base.Fix1(_lift_nd, Val(dim)), (x, xs...))...)...)
+cat_layout(tiles, layout, row_first) = cat_layout(tiles, Val(layout), Val(row_first))
 
-# Base.cat with the dims keyword — the generic entry point behind vcat/hcat.
-# Scalars lift to unit tiles as in bracket syntax; `dims` must fold to a
-# compile-time constant (a literal or Val). No @constprop needed: @inline
-# frames with a literal kwarg const-prop through the kwcall wrapper on
-# their own (verified by the construction tests). Single-element tuple dims
-# normalize like Base's; multi-dim tuples mean block-diagonal concatenation
-# with zero padding, which has no tile lowering and throws.
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.cat(x::TileElem, xs::TileElem...; dims) =
-    _cat_dims(dims, x, xs...)
+@generated function cat_layout(tiles::Tuple, ::Val{layout}, ::Val{row_first}) where {layout, row_first}
+    isempty(layout) && return :(throw(ArgumentError("hvncat layout cannot be empty")))
+    shaped = first(layout) isa Tuple
+    rank = max(length(layout) == 1 && shaped && row_first ? 2 : length(layout),
+               maximum(ndims, tiles.parameters))
+    nodes = Any[]
+    for i in eachindex(tiles.parameters)
+        push!(nodes, :(pad_tile(tiles[$i], $rank)))
+    end
+    counts = ones(Int, length(nodes))
 
-@inline _cat_dims(::Val{D}, xs::TileElem...) where {D} = _cat_dims(D, xs...)
-@inline _cat_dims(dims::Tuple{Any}, xs::TileElem...) = _cat_dims(dims[1], xs...)
-@inline _cat_dims(dims::Tuple, xs::TileElem...) =
-    throw(ArgumentError("cat with multiple dims concatenates block-diagonally, padding with zeros; that has no tile equivalent — build the blocks explicitly, e.g. [a zeros(T, size_a); zeros(T, size_b) b]"))
-@inline function _cat_dims(dims::Integer, xs::TileElem...)
-    d = Int(dims)
-    _hvncat_tiles(Val(d), _promote_tiles(map(Base.Fix1(_lift_nd, Val(d)), xs)...)...)
+    function fixed_groups(nodes, counts, n, dim)
+        length(nodes) % n == 0 || return nothing
+        grouped = Any[]
+        grouped_counts = Int[]
+        for first in 1:n:length(nodes)
+            indices = first:first + n - 1
+            push!(grouped, :(cat_tree(($(nodes[indices]...),), $dim)))
+            push!(grouped_counts, sum(counts[indices]))
+        end
+        grouped, grouped_counts
+    end
+
+    function shaped_groups(nodes, counts, targets, dim)
+        grouped = Any[]
+        grouped_counts = Int[]
+        first = 1
+        for target in targets
+            total = 0
+            last = first - 1
+            while last < length(counts) && total < target
+                last += 1
+                total += counts[last]
+            end
+            total == target || return nothing
+            push!(grouped, :(cat_tree(($(nodes[first:last]...),), $dim)))
+            push!(grouped_counts, total)
+            first = last + 1
+        end
+        first == length(nodes) + 1 || return nothing
+        grouped, grouped_counts
+    end
+
+    if shaped
+        all(level -> level isa Tuple && all(x -> x isa Int && x > 0, level), layout) ||
+            return :(throw(ArgumentError("`shape` argument must consist of positive integers")))
+        for (level, targets) in enumerate(layout)
+            dim = row_first && level < 3 ? 3 - level : level
+            result = shaped_groups(nodes, counts, targets, dim)
+            result === nothing && return :(throw(DimensionMismatch("hvncat shape levels do not nest evenly")))
+            nodes, counts = result
+        end
+    else
+        all(x -> x isa Int && x > 0, layout) ||
+            return :(throw(ArgumentError("`dims` argument must contain positive integers")))
+        prod(layout) == length(nodes) ||
+            return :(throw(ArgumentError("argument count does not match specified shape")))
+        axes = length(layout) == 1 ? (1,) :
+               row_first ? (2, 1, (3:length(layout))...) : ntuple(identity, length(layout))
+        for dim in axes
+            result = fixed_groups(nodes, counts, layout[dim], dim)
+            result === nothing && return :(throw(DimensionMismatch("hvncat shape levels do not nest evenly")))
+            nodes, counts = result
+        end
+    end
+
+    length(nodes) == 1 || return :(throw(DimensionMismatch("hvncat layout does not form one tile")))
+    only(nodes)
 end
 
-# T[...] typed concatenation converts every element (scalar or Tile) to T
-@inline _convert_elem(::Type{T}, x::Number) where {T} = T(x)
-@inline _convert_elem(::Type{T}, t::Tile) where {T} = convert(Tile{T}, t)
+function cat_dimensions(tiles, dim::Integer)
+    dim > 0 || throw(ArgumentError("All cat dimensions must be positive integers, but got $dim"))
+    cat_tiles(tiles, Int(dim))
+end
 
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_vcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
-    _cat_tiles(Val(0), map(e -> _lift_1d(_convert_elem(T, e)), (x, xs...))...)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
-    _cat_tiles(Val(1), map(e -> _lift_2d(_convert_elem(T, e)), (x, xs...))...)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) where {T<:Number} =
-    _hvcat_tiles(Val(rows), map(e -> _lift_2d(_convert_elem(T, e)), (x, xs...))...)
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dim::Int, x::TileElem, xs::TileElem...) where {T<:Number} =
-    _hvncat_tiles(Val(dim), map(e -> _lift_nd(Val(dim), _convert_elem(T, e)), (x, xs...))...)
+cat_dimensions(tiles, dims::Tuple{Vararg{Integer}}) =
+    cat_dimensions(tiles, Val(dims))
 
-# Commas collect into a Vector on the host, which has no tile equivalent —
-# route tile-containing [a, b] / hvncat-shape-form calls into the scalar
-# intrinsics so they fail with a clear compile-time error rather than
-# derailing on Base's array code.
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.vect(x::TileElem, xs::TileElem...) =
-    Intrinsics.vect((x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.hvncat(dims::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) =
-    Intrinsics.hvncat(dims, row_first, (x, xs...))
-Base.Experimental.@consistent_overlay cuTileMethodTable @inline Base.typed_hvncat(::Type{T}, dims::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) where {T<:Number} =
-    Intrinsics.hvncat(dims, row_first, map(Base.Fix1(_convert_elem, T), (x, xs...)))
+@generated function cat_dimensions(tiles, ::Val{dims}) where {dims}
+    isempty(dims) && return :(throw(ArgumentError("cat dimensions cannot be empty")))
+    any(<=(0), dims) && return :(throw(ArgumentError(
+        "All cat dimensions must be positive integers, but got $dims")))
+    canonical = Tuple(unique(Int[dims...]))
+    length(canonical) == 1 && return :(cat_tiles(tiles, $(only(canonical))))
+
+    types = tiles.parameters
+    shapes = map(size, types)
+    rank = max(maximum(canonical), maximum(length, shapes))
+    shapes = map(shape -> (shape..., ntuple(_ -> 1, rank - length(shape))...), shapes)
+    T = mapreduce(eltype, promote_type, types)
+
+    coords = Any[()]
+    for _ in canonical
+        next = Any[]
+        for i in eachindex(types), prefix in coords
+            push!(next, (prefix..., i))
+        end
+        coords = next
+    end
+
+    cells = Any[]
+    for coord in coords
+        shape = ntuple(rank) do dim
+            position = findfirst(==(dim), canonical)
+            position === nothing ? shapes[1][dim] : shapes[coord[position]][dim]
+        end
+        if all(==(first(coord)), coord)
+            push!(cells, :(pad_tile(tiles[$(first(coord))], $rank)))
+        else
+            push!(cells, :(zeros($T, $(shape...))))
+        end
+    end
+
+    layout = ntuple(dim -> dim in canonical ? length(types) : 1, rank)
+    :(cat_layout(($(cells...),), $layout, false))
+end
 
 
+cat_dimensions(tiles, dims) =
+    throw(ArgumentError("cat dimensions must be integers, got $dims"))
+
+cat_dims_value(dims) = dims
+cat_dims_value(::Val{D}) where {D} = D
+
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.vcat(x::TileElem, xs::TileElem...) =
+    cat_tiles(promote_tile_elements((x, xs...)), 1)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.hcat(x::TileElem, xs::TileElem...) =
+    cat_tiles(promote_tile_elements((x, xs...)), 2)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
+    cat_layout(promote_tile_elements((x, xs...)), Base.rows_to_dimshape(rows), true)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
+    cat_tiles(promote_tile_elements((x, xs...)), dim)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvncat(layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) =
+    cat_layout(promote_tile_elements((x, xs...)), layout, row_first)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.cat(x::TileElem, xs::TileElem...; dims) =
+    cat_dimensions(promote_tile_elements((x, xs...)), cat_dims_value(dims))
+
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_vcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
+    cat_tiles(typed_tile_elements(T, (x, xs...)), 1)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
+    cat_tiles(typed_tile_elements(T, (x, xs...)), 2)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) where {T<:Number} =
+    cat_layout(typed_tile_elements(T, (x, xs...)), Base.rows_to_dimshape(rows), true)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, dim::Int, x::TileElem, xs::TileElem...) where {T<:Number} =
+    cat_tiles(typed_tile_elements(T, (x, xs...)), dim)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) where {T<:Number} =
+    cat_layout(typed_tile_elements(T, (x, xs...)), layout, row_first)
+
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.vect(x::Number, xs::Number...) =
+    cat_tiles(promote_tile_elements((x, xs...)), 1)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.getindex(::Type{T}, x::Number, xs::Number...) where {T<:Number} =
+    cat_tiles(typed_tile_elements(T, (x, xs...)), 1)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.vect(x::TileElem, xs::TileElem...) =
+    throw(ArgumentError("comma-separated tile literals are not supported; use concatenation syntax"))

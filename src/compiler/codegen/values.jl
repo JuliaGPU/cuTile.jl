@@ -205,26 +205,3 @@ function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
         throw(IRError("Cannot convert $T to constant bytes"))
     end
 end
-
-"""
-    dense_constants_to_bytes(values, T) -> Vector{UInt8}
-
-Serialize multiple constants as MLIR non-splat `DenseElementsAttr` bytes:
-per-element bytes concatenated in the order given. Bool is the exception —
-MLIR requires non-splat `i1` data to be bit-packed, LSB first (whereas a
-splat Bool is a single `0xff`/`0x00` byte, see [`constant_to_bytes`](@ref)).
-"""
-function dense_constants_to_bytes(values, @nospecialize(T::Type))
-    if T === Bool
-        bytes = zeros(UInt8, cld(length(values), 8))
-        for (i, v) in enumerate(values)
-            v && (bytes[(i - 1) >> 3 + 1] |= 0x01 << ((i - 1) & 7))
-        end
-        return bytes
-    end
-    bytes = UInt8[]
-    for v in values
-        append!(bytes, constant_to_bytes(v, T))
-    end
-    return bytes
-end
