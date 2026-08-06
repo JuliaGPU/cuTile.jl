@@ -417,12 +417,14 @@ Base.@constprop :aggressive function hvncat_tiles(tiles, dim)
     cat_tiles(tiles, dim)
 end
 
+rows_to_dimshape(rows) = all(==(rows[1]), rows) ? (length(rows), rows[1]) : (rows, (sum(rows),))
+
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.vcat(x::TileElem, xs::TileElem...) =
     cat_tiles(promote_tile_elements((x, xs...)), 1)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.hcat(x::TileElem, xs::TileElem...) =
     cat_tiles(promote_tile_elements((x, xs...)), 2)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
-    cat_layout(promote_tile_elements((x, xs...)), Base.rows_to_dimshape(rows), true)
+    cat_layout(promote_tile_elements((x, xs...)), rows_to_dimshape(rows), true)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
     hvncat_tiles(promote_tile_elements((x, xs...)), dim)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvncat(layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) =
@@ -435,7 +437,7 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_vcat(::Type{T
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
     cat_tiles(typed_tile_elements(T, (x, xs...)), 2)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) where {T<:Number} =
-    cat_layout(typed_tile_elements(T, (x, xs...)), Base.rows_to_dimshape(rows), true)
+    cat_layout(typed_tile_elements(T, (x, xs...)), rows_to_dimshape(rows), true)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, dim::Int, x::TileElem, xs::TileElem...) where {T<:Number} =
     hvncat_tiles(typed_tile_elements(T, (x, xs...)), dim)
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) where {T<:Number} =
