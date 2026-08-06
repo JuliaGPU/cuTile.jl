@@ -265,6 +265,31 @@ end
     @test Array(b) ≈ Array(a)
 end
 
+@testset "tile bounds do not inherit @inbounds" begin
+    function ragged_tiles(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,); padding_mode=ct.PaddingMode.Zero)
+        ct.store(b, pid, sum(tile; dims=1))
+        return nothing
+    end
+    function ragged_tiles_inbounds(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        @inbounds begin
+            tile = ct.load(a, pid, (16,); padding_mode=ct.PaddingMode.Zero)
+            ct.store(b, pid, sum(tile; dims=1))
+        end
+        return nothing
+    end
+
+    a = CUDA.rand(Float32, 17)
+    expected = Float32[sum(Array(a)[1:16]), Array(a)[17]]
+    for kernel in (ragged_tiles, ragged_tiles_inbounds)
+        b = CUDA.zeros(Float32, 2)
+        @cuda backend=cuTile blocks=2 kernel(a, b)
+        @test Array(b) ≈ expected
+    end
+end
+
 if cuTile.bytecode_version() >= v"13.4"
 @testset "load/store with check_bounds=false" begin
     function vadd_unchecked(a::ct.TileArray{Float32,1},
@@ -301,6 +326,21 @@ end
 
     @cuda backend=cuTile blocks=cld(m, 32) copy_unchecked(a, b)
 
+    @test Array(b) ≈ Array(a)
+end
+
+@testset "unchecked load ignores padding_mode" begin
+    function padded_unchecked(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,); padding_mode=ct.PaddingMode.Zero,
+                       check_bounds=false)
+        ct.store(b, pid, tile; check_bounds=false)
+        return nothing
+    end
+
+    a = CUDA.rand(Float32, 1024)
+    b = CUDA.zeros(Float32, 1024)
+    @cuda backend=cuTile blocks=64 padded_unchecked(a, b)
     @test Array(b) ≈ Array(a)
 end
 end

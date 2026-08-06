@@ -34,12 +34,14 @@ const INTRINSIC_RULES = RewriteRule[
     @rewrite Core.Intrinsics.or_int(~x, ~y)  => Intrinsics.ori(~x, ~y)
     @rewrite Core.Intrinsics.xor_int(~x, ~y) => Intrinsics.xori(~x, ~y)
 
-    # not_int: xori with all-ones constant (type-dependent)
-    @rewrite Core.Intrinsics.not_int(~x::Tile{Bool})   => Intrinsics.xori(~x, $(true))
-    @rewrite Core.Intrinsics.not_int(~x::Tile{Int32})  => Intrinsics.xori(~x, $(Int32(-1)))
-    @rewrite Core.Intrinsics.not_int(~x::Tile{Int64})  => Intrinsics.xori(~x, $(Int64(-1)))
-    @rewrite Core.Intrinsics.not_int(~x::Tile{UInt32}) => Intrinsics.xori(~x, $(~UInt32(0)))
-    @rewrite Core.Intrinsics.not_int(~x::Tile{UInt64}) => Intrinsics.xori(~x, $(~UInt64(0)))
+    # not_int: xori with all-ones constant (type-dependent). Unlike the binary
+    # bitwise ops above, the constant makes these rules type-directed, so each
+    # one has to admit the scalar form too (`!` on a Bool, `~` on an integer).
+    @rewrite Core.Intrinsics.not_int(~x::Union{Bool, Tile{Bool}})     => Intrinsics.xori(~x, $(true))
+    @rewrite Core.Intrinsics.not_int(~x::Union{Int32, Tile{Int32}})   => Intrinsics.xori(~x, $(Int32(-1)))
+    @rewrite Core.Intrinsics.not_int(~x::Union{Int64, Tile{Int64}})   => Intrinsics.xori(~x, $(Int64(-1)))
+    @rewrite Core.Intrinsics.not_int(~x::Union{UInt32, Tile{UInt32}}) => Intrinsics.xori(~x, $(~UInt32(0)))
+    @rewrite Core.Intrinsics.not_int(~x::Union{UInt64, Tile{UInt64}}) => Intrinsics.xori(~x, $(~UInt64(0)))
 
     # Float arithmetic
     @rewrite Core.Intrinsics.add_float(~x, ~y) => Intrinsics.addf(~x, ~y)

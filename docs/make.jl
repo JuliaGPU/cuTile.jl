@@ -36,6 +36,7 @@ function main()
                 "man/performance.md",
                 "man/compatibility.md",
                 "man/debugging.md",
+                "man/julia_differences.md",
                 "man/comparison.md",
             ],
             "API reference" => [
