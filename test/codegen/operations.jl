@@ -3159,6 +3159,17 @@ end
 
     @test @filecheck begin
         @check_label "entry"
+        @check "constant <f32: 0.000000e+00> : tile<2x4xf32>"
+        @check_not "broadcast"
+        code_tiled(Tuple{}) do
+            tile = vcat(zeros(Float32, (2,)), zeros(Float32, (2,)))
+            Base.donotdelete(ct.Intrinsics.constant((4, 2), tile, Float32))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
             @check "cat {{.*}}-> tile<4xf32>"
             t = ct.load(a, ct.bid(1), (2,))

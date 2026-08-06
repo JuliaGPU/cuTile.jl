@@ -236,11 +236,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
             c isa AbstractArray ? c : fill(convert(elem_type, c), Tuple(ColMajorShape(tv.shape).dims))
         end
         merged = Base.cat(payload(lhs), payload(rhs); dims = julia_axis + 1)
-        bytes = allequal(merged) ? constant_to_bytes(first(merged), elem_type) :
-                                   dense_constants_to_bytes(vec(merged), elem_type)
+        bytes, constant = if allequal(merged)
+            value = first(merged)
+            constant_to_bytes(value, elem_type), Some(value)
+        else
+            dense_constants_to_bytes(vec(merged), elem_type), Some(merged)
+        end
         v = encode_ConstantOp!(cb, output_tile_type, bytes)
         return CGVal(v, output_tile_type, result_jltype, output_shape,
-                     nothing, Some(merged), nothing)
+                     nothing, constant, nothing)
     end
 
     # Emit CatOp (Tile IR axis)
