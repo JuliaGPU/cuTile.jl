@@ -928,7 +928,7 @@ end
             tile_a = ct.load(a, (bid, 1), (4, 4))
             tile_b = ct.load(b, (bid, 1), (4, 4))
             # Concatenate along last axis -> (4, 8)
-            combined = ct.cat((tile_a, tile_b), Val(-1))
+            combined = cat(tile_a, tile_b; dims=2)
             ct.store(c, (bid, 1), combined)
             return
         end
@@ -967,7 +967,7 @@ end
             tile_a = ct.load(a, (bid, 1), (4, 4))
             tile_b = ct.load(b, (bid, 1), (4, 4))
             # Concatenate along first axis -> (8, 4)
-            combined = ct.cat((tile_a, tile_b), Val(1))
+            combined = cat(tile_a, tile_b; dims=1)
             ct.store(c, (bid, 1), combined)
             return
         end
@@ -1008,7 +1008,7 @@ end
             left = ct.extract(tile, (1, 1), (4, 4))   # rows 1-4, cols 1-4
             right = ct.extract(tile, (1, 2), (4, 4))  # rows 1-4, cols 5-8
             # Cat them back together along last axis
-            combined = ct.cat((left, right), Val(-1))
+            combined = cat(left, right; dims=2)
             ct.store(y, (bid, 1), combined)
             return
         end

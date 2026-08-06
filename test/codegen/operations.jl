@@ -436,7 +436,6 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "cat" begin
-        # Concatenate along last axis (axis -1)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
@@ -444,13 +443,12 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile1 = ct.load(a, pid, (4, 4))
                 tile2 = ct.load(b, pid, (4, 4))
                 @check "cat"
-                combined = ct.cat((tile1, tile2), Val(-1))  # -> (4, 8)
+                combined = cat(tile1, tile2; dims=2)
                 ct.store(a, pid, combined)
                 return
             end
         end
 
-        # Concatenate along first axis (axis 0)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
@@ -458,15 +456,13 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile1 = ct.load(a, pid, (4, 8))
                 tile2 = ct.load(b, pid, (4, 8))
                 @check "cat"
-                combined = ct.cat((tile1, tile2), Val(1))  # -> (8, 8)
+                combined = cat(tile1, tile2; dims=1)
                 ct.store(a, pid, combined)
                 return
             end
         end
 
-        # The user-facing `ct.cat` wrapper enforces same-rank/same-element-type
-        # via dispatch; exercise `Intrinsics.cat` directly to lock in the
-        # codegen-time validation for future internal callers.
+        # Exercise validation at the intrinsic boundary.
         @test_throws "ranks differ" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
                                                      ct.TileArray{Float32,1,spec1d}}) do a, b
             pid = ct.bid(1)

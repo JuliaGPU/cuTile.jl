@@ -39,7 +39,7 @@ between two tiles is matrix multiplication, not an element-wise product.
 | `ct.arange(n; dtype, start, step)` | Configurable arithmetic sequence (defaults to `1:n`) |
 | `[a, b, c, d]` | Tile from comma-separated scalars (incl. `T[...]` typed forms) |
 | `[A; B]`, `[a b; C]`, `[A;;; B]` | Bracket concatenation of scalars and Tiles |
-| `cat(A, B...; dims)` | Concatenation as a function (`ct.cat((a, b), axis)` is deprecated) |
+| `cat(A, B...; dims)` | Concatenation as a function |
 
 ## Shape
 

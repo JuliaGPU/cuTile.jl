@@ -443,7 +443,7 @@ end
             shr()   = ct.Intrinsics.shri(raw, bcast(), ct.Signedness.Unsigned)
             a = ct.Intrinsics.trunci(raw,   UInt16)
             b = ct.Intrinsics.trunci(shr(), UInt16)
-            t = ct.cat((a, b), 1)
+            t = cat(a, b; dims=1)
             ct.store(out, pid, t)
             return
         end

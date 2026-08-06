@@ -232,7 +232,7 @@ rules are documented under [Memory](memory.md#Automatic-rank-matching).
 Both packages are conventionally imported as `ct` (`import cuda.tile as ct`,
 `import cuTile as ct`), so most operations are spelled identically on both
 sides: `ct.bid`, `ct.num_blocks`, `ct.num_tiles`, `ct.load`, `ct.store`,
-`ct.gather`, `ct.scatter`, `ct.arange`, `ct.cat`, `ct.broadcast_to`,
+`ct.gather`, `ct.scatter`, `ct.arange`, `ct.broadcast_to`,
 `ct.extract`, `ct.insert`, `ct.divmod`, `ct.assume_divisible_by` and the
 `ct.atomic_*` family all keep their names, and so do their keyword arguments
 (`index`, `shape`, `order`, `padding_mode`, `padding_value`, `check_bounds`,
