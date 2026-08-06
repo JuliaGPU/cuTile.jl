@@ -140,7 +140,7 @@ emit_value!(ctx::CGCtx, @nospecialize(val::Type)) = ghost_value(Type{val}, val)
 # Undef values (dead-code branches, unexported loop slots) -> zero constant
 function emit_value!(ctx::CGCtx, undef::Undef)
     T = CC.widenconst(undef.type)
-    is_ghost_type(T) && return ghost_value(T)
+    (is_ghost_type(T) || is_empty_tile_type(T)) && return ghost_value(T)
     type_id = tile_type_for_julia!(ctx, T)
     elem_type = T <: Tile ? eltype(T) : T
     bytes = constant_to_bytes(zero(elem_type), elem_type)

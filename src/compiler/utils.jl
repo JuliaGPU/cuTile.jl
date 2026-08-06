@@ -705,6 +705,7 @@ function tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
         if !(shape_param isa Tuple)
             throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
+        is_empty_tile_type(T) && return nothing
         elem_dtype = lookup_dtype!(tt, eltype(T))
         shape = RowMajorShape(ColMajorShape(shape_param))
         return tile_type!(tt, elem_dtype, shape)
@@ -741,9 +742,9 @@ function is_ghost_type(@nospecialize(T))
     end
 end
 
-function is_empty_tile_type(T)
+"""Check whether `T` is a concrete tile with a zero extent."""
+is_empty_tile_type(@nospecialize(T)) =
     T isa DataType && T <: Tile && isconcretetype(T) && 0 in size(T)
-end
 
 """
     flat_field_count(T) -> Int

@@ -111,7 +111,8 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     if parent_result_type !== Nothing
         Ts = parent_result_type <: Tuple ? collect(parent_result_type.parameters) :
                                             Any[parent_result_type]
-        result_types, result_poisoned = collect_result_types!(ctx, Ts; context="`if`/`else` result")
+        result_types, result_poisoned = collect_result_types!(
+            ctx, (T for T in Ts if !is_empty_tile_type(T)); context="`if`/`else` result")
     end
     carry_errors = carry_mark+1:length(ctx.errors)
 
@@ -130,7 +131,9 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
     prune_derived_errors!(ctx, carry_errors)
 
-    ctx.values[ssa_idx] = CGVal(results, parent_result_type)
+    ctx.values[ssa_idx] = is_empty_tile_type(parent_result_type) ?
+                          ghost_value(parent_result_type) :
+                          CGVal(results, parent_result_type)
     result_poisoned && push!(ctx.poisoned, ssa_idx)
 end
 
@@ -443,8 +446,10 @@ function emit_loop_getfield!(ctx::CGCtx, args::Vector{Any})
     ref_cgval.v isa Vector{Value} || return nothing
 
     field_idx = args[2]::Int
-    v = ref_cgval.v[field_idx]
     elem_type = ref_cgval.jltype.parameters[field_idx]
+    is_empty_tile_type(elem_type) && return ghost_value(elem_type)
+    value_idx = count(i -> !is_empty_tile_type(ref_cgval.jltype.parameters[i]), 1:field_idx)
+    v = ref_cgval.v[value_idx]
     type_id = tile_type_for_julia!(ctx, elem_type)
     shape = RowMajorShape(extract_tile_shape(elem_type))
     CGVal(v, type_id, elem_type, shape)

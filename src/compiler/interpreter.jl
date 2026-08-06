@@ -71,6 +71,21 @@ CC.may_discard_trees(::cuTileInterpreter) = false
 # Returns nothing when no override applies (fallback).
 tfunc(𝕃, @nospecialize(f), @nospecialize args...) = nothing
 
+# Keep invalid zero-volume intrinsic calls visible to codegen. A concrete
+# override lets inference fold or discard the call before its emitter can
+# diagnose the invalid shape.
+function checked_tfunc(𝕃, @nospecialize(f), @nospecialize args...)
+    rt = tfunc(𝕃, f, args...)
+    contains_empty_tile(rt) ? nothing : rt
+end
+
+function contains_empty_tile(@nospecialize(T))
+    T isa DataType || return false
+    is_empty_tile_type(T) && return true
+    T <: Tuple && return any(contains_empty_tile, T.parameters)
+    false
+end
+
 # Per-intrinsic effect overrides.
 # Returns nothing when no override applies (fallback).
 efunc(@nospecialize(f), effects::CC.Effects) = nothing
@@ -172,7 +187,7 @@ end
             sv::CC.InferenceState, max_methods::Int)
         is_intr = isintrinsic(f)
         𝕃 = CC.typeinf_lattice(interp)
-        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
+        rt_override = checked_tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, vtypes, sv)
         !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
@@ -200,7 +215,7 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
             sv::CC.InferenceState, max_methods::Int)
         is_intr = isintrinsic(f)
         𝕃 = CC.typeinf_lattice(interp)
-        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
+        rt_override = checked_tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, nothing, sv)
         !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
@@ -229,7 +244,7 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
         _infer_subprogram(interp, f, arginfo, si, nothing, sv)  # side-effect only
         is_intr = isintrinsic(f)
         𝕃 = CC.typeinf_lattice(interp)
-        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
+        rt_override = checked_tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         rt = rt_override !== nothing ? rt_override : result.rt
         efunc_override = is_intr ? efunc(f, result.effects) : nothing
         effects = efunc_override !== nothing ? efunc_override : result.effects
