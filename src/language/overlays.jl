@@ -403,7 +403,7 @@ end
 
 
 cat_dimensions(tiles, dims) =
-    throw(ArgumentError("cat dimensions must be integers, got $dims"))
+    cat_dimensions(tiles, Val(dims))
 
 cat_dims_value(dims) = dims
 cat_dims_value(::Val{D}) where {D} = D

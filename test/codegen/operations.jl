@@ -3199,6 +3199,16 @@ end
         end
     end
 
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f32: 0.000000e+00> : tile<4x4xf32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(cat(zeros(Float32, (2, 2)), zeros(Float32, (2, 2));
+                                  dims=1:2))
+            return
+        end
+    end
+
     @test_throws "positive integers" code_tiled(
             Tuple{ct.TileArray{Float32,1,spec1d}}) do a
         t = ct.load(a, ct.bid(1), (2,))
