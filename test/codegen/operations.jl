@@ -3141,7 +3141,10 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        @check "constant <i1: [true, false, false, true]> : tile<4xi1>"
+        @check cond=(ct.bytecode_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
+        # Pre-v13.4 disassemblers print packed i1 data as a splat.
+        @check cond=(ct.bytecode_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
+        @check_not "cat"
         code_tiled(Tuple{}) do
             Base.donotdelete(Bool[true, false, false, true])
             return
