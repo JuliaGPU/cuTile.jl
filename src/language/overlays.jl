@@ -174,9 +174,9 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Base.ones(::Type{T}, dim
 ## empty literals
 
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.getindex(::Type{T}) where {T<:Number} =
-    throw(ArgumentError("empty tile literals are not supported"))
+    Tile{T, Tuple{0}}()
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.vect() =
-    throw(ArgumentError("empty tile literals are not supported"))
+    throw(ArgumentError("empty array literal `[]`: cannot infer an element type; use a typed literal like `Float32[]`"))
 
 ## tile and scalar concatenation
 
@@ -195,10 +195,12 @@ end
 typed_tile_elements(::Type{T}, xs) where {T} =
     map(x -> convert(Tile{T}, x), xs)
 
-function pad_tile(tile::Tile, rank)
+function pad_tile(tile::Tile{T}, rank) where {T}
     shape = size(tile)
     length(shape) == rank && return tile
-    Intrinsics.broadcast(tile, (shape..., ntuple(_ -> 1, rank - length(shape))...))
+    padded = (shape..., ntuple(_ -> 1, rank - length(shape))...)
+    length(tile) == 0 && return Tile{T, Tuple{padded...}}()
+    Intrinsics.broadcast(tile, padded)
 end
 
 function cat_split(widths, target, i=1, total=0)
@@ -210,10 +212,61 @@ end
 cat_tree(tiles, dim) = cat_tree(tiles, Val(dim))
 
 @generated function cat_tree(tiles::Tuple, ::Val{dim}) where {dim}
-    widths = map(type -> size(type, dim), tiles.parameters)
+    types = tiles.parameters
+    shapes = map(size, types)
+    rank = length(first(shapes))
+    keep = Int[]
+
+    has_empty = false
+    for shape in shapes
+        if 0 in shape
+            has_empty = true
+            break
+        end
+    end
+
+    if has_empty
+        for d in 1:rank
+            d == dim && continue
+            extents = Int[]
+            for shape in shapes
+                push!(extents, shape[d])
+            end
+            allequal(extents) || return :(throw(DimensionMismatch(
+                $("mismatch in dimension $d extents of concatenated tiles: $(Tuple(extents))"))))
+        end
+
+        result = ntuple(rank) do d
+            if d == dim
+                total = 0
+                for shape in shapes
+                    total += shape[d]
+                end
+                total
+            else
+                first(shapes)[d]
+            end
+        end
+        if prod(result) == 0
+            T = mapreduce(eltype, promote_type, types)
+            return :(Tile{$T, $(Tuple{result...})}())
+        end
+
+        # A nonempty result can only retain positive-volume operands.
+        for i in eachindex(types)
+            shapes[i][dim] > 0 && push!(keep, i)
+        end
+    else
+        append!(keep, eachindex(types))
+    end
+
+    widths = Int[]
+    for i in keep
+        push!(widths, shapes[i][dim])
+    end
 
     function tree(first, last)
-        first == last && return :(tiles[$first])
+        first == last && return :(tiles[$(keep[first])])
         split = first - 1 + cat_split(widths[first:last], sum(widths[first:last]) ÷ 2)
         :(Intrinsics.cat(($(tree(first, split)), $(tree(split + 1, last))), $(dim - 1)))
     end
@@ -337,6 +390,8 @@ cat_dimensions(tiles, dims::Tuple{Vararg{Integer}}) =
         end
         if all(==(first(coord)), coord)
             push!(cells, :(pad_tile(tiles[$(first(coord))], $rank)))
+        elseif 0 in shape
+            push!(cells, :(Tile{$T, $(Tuple{shape...})}()))
         else
             push!(cells, :(zeros($T, $(shape...))))
         end
