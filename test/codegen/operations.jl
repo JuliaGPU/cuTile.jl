@@ -3216,6 +3216,27 @@ end
         return
     end
 
+    for f in (() -> hvncat(0, 1.0f0),
+              () -> Base.typed_hvncat(Float32, 0, 1))
+        @test only(ct.code_typed(f, Tuple{}))[2] == ct.Tile{Float32,Tuple{}}
+        code_tiled(devnull, () -> (Base.donotdelete(f()); nothing), Tuple{})
+    end
+
+    @test_throws "exactly one element" code_tiled(Tuple{}) do
+        Base.donotdelete(hvncat(0, 1, 2))
+        return
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            t = ct.load(a, ct.bid(1), (2, 2))
+            Base.donotdelete(hvncat(0, t))
+            return
+        end
+    end
+
     @test_throws "cannot infer an element type" code_tiled(
             Tuple{ct.TileArray{Float32,1,spec1d}}) do a
         Base.donotdelete([])
