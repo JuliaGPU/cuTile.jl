@@ -62,3 +62,34 @@ end
     @test Array(out) == Float32[1.5 2; 3 4]
     @test Array(wide) == [Array(vector); 1.5f0; 1.5f0]
 end
+
+@testset "empty concatenation" begin
+    function empty_concatenation_kernel(input::ct.TileArray{Float32,2},
+                                        input_vector::ct.TileArray{Float32,1},
+                                        block::ct.TileArray{Float32,2},
+                                        promoted::ct.TileArray{Float64,1},
+                                        shape::ct.TileArray{Int32,1})
+        tile = ct.load(input, 1, (2, 2))
+        vector = ct.load(input_vector, 1, (4,))
+        ct.store(block, 1, [Float32[] Float32[]; tile])
+        ct.store(promoted, 1, vcat(Float64[], vector, Float64[]))
+
+        empty = hcat(Float32[], Float32[], Float32[])
+        ct.store(shape, 1,
+                 Int32[length(empty), size(empty, 1), size(empty, 2), ndims(empty)])
+        return
+    end
+
+    input = CUDA.rand(Float32, 2, 2)
+    input_vector = CUDA.rand(Float32, 4)
+    block = CUDA.zeros(Float32, 2, 2)
+    promoted = CUDA.zeros(Float64, 4)
+    shape = CUDA.zeros(Int32, 4)
+    @cuda backend=cuTile blocks=1 empty_concatenation_kernel(
+        input, input_vector, block, promoted, shape)
+
+    host = Array(input)
+    @test Array(block) == [Float32[] Float32[]; host]
+    @test Array(promoted) == vcat(Float64[], Array(input_vector), Float64[])
+    @test Array(shape) == Int32[0, 0, 3, 2]
+end

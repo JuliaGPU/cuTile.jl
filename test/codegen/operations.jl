@@ -3123,12 +3123,7 @@ end
         return
     end
 
-    @test_throws "empty tile literals" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
-        Base.donotdelete(Float32[])
-        return
-    end
-    @test_throws "empty tile literals" code_tiled(
+    @test_throws "cannot infer an element type" code_tiled(
             Tuple{ct.TileArray{Float32,1,spec1d}}) do a
         Base.donotdelete([])
         return
@@ -3138,6 +3133,62 @@ end
             Tuple{ct.TileArray{Float32,1,spec1d}}) do a
         t = ct.load(a, ct.bid(1), (4,))
         Base.donotdelete([t, t])
+        return
+    end
+end
+
+@testset "empty array construction" begin
+    empty_cases = (
+        (() -> vcat(Float32[], Float32[]), ct.Tile{Float32,Tuple{0}}),
+        (() -> hcat(Float32[], Float32[]), ct.Tile{Float32,Tuple{0,2}}),
+        (() -> hcat(Float32[], Float32[], Float32[]), ct.Tile{Float32,Tuple{0,3}}),
+        (() -> cat(Float32[], Float32[]; dims=2), ct.Tile{Float32,Tuple{0,2}}),
+        (() -> cat(Float32[], Float32[]; dims=(1, 2)), ct.Tile{Float32,Tuple{0,2}}),
+        (() -> [Float32[];;; Float32[]], ct.Tile{Float32,Tuple{0,1,2}}),
+    )
+    for (f, T) in empty_cases
+        @test only(ct.code_typed(f, Tuple{}))[2] == T
+        ct.code_tiled(devnull, () -> (Base.donotdelete(f()); nothing), Tuple{})
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            t = ct.load(a, ct.bid(1), (4,))
+            ct.store(a, ct.bid(1), vcat(Float32[], t, Float32[]))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "ftof {{.*}}tile<4xf32> -> tile<4xf64>"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                         ct.TileArray{Float64,1,spec1d}}) do input, output
+            t = ct.load(input, ct.bid(1), (4,))
+            ct.store(output, ct.bid(1), vcat(Float64[], t))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            t = ct.load(a, ct.bid(1), (4,))
+            ct.store(a, ct.bid(1), Float32[Float64[]; t])
+            return
+        end
+    end
+
+    @test_throws "mismatch in dimension 1" code_tiled(Tuple{}) do
+        Base.donotdelete(hcat(Float32[], Float32[1]))
+        return
+    end
+    @test_throws "unsupported operation on an empty tile" code_tiled(Tuple{}) do
+        Base.donotdelete(ct.Intrinsics.broadcast(Float32[], (0, 1)))
         return
     end
 end
