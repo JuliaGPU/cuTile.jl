@@ -111,7 +111,9 @@ escape_printf(s::String) = replace(s, "%" => "%%")
 # Tuple constants are expanded as `(a, b, c)` matching cuTile Python.
 function format_print_arg!(format_parts::Vector{String}, tile_args::Vector{Value},
                             ctx::CGCtx, @nospecialize(arg))
-    c = get_constant(ctx, arg)
+    T = value_type(ctx.current_block, arg)
+    shaped_tile = T isa DataType && T <: Tile && !isempty(size(T))
+    c = shaped_tile ? nothing : get_constant(ctx, arg)
     if c !== nothing
         format_print_constant!(format_parts, something(c))
     else

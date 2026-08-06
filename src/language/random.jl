@@ -62,7 +62,7 @@
 # emits two UInt32s — exactly the input that Box-Muller consumes — so a tile
 # of `n` normals costs `n/2` Philox calls (Float16/BFloat16/Float32) or `n`
 # calls (Float64, where one normal needs a UInt64 of entropy). The cyclic
-# tile distribution makes the final `cat((n1, n2), 1)` a register-level
+# tile distribution makes the final `cat(n1, n2; dims=1)` a register-level
 # no-op, just like in `rand`.
 #
 # Float16/BFloat16 randn computes the Box-Muller in Float32, then converts:
@@ -260,7 +260,7 @@ function rand_uint32_tile(stream, dims::NTuple{N, Int}) where {N}
         counters = counter_tile(c_base, (half,))
         ctr2     = fill(UInt32(0), half)
         c1, c2   = philox2x_rounds(Val(7), counters, ctr2, k_tile)
-        return reshape(cat((c1, c2), 1), dims)
+        return reshape(cat(c1, c2; dims=1), dims)
     end
 end
 
@@ -296,7 +296,7 @@ function rand_uint16_tile(stream, dims::NTuple{N, Int}) where {N}
     lo    = Intrinsics.trunci(raw, UInt16)
     hi    = Intrinsics.trunci(Intrinsics.shri(raw, fill(UInt32(16), raw_n),
                                               Signedness.Unsigned), UInt16)
-    full  = cat((lo, hi), 1)
+    full = cat(lo, hi; dims=1)
     n < 2 * raw_n ? reshape(extract(full, (1,), (n,)), dims) : reshape(full, dims)
 end
 
@@ -309,7 +309,7 @@ function rand_uint8_tile(stream, dims::NTuple{N, Int}) where {N}
     b1 = Intrinsics.trunci(shr(8),  UInt8)
     b2 = Intrinsics.trunci(shr(16), UInt8)
     b3 = Intrinsics.trunci(shr(24), UInt8)
-    full = cat((cat((b0, b1), 1), cat((b2, b3), 1)), 1)
+    full = cat(cat(b0, b1; dims=1), cat(b2, b3; dims=1); dims=1)
     n < 4 * raw_n ? reshape(extract(full, (1,), (n,)), dims) : reshape(full, dims)
 end
 
@@ -413,7 +413,7 @@ end
 
 # Float32-class randn (Float16/BFloat16/Float32): each Philox call gives the
 # (u1, u2) pair Box-Muller needs, halving Philox work vs the rand_uint32 path.
-# For `n ≥ 2` we run `n/2` Philox calls and `cat((n1, n2), 1)` the two BM
+# For `n ≥ 2` we run `n/2` Philox calls and concatenate the two BM
 # lanes; for `n == 1` (0D scalar) we keep the single-call form and discard
 # the second BM output. The host counter advances by `n` to match `rand`'s
 # T-agnostic advance scheme.
@@ -437,7 +437,7 @@ function randn_f32class_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:
         ctr2     = fill(UInt32(0), half)
         c1, c2   = philox2x_rounds(Val(7), counters, ctr2, k_tile)
         n1, n2   = boxmuller_tile(T, c1, c2)
-        return reshape(cat((n1, n2), 1), dims)
+        return reshape(cat(n1, n2; dims=1), dims)
     end
 end
 
@@ -478,7 +478,7 @@ function randn_f64_tile(stream, dims::NTuple{N, Int}) where {N}
         u1 = pack_uint64(c1_a, c2_a)
         u2 = pack_uint64(c1_b, c2_b)
         n1, n2 = boxmuller_tile(Float64, u1, u2)
-        return reshape(cat((n1, n2), 1), dims)
+        return reshape(cat(n1, n2; dims=1), dims)
     end
 end
 

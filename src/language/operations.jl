@@ -1089,32 +1089,7 @@ end
  Shape & DType
 =============================================================================#
 
-public cat, broadcast_to
-
-"""
-    cat(tiles::Tuple{Tile, Tile}, axis::Int) -> Tile
-
-Concatenate two tiles along the specified axis (1-indexed).
-Supports negative axis (e.g., -1 for last dimension).
-
-# Example
-```julia
-tile_a = ct.load(arr_a, (1,), (4, 8))  # Shape (4, 8)
-tile_b = ct.load(arr_b, (1,), (4, 8))  # Shape (4, 8)
-# Concatenate along axis 1: (4, 8) + (4, 8) -> (8, 8)
-combined = ct.cat((tile_a, tile_b), 1)
-# Concatenate along axis -1 (last): (4, 8) + (4, 8) -> (4, 16)
-combined_last = ct.cat((tile_a, tile_b), -1)
-```
-"""
-@inline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, axis::Int) where {T, S1, S2}
-    axis0 = axis < 0 ? axis : axis - 1
-    Intrinsics.cat(tiles, axis0)
-end
-@inline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, ::Val{Axis}) where {T, S1, S2, Axis}
-    axis0 = Axis < 0 ? Axis : Axis - 1
-    Intrinsics.cat(tiles, axis0)
-end
+public broadcast_to
 
 """
     broadcast_to(tile::Tile{T, S}, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -1371,7 +1346,7 @@ end
 
 @inline Base.convert(::Type{Tile{T}}, tile::Tile{T}) where {T} = tile
 @inline Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} =
-    map(T2, tile)
+    length(tile) == 0 ? Tile{T2, Shape}() : map(T2, tile)
 @inline Base.convert(::Type{Tile{T}}, x::Number) where {T} = Tile(convert(T, x))
 
 #=============================================================================

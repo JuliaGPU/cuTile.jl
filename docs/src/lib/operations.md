@@ -37,7 +37,9 @@ between two tiles is matrix multiplication, not an element-wise product.
 | `ones(T, dims...)` | One-filled tile |
 | `fill(value, dims...)` | Constant-filled tile |
 | `ct.arange(n; dtype, start, step)` | Configurable arithmetic sequence (defaults to `1:n`) |
-
+| `[a, b, c, d]` | Tile from comma-separated scalars (incl. `T[...]` typed forms) |
+| `[A; B]`, `[a b; C]`, `[A;;; B]` | Bracket concatenation of scalars and Tiles |
+| `cat(A, B...; dims)` | Concatenation as a function |
 
 ## Shape
 
@@ -49,7 +51,6 @@ between two tiles is matrix multiplication, not an element-wise product.
 | `repeat(tile, counts...)` `repeat(tile; inner, outer)` | Repeat values along dimensions |
 | `ct.extract(tile, index, shape)` | Extract sub-tile |
 | `ct.insert(tile, index, value)` | Replace a non-overlapping sub-tile (Tile IR v13.4+) |
-| `ct.cat((a, b), axis)` | Concatenate tiles |
 | `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
 | `dropdims(tile; dims)` | Remove one or more singleton dimensions |
 

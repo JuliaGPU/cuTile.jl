@@ -74,12 +74,44 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
         return source
     end
 
-    # Use the existing broadcast helper
     dtype = lookup_dtype!(tt, source_elem)
-    result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
     result_type_id = tile_type!(tt, dtype, target_shape)
+    result_jltype = Tile{source_elem, Tuple{target_shape_tuple...}}
 
-    CGVal(result_v, result_type_id, Tile{source_elem, Tuple{target_shape_tuple...}}, target_shape)
+    source_shape = Tuple(ColMajorShape(source.shape).dims)
+    broadcastable = length(source_shape) <= length(target_shape_tuple)
+    padded_shape = broadcastable ?
+        (source_shape..., ntuple(_ -> 1, length(target_shape_tuple) - length(source_shape))...) : ()
+    if broadcastable
+        for i in eachindex(target_shape_tuple)
+            if padded_shape[i] != 1 && padded_shape[i] != target_shape_tuple[i]
+                broadcastable = false
+                break
+            end
+        end
+    end
+
+    if broadcastable && source.constant !== nothing && source_elem <: Number
+        c = something(source.constant)
+        if c isa Number
+            v = encode_ConstantOp!(cb, result_type_id, constant_to_bytes(c, source_elem))
+            return CGVal(v, result_type_id, result_jltype, target_shape,
+                         nothing, source.constant, nothing)
+        elseif c isa AbstractArray
+            counts = ntuple(i -> target_shape_tuple[i] ÷ padded_shape[i],
+                            length(target_shape_tuple))
+            payload = repeat(reshape(c, padded_shape), counts...)
+            v = encode_ConstantOp!(cb, result_type_id,
+                                   dense_constants_to_bytes(vec(payload), source_elem))
+            return CGVal(v, result_type_id, result_jltype, target_shape,
+                         nothing, Some(payload), nothing)
+        end
+    end
+
+    # Use the existing broadcast helper
+    result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
+
+    CGVal(result_v, result_type_id, result_jltype, target_shape)
 end
 
 """
@@ -196,12 +228,29 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     # Create output tile type
     dtype = lookup_dtype!(tt, elem_type)
     output_tile_type = tile_type!(tt, dtype, output_shape)
+    julia_output = ColMajorShape(output_shape)
+    result_jltype = Tile{elem_type, TupleType(julia_output)}
+
+    if lhs.constant !== nothing && rhs.constant !== nothing && elem_type <: Number
+        payload(tv) = let c = something(tv.constant)
+            c isa AbstractArray ? c : fill(convert(elem_type, c), Tuple(ColMajorShape(tv.shape).dims))
+        end
+        merged = Base.cat(payload(lhs), payload(rhs); dims = julia_axis + 1)
+        bytes, constant = if allequal(merged)
+            value = first(merged)
+            constant_to_bytes(value, elem_type), Some(value)
+        else
+            dense_constants_to_bytes(vec(merged), elem_type), Some(merged)
+        end
+        v = encode_ConstantOp!(cb, output_tile_type, bytes)
+        return CGVal(v, output_tile_type, result_jltype, output_shape,
+                     nothing, constant, nothing)
+    end
 
     # Emit CatOp (Tile IR axis)
     result = encode_CatOp!(cb, output_tile_type, lhs.v, rhs.v, tileir_axis)
 
-    julia_output = ColMajorShape(output_shape)
-    CGVal(result, output_tile_type, Tile{elem_type, TupleType(julia_output)}, output_shape)
+    CGVal(result, output_tile_type, result_jltype, output_shape)
 end
 
 """
@@ -240,15 +289,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
 
     tv = emit_value!(ctx, args[2])
     tv === nothing && throw(IRError("fill() value must be a constant or a runtime scalar"))
-    if tv.constant !== nothing
-        # Compile-time constant: use ConstantOp directly
+    if tv.constant !== nothing && something(tv.constant) isa Number
         value_bytes = constant_to_bytes(something(tv.constant), elem_type)
         result = encode_ConstantOp!(cb, tile_type, value_bytes)
-    else
-        # Runtime value: broadcast 0D tile to the target shape
-        result = broadcast_tile_to_shape!(cb, tt, tv, tile_shape, dtype)
+        return CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape,
+                     nothing, tv.constant, nothing)
     end
 
+    # Runtime value: broadcast 0D tile to the target shape
+    result = broadcast_tile_to_shape!(cb, tt, tv, tile_shape, dtype)
     CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
 end
 

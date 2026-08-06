@@ -119,7 +119,7 @@ function fft_kernel(
     # --- Concatenate and Store ---
     X_r_final = reshape(X_r10, (1, N, BS))
     X_i_final = reshape(X_i10, (1, N, BS))
-    Y_ri = reshape(ct.cat((X_r_final, X_i_final), 1), (D, 2N ÷ D, BS))
+    Y_ri = reshape(cat(X_r_final, X_i_final; dims=1), (D, 2N ÷ D, BS))
     ct.store(y_packed_out; index=(Int32(1), Int32(1), bid), tile=Y_ri)
 
     return

@@ -436,7 +436,6 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "cat" begin
-        # Concatenate along last axis (axis -1)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
@@ -444,13 +443,12 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile1 = ct.load(a, pid, (4, 4))
                 tile2 = ct.load(b, pid, (4, 4))
                 @check "cat"
-                combined = ct.cat((tile1, tile2), Val(-1))  # -> (4, 8)
+                combined = cat(tile1, tile2; dims=2)
                 ct.store(a, pid, combined)
                 return
             end
         end
 
-        # Concatenate along first axis (axis 0)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
@@ -458,15 +456,13 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile1 = ct.load(a, pid, (4, 8))
                 tile2 = ct.load(b, pid, (4, 8))
                 @check "cat"
-                combined = ct.cat((tile1, tile2), Val(1))  # -> (8, 8)
+                combined = cat(tile1, tile2; dims=1)
                 ct.store(a, pid, combined)
                 return
             end
         end
 
-        # The user-facing `ct.cat` wrapper enforces same-rank/same-element-type
-        # via dispatch; exercise `Intrinsics.cat` directly to lock in the
-        # codegen-time validation for future internal callers.
+        # Exercise validation at the intrinsic boundary.
         @test_throws "ranks differ" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
                                                      ct.TileArray{Float32,1,spec1d}}) do a, b
             pid = ct.bid(1)
@@ -505,6 +501,15 @@ spec4d = ct.ArraySpec{4}(16, true)
                 @check "broadcast"
                 expanded = ct.broadcast_to(tile, (32, 16))
                 ct.store(b, pid, expanded)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: [{{\\[}}1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00], [1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]]> : tile<2x4xf32>"
+            code_tiled(Tuple{}) do
+                Base.donotdelete(ct.broadcast_to(Float32[1, 2, 3, 4], (4, 2)))
                 return
             end
         end
@@ -1984,24 +1989,36 @@ end
     end
 
     @testset "scalar broadcast" begin
-        # Distinct constants per line so CSE doesn't fold the broadcasts.
+        # Distinct constants per line so CSE doesn't fold them. Constant
+        # scalars broadcast as shaped splat ConstantOps, not BroadcastOps.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
-                @check "broadcast"
+                @check "constant <f32: 1.000000e+00> : tile<16xf32>"
                 @check "addf"
                 Base.donotdelete(tile .+ 1.0f0)
-                @check "broadcast"
+                @check "constant <f32: 1.500000e+00> : tile<16xf32>"
                 @check "subf"
                 Base.donotdelete(1.5f0 .- tile)
-                @check "broadcast"
+                @check "constant <f32: 2.000000e+00> : tile<16xf32>"
                 @check "mulf"
                 Base.donotdelete(tile .* 2.0f0)
-                @check "broadcast"
+                @check "constant <f32: 3.000000e+00> : tile<16xf32>"
                 @check "divf"
                 Base.donotdelete(tile ./ 3.0f0)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: 0.000000e+00> : tile<4xf32>"
+            @check "constant <f32: 1.000000e+00> : tile<4xf32>"
+            @check "addf {{.*}} : tile<4xf32>"
+            code_tiled(Tuple{}) do
+                Base.donotdelete(zeros(Float32, (4,)) + ones(Float32, (4,)))
                 return
             end
         end
@@ -2939,6 +2956,18 @@ end
         end
     end
 
+    @testset "print constant tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: 0.000000e+00> : tile<4xf32>"
+            @check "print_tko \"%f\"{{.*}}tile<4xf32>"
+            code_tiled(Tuple{}) do
+                print(zeros(Float32, (4,)))
+                return
+            end
+        end
+    end
+
     @testset "println with tile" begin
         @test @filecheck begin
             @check_label "entry"
@@ -3067,5 +3096,223 @@ end
                 return
             end
         end
+    end
+end
+
+@testset "array construction" begin
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}, Float64}) do a, x
+            @check "cat {{.*}}-> tile<4xf64>"
+            ct.store(a, ct.bid(1), [x, 2, 3, 4])
+            return
+        end
+    end
+
+    # All-constant literals fold to one dense ConstantOp. [a b; c d] lists
+    # row-major; dense data is column-major (Tile IR row-major over the
+    # reversed shape).
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            @check "constant <f32: [{{\\[}}1.000000e+00, 3.000000e+00, 5.000000e+00, 7.000000e+00], [2.000000e+00, 4.000000e+00, 6.000000e+00, 8.000000e+00]]> : tile<2x4xf32>"
+            ct.store(a, ct.bid(1), Float32[1 2; 3 4; 5 6; 7 8])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f64: [1.000000e+00, 2.500000e+00, 3.000000e+00, 4.000000e+00]> : tile<4xf64>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete([1, 2.5, 3, 4])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <i32: [{{\\[\\[}}1, 3], [2, 4]], {{\\[\\[}}5, 7], [6, 8]]]> : tile<2x2x2xi32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(Int32[1 2; 3 4;;; 5 6; 7 8])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check cond=(ct.bytecode_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
+        # Pre-v13.4 disassemblers print packed i1 data as a splat.
+        @check cond=(ct.bytecode_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
+        @check_not "cat"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(Bool[true, false, false, true])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f32: 0.000000e+00> : tile<4xf32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(vcat(zeros(Float32, (2,)), zeros(Float32, (2,))))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f32: 0.000000e+00> : tile<2x4xf32>"
+        @check_not "broadcast"
+        code_tiled(Tuple{}) do
+            tile = vcat(zeros(Float32, (2,)), zeros(Float32, (2,)))
+            Base.donotdelete(ct.Intrinsics.constant((4, 2), tile, Float32))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
+            @check "cat {{.*}}-> tile<4xf32>"
+            t = ct.load(a, ct.bid(1), (2,))
+            ct.store(a, ct.bid(1), cat(t, x, x; dims=1))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+                         ct.TileArray{Float32,3,spec3d}}) do a, b
+            t = ct.load(a, ct.bid(1), (2, 2))
+            @check "cat {{.*}}-> tile<2x4x2xf32>"
+            ct.store(b, ct.bid(1), [t t;;; t t])
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            t = ct.load(a, ct.bid(1), (2, 2))
+            @check "cat {{.*}}-> tile<4x4xf32>"
+            Base.donotdelete(cat(t, t; dims=(1, 2)))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <i32: 0> : tile<8x8xi32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(cat(zeros(Int32, (1, 1)), zeros(Int32, (1, 1)),
+                                  zeros(Int32, (2, 2)), zeros(Int32, (4, 4));
+                                  dims=(2, 1)))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "constant <f32: 0.000000e+00> : tile<4x4xf32>"
+        code_tiled(Tuple{}) do
+            Base.donotdelete(cat(zeros(Float32, (2, 2)), zeros(Float32, (2, 2));
+                                  dims=1:2))
+            return
+        end
+    end
+
+    @test_throws "positive integers" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        t = ct.load(a, ct.bid(1), (2,))
+        Base.donotdelete(cat(t, t; dims=0))
+        return
+    end
+
+    for f in (() -> hvncat(0, 1.0f0),
+              () -> Base.typed_hvncat(Float32, 0, 1))
+        @test only(ct.code_typed(f, Tuple{}))[2] == ct.Tile{Float32,Tuple{}}
+        code_tiled(devnull, () -> (Base.donotdelete(f()); nothing), Tuple{})
+    end
+
+    @test_throws "exactly one element" code_tiled(Tuple{}) do
+        Base.donotdelete(hvncat(0, 1, 2))
+        return
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            t = ct.load(a, ct.bid(1), (2, 2))
+            Base.donotdelete(hvncat(0, t))
+            return
+        end
+    end
+
+    @test_throws "cannot infer an element type" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        Base.donotdelete([])
+        return
+    end
+
+    @test_throws "concatenation syntax" code_tiled(
+            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        t = ct.load(a, ct.bid(1), (4,))
+        Base.donotdelete([t, t])
+        return
+    end
+end
+
+@testset "empty array construction" begin
+    empty_cases = (
+        (() -> vcat(Float32[], Float32[]), ct.Tile{Float32,Tuple{0}}),
+        (() -> hcat(Float32[], Float32[]), ct.Tile{Float32,Tuple{0,2}}),
+        (() -> hcat(Float32[], Float32[], Float32[]), ct.Tile{Float32,Tuple{0,3}}),
+        (() -> cat(Float32[], Float32[]; dims=2), ct.Tile{Float32,Tuple{0,2}}),
+        (() -> cat(Float32[], Float32[]; dims=(1, 2)), ct.Tile{Float32,Tuple{0,2}}),
+        (() -> [Float32[];;; Float32[]], ct.Tile{Float32,Tuple{0,1,2}}),
+    )
+    for (f, T) in empty_cases
+        @test only(ct.code_typed(f, Tuple{}))[2] == T
+        ct.code_tiled(devnull, () -> (Base.donotdelete(f()); nothing), Tuple{})
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            t = ct.load(a, ct.bid(1), (4,))
+            ct.store(a, ct.bid(1), vcat(Float32[], t, Float32[]))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check "ftof {{.*}}tile<4xf32> -> tile<4xf64>"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                         ct.TileArray{Float64,1,spec1d}}) do input, output
+            t = ct.load(input, ct.bid(1), (4,))
+            ct.store(output, ct.bid(1), vcat(Float64[], t))
+            return
+        end
+    end
+
+    @test @filecheck begin
+        @check_label "entry"
+        @check_not "cat "
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            t = ct.load(a, ct.bid(1), (4,))
+            ct.store(a, ct.bid(1), Float32[Float64[]; t])
+            return
+        end
+    end
+
+    @test_throws "mismatch in dimension 1" code_tiled(Tuple{}) do
+        Base.donotdelete(hcat(Float32[], Float32[1]))
+        return
     end
 end

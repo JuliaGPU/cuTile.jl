@@ -40,12 +40,13 @@ end
 
 Emit bytecode for a `:new` expression (struct construction).
 
-In Tile IR codegen, only ghost types (zero-size immutables like `Val{V}`,
-`Constant{T,V}`) are supported — these have no runtime representation.
+In Tile IR codegen, ghost types and zero-volume tiles have no runtime
+representation. Other struct construction is unsupported.
 """
 function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     T = CC.widenconst(result_type)
     is_ghost_type(T) && return ghost_value(T)
+    is_empty_tile_type(T) && return ghost_value(T)
     # On older Julia versions, method errors are emitted as
     # %new(MethodError, func, args_tuple, world) instead of Core.throw_methoderror
     if T === MethodError
