@@ -205,3 +205,24 @@ function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
         throw(IRError("Cannot convert $T to constant bytes"))
     end
 end
+
+"""
+    dense_constants_to_bytes(values, T) -> Vector{UInt8}
+
+Serialize a non-splat `DenseElementsAttr`. Boolean elements are packed LSB
+first; other elements are concatenated in order.
+"""
+function dense_constants_to_bytes(values, @nospecialize(T::Type))
+    if T === Bool
+        bytes = zeros(UInt8, cld(length(values), 8))
+        for (i, v) in enumerate(values)
+            v && (bytes[(i - 1) >> 3 + 1] |= 0x01 << ((i - 1) & 7))
+        end
+        return bytes
+    end
+    bytes = UInt8[]
+    for v in values
+        append!(bytes, constant_to_bytes(v, T))
+    end
+    return bytes
+end

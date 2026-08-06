@@ -41,6 +41,8 @@ end
 function try_const_fold(ctx::CGCtx, op, args)
     vals = Any[]
     for arg in args
+        T = value_type(ctx.current_block, arg)
+        T isa DataType && T <: Tile && !isempty(size(T)) && return nothing
         c = get_constant(ctx, arg)
         c === nothing && return nothing
         val = something(c)

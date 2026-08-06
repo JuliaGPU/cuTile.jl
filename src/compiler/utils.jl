@@ -181,8 +181,8 @@ diverge from the underlying IR type (e.g., broadcasting semantics, type promotio
 
 ## Auxiliary fields
 
-- `constant`: `Some(x)` for compile-time constants (ghost `Constant{T,V}` types), `nothing`
-  otherwise.
+- `constant`: `Some(x)` for compile-time constants, `nothing` otherwise. Shaped
+  tiles use a scalar payload for splats and a Julia-order array for dense values.
 - `tuple`: component refs (`SSAValue`s, `CGVal`s, …) for tuple values used by `cat()` and similar.
 """
 struct CGVal
@@ -193,7 +193,7 @@ struct CGVal
     # Lazy argument reference: (arg_idx, [field_indices...])
     # e.g., (1, [2, 1]) means "argument 1, field 2, sub-field 1"
     arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
-    constant::Union{Some, Nothing}  # Nothing = no constant, Some(x) = constant value x
+    constant::Union{Some, Nothing}
     tuple::Union{Vector{Any}, Nothing}  # For tuples: component refs (SSAValue, etc.)
 end
 
