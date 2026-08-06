@@ -1397,12 +1397,53 @@ result = map(+, a, b)            # Element-wise addition (same shape required)
     Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), S)
 end
 
+reduction_dims(dim::Integer, ::Tuple) = Int(dim)
+function reduction_dims(dims, shape::Tuple)
+    isempty(dims) && return ()
+    eltype(dims) <: Integer || throw(ArgumentError("reduced dimension(s) must be integers"))
+    invalid = min(Int(minimum(dims)), Int(maximum(dims)))
+    # Pass invalid dimensions through to Intrinsics.reduce for validation.
+    invalid < 1 && return invalid
+    reduction_dims(dims, shape, 1)
+end
+reduction_dims(::Colon, ::Tuple) = Colon()
+reduction_dims(::Any, ::Tuple{}, ::Integer) = ()
+function reduction_dims(dims, shape::Tuple, dim::Integer)
+    rest = reduction_dims(dims, Base.tail(shape), dim + 1)
+    dim in dims ? (dim, rest...) : rest
+end
+
+function reduce_tiles(tiles::Tuple, dim::Integer, f, init::Tuple)
+    dim > ndims(first(tiles)) && return tiles
+    Intrinsics.reduce(tiles, dim - 1, f, init)
+end
+reduce_tiles(tiles::Tuple, ::Tuple{}, ::Any, ::Tuple) = tiles
+reduce_tiles(tiles::Tuple, dims::Tuple, f, init::Tuple) =
+    reduce_tiles(Intrinsics.reduce(tiles, first(dims) - 1, f, init),
+                 Base.tail(dims), f, init)
+function reduce_tiles(tiles::Tuple, ::Colon, f, init::Tuple)
+    shape = size(first(tiles))
+    reduced = reduce_tiles(tiles, reduction_dims(1:length(shape), shape), f, init)
+    map(tile -> Intrinsics.to_scalar(reshape(tile, ())), reduced)
+end
+
+function reduce_tile(tile::Tile, dim::Integer, f, init)
+    dim > ndims(tile) && return tile
+    Intrinsics.reduce((tile,), dim - 1, f, (init,))[1]
+end
+reduce_tile(tile::Tile, dims, f, init) = reduce_tiles((tile,), dims, f, (init,))[1]
+
 """
-    mapreduce(identity, f, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
-    mapreduce(f, op, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
-    mapreduce(identity, f, tile1, tile2, ...; dims, init) -> Tuple{Tile...}
+    mapreduce(identity, f, tile::Tile{T,S}; dims, init)
+    mapreduce(f, op, tile::Tile{T,S}; dims, init)
+    mapreduce(identity, f, tile1, tile2, ...; dims, init)
 
 Reduce one or more tiles along `dims` using binary function `f`.
+
+`dims` must be a compile-time constant and may be an integer, an iterable of
+integers, or `:`. Dimensions form a region, so order and repetitions do not
+matter and dimensions above `ndims(tile)` are no-ops. Reduced dimensions are
+retained with size 1; `:` returns a scalar.
 
 The single-tile form reduces a single tile along `dims` with identity element
 `init`. The multi-tile form reduces several same-shaped tiles simultaneously:
@@ -1418,6 +1459,7 @@ When a non-identity map function is provided, it is applied element-wise via
 sums = mapreduce(identity, +, tile; dims=2, init=zero(Float32))
 sum_of_squares = mapreduce(x -> x * x, +, tile; dims=2, init=zero(Float32))
 sum_of_abs = mapreduce(abs, +, tile; dims=2, init=zero(Float32))
+total = mapreduce(identity, +, tile; dims=(1, 2), init=zero(Float32))
 
 # Simultaneous reduction of two tiles
 vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
@@ -1425,42 +1467,42 @@ vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
 ```
 """
 @inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
-                                dims::Integer, init) where {T<:Number, S}
-    Intrinsics.reduce((tile,), dims - 1, f, (T(init),))[1]
+                                dims, init) where {T<:Number, S}
+    reduce_tile(tile, reduction_dims(dims, size(tile)), f, T(init))
 end
 
 @inline function Base.mapreduce(f, op, tile::Tile{T,S};
-                                dims::Integer, init) where {T<:Number, S}
+                                dims, init) where {T<:Number, S}
     reduce(op, map(f, tile); dims, init)
 end
 
 @inline function Base.mapreduce(::typeof(identity), f,
                                 tile1::Tile{<:Any,S}, tile2::Tile{<:Any,S},
                                 tiles::Tile{<:Any,S}...;
-                                dims::Integer,
+                                dims,
                                 init::Tuple{Any, Any, Vararg{Any}}) where {S}
     all_tiles = (tile1, tile2, tiles...)
     function _combiner(args...)
         f(_deinterleave_accs(args...), _deinterleave_elems(args...))
     end
-    Intrinsics.reduce(all_tiles, dims - 1, _combiner, init)
+    reduce_tiles(all_tiles, reduction_dims(dims, size(tile1)), _combiner, init)
 end
 
 """
-    reduce(f, tile::Tile{T,S}; dims::Integer, init) -> Tile{T, reduced_shape}
+    reduce(f, tile::Tile{T,S}; dims, init)
 
-Reduce a tile along the specified dimension using binary function `f` with
-identity element `init`. The `dims` axis is 1-indexed. The reduced dimension
-becomes size 1 (Julia semantics).
+Reduce a tile along the specified dimensions using binary function `f` with
+identity element `init`. See [`mapreduce`](@ref) for supported `dims` values.
 
 Supported functions: `+`, `*`, `max`, `min`.
 
 # Example
 ```julia
 sums = reduce(+, tile; dims=2, init=zero(Float32))
+total = reduce(+, tile; dims=(1, 2), init=zero(Float32))
 ```
 """
-@inline function Base.reduce(f, tile::Tile{T,S}; dims::Integer, init) where {T<:Number, S}
+@inline function Base.reduce(f, tile::Tile{T,S}; dims, init) where {T<:Number, S}
     mapreduce(identity, f, tile; dims, init)
 end
 
@@ -1487,9 +1529,9 @@ for (f, dim_helper, all_helper, ignore_op, propagate_op, integer_op, init_expr) 
     (:minimum, :_minimum_dim, :_minimum_all,
      :_min_ignore_nan, :_min_propagate_nan, :min, :(typemax(T))),
 ]
-    @eval @inline $dim_helper(tile::Tile{T}, dims::Integer, ::Val{P}) where {T<:AbstractFloat, P} =
+    @eval @inline $dim_helper(tile::Tile{T}, dims, ::Val{P}) where {T<:AbstractFloat, P} =
         reduce(P ? $propagate_op : $ignore_op, tile; dims, init=$init_expr)
-    @eval @inline $dim_helper(tile::Tile{T}, dims::Integer, ::Val) where {T<:Integer} =
+    @eval @inline $dim_helper(tile::Tile{T}, dims, ::Val) where {T<:Integer} =
         reduce($integer_op, tile; dims, init=$init_expr)
 
     @eval @inline $all_helper(tile::Tile{T,Tuple{}}, ::Val) where {T<:Number} =
@@ -1518,35 +1560,33 @@ for f in (:sum, :prod)
 end
 
 """
-    any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+    any(tile::Tile{Bool,S}; dims)
 
-Logical OR reduction along the specified axis (1-indexed).
-Reduced dimensions become size 1.
+Logical OR reduction over `dims`.
 """
-@inline Base.any(tile::Tile{Bool,S}; dims::Integer) where {S} =
+@inline Base.any(tile::Tile{Bool,S}; dims) where {S} =
     reduce(|, tile; dims, init=false)
 
 """
-    all(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+    all(tile::Tile{Bool,S}; dims)
 
-Logical AND reduction along the specified axis (1-indexed).
-Reduced dimensions become size 1.
+Logical AND reduction over `dims`.
 """
-@inline Base.all(tile::Tile{Bool,S}; dims::Integer) where {S} =
+@inline Base.all(tile::Tile{Bool,S}; dims) where {S} =
     reduce(&, tile; dims, init=true)
 
 """
-    count(tile::Tile{Bool,S}; dims) -> Tile{Int32, reduced_shape}
+    count(tile::Tile{Bool,S}; dims)
 
-Count true elements along `dims` (1-indexed). Apply predicates via
-broadcasting before calling count:
+Count true elements along `dims`. Apply predicates via broadcasting before
+calling `count`:
 
 # Example
 ```julia
 n_positive = count(tile .> 0.0f0; dims=1)
 ```
 """
-@inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
+@inline function Base.count(tile::Tile{Bool,S}; dims) where {S}
     sum(convert(Tile{Int32}, tile); dims)
 end
 
@@ -1643,25 +1683,39 @@ end
 end
 
 
+check_drop_dims(tile::Tile, dims::Tuple) = check_drop_dims(tile, dims, ())
+check_drop_dims(::Tile, ::Tuple{}, ::Tuple) = nothing
+function check_drop_dims(tile::Tile, dims::Tuple, seen::Tuple)
+    dim = first(dims)
+    1 <= dim <= ndims(tile) ||
+        throw(ArgumentError("dropped dims must be in range 1:ndims(A)"))
+    size(tile, dim) == 1 || throw(ArgumentError("dropped dims must all be size 1"))
+    dim in seen && throw(ArgumentError("dropped dims must be unique"))
+    check_drop_dims(tile, Base.tail(dims), (seen..., dim))
+end
+
+drop_shape(shape::Tuple, dims::Tuple) = drop_shape(shape, dims, 1)
+drop_shape(::Tuple{}, ::Tuple, ::Integer) = ()
+function drop_shape(shape::Tuple, dims::Tuple, dim::Integer)
+    rest = drop_shape(Base.tail(shape), dims, dim + 1)
+    dim in dims ? rest : (first(shape), rest...)
+end
+
 """
     dropdims(tile::Tile{T,S}; dims) -> Tile{T, squeezed_shape}
 
-Remove singleton dimensions from a tile. The specified dimensions must have
-size 1. This is the inverse of the dimension-preserving behavior of `sum`,
-`prod`, `maximum`, and `minimum`.
+Remove the singleton dimensions in `dims` from a tile.
 
 # Example
 ```julia
-sums = sum(tile; dims=2)           # (64, 1)
-squeezed = dropdims(sums; dims=2)  # (64,)
+sums = sum(tile; dims=(1, 2))
+scalar_tile = dropdims(sums; dims=(1, 2))
 ```
 """
-@inline Base.dropdims(tile::Tile; dims::Integer) =
-    _dropdims(tile, Val(dims))
-
-@inline function _dropdims(tile::Tile, ::Val{D}) where {D}
-    new_shape = ntuple(i -> i < D ? size(tile, i) : size(tile, i + 1), Val(ndims(tile) - 1))
-    reshape(tile, new_shape)
+function Base.dropdims(tile::Tile; dims::Union{Integer,Dims})
+    region = dims isa Integer ? (Int(dims),) : dims
+    check_drop_dims(tile, region)
+    reshape(tile, drop_shape(size(tile), region))
 end
 
 #=============================================================================

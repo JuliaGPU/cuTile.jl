@@ -188,13 +188,18 @@ Python reductions (`ct.sum`, `ct.max`, etc.) drop the reduced dimension by defau
 # Python
 result = ct.sum(tile, axis=1)                 # (M, N) → (M,)
 result = ct.sum(tile, axis=1, keepdims=True)  # (M, N) → (M, 1)
+result = ct.sum(tile, axis=(0, 1))            # (M, N) → ()
 ```
 
 ```julia
 # Julia
 result = sum(tile; dims=2)                    # (M, N) → (M, 1)
 result = dropdims(sum(tile; dims=2); dims=2)  # (M, N) → (M,)
+result = sum(tile; dims=(1, 2))               # (M, N) → (1, 1)
+result = sum(tile; dims=:)                    # (M, N) → scalar
 ```
+
+Julia `dims` is a region: its order and repeated entries do not affect the result.
 
 
 ## Scalar access and 0-D tiles

@@ -184,7 +184,6 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 
     @testset "dropdims" begin
-        # dropdims on dim 1: (1, 8) -> dropdims(; dims=2) -> (8,)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
@@ -197,7 +196,6 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        # dropdims on dim 2: (8, 1) -> dropdims(; dims=2) -> (8,)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
@@ -208,6 +206,23 @@ spec4d = ct.ArraySpec{4}(16, true)
                 ct.store(b, pid, squeezed)
                 return
             end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                tile = ct.load(a, (1, 1), (1, 1))
+                @check "reshape"
+                Base.donotdelete(dropdims(tile; dims=(2, 1)))
+                return
+            end
+        end
+
+        @test_throws "dropped dims must be unique" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            tile = ct.load(a, (1, 1), (1, 1))
+            Base.donotdelete(dropdims(tile; dims=(1, 1)))
+            return
         end
     end
 
@@ -1025,6 +1040,83 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
+        @test @filecheck begin
+            @check_label "entry"
+            @check "reduce {{.*}} dim=1"
+            @check "reduce {{.*}} dim=0"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                Base.donotdelete(sum(tile; dims=(2, 1, 2)))
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check_count 4 "reduce"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                Base.donotdelete(sum(tile; dims=1:2))
+                Base.donotdelete(sum(tile; dims=:))
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (4, 16))
+                @check_not "reduce"
+                Base.donotdelete(sum(tile; dims=()))
+                Base.donotdelete(sum(tile; dims=3))
+                Base.donotdelete(sum(tile; dims=(3, 4)))
+                return
+            end
+        end
+
+        @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(sum(tile; dims=0))
+            return
+        end
+
+        @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(sum(tile; dims=(0,)))
+            return
+        end
+
+        @test_throws "reduced dimension(s) must be integers" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(sum(tile; dims=(1.0,)))
+            return
+        end
+
+        @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(ct.Intrinsics.reduce((tile,), -1, +, (0.0f0,)))
+            return
+        end
+
+        @test_throws "reduce() dimension must be in 1:2; got 3" code_tiled(
+            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (4, 16))
+            Base.donotdelete(ct.Intrinsics.reduce((tile,), 2, +, (0.0f0,)))
+            return
+        end
+
         # any
         @test @filecheck begin
             @check_label "entry"
@@ -1032,9 +1124,9 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 mask = tile .> 0.0f0
-                @check "reduce"
+                @check_count 2 "reduce"
                 @check "ori"
-                Base.donotdelete(any(mask; dims=2))
+                Base.donotdelete(any(mask; dims=(1, 2)))
                 return
             end
         end
@@ -1046,9 +1138,9 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 mask = tile .> 0.0f0
-                @check "reduce"
+                @check_count 2 "reduce"
                 @check "andi"
-                Base.donotdelete(all(mask; dims=2))
+                Base.donotdelete(all(mask; dims=(1, 2)))
                 return
             end
         end
@@ -1060,9 +1152,9 @@ spec4d = ct.ArraySpec{4}(16, true)
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "exti"
-                @check "reduce"
+                @check_count 2 "reduce"
                 @check "addi"
-                Base.donotdelete(count(tile .> 0.0f0; dims=2))
+                Base.donotdelete(count(tile .> 0.0f0; dims=(1, 2)))
                 return
             end
         end

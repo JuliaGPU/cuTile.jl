@@ -27,6 +27,37 @@ using CUDA
         @test Array(R) ≈ Array(sum(A; dims=2))
     end
 
+    @testset "sum with multiple dims" begin
+        A = CUDA.rand(Float32, 128, 256)
+        for dims in ((2, 1, 2), 1:2, [2, 1])
+            @test Array(sum(ct.Tiled(A); dims)) ≈ Array(sum(A; dims))
+        end
+    end
+
+    @testset "non-aligned no-op dims" begin
+        A = CUDA.fill(Int32(2), 17)
+        @test Array(prod(ct.Tiled(A); dims=())) == Array(prod(A; dims=()))
+        @test Array(maximum(ct.Tiled(A); dims=())) == Array(maximum(A; dims=()))
+        @test Array(prod(ct.Tiled(A); dims=2)) == Array(prod(A; dims=2))
+    end
+
+    @testset "out-of-range dims" begin
+        A = CUDA.rand(Float32, 64, 32)
+        R = sum(ct.Tiled(A); dims=(2, 3))
+        @test Array(R) ≈ Array(sum(A; dims=2))
+        @test_throws InexactError sum(ct.Tiled(A); dims=big(typemax(Int)) + 1)
+        @test_throws ArgumentError sum(ct.Tiled(A); dims=0)
+        @test_throws ArgumentError("reduced dimension(s) must be integers") begin
+            sum(ct.Tiled(A); dims=(1.0,))
+        end
+    end
+
+    @testset "maximum 3D dims=(1,3)" begin
+        A = CUDA.rand(Float32, 32, 16, 8)
+        R = maximum(ct.Tiled(A); dims=(1, 3))
+        @test Array(R) ≈ Array(maximum(A; dims=(1, 3)))
+    end
+
     @testset "sum 2D full" begin
         A = CUDA.rand(Float32, 128, 256)
         @test sum(ct.Tiled(A)) ≈ sum(A)

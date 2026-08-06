@@ -133,6 +133,142 @@ end
     end
 end
 
+@testset "reduction dimensions" begin
+    function sum_dims_empty_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (8, 16))
+        ct.store(b, (1, 1), sum(tile; dims=()))
+        return
+    end
+
+    function sum_dims_order_kernel(a::ct.TileArray{Float32,2},
+                                   b12::ct.TileArray{Float32,2},
+                                   b21::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (2, 2))
+        ct.store(b12, (1, 1), sum(tile; dims=(1, 2)))
+        ct.store(b21, (1, 1), sum(tile; dims=(2, 1)))
+        return
+    end
+
+    function sum_dims_range_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (8, 16))
+        ct.store(b, (1, 1), sum(tile; dims=1:2))
+        return
+    end
+
+    function sum_dims_colon_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        tile = ct.load(a, (1, 1), (8, 16))
+        b[1] = sum(tile; dims=:)
+        return
+    end
+
+    function sum_dims23_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (8, 16))
+        ct.store(b, (1, 1), sum(tile; dims=(2, 3)))
+        return
+    end
+
+    m, n = 8, 16
+    a = CUDA.rand(Float32, m, n)
+    a_cpu = Array(a)
+
+    b = CUDA.zeros(Float32, m, n)
+    @cuda backend=cuTile sum_dims_empty_kernel(a, b)
+    @test Array(b) == a_cpu
+
+    order_input = CuArray(Float32[-1.0f10 -1; 1.0f10 -1])
+    b12 = CUDA.zeros(Float32, 1, 1)
+    b21 = similar(b12)
+    @cuda backend=cuTile sum_dims_order_kernel(order_input, b12, b21)
+    @test Array(b12) == Array(b21) == sum(Array(order_input); dims=(1, 2))
+
+    b = CUDA.zeros(Float32, 1, 1)
+    @cuda backend=cuTile sum_dims_range_kernel(a, b)
+    @test Array(b) ≈ sum(a_cpu; dims=1:2) rtol=1e-3
+
+    b_scalar = CUDA.zeros(Float32, 1)
+    @cuda backend=cuTile sum_dims_colon_kernel(a, b_scalar)
+    @test Array(b_scalar)[1] ≈ sum(a_cpu; dims=:) rtol=1e-3
+
+    b = CUDA.zeros(Float32, m, 1)
+    @cuda backend=cuTile sum_dims23_kernel(a, b)
+    @test Array(b) ≈ sum(a_cpu; dims=(2, 3)) rtol=1e-3
+end
+
+@testset "3D reduction dimensions" begin
+    function max_dims23_kernel(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,3})
+        tile = ct.load(a, (1, 1, 1), (4, 8, 16))
+        ct.store(b, (1, 1, 1), maximum(tile; dims=(2, 3)))
+        return
+    end
+
+    function mapreduce_dims13_kernel(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,3})
+        tile = ct.load(a, (1, 1, 1), (4, 8, 16))
+        ct.store(b, (1, 1, 1), mapreduce(abs, +, tile; dims=(1, 3), init=0.0f0))
+        return
+    end
+
+    function sum_dims_colon_3d_kernel(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,1})
+        tile = ct.load(a, (1, 1, 1), (4, 8, 16))
+        b[1] = sum(tile; dims=:)
+        return
+    end
+
+    d1, d2, d3 = 4, 8, 16
+    a = CUDA.rand(Float32, d1, d2, d3) .- 0.5f0
+    a_cpu = Array(a)
+
+    b = CUDA.zeros(Float32, d1, 1, 1)
+    @cuda backend=cuTile max_dims23_kernel(a, b)
+    @test Array(b) ≈ maximum(a_cpu; dims=(2, 3))
+
+    b = CUDA.zeros(Float32, 1, d2, 1)
+    @cuda backend=cuTile mapreduce_dims13_kernel(a, b)
+    @test Array(b) ≈ mapreduce(abs, +, a_cpu; dims=(1, 3)) rtol=1e-3
+
+    b = CUDA.zeros(Float32, 1)
+    @cuda backend=cuTile sum_dims_colon_3d_kernel(a, b)
+    @test Array(b)[1] ≈ sum(a_cpu) rtol=1e-3
+end
+
+@testset "count dimensions" begin
+    function count_dims12_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Int32,2})
+        tile = ct.load(a, (1, 1), (8, 16))
+        ct.store(b, (1, 1), count(tile .> 0.0f0; dims=(1, 2)))
+        return
+    end
+
+    a = CUDA.rand(Float32, 8, 16) .- 0.5f0
+    b = CUDA.zeros(Int32, 1, 1)
+    @cuda backend=cuTile count_dims12_kernel(a, b)
+    @test Array(b)[1, 1] == count(>(0.0f0), Array(a))
+end
+
+@testset "multi-tile mapreduce dimensions" begin
+    function pair_reduce_kernel(a::ct.TileArray{Float32,2},
+                                bv::ct.TileArray{Float32,2}, bt::ct.TileArray{Float32,2})
+        tile = ct.load(a, (1, 1), (8, 16))
+        tag = tile .* 2.0f0
+        function reducer(accs, elems)
+            cond = accs[1] >= elems[1]
+            (ifelse(cond, accs[1], elems[1]), ifelse(cond, accs[2], elems[2]))
+        end
+        vals, tags = mapreduce(identity, reducer, tile, tag;
+                               dims=(1, 2), init=(typemin(Float32), 0.0f0))
+        ct.store(bv, (1, 1), vals)
+        ct.store(bt, (1, 1), tags)
+        return
+    end
+
+    a = CUDA.rand(Float32, 8, 16)
+    bv = CUDA.zeros(Float32, 1, 1)
+    bt = CUDA.zeros(Float32, 1, 1)
+    @cuda backend=cuTile pair_reduce_kernel(a, bv, bt)
+
+    a_cpu = Array(a)
+    @test Array(bv)[1, 1] == maximum(a_cpu)
+    @test Array(bt)[1, 1] == 2.0f0 * maximum(a_cpu)
+end
+
 @testset "map(abs, tile)" begin
     function map_abs_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
         pid = ct.bid(1)
