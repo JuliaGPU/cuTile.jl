@@ -32,11 +32,11 @@ spec2d = ct.ArraySpec{2}(16, true)
         end
     end
 
-    # Float32 -> Float8_E8M0FNU works on bytecode 13.2+
+    # Float32 -> Float8_E8M0FNU conversion requires bytecode 13.3.
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
-                   bytecode_version=v"13.2") do a, b
+                   bytecode_version=v"13.3") do a, b
             pid = ct.bid(1)
             tile = ct.load(a, pid, (16,))
             @check "ftof"
@@ -46,7 +46,22 @@ spec2d = ct.ArraySpec{2}(16, true)
         end
     end
 
-    # Float8_E8M0FNU rejected on bytecode 13.1 with a clear version error
+    # Float32 -> Float8_E8M0FNU supports round-up from bytecode 13.3.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                         ct.TileArray{Float32,1,Int32,spec1d}};
+                   bytecode_version=v"13.3") do a, b
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            @check "rounding<positive_inf>"
+            converted = Float8_E8M0FNU.(tile, RoundUp)
+            ct.store(b, pid, Float32.(converted))
+            return
+        end
+    end
+
+    # The type exists in 13.2, but the default round-to-zero conversion does not.
     let kernel = (a, b) -> begin
             pid = ct.bid(1)
             tile = ct.load(a, pid, (16,))
@@ -54,9 +69,9 @@ spec2d = ct.ArraySpec{2}(16, true)
             ct.store(b, pid, convert(ct.Tile{Float32}, converted))
             return
         end
-        @test_throws "v13.2+" code_tiled(devnull, kernel,
+        @test_throws "requires Tile IR bytecode v13.3" code_tiled(devnull, kernel,
             Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
-            bytecode_version=v"13.1")
+            bytecode_version=v"13.2")
     end
 
     # Float4_E2M1FN requires bytecode 13.3 — rejected at 13.2 with a clear error

@@ -529,6 +529,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 return
             end
         end
+
     end
 
     @testset "cmpf" begin
@@ -1565,6 +1566,75 @@ end
                 ct.store(b, pid, Float32.(ct.TFloat32.(tile)))
                 return
             end
+        end
+
+        for (mode, attr) in ((RoundToZero, "zero"),
+                             (RoundDown, "negative_inf"),
+                             (RoundUp, "positive_inf"))
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
+                                 ct.TileArray{Float32,1,Int32,spec1d}};
+                           bytecode_version=v"13.4") do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "ftof"
+                    @check "rounding<$attr>"
+                    ct.store(b, pid, Float32.(tile, mode))
+                    return
+                end
+            end
+        end
+
+        # Explicit nearest-even and nearest-away through map and scalar conversion.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
+                             ct.TileArray{Float32,1,Int32,spec1d}, Float32};
+                       bytecode_version=v"13.4") do a, b, x
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "ftof"
+                mapped = map(y -> Float32(y, RoundNearest), tile)
+                @check "rounding<nearest_away>"
+                Base.donotdelete(ct.TFloat32(x, RoundNearestTiesAway))
+                ct.store(b, pid, mapped)
+                return
+            end
+        end
+
+        # Same-type conversions are identities, including with an explicit mode.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, ct.bid(1), (16,))
+                Base.donotdelete(Float32.(tile, RoundDown))
+                @check_not "ftof"
+                return
+            end
+        end
+
+        let tt = Tuple{ct.TileArray{Float64,1,Int32,spec1d},
+                       ct.TileArray{Float32,1,Int32,spec1d}},
+            convert_with = mode -> (a, b) -> begin
+                pid = ct.bid(1)
+                ct.store(b, pid, Float32.(ct.load(a, pid, (16,)), mode))
+                return
+            end
+            @test_throws "requires Tile IR bytecode v13.4" code_tiled(
+                devnull, convert_with(RoundDown), tt; bytecode_version=v"13.3")
+            @test_throws "NearestAway is not supported" code_tiled(
+                devnull, convert_with(RoundNearestTiesAway), tt; bytecode_version=v"13.4")
+            @test_throws "NearestTiesUp" code_tiled(
+                devnull, convert_with(RoundNearestTiesUp), tt; bytecode_version=v"13.4")
+        end
+
+        @test_throws "only supported for float-to-float" code_tiled(
+            Tuple{ct.TileArray{Int32,1,Int32,spec1d},
+                  ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
+            pid = ct.bid(1)
+            ct.store(b, pid, Float32.(ct.load(a, pid, (16,)), RoundDown))
+            return
         end
     end
 
