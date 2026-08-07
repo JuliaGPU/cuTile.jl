@@ -399,9 +399,10 @@ end
     Int32(cld(size(arr, axis), shape[axis]))
 end
 
-@inline zero_based_indices(::Type{Int32}, indices::Tuple) = promote(indices...) .- One()
+@inline zero_based_indices(::Type{Int32}, indices::Tuple{Vararg{Integer, N}}) where {N} =
+    promote(indices...) .- One()
 @generated function zero_based_indices(::Type{Int64},
-                                       indices::NTuple{N, <:Integer}) where {N}
+                                       indices::Tuple{Vararg{Integer, N}}) where {N}
     Expr(:tuple, [:(Int64(indices[$d]) - Int64(1)) for d in 1:N]...)
 end
 @inline zero_based_indices(arr::TileArray, indices::Tuple) =
