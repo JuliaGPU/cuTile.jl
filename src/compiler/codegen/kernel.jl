@@ -36,7 +36,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # Validate non-ghost, non-const argument types are concrete
     for (i, argtype) in enumerate(sci.argtypes)
-        is_ghost_type(CC.widenconst(argtype)) && continue
+        argtype_unwrapped = CC.widenconst(argtype)
+        is_empty_tile_type(argtype_unwrapped) &&
+            throw(IRError("kernel argument $i has no Tile IR representation (inferred `$argtype_unwrapped`)"))
+        is_ghost_type(argtype_unwrapped) && continue
         is_const_arg(i) && continue
         require_concrete_type(argtype, "kernel argument $i")
     end
@@ -78,8 +81,16 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # Return types
     result_types = TypeId[]
+    return_type_ok = true
     if rettype !== Nothing && rettype !== Union{}
-        push!(result_types, tile_type_for_julia!(ctx, rettype))
+        # Emit the body before diagnosing an unsupported return so a more
+        # specific intrinsic error can surface first.
+        result_type = tile_type_for_julia!(ctx, rettype; throw_error=false)
+        if result_type === nothing
+            return_type_ok = false
+        else
+            push!(result_types, result_type)
+        end
     end
 
     # Create entry hints if provided
@@ -187,6 +198,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, ctx.sci.entry)
+
+    if !return_type_ok && isempty(ctx.errors)
+        record_error!(ctx, "kernel return has no Tile IR representation (inferred `$(CC.widenconst(rettype))`)")
+    end
 
     # Cover the function-definition line (Julia's codegen does this at the
     # prologue; the per-statement coverage effects only cover body lines).

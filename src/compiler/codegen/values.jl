@@ -121,6 +121,14 @@ function get_constant(ctx::CGCtx, @nospecialize(ref))
     return nothing
 end
 
+# Tile constructors fold to opaque handle constants. Empty tiles are compiler
+# ghosts; a constant nonempty handle cannot name a Tile IR value.
+function emit_value!(ctx::CGCtx, val::Tile)
+    T = typeof(val)
+    is_empty_tile_type(T) && return ghost_value(T, val)
+    throw(IRError("constant tile handle without a Tile IR value: $T"))
+end
+
 # Symbols are compile-time only values
 emit_value!(ctx::CGCtx, val::Symbol) = ghost_value(Symbol, val)
 
@@ -140,7 +148,7 @@ emit_value!(ctx::CGCtx, @nospecialize(val::Type)) = ghost_value(Type{val}, val)
 # Undef values (dead-code branches, unexported loop slots) -> zero constant
 function emit_value!(ctx::CGCtx, undef::Undef)
     T = CC.widenconst(undef.type)
-    is_ghost_type(T) && return ghost_value(T)
+    (is_ghost_type(T) || is_empty_tile_type(T)) && return ghost_value(T)
     type_id = tile_type_for_julia!(ctx, T)
     elem_type = T <: Tile ? eltype(T) : T
     bytes = constant_to_bytes(zero(elem_type), elem_type)
@@ -171,8 +179,8 @@ end
 function emit_constant!(ctx::CGCtx, @nospecialize(value), @nospecialize(result_type))
     result_type_unwrapped = CC.widenconst(result_type)
 
-    # Ghost types have no runtime representation
-    if is_ghost_type(result_type_unwrapped)
+    # Ghost types and empty tiles have no runtime representation
+    if is_ghost_type(result_type_unwrapped) || is_empty_tile_type(result_type_unwrapped)
         return ghost_value(result_type_unwrapped)
     end
 

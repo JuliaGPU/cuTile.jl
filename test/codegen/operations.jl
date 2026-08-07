@@ -1335,6 +1335,36 @@ spec4d = ct.ArraySpec{4}(16, true)
     end
 end
 
+@testset "invalid zero-volume intrinsic results" begin
+    for f in (
+        a -> (ct.load(a, ct.bid(1), (0,)); nothing),
+        a -> ct.load(a, ct.bid(1), (0,)),
+    )
+        @test_throws "tile dimension 1 must be positive" code_tiled(
+            f, Tuple{ct.TileArray{Float32,1,spec1d}})
+    end
+end
+
+@testset "zero-volume tile boundaries" begin
+    @test_throws "kernel return has no Tile IR representation" code_tiled(
+        devnull, () -> Float32[], Tuple{})
+
+    @test_throws "kernel argument 2 has no Tile IR representation" code_tiled(
+        devnull, x -> nothing, Tuple{ct.Tile{Float32, Tuple{0}}})
+
+    code_tiled(devnull, c -> begin
+        Base.donotdelete(c ? Float32[] : Float32[])
+        nothing
+    end, Tuple{Bool})
+
+    code_tiled(devnull, c -> begin
+        empty, index = c ? (Float32[], ct.bid(1)) : (Float32[], ct.bid(1))
+        Base.donotdelete(empty)
+        Base.donotdelete(index)
+        nothing
+    end, Tuple{Bool})
+end
+
 #=========================================================================
  8.4 Conversions
 =========================================================================#

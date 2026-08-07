@@ -317,21 +317,13 @@ end
 Represents a tile of data with element type `T` and static shape `Shape`.
 Shape is a tuple type encoding the tile dimensions (e.g. `Tuple{16, 32}`).
 
-This is a compile-time abstraction - at runtime in kernel code, tiles are
-represented as Tile IR values. The struct exists to enable proper type
-inference and operator dispatch.
-
-Note: This is a mutable struct (despite having no fields) to prevent Julia's
-optimizer from treating it as a singleton. Each Tile instance represents a
-distinct Tile IR value, and we need SSA references to be preserved rather
-than being replaced with constant QuoteNodes.
+This is an opaque handle like `Ptr`: tile data exists only as Tile IR values.
+The byte payload is never read; it keeps concrete tile types from becoming
+singletons so inference preserves distinct tile SSA values.
 """
-mutable struct Tile{T, Shape}
-    # Inner constructor that's never actually called at runtime
-    function Tile{T, Shape}() where {T, Shape}
-        new{T, Shape}()
-    end
-end
+primitive type Tile{T, Shape} 8 end
+
+(::Type{Tile{T, Shape}})() where {T, Shape} = reinterpret(Tile{T, Shape}, 0x00)
 
 """
     Tile(val::T) -> Tile{T, Tuple{}}
