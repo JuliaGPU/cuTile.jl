@@ -542,6 +542,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view),
                @nospecialize(T_arg), @nospecialize args...)
     T_outer = CC.widenconst(T_arg)
     T_outer isa DataType && T_outer <: Type || return nothing
+    isempty(T_outer.parameters) && return nothing
     T = T_outer.parameters[1]
     T isa Type && T <: TileArray || return nothing
     TensorView{eltype(T), ndims(T)}

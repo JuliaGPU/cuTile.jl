@@ -6,6 +6,11 @@
 spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 
+@testset "make_tensor_view — imprecise type argument" begin
+    @test ct.tfunc(nothing, ct.Intrinsics.make_tensor_view,
+                   DataType, Any, Any, Any) === nothing
+end
+
 @testset "permutedims — 2D (2, 1)" begin
     # Source: contiguous (strides=[?,1]). After permutedims with (2,1),
     # contiguity flag drops (new stride[1] is the old stride[2], not 1) —
