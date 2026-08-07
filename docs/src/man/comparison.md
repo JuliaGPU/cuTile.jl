@@ -289,6 +289,7 @@ requested padding and partial stores clip to the array. In both, an explicit
 | `expand_dims` | `reshape` |
 | `permute` | `permutedims` |
 | `astype` | `convert(ct.Tile{T}, x)` |
+| `astype(x, T, rounding_mode=RM)` | `T.(x, RoundDown)` |
 | `bitcast`, `pack_to_bytes`, `unpack_from_bytes` | `reinterpret` |
 
 Julia's `reinterpret` covers all three of Python's reinterpretation functions,
@@ -377,7 +378,9 @@ code-generation construct when compile-time unrolling is actually required.
 
 Enum members follow Julia's capitalization: `PaddingMode.NEG_ZERO` is
 `ct.PaddingMode.NegZero`, `MemoryOrder.ACQ_REL` is `ct.MemoryOrder.AcqRel`, and
-`RoundingMode.RN`/`RZ`/`RM`/`RP` are
-`ct.Rounding.NearestEven`/`Zero`/`NegInf`/`PosInf`. Julia exposes no equivalent
-of `RoundingMode.FULL` or `.RZI`, nor of `MemoryScope.NONE`, while weak ordering
-is expressed through `memory_order` instead.
+For arithmetic, `RoundingMode.RN`/`RZ`/`RM`/`RP` are
+`ct.Rounding.NearestEven`/`Zero`/`NegInf`/`PosInf`. Per-conversion rounding uses
+Base's `RoundNearest`/`RoundToZero`/`RoundDown`/`RoundUp`; Python's
+`RoundingMode.RA` is `RoundNearestTiesAway`. Julia exposes no arithmetic
+equivalent of `RoundingMode.FULL` or `.RZI`, nor of `MemoryScope.NONE`, while
+weak ordering is expressed through `memory_order` instead.
