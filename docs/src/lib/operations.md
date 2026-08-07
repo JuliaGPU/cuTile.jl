@@ -186,7 +186,6 @@ Everything else in this chapter is a `Base` function that cuTile overlays, docum
 
 ```@docs
 arange
-cat
 broadcast_to
 extract
 insert
