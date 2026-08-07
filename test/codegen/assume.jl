@@ -12,7 +12,7 @@
     spec1d = ct.ArraySpec{1}(128, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             ct.store(a, 1, ct.load(a, 1, (16,)))
             return
         end
@@ -23,7 +23,7 @@
     spec_unaligned = ct.ArraySpec{1}(0, false)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec_unaligned}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec_unaligned}}) do a
             ct.store(a, 1, ct.load(a, 1, (16,)))
             return
         end
@@ -38,7 +38,7 @@ end
     spec2d = ct.ArraySpec{2}(16, true, (0, 0), (16, 8))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             ct.store(a, (1, 1), ct.load(a, (1, 1), (16, 16)))
             return
         end
@@ -56,7 +56,7 @@ end
     spec2d = ct.ArraySpec{2}(16, true, (0, 0), (16, 8))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             ct.store(a, (1, 1), ct.load(a, (1, 1), (16, 16)))
             return
         end
@@ -75,7 +75,7 @@ end
     spec1d = ct.ArraySpec{1}(128, false, (4,), (16,))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32, Int32}) do a, i, j
             sub = @view a[i:j]
             ct.store(sub, 1, ct.load(sub, 1, (16,)))
             return
@@ -96,7 +96,7 @@ end
     spec1d = ct.ArraySpec{1}(128, true, (0,), (16,))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[1:64]
             ct.store(sub, 1, ct.load(sub, 1, (16,)))
             return
@@ -115,7 +115,7 @@ end
     spec1d = ct.ArraySpec{1}(128, false, (4,), (16,))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[1:64]
             ct.store(sub, 1, ct.load(sub, 1, (16,)))
             return
@@ -132,7 +132,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true, (0,), (0,))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32, Int32}) do a, i, j
             sub = @view a[i:j]
             ct.store(sub, 1, ct.load(sub, 1, (16,)))
             return
@@ -147,7 +147,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, n
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32}) do a, n
             ct.store(a, n, ct.load(a, n, (16,)))
             return
         end
@@ -169,8 +169,8 @@ end
     spec1d = ct.ArraySpec{1}(128, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                         ct.TileArray{Float32,1,spec1d}}) do a, b
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                         ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
             indices = ct.arange(16)
             tile = ct.gather(a, indices)
             ct.scatter(b, indices, tile)
@@ -198,7 +198,7 @@ end
     spec1d = ct.ArraySpec{1}(128, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             tile = ct.load(a, 1, (16,))
             indices = ct.arange(16)
             tile2 = ct.gather(a, indices)
@@ -216,7 +216,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             n = ct.bid(1) * Int32(128)
             n = ct.assume_divisible_by(n, 128)
             @check "muli"
@@ -228,7 +228,7 @@ end
 
     # Non-positive divisor is rejected
     @test_throws "assume: DivBy requires a positive divisor, got 0" begin
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             n = ct.assume_divisible_by(ct.bid(1), 0)
             ct.store(a, n, ct.load(a, n, (64,)))
             return
@@ -237,7 +237,7 @@ end
 
 
     @test_throws "contradicts a known constant" begin
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             n = ct.assume_divisible_by(Int32(5), 4)
             ct.store(a, n, ct.load(a, n, (64,)))
             return
@@ -246,7 +246,7 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             n = ct.assume_divisible_by(Int32(8), 4)
             @check_not "assume div_by<4>"
             ct.store(a, n, ct.load(a, n, (64,)))

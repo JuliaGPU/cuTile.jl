@@ -6,7 +6,7 @@ spec2d = ct.ArraySpec{2}(16, true)
 @testset "default (no @fpmode)" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             @check "addf"
@@ -22,7 +22,7 @@ end
 @testset "rounding_mode only" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.@fpmode rounding_mode=ct.Rounding.Zero begin
@@ -40,7 +40,7 @@ end
 @testset "flush_to_zero only" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.@fpmode flush_to_zero=true begin
@@ -58,7 +58,7 @@ end
 @testset "rounding_mode + flush_to_zero" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.@fpmode rounding_mode=ct.Rounding.Zero flush_to_zero=true begin
@@ -76,7 +76,7 @@ end
 @testset "scope: ops outside @fpmode are unaffected" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             # before: default
@@ -103,7 +103,7 @@ end
 @testset "nesting with inheritance" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (16,))
             ct.@fpmode rounding_mode=ct.Rounding.Zero flush_to_zero=true begin
@@ -134,7 +134,7 @@ end
 @testset "subprogram propagation (reduction)" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             pid = ct.bid(1)
             t = ct.load(a, pid, (4, 16))
             ct.@fpmode flush_to_zero=true begin

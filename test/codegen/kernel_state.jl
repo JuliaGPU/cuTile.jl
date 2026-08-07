@@ -16,7 +16,7 @@
             @check "(%arg0: tile<ptr<i32>>"
             @check "%arg3: tile<i32>"
             @check "reshape %arg3"
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 s = ct.Intrinsics.kernel_state()
                 a[pid] = s.seed

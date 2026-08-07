@@ -13,6 +13,7 @@ ArraySpec
 Tile
 Constant
 similar_type
+indextype
 ```
 
 ## Element types

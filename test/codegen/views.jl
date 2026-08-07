@@ -6,13 +6,20 @@
 spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 
+@testset "make_tensor_view — imprecise type argument" begin
+    # The public codegen path normally keeps this argument precise in the test
+    # harness; call the inference hook directly to cover the cold-process case.
+    @test ct.tfunc(nothing, ct.Intrinsics.make_tensor_view,
+                   DataType, Any, Any, Any) === nothing
+end
+
 @testset "permutedims — 2D (2, 1)" begin
     # Source: contiguous (strides=[?,1]). After permutedims with (2,1),
     # contiguity flag drops (new stride[1] is the old stride[2], not 1) —
     # the new tensor_view is fully dynamic.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             b = permutedims(a, (2, 1))
             t = ct.load(b, (1, 1), (4, 4))
             ct.store(a, (1, 1), t)
@@ -29,7 +36,7 @@ end
     # transpose(arr) === permutedims(arr, (2, 1)).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             b = transpose(a)
             t = ct.load(b, (1, 1), (4, 4))
             ct.store(a, (1, 1), t)
@@ -46,7 +53,7 @@ end
     # folds to `true` and is elided.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             b = reshape(a, (4, 4))
             t = ct.load(b, (1, 1), (4, 4))
             ct.store(a, 1, ct.reshape(t, (16,)))
@@ -67,7 +74,7 @@ end
     spec_noncontig = ct.ArraySpec{2}(0, false)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec_noncontig}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec_noncontig}}) do a
             b = reshape(a, (16,))
             t = ct.load(b, 1, (16,))
             ct.store(a, (1, 1), ct.reshape(t, (4, 4)))
@@ -84,7 +91,7 @@ end
         @check_label "entry"
         @check "make_partition_view"
         @check_not "make_strided_view"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
                    bytecode_version=v"13.2") do a, b
             src = eachtile(a, (8,))
             dst = eachtile(b, (8,); step=(8,))
@@ -101,7 +108,7 @@ end
         @check "tile=(4x8), traversal_strides=[2,3]"
         @check "load_view_tko"
         @check "store_view_tko"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}};
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}};
                    bytecode_version=v"13.3") do a, b
             src = eachtile(a, (8, 4); step=(3, 2), padding_mode=ct.PaddingMode.Zero)
             dst = eachtile(b, (8, 4); step=(3, 2))
@@ -112,7 +119,7 @@ end
     end
 
     @test_throws "v13.3+" code_tiled(
-        Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.2") do a
+        Tuple{ct.TileArray{Float32,1,Int32,spec1d}}; bytecode_version=v"13.2") do a
             tiles = eachtile(a, (8,); step=(4,))
             ct.store(tiles, 1, ct.load(tiles, 1))
             return
@@ -130,7 +137,7 @@ end
         @check "get_index_space_shape"
         @check "load_view_tko"
         @check "store_view_tko"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}; bytecode_version=v"13.3") do a
             tiles = eachtile(a, (8,); step=(4,))
             n = size(tiles, 1)
             ct.store(a, 1, ct.load(tiles, n))
@@ -148,7 +155,7 @@ end
         @check "make_partition_view"
         @check "dim_map=[1, 0]"
         @check "load_view_tko"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.3") do a
             tiles = eachtile(a, (4, 8); order=(2, 1))
             ct.store(a, (1, 1), ct.load(tiles, (1, 1)))
             return
@@ -161,7 +168,7 @@ end
         @check "make_strided_view"
         @check "dim_map=[1, 0]"
         @check "load_view_tko"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.3") do a
             tiles = eachtile(a, (4, 8); step=(2, 8), order=(2, 1))
             ct.store(a, (1, 1), ct.load(tiles, (1, 1)))
             return

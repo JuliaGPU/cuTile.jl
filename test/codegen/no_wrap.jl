@@ -15,7 +15,7 @@
     spec = ct.ArraySpec{1}(16, false)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec}}) do a
             sub = @view a[1:64]
             ct.store(sub, 1, ct.load(sub, 1, (16,)))
             return
@@ -30,7 +30,7 @@ end
     spec = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec}, Int32, Int32}) do a, i, j
             sub = @view a[i:j]
             ct.store(sub, 1, ct.load(sub, 1, (16,)))
             return

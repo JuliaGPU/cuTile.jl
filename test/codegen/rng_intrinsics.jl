@@ -14,7 +14,7 @@
             # rng_counter() twice with an rng_advance(16) between → one addi
             # with constant 16. Const-folding collapses 0 + 16 = 16, so the
             # output store sees a constant-16 tile.
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 v = ct.Intrinsics.rng_counter(0)
                 ct.Intrinsics.rng_advance(0, 16)
@@ -34,7 +34,7 @@
         # `addi %iterArg, 1` and continuing with the bumped value.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}, Int32}) do a, n
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec1d}, Int32}) do a, n
                 pid = ct.bid(1)
                 for i in Int32(1):n
                     ct.Intrinsics.rng_advance(0, 1)
@@ -55,7 +55,7 @@
         # well-defined counter value.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}, Int32}) do a, cond
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec1d}, Int32}) do a, cond
                 pid = ct.bid(1)
                 if cond > Int32(0)
                     ct.Intrinsics.rng_advance(0, 1)
@@ -77,7 +77,7 @@
         # a single-slot implementation would merge to 48.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}, ct.TileArray{UInt32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec1d}, ct.TileArray{UInt32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 ct.Intrinsics.rng_advance(1, 16)
                 ct.Intrinsics.rng_advance(2, 32)
@@ -99,7 +99,7 @@
             @check_label "entry"
             @check_not "rng_counter"
             @check_not "rng_advance"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 ct.store(a, pid, tile)

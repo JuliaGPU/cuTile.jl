@@ -46,13 +46,18 @@ first:
 
 | Host argument | Kernel parameter |
 |---------------|------------------|
-| `CuArray{T,N}` | [`ct.TileArray{T,N,Spec}`](programming_model.md#Arrays-and-tiles) |
+| `CuArray{T,N}` | [`ct.TileArray{T,N,I,Spec}`](programming_model.md#Arrays-and-tiles) |
 | `ct.Constant(x)` | `x` with its ordinary type, and no runtime parameter |
 | other `isbits` values | themselves, as a by-value parameter |
 
 A `TileArray` is then flattened further: its base pointer, sizes and strides
 each become a separate kernel parameter. This is why a kernel taking three
 vectors and a constant tile size has nine runtime parameters rather than four.
+
+Array sizes and strides use `Int32` when they fit, and switch to `Int64`
+automatically when either exceeds the 32-bit range. The index width is part of
+the converted argument type, so crossing that boundary compiles a new kernel.
+Use `ct.TileArray(array; index=Int64)` to select the wide path explicitly.
 
 
 ## Compile-time arguments
@@ -91,6 +96,10 @@ Three things therefore trigger a recompile:
 
 **The element type and rank of each array**, as you would expect.
 
+**Each array's index width.** Sizes and strides normally use `Int32`, but an
+array with a size or stride outside that range uses `Int64` and therefore has a
+different converted type.
+
 **Each `Constant` value**, since it lands in the type. `ct.Constant(64)` and
 `ct.Constant(128)` have types `Constant{Int64,64}` and `Constant{Int64,128}`, so
 a tile-size sweep compiles a kernel per size, which is the point, but worth
@@ -110,10 +119,10 @@ one down. But they do mean that arrays which look interchangeable are not:
 
 ```julia-repl
 julia> typeof(ct.TileArray(CUDA.rand(Float32, 1024)))
-cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,), false}()}
+cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false}()}
 
 julia> typeof(ct.TileArray(view(CUDA.rand(Float32, 2048), 1:2:2048)))
-cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, false, (0,), (16,), false}()}
+cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, false, (0,), (16,), false}()}
 ```
 
 The strided view is not contiguous, so it compiles to a second, more

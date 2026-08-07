@@ -272,15 +272,20 @@ function gather_scatter_index_values(ctx::CGCtx, indices_arg, view_shape::Tuple,
     1 <= sparse_dim <= ndim ||
         throw(IRError("$name has invalid sparse dimension $sparse_dim for rank $ndim"))
 
+    index_element_type = nothing
     for (dim, index_tv) in enumerate(index_tvs)
         index_type = CC.widenconst(index_tv.jltype)
         index_type <: Tile ||
-            throw(IRError("$name at dimension $dim must be a Tile{Int32}"))
-        eltype(index_type) === Int32 ||
-            throw(IRError("$name at dimension $dim must have Int32 elements, got $(eltype(index_type))"))
+            throw(IRError("$name at dimension $dim must be an integer Tile"))
+        I = eltype(index_type)
+        I === Int32 || I === Int64 ||
+            throw(IRError("$name at dimension $dim must have Int32 or Int64 elements, got $I"))
+        index_element_type === nothing || index_element_type === I ||
+            throw(IRError("$name indices must have matching element types"))
+        index_element_type = I
         expected_rank = dim == sparse_dim ? 1 : 0
         ndims(index_type) == expected_rank ||
-            throw(IRError("$name at dimension $dim must be a $(expected_rank)D Int32 tile"))
+            throw(IRError("$name at dimension $dim must be a $(expected_rank)D integer tile"))
         if dim == sparse_dim
             size(index_type, 1) == view_shape[dim] ||
                 throw(IRError("$name sparse index length $(size(index_type, 1)) does not match view shape $(view_shape[dim]) at dimension $dim"))
@@ -537,6 +542,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view),
                @nospecialize(T_arg), @nospecialize args...)
     T_outer = CC.widenconst(T_arg)
     T_outer isa DataType && T_outer <: Type || return nothing
+    isempty(T_outer.parameters) && return nothing
     T = T_outer.parameters[1]
     T isa Type && T <: TileArray || return nothing
     TensorView{eltype(T), ndims(T)}
@@ -554,6 +560,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     elem_T = eltype(T)
     ndim = ndims(T)
     spec = array_spec(T)
+    I = indextype(T)
+    I === Int64 && tt.version < v"13.3" &&
+        throw(IRError("Int64-indexed TileArray requires Tile IR bytecode v13.3+, got v$(tt.version)"))
     dtype = lookup_dtype!(tt, elem_T)
 
     # Resolve operands. ptr is a single Value; sizes/strides expand to N values.

@@ -9,7 +9,7 @@ spec2d = ct.ArraySpec{2}(16, true)
     # Float32 -> Float8_E4M3FN (always available; 13.1+)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
             pid = ct.bid(1)
             tile = ct.load(a, pid, (16,))
             @check "ftof"
@@ -22,7 +22,7 @@ spec2d = ct.ArraySpec{2}(16, true)
     # Float32 -> Float8_E5M2 (always available; 13.1+)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
             pid = ct.bid(1)
             tile = ct.load(a, pid, (16,))
             @check "ftof"
@@ -35,7 +35,7 @@ spec2d = ct.ArraySpec{2}(16, true)
     # Float32 -> Float8_E8M0FNU works on bytecode 13.2+
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
                    bytecode_version=v"13.2") do a, b
             pid = ct.bid(1)
             tile = ct.load(a, pid, (16,))
@@ -55,7 +55,7 @@ spec2d = ct.ArraySpec{2}(16, true)
             return
         end
         @test_throws "v13.2+" code_tiled(devnull, kernel,
-            Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
             bytecode_version=v"13.1")
     end
 
@@ -68,7 +68,7 @@ spec2d = ct.ArraySpec{2}(16, true)
             return
         end
         @test_throws "v13.3+" code_tiled(devnull, kernel,
-            Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
             bytecode_version=v"13.2")
     end
 end
@@ -79,7 +79,7 @@ end
     # lowering to `cuda_tile.unpack` (13.3+).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
+        code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}};
                    bytecode_version=v"13.3") do a, b
             pid = ct.bid(1)
             bytes = ct.load(a, pid, (8,))            # Tile{UInt8,(8,)}
@@ -93,7 +93,7 @@ end
     # And the reverse packs FP4 back into bytes via `cuda_tile.pack` (13.3+).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{UInt8,1,spec1d}};
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{UInt8,1,Int32,spec1d}};
                    bytecode_version=v"13.3") do a, b
             pid = ct.bid(1)
             vals = ct.load(a, pid, (16,))
@@ -109,8 +109,8 @@ end
     # f8e4m3fn operands with an f32 accumulator lower to `mmaf` (13.1+).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                         ct.TileArray{Float32,2,spec2d}}) do a, b, c
+        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                         ct.TileArray{Float32,2,Int32,spec2d}}) do a, b, c
             ta = ct.load(a, (1, 1), (16, 16))
             tb = ct.load(b, (1, 1), (16, 16))
             @check "mmaf"
@@ -122,8 +122,8 @@ end
     # f8e5m2 operands with an f16 accumulator also lower to `mmaf`.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float8_E5M2,2,spec2d}, ct.TileArray{Float8_E5M2,2,spec2d},
-                         ct.TileArray{Float16,2,spec2d}}) do a, b, c
+        code_tiled(Tuple{ct.TileArray{Float8_E5M2,2,Int32,spec2d}, ct.TileArray{Float8_E5M2,2,Int32,spec2d},
+                         ct.TileArray{Float16,2,Int32,spec2d}}) do a, b, c
             ta = ct.load(a, (1, 1), (16, 16))
             tb = ct.load(b, (1, 1), (16, 16))
             @check "mmaf"
@@ -135,8 +135,8 @@ end
     # A disallowed accumulator dtype for f8 (only f16/f32 are valid) is rejected
     # with a clear error rather than producing an mmaf op tileiras would reject.
     @test_throws "tileiras requires acc" code_tiled(
-        Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-              ct.TileArray{Float64,2,spec2d}}) do a, b, c
+        Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+              ct.TileArray{Float64,2,Int32,spec2d}}) do a, b, c
         ta = ct.load(a, (1, 1), (16, 16))
         tb = ct.load(b, (1, 1), (16, 16))
         acc = zeros(Float64, (16, 16))
@@ -150,8 +150,8 @@ end
     # the op as a flag); requires bytecode 13.3.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                         ct.TileArray{Float32,2,spec2d}};
+        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                         ct.TileArray{Float32,2,Int32,spec2d}};
                    bytecode_version=v"13.3") do a, b, c
             ta = ct.load(a, (1, 1), (16, 16))
             tb = ct.load(b, (1, 1), (16, 16))
@@ -163,8 +163,8 @@ end
 
     # `fast_acc` is an FP8-only hint: requesting it for f16 inputs is rejected.
     @test_throws "only supported for fp8" code_tiled(
-        Tuple{ct.TileArray{Float16,2,spec2d}, ct.TileArray{Float16,2,spec2d},
-              ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a, b, c
+        Tuple{ct.TileArray{Float16,2,Int32,spec2d}, ct.TileArray{Float16,2,Int32,spec2d},
+              ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.3") do a, b, c
         ta = ct.load(a, (1, 1), (16, 16))
         tb = ct.load(b, (1, 1), (16, 16))
         ct.store(c, (1, 1), muladd(ta, tb, zeros(Float32, (16, 16)); fast_acc=true))
@@ -179,8 +179,8 @@ end
             return
         end
         @test_throws "13.3" code_tiled(devnull, kernel,
-            Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                  ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.2")
+            Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                  ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.2")
     end
 end
 
@@ -189,9 +189,9 @@ end
     # accumulate into f32. Block size B = K ÷ K_s = 64 ÷ 2 = 32.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E8M0FNU,2,spec2d},
-                         ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E8M0FNU,2,spec2d},
-                         ct.TileArray{Float32,2,spec2d}};
+        code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E8M0FNU,2,Int32,spec2d},
+                         ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E8M0FNU,2,Int32,spec2d},
+                         ct.TileArray{Float32,2,Int32,spec2d}};
                    bytecode_version=v"13.3") do x, x_scale, y, y_scale, z
             xt  = ct.load(x,       (1, 1), (16, 64))
             xst = ct.load(x_scale, (1, 1), (16, 2))
@@ -208,9 +208,9 @@ end
     # unpacked FP4 tiles; `mmaf_scaled` accepts them too.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                         ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                         ct.TileArray{Float32,2,spec2d}};
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                         ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                         ct.TileArray{Float32,2,Int32,spec2d}};
                    bytecode_version=v"13.3") do x, x_scale, y, y_scale, z
             xt  = convert(ct.Tile{Float4_E2M1FN}, ct.load(x, (1, 1), (16, 64)))
             xst = ct.load(x_scale, (1, 1), (16, 4))
@@ -233,9 +233,9 @@ end
             return
         end
         @test_throws "13.3" code_tiled(devnull, kernel,
-            Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E8M0FNU,2,spec2d},
-                  ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E8M0FNU,2,spec2d},
-                  ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.2")
+            Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E8M0FNU,2,Int32,spec2d},
+                  ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E8M0FNU,2,Int32,spec2d},
+                  ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.2")
     end
 end
 
