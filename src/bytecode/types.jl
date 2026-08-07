@@ -129,6 +129,34 @@ function items(table::TypeTable)
     return pairs
 end
 
+function type_encoding(table::TypeTable, id::TypeId)
+    for (encoding, type_id) in table.types
+        type_id == id && return encoding
+    end
+    throw(ArgumentError("unknown type id $(id.id)"))
+end
+
+function simple_type_tag(table::TypeTable, id::TypeId)
+    encoding = type_encoding(table, id)
+    length(encoding) == 1 || throw(ArgumentError("type id $(id.id) is not a simple type"))
+    return only(encoding)
+end
+
+function tile_eltype_id(table::TypeTable, id::TypeId)
+    encoding = type_encoding(table, id)
+    first(encoding) == CompositeType.Tile ||
+        throw(ArgumentError("type id $(id.id) is not a tile type"))
+
+    value = 0
+    shift = 0
+    for byte in @view encoding[2:end]
+        value |= Int(byte & 0x7f) << shift
+        byte & 0x80 == 0 && return TypeId(value)
+        shift += 7
+    end
+    throw(ArgumentError("invalid tile element type id"))
+end
+
 # Type constructors
 
 function simple_type!(table::TypeTable, tag::UInt8)

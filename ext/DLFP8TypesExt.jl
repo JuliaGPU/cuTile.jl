@@ -12,9 +12,6 @@ function ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E5M2})
     return ct.F8E5M2(table)
 end
 
-ct.float_dtype_tag(::Type{Float8_E4M3FN}) = ct.SimpleType.F8E4M3FN
-ct.float_dtype_tag(::Type{Float8_E5M2}) = ct.SimpleType.F8E5M2
-
 # Non-scaled `mma`/`matmul` (`cuda_tile.mmaf`) accepts f8e4m3fn and f8e5m2
 # operands with an f16 or f32 accumulator (f16 first/preferred), mirroring
 # cuda-tile's mmaf type table and cutile-python's `_mma_supported_dtypes`.

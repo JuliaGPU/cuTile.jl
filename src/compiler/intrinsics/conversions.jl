@@ -199,55 +199,33 @@ ftof_rounding_mode(::Type) = RoundingMode.NearestEven
 @inline lookup_ftof_rounding_mode(@nospecialize(T::Type)) =
     Base.invokelatest(ftof_rounding_mode, T)::RoundingMode.T
 
-float_dtype_tag(::Type{Float16}) = SimpleType.F16
-float_dtype_tag(::Type{BFloat16}) = SimpleType.BF16
-float_dtype_tag(::Type{Float32}) = SimpleType.F32
-float_dtype_tag(::Type{TFloat32}) = SimpleType.TF32
-float_dtype_tag(::Type{Float64}) = SimpleType.F64
+const E8M0_LATE_SOURCES = (SimpleType.F64, SimpleType.F8E5M2, SimpleType.F8E4M3FN)
+const F16_DIRECTED_SOURCES = (
+    SimpleType.F16, SimpleType.BF16, SimpleType.F8E5M2,
+    SimpleType.F8E4M3FN, SimpleType.F4E2M1FN,
+)
 
-@inline lookup_float_dtype_tag(@nospecialize(T::Type)) =
-    Base.invokelatest(float_dtype_tag, T)::UInt8
-
-const FTOF_ROUNDING_REGISTRY = let
-    all = (SimpleType.F64, SimpleType.F32, SimpleType.TF32, SimpleType.F16,
-           SimpleType.BF16, SimpleType.F8E5M2, SimpleType.F8E8M0FNU,
-           SimpleType.F8E4M3FN, SimpleType.F4E2M1FN)
-    registry = Dict{Tuple{UInt8,UInt8,RoundingMode.T},VersionNumber}()
-    add(from, to, mode, version) = foreach(f -> registry[(f, to, mode)] = version, from)
-
-    for to in (SimpleType.F64, SimpleType.F32, SimpleType.TF32, SimpleType.BF16,
-               SimpleType.F16, SimpleType.F8E4M3FN, SimpleType.F8E5M2, SimpleType.F4E2M1FN)
-        add(all, to, RoundingMode.NearestEven, v"13.0")
+function ftof_rounding_min_version(from::UInt8, to::UInt8, mode::RoundingMode.T)
+    if mode == RoundingMode.NearestEven
+        return to == SimpleType.F8E8M0FNU ? nothing : v"13.0"
+    elseif mode == RoundingMode.Zero
+        to in (SimpleType.F64, SimpleType.F32, SimpleType.TF32,
+               SimpleType.F16, SimpleType.BF16) && return v"13.4"
+        to == SimpleType.F8E8M0FNU &&
+            return (from in E8M0_LATE_SOURCES ? v"13.4" : v"13.3")
+    elseif mode in (RoundingMode.NegativeInf, RoundingMode.PositiveInf)
+        to == SimpleType.F64 && return v"13.4"
+        to == SimpleType.F32 && from != SimpleType.F8E8M0FNU && return v"13.4"
+        to == SimpleType.F16 && from in F16_DIRECTED_SOURCES && return v"13.4"
+        mode == RoundingMode.PositiveInf && to == SimpleType.F8E8M0FNU &&
+            return (from in E8M0_LATE_SOURCES ? v"13.4" : v"13.3")
+    elseif mode == RoundingMode.NearestAway
+        to == SimpleType.F64 && return v"13.4"
+        to in (SimpleType.F32, SimpleType.TF32) &&
+            from ∉ (SimpleType.F64, SimpleType.F8E8M0FNU) && return v"13.4"
+        to == SimpleType.F16 && from in F16_DIRECTED_SOURCES && return v"13.4"
     end
-    for to in (SimpleType.F64, SimpleType.F32, SimpleType.TF32, SimpleType.F16, SimpleType.BF16)
-        add(all, to, RoundingMode.Zero, v"13.4")
-    end
-
-    e8m0_early = filter(t -> t ∉ (SimpleType.F64, SimpleType.F8E5M2, SimpleType.F8E4M3FN), all)
-    e8m0_late = (SimpleType.F64, SimpleType.F8E5M2, SimpleType.F8E4M3FN)
-    for mode in (RoundingMode.Zero, RoundingMode.PositiveInf)
-        add(e8m0_early, SimpleType.F8E8M0FNU, mode, v"13.3")
-        add(e8m0_late, SimpleType.F8E8M0FNU, mode, v"13.4")
-    end
-
-    add(all, SimpleType.F64, RoundingMode.NegativeInf, v"13.4")
-    add(all, SimpleType.F64, RoundingMode.PositiveInf, v"13.4")
-    no_e8m0 = filter(!=(SimpleType.F8E8M0FNU), all)
-    for mode in (RoundingMode.NegativeInf, RoundingMode.PositiveInf)
-        add(no_e8m0, SimpleType.F32, mode, v"13.4")
-        add(filter(t -> t ∉ (SimpleType.F64, SimpleType.F32, SimpleType.TF32,
-                             SimpleType.F8E8M0FNU), all),
-            SimpleType.F16, mode, v"13.4")
-    end
-
-    add(all, SimpleType.F64, RoundingMode.NearestAway, v"13.4")
-    ra_f32 = filter(t -> t ∉ (SimpleType.F64, SimpleType.F8E8M0FNU), all)
-    add(ra_f32, SimpleType.F32, RoundingMode.NearestAway, v"13.4")
-    add(ra_f32, SimpleType.TF32, RoundingMode.NearestAway, v"13.4")
-    add(filter(t -> t ∉ (SimpleType.F64, SimpleType.F32, SimpleType.TF32,
-                         SimpleType.F8E8M0FNU), all),
-        SimpleType.F16, RoundingMode.NearestAway, v"13.4")
-    registry
+    return nothing
 end
 
 bytecode_rounding_mode(::Base.Rounding.RoundingMode{:Nearest}) = RoundingMode.NearestEven
@@ -257,22 +235,6 @@ bytecode_rounding_mode(::Base.Rounding.RoundingMode{:Up}) = RoundingMode.Positiv
 bytecode_rounding_mode(::Base.Rounding.RoundingMode{:NearestTiesAway}) = RoundingMode.NearestAway
 bytecode_rounding_mode(mode::Base.Rounding.RoundingMode) =
     throw(IRError("rounding mode $mode is not supported for float conversion"))
-
-function tile_eltype_tag(table::TypeTable, id::TypeId)
-    tile = only(encoded for (encoded, type_id) in table.types if type_id == id)
-    tile[1] == CompositeType.Tile || throw(IRError("ftof: expected a tile type"))
-    dtype_id = Int(tile[2] & 0x7f)
-    shift = 7
-    i = 3
-    while tile[i - 1] & 0x80 != 0
-        dtype_id |= Int(tile[i] & 0x7f) << shift
-        shift += 7
-        i += 1
-    end
-    dtype = only(encoded for (encoded, type_id) in table.types if type_id.id == dtype_id)
-    length(dtype) == 1 || throw(IRError("ftof: expected a simple element type"))
-    return only(dtype)
-end
 
 const FLOAT_DTYPE_NAMES = Dict(
     SimpleType.F16 => "Float16", SimpleType.BF16 => "BFloat16",
@@ -287,13 +249,13 @@ function validate_ftof_rounding(from_tag::UInt8, to_tag::UInt8, mode::RoundingMo
                                 version::VersionNumber)
     from = float_dtype_name(from_tag)
     to = float_dtype_name(to_tag)
-    min_version = get(FTOF_ROUNDING_REGISTRY, (from_tag, to_tag, mode), nothing)
+    min_version = ftof_rounding_min_version(from_tag, to_tag, mode)
     if min_version === nothing
         supported = RoundingMode.T[
             candidate for candidate in (RoundingMode.NearestEven, RoundingMode.Zero,
                                          RoundingMode.NegativeInf, RoundingMode.PositiveInf,
                                          RoundingMode.NearestAway)
-            if haskey(FTOF_ROUNDING_REGISTRY, (from_tag, to_tag, candidate))
+            if ftof_rounding_min_version(from_tag, to_tag, candidate) !== nothing
         ]
         isempty(supported) && throw(IRError("float conversion from $from to $to is not supported"))
         throw(IRError("rounding mode $mode is not supported for conversion from $from to $to; supported modes are $(Tuple(supported))"))
@@ -338,8 +300,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     else
         lookup_ftof_rounding_mode(target_type)
     end
-    validate_ftof_rounding(tile_eltype_tag(tt, source.type_id),
-                           lookup_float_dtype_tag(target_type), rounding_mode, tt.version)
+    source_tag = simple_type_tag(tt, tile_eltype_id(tt, source.type_id))
+    target_tag = simple_type_tag(tt, dtype)
+    validate_ftof_rounding(source_tag, target_tag, rounding_mode, tt.version)
     result_v = encode_FToFOp!(cb, result_type_id, source.v; rounding_mode)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
