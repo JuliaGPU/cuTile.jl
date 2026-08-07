@@ -11,7 +11,7 @@
     spec1d = ct.ArraySpec{1}(16, true, (0,), (16,))
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             t1 = ct.load(a, 1, (16,))
             t2 = ct.load(a, 1, (16,))
             ct.store(a, 1, t1 + t2)
@@ -26,8 +26,8 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                         ct.TileArray{Float32,1,spec1d}}) do a, b
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                         ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
             ct.store(b, 1, ct.load(a, 1, (16,)))
             return
         end
@@ -44,7 +44,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do out
+        code_tiled(Tuple{ct.TileArray{Int64,1,Int32,spec1d}}) do out
             a = ct.arange(16; dtype = Int64)
             b = ct.arange(16)  # default dtype = Int32
             # `a .- b` requires extending b to Int64 — no type collision
@@ -66,7 +66,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Bool}) do a, c
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Bool}) do a, c
             t1 = ct.load(a, 1, (16,))     # entry: emits the canonical mtv
             if c
                 Base.donotdelete(t1)
@@ -87,7 +87,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Bool}) do a, c
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Bool}) do a, c
             if c
                 ct.store(a, 1, ct.load(a, 1, (16,)))
                 ct.store(a, 1, ct.load(a, 1, (16,)))
@@ -106,7 +106,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Bool}) do a, c
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Bool}) do a, c
             if c
                 ct.store(a, 1, ct.load(a, 1, (16,)))
             else
@@ -128,7 +128,7 @@ end
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             t1 = ct.load(a, 1, (16,))
             t2 = ct.load(a, 1, (16,))
             ct.store(a, 1, t1 + t2)

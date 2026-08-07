@@ -9,7 +9,7 @@ spec2d = ct.ArraySpec{2}(16, true)
 # Float32 -> Float8_E4M3FN
 @test @filecheck begin
     @check_label "entry"
-    code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+    code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
         pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         @check "ftof"
@@ -22,7 +22,7 @@ end
 # Float32 -> Float8_E5M2
 @test @filecheck begin
     @check_label "entry"
-    code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+    code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
         pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         @check "ftof"
@@ -35,8 +35,8 @@ end
 # Non-scaled f8 matmul lowers to `mmaf` (f8 operands, f32 accumulator).
 @test @filecheck begin
     @check_label "entry"
-    code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                     ct.TileArray{Float32,2,spec2d}}) do a, b, c
+    code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                     ct.TileArray{Float32,2,Int32,spec2d}}) do a, b, c
         ta = ct.load(a, (1, 1), (16, 16))
         tb = ct.load(b, (1, 1), (16, 16))
         @check "mmaf"
@@ -48,8 +48,8 @@ end
 # `fast_acc=true` is an FP8-only hint; it still lowers to `mmaf` (13.3+).
 @test @filecheck begin
     @check_label "entry"
-    code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,spec2d}, ct.TileArray{Float8_E4M3FN,2,spec2d},
-                     ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a, b, c
+    code_tiled(Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E4M3FN,2,Int32,spec2d},
+                     ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.3") do a, b, c
         ta = ct.load(a, (1, 1), (16, 16))
         tb = ct.load(b, (1, 1), (16, 16))
         @check "mmaf"

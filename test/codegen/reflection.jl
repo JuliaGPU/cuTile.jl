@@ -1,5 +1,5 @@
 spec = ct.ArraySpec{1}(16, true)
-TT3 = Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}
+TT3 = Tuple{ct.TileArray{Float32,1,Int32,spec}, ct.TileArray{Float32,1,Int32,spec}, ct.TileArray{Float32,1,Int32,spec}}
 
 function reflect_vadd(a, b, c)
     pid = ct.bid(1)
@@ -74,8 +74,8 @@ end
 
 @testset "Constant args" begin
     const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
-    ConstTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
-                    ct.TileArray{Float32,1,const_spec}, ct.Constant{Int64, 16}}
+    ConstTT = Tuple{ct.TileArray{Float32,1,Int32,const_spec}, ct.TileArray{Float32,1,Int32,const_spec},
+                    ct.TileArray{Float32,1,Int32,const_spec}, ct.Constant{Int64, 16}}
 
     function reflect_const_vadd(a, b, c, tile_size::Int)
         pid = ct.bid(1)
@@ -119,8 +119,8 @@ end
             return
         end
 
-        ConstTypeTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
-                            ct.TileArray{Float32,1,const_spec}, ct.Constant{Int64, 16},
+        ConstTypeTT = Tuple{ct.TileArray{Float32,1,Int32,const_spec}, ct.TileArray{Float32,1,Int32,const_spec},
+                            ct.TileArray{Float32,1,Int32,const_spec}, ct.Constant{Int64, 16},
                             Type{Float32}}
 
         @test @filecheck begin

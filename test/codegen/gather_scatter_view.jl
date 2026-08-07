@@ -3,7 +3,7 @@
 # index encoding, and conservative token behavior on their own.
 
 spec2d = ct.ArraySpec{2}(16, true)
-AT2d = ct.TileArray{Float32,2,spec2d}
+AT2d = ct.TileArray{Float32,2,Int32,spec2d}
 
 @testset "GatherScatterView — row-major dimension conversion" begin
     @test @filecheck begin

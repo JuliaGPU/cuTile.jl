@@ -1,3 +1,13 @@
+struct TestDeviceArray{T, N} <: AbstractArray{T, N}
+    ptr::CUDA.CuPtr{T}
+    dims::NTuple{N, Int64}
+    steps::NTuple{N, Int64}
+end
+Base.size(a::TestDeviceArray) = a.dims
+Base.strides(a::TestDeviceArray) = a.steps
+Base.pointer(a::TestDeviceArray) = a.ptr
+Base.getindex(::TestDeviceArray, ::Vararg{Int}) = error("not implemented")
+
 @testset "Constant" begin
     # Auto-typed convenience constructor
     @test cuTile.Constant(Int32(5)) === cuTile.Constant{Int32, Int32(5)}()
@@ -57,16 +67,33 @@ end
 
     # array_spec tests
     spec = ct.ArraySpec{2}(128, true)
-    TA = ct.TileArray{Float32, 2, spec}
+    TA = ct.TileArray{Float32, 2, Int32, spec}
     @test ct.array_spec(TA) === spec
+    @test ct.indextype(TA) === Int32
     @test ct.array_spec(ct.TileArray{Float32, 2}) === nothing
 
     spec1 = ct.ArraySpec{2}(128, true, (1, 4), (16, 8))
-    T = ct.TileArray{Float32, 2, spec1}
+    T = ct.TileArray{Float32, 2, Int32, spec1}
     @test ct.array_spec(ct.sliced_arraytype(T)).contiguous
     @test !ct.array_spec(ct.sliced_arraytype(T; stepped_axis=1)).contiguous
     @test ct.array_spec(ct.sliced_arraytype(T; stepped_axis=2)).contiguous
     @test ct.array_spec(ct.sliced_arraytype(T; stepped_axis=1)).stride_div_by == (1, 4)
+
+    ptr = CUDA.CuPtr{Float32}(0)
+    small = TestDeviceArray(ptr, (Int64(16), Int64(8)), (Int64(1), Int64(16)))
+    wide = TestDeviceArray(ptr, (Int64(16), Int64(8)),
+                           (Int64(1), Int64(typemax(Int32)) + 1))
+
+    small_tile = ct.TileArray(small)
+    wide_tile = ct.TileArray(wide)
+    forced_wide_tile = ct.TileArray(small; index=Int64)
+    @test ct.indextype(small_tile) === Int32
+    @test ct.indextype(wide_tile) === Int64
+    @test ct.indextype(forced_wide_tile) === Int64
+    @test eltype(small_tile.sizes) === Int32
+    @test eltype(wide_tile.strides) === Int64
+    @test_throws InexactError ct.TileArray(wide; index=Int32)
+    @test_throws ArgumentError ct.TileArray(small; index=UInt32)
 end
 
 @testset "PartitionView" begin
@@ -119,6 +146,12 @@ end
     @test size(permuted) == (Int32(4), Int32(8))  # cld(10, 3), cld(16, 2)
     @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1, 1))
     @test_throws "must be a permutation" eachtile(a, (8, 4); order=(1,))
+
+    a64 = ct.TileArray(Ptr{Float32}(0), (Int64(16), Int64(10)),
+                       (Int64(1), Int64(16)))
+    tiles64 = eachtile(a64, (8, 4); step=(3, 2))
+    @test size(tiles64) == (Int64(6), Int64(5))
+    @test size(tiles64, 3) === Int64(1)
 end
 
 @testset "GatherScatterTileView" begin

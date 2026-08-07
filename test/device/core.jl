@@ -562,7 +562,7 @@ end
 @testset "struct destructuring" begin
     @testset "TileArray + scalar field" begin
         struct ArrayWithScale{T, N, S}
-            arr::ct.TileArray{T, N, S}
+            arr::ct.TileArray{T, N, Int32, S}
             scale::Float32
         end
 
@@ -581,8 +581,8 @@ end
 
     @testset "two TileArrays in one struct" begin
         struct TwoArrays{T, N, S1, S2}
-            a::ct.TileArray{T, N, S1}
-            b::ct.TileArray{T, N, S2}
+            a::ct.TileArray{T, N, Int32, S1}
+            b::ct.TileArray{T, N, Int32, S2}
         end
 
         function add_two_kernel(dest::ct.TileArray{Float32,1}, pair::TwoArrays{Float32,1}, ts)
@@ -602,7 +602,7 @@ end
 
     @testset "nested struct (struct inside struct)" begin
         struct InnerLayer{T, N, S}
-            arr::ct.TileArray{T, N, S}
+            arr::ct.TileArray{T, N, Int32, S}
             bias::Float32
         end
         struct OuterLayer{T, N, S}
@@ -643,8 +643,8 @@ end
     @testset "heterogeneous tuple in struct" begin
         struct HetTupleWrapper{A, B}; a::A; b::B; end
 
-        function het_tuple_kernel(dest::ct.TileArray{Float32,1,S},
-                                  w::HetTupleWrapper{ct.TileArray{Float32,1,S2}, Int32},
+        function het_tuple_kernel(dest::ct.TileArray{Float32,1,Int32,S},
+                                  w::HetTupleWrapper{ct.TileArray{Float32,1,Int32,S2}, Int32},
                                   ts) where {S, S2}
             bid = ct.bid(1)
             tile = ct.load(w.a, bid, (ts[1],))

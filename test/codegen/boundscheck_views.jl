@@ -2,9 +2,9 @@
 # `@inbounds` must not discard a partial tile's padding or store clipping.
 
 const view_spec = ct.ArraySpec{1}(64, true)
-const ViewArray = ct.TileArray{Float32, 1, view_spec}
+const ViewArray = ct.TileArray{Float32, 1, Int32, view_spec}
 const view2_spec = ct.ArraySpec{2}(64, true)
-const ViewArray2 = ct.TileArray{Float32, 2, view2_spec}
+const ViewArray2 = ct.TileArray{Float32, 2, Int32, view2_spec}
 
 direct_plain(a) = (ct.store(a, ct.bid(1),
                             ct.load(a, ct.bid(1), (16,); padding_mode=ct.PaddingMode.Zero)); return)

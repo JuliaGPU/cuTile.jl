@@ -1,4 +1,5 @@
 public AbstractTileArray, TileArray, ArraySpec, Tile, Constant, TFloat32, similar_type,
+       indextype,
        bitwidth,
        ScalarInt, ScalarFloat, IntTile, FloatTile, TileOrInt, TileOrFloat,
        TileOrScalar
@@ -185,7 +186,8 @@ ArraySpec{N} with:
 - `stride_div_by`: Per-dimension stride divisibility (enables vectorized access)
 - `shape_div_by`: Per-dimension shape divisibility (eliminates boundary checks)
 """
-function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTuple{N, Int32}) where {T, N}
+function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, <:Integer},
+                            strides::NTuple{N, <:Integer}) where {T, N}
     elem_size = sizeof(T)
 
     # Pointer alignment
@@ -229,10 +231,11 @@ end
 
 
 """
-    TileArray{T, N, S}
+    TileArray{T, N, I, S}
 
 Represents an N-dimensional array argument to a kernel with element type `T`
-and specialization `S::ArraySpec`.
+and index type `I`. `I` is `Int32` unless an array size or stride requires
+`Int64`. `S::ArraySpec` holds layout specialization information.
 
 Unlike raw pointers, TileArray carries size and stride information that is
 passed to the kernel as runtime parameters, enabling dynamic array sizes.
@@ -242,25 +245,28 @@ specializations (e.g., aligned vs unaligned) produce different cubins.
 
 # Fields
 - `ptr::Ptr{T}`: Base pointer to array data
-- `sizes::NTuple{N, Int32}`: Size in each dimension
-- `strides::NTuple{N, Int32}`: Stride in each dimension (in elements)
+- `sizes::NTuple{N, I}`: Size in each dimension
+- `strides::NTuple{N, I}`: Stride in each dimension (in elements)
 """
-struct TileArray{T, N, S} <: AbstractTileArray{T, N}
+struct TileArray{T, N, I<:Union{Int32, Int64}, S} <: AbstractTileArray{T, N}
     ptr::Ptr{T}
-    sizes::NTuple{N, Int32}
-    strides::NTuple{N, Int32}
+    sizes::NTuple{N, I}
+    strides::NTuple{N, I}
 end
 Base.size(arr::TileArray) = arr.sizes
-function Base.size(arr::TileArray{<:Any, N}, d::Integer) where N
+function Base.size(arr::TileArray{<:Any, N, I}, d::Integer) where {N, I}
     d < 1 && error("arraysize: dimension out of range") # from Array method
-    return d > N ? Int32(1) : arr.sizes[d]
+    return d > N ? one(I) : arr.sizes[d]
 end
 Base.length(arr::TileArray) = prod(size(arr))
-# Return the ArraySpec value (third type parameter) if present
+indextype(::Type{<:TileArray{<:Any, <:Any, I}}) where {I} = I
+indextype(arr::TileArray) = indextype(typeof(arr))
+
+# Return the ArraySpec value (fourth type parameter) if present
 function array_spec(@nospecialize(T::Type{<:TileArray}))
     T isa DataType || return nothing  # UnionAll types don't have full parameters
-    length(T.parameters) >= 3 || return nothing
-    S = T.parameters[3]
+    length(T.parameters) >= 4 || return nothing
+    S = T.parameters[4]
     S isa ArraySpec && return S
     nothing
 end
@@ -272,13 +278,25 @@ array_spec(arr::TileArray) = array_spec(typeof(arr))
 Create a TileArray from a pointer, sizes, and strides.
 Computes the ArraySpec automatically based on alignment, contiguity, and divisibility.
 """
-function TileArray(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTuple{N, Int32}) where {T, N}
+function TileArray(ptr::Ptr{T}, sizes::NTuple{N, I}, strides::NTuple{N, I}) where
+        {T, N, I<:Union{Int32, Int64}}
     spec = compute_array_spec(ptr, sizes, strides)
-    TileArray{T, N, spec}(ptr, sizes, strides)
+    TileArray{T, N, I, spec}(ptr, sizes, strides)
+end
+
+function array_indextype(sizes, strides)
+    all(x -> typemin(Int32) <= x <= typemax(Int32), sizes) &&
+    all(x -> typemin(Int32) <= x <= typemax(Int32), strides) ? Int32 : Int64
+end
+
+function check_indextype(@nospecialize(I))
+    I === Int32 || I === Int64 ||
+        throw(ArgumentError("TileArray index type must be Int32 or Int64, got $I"))
+    return I
 end
 
 """
-    TileArray(arr)
+    TileArray(arr; index=nothing)
 
 Create a TileArray from a device array (CuArray or similar).
 Automatically extracts pointer, sizes, strides, and computes ArraySpec.
@@ -288,15 +306,21 @@ This method works with any array type that supports:
 - `size(arr)` - returns array dimensions
 - `strides(arr)` - returns array strides
 """
-function TileArray(arr::AbstractArray{T, N}) where {T, N}
-    sizes = NTuple{N, Int32}(Int32.(size(arr)))
-    strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
+function TileArray(arr::AbstractArray{T, N}; index=nothing) where {T, N}
+    arr_sizes = size(arr)
+    arr_strides = strides(arr)
+    I = check_indextype(something(index, array_indextype(arr_sizes, arr_strides)))
+    sizes = NTuple{N, I}(I.(arr_sizes))
+    strides_val = NTuple{N, I}(I.(arr_strides))
     TileArray(device_pointer(arr), sizes, strides_val)
 end
 
-function TileArray(arr::PermutedDimsArray{T, N}) where {T, N}
-    sizes = NTuple{N, Int32}(Int32.(size(arr)))
-    strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
+function TileArray(arr::PermutedDimsArray{T, N}; index=nothing) where {T, N}
+    arr_sizes = size(arr)
+    arr_strides = strides(arr)
+    I = check_indextype(something(index, array_indextype(arr_sizes, arr_strides)))
+    sizes = NTuple{N, I}(I.(arr_sizes))
+    strides_val = NTuple{N, I}(I.(arr_strides))
     TileArray(device_pointer(parent(arr)), sizes, strides_val)
 end
 
@@ -455,11 +479,12 @@ function Base.size(tiles::TiledView)
     steps = tiled_view_step(typeof(tiles))
     order = tiled_view_order(typeof(tiles))
     dims = something(order, ntuple(identity, Val(ndims(tiles))))
-    ntuple(i -> cld(size(tiles.parent, dims[i]), Int32(steps[i])), Val(ndims(tiles)))
+    I = indextype(tiles.parent)
+    ntuple(i -> cld(size(tiles.parent, dims[i]), I(steps[i])), Val(ndims(tiles)))
 end
 function Base.size(tiles::TiledView, d::Integer)
     d < 1 && error("arraysize: dimension out of range")
-    d > ndims(tiles) ? Int32(1) : size(tiles)[d]
+    d > ndims(tiles) ? one(indextype(tiles.parent)) : size(tiles)[d]
 end
 
 """

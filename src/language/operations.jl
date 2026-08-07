@@ -12,7 +12,7 @@
 # and are defined as regular methods on `TileArray` — TileArray is its own
 # type, not an `AbstractArray` subtype, so there's no Base method to shadow
 # and no need for the `@overlay` mechanism. The new aggregate is built via
-# the regular Julia inner constructor `TileArray{T,N,S}(ptr, sizes, strides)`;
+# the regular Julia inner constructor `TileArray{T,N,I,S}(ptr, sizes, strides)`;
 # Julia's SROA pass eliminates the temporary struct so the IR sees direct
 # field references at each downstream use.
 #
@@ -94,7 +94,8 @@ function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray});
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
     N = ndims(SrcT)
-    spec === nothing && return TileArray{elem_T, N}
+    I = indextype(SrcT)
+    spec === nothing && return TileArray{elem_T, N, I}
     # A StepRange scales that axis' element stride. The step is a runtime value
     # not encoded in the type (`2:1:20` is still a StepRange), so column-major
     # axis-1 contiguity must be dropped conservatively even when the step
@@ -102,7 +103,7 @@ function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray});
     new_contiguous = spec.contiguous && stepped_axis !== 1
     new_spec = ArraySpec{N, 0, new_contiguous, spec.stride_div_by, ntuple(_ -> 0, N),
                          spec.may_alias_internally}()
-    return TileArray{elem_T, N, new_spec}
+    return TileArray{elem_T, N, I, new_spec}
 end
 
 # Empty tuple: all axes walked, return the accumulated slice.
@@ -184,7 +185,7 @@ end
 
 # These derive a new TileArray with adjusted sizes/strides (and sometimes a
 # different rank) without touching the underlying memory. The new aggregate
-# is built via the regular `TileArray{T,N,S}(ptr, sizes, strides)` inner
+# is built via the regular `TileArray{T,N,I,S}(ptr, sizes, strides)` inner
 # constructor; SROA eliminates the temporary so the IR sees direct field
 # references at each downstream use.
 
@@ -201,14 +202,15 @@ function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
     N = ndims(SrcT)
-    spec === nothing && return TileArray{elem_T, N}
+    I = indextype(SrcT)
+    spec === nothing && return TileArray{elem_T, N, I}
     new_contiguous = spec.contiguous && Perm[1] == 1
     new_stride_div_by = ntuple(i -> spec.stride_div_by[Perm[i]], Val(N))
     new_shape_div_by  = ntuple(i -> spec.shape_div_by[Perm[i]],  Val(N))
     new_spec = ArraySpec{N, spec.alignment, new_contiguous,
                          new_stride_div_by, new_shape_div_by,
                          spec.may_alias_internally}()
-    return TileArray{elem_T, N, new_spec}
+    return TileArray{elem_T, N, I, new_spec}
 end
 
 function unsafe_permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm}
@@ -237,6 +239,7 @@ function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
                             ::Val{NewShape}) where {NewShape}
     spec = array_spec(SrcT)
     elem_T = eltype(SrcT)
+    I = indextype(SrcT)
     M = length(NewShape)
     new_shape_div_by = ntuple(i -> NewShape[i], Val(M))
     # Reshape recomputes dense column-major strides, so the result layout is
@@ -247,7 +250,7 @@ function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
         new_spec = ArraySpec{M, spec.alignment, true,
                              ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
     end
-    return TileArray{elem_T, M, new_spec}
+    return TileArray{elem_T, M, I, new_spec}
 end
 
 function unsafe_reshape(arr::TileArray{T, N}, ::Val{NewShape}) where {T, N, NewShape}

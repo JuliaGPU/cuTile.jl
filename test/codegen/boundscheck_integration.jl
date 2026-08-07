@@ -1,7 +1,7 @@
 import IRStructurizer
 
 const bounds_spec = ct.ArraySpec{1}(128, true)
-const BoundsArray = ct.TileArray{Float32, 1, bounds_spec}
+const BoundsArray = ct.TileArray{Float32, 1, Int32, bounds_spec}
 
 function bounds_context(a::BoundsArray, b::BoundsArray)
     check_bounds = Base.@_boundscheck
@@ -95,7 +95,7 @@ else
         @test test_bytecode(bounds_loop, loop_types) ==
               test_bytecode(bounds_loop_literal, loop_types)
 
-        range_types = Tuple{ct.TileArray{Int32, 1, ct.ArraySpec{1}(1, true)}, Int32, Int32}
+        range_types = Tuple{ct.TileArray{Int32, 1, Int32, ct.ArraySpec{1}(1, true)}, Int32, Int32}
         checked_kernel = function(out, n, i)
             value = (Int32(1):n)[i]
             ct.store(out, 1, ct.Tile(value))

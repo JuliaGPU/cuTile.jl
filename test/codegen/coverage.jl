@@ -13,8 +13,8 @@
     end
 
     cov_spec = ct.ArraySpec{1}(16, true)
-    cov_tt = Tuple{ct.TileArray{Float32,1,cov_spec}, ct.TileArray{Float32,1,cov_spec},
-                ct.TileArray{Float32,1,cov_spec}}
+    cov_tt = Tuple{ct.TileArray{Float32,1,Int32,cov_spec}, ct.TileArray{Float32,1,Int32,cov_spec},
+                ct.TileArray{Float32,1,Int32,cov_spec}}
 
     # Whether any line in `lo:hi` of `file` has a nonzero execution count in an lcov
     # tracefile.

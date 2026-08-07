@@ -18,7 +18,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         spec = ct.ArraySpec{1}(16, true)
         # Reject float offsets at the intrinsic boundary so direct callers
         # don't slip past the integer-only requirement.
-        @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+        @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec}}) do a
             base_ptr = ct.Tile(a.ptr)
             float_offs = Float32.(ct.Intrinsics.iota((16,), Int32))
             Base.donotdelete(ct.Intrinsics.offset(base_ptr, float_offs))
@@ -33,7 +33,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         ]
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{T,1,spec}}) do a
+                code_tiled(Tuple{ct.TileArray{T,1,Int32,spec}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "scan"
@@ -47,7 +47,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # 2D scan along different axes
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "scan"
@@ -61,7 +61,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Reverse scan
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "scan"
@@ -73,7 +73,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # cumsum convenience
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "scan"
@@ -85,7 +85,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # cumprod
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "scan"
@@ -98,7 +98,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Non-commutative combiner pins down the (acc, elem) convention.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "scan"
@@ -116,7 +116,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test @filecheck begin
             @check_label "entry"
             @check_not "permute"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "reshape"
@@ -130,7 +130,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test @filecheck begin
             @check_label "entry"
             @check_not "permute"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (64,))
                 @check "reshape"
@@ -144,7 +144,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test @filecheck begin
             @check_label "entry"
             @check_not "permute"
-            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,3,Int32,spec3d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (2, 4, 8))
                 @check "reshape"
@@ -159,7 +159,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             @check_label "entry"
             @check_not "permute"
             @check_not "reshape"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (32,))
                 reshaped = reshape(tile, (32,))
@@ -172,7 +172,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test @filecheck begin
             @check_label "entry"
             @check_not "permute"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "reshape"
@@ -186,7 +186,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "dropdims" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, (pid, 1), (1, 8))
                 @check "reshape"
@@ -198,7 +198,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, (1, pid), (8, 1))
                 @check "reshape"
@@ -210,7 +210,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 tile = ct.load(a, (1, 1), (1, 1))
                 @check "reshape"
                 Base.donotdelete(dropdims(tile; dims=(2, 1)))
@@ -219,7 +219,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "dropped dims must be unique" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             tile = ct.load(a, (1, 1), (1, 1))
             Base.donotdelete(dropdims(tile; dims=(1, 1)))
             return
@@ -228,19 +228,19 @@ spec4d = ct.ArraySpec{4}(16, true)
 
     @testset "permutedims" begin
         @test_throws "axis order must be a permutation" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             Base.donotdelete(permutedims(a, Val((1, 1))))
             return
         end
 
         @test_throws "axis order must be a permutation" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             Base.donotdelete(ct.load(a, (1, 1), (4, 8); order=(1, 1)))
             return
         end
 
         @test_throws "axis order must be a permutation" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             tile = ct.load(a, (1, 1), (4, 8))
             Base.donotdelete(permutedims(tile, (1, 1)))
             return
@@ -249,7 +249,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # 2D permutedims with explicit perm (same as transpose)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "permute"
@@ -262,7 +262,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # 3D permutedims
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,3,Int32,spec3d}, ct.TileArray{Float32,3,Int32,spec3d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (2, 4, 8))
                 @check "permute"
@@ -276,7 +276,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # 3D identity permutedims
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,3,Int32,spec3d}, ct.TileArray{Float32,3,Int32,spec3d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (2, 4, 8))
                 @check "permute"
@@ -290,7 +290,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # 2D permutedims with no-arg (defaults to transpose)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "permute"
@@ -303,7 +303,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # 1D permutedims (reshape to row)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (32,))
                 @check "reshape"
@@ -316,7 +316,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
     @testset "extract" begin
         @test_throws "requires Tile IR v13.4+" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}; bytecode_version=v"13.3") do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.3") do a
             tile = ct.load(a, (1, 1), (4, 8))
             value = ct.extract(tile, (1, 1), (2, 4))
             Base.donotdelete(ct.insert(tile, (2, 2), value))
@@ -326,7 +326,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Extract slice from 2D tile
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
                 @check "extract"
@@ -340,7 +340,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "extract"
@@ -355,7 +355,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Scalar tile getindex
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 tile = ct.load(a, 1, (8,))
                 @check "extract"
                 # extract produces tile<1xf32>, reshape to scalar tile<f32>
@@ -369,7 +369,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Scalar tile setindex (functional)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 tile = ct.load(a, 1, (8,))
                 @check "iota"
                 @check "select"
@@ -382,7 +382,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Extract slice from 3D tile (FFT real/imag pattern)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,3,Int32,spec3d}, ct.TileArray{Float32,3,Int32,spec3d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (2, 4, 2))  # (batch, N, real/imag)
                 @check "extract"
@@ -396,13 +396,13 @@ spec4d = ct.ArraySpec{4}(16, true)
 
     @testset "unchecked view access requires v13.4" begin
         @test_throws "check_bounds=false requires Tile IR v13.4+" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}}; bytecode_version=v"13.3") do a
             tile = ct.load(a, 1, (16,); check_bounds=false)
             ct.store(a, 1, tile)
             return
         end
         @test_throws "check_bounds=false requires Tile IR v13.4+" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}}; bytecode_version=v"13.3") do a
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}}; bytecode_version=v"13.3") do a
             tile = ct.load(a, 1, (16,))
             ct.store(a, 1, tile; check_bounds=false)
             return
@@ -411,7 +411,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                     pid = ct.bid(1)
                     @check "load_view{{.*}}inbounds = [true]"
                     tile = ct.load(a, pid, (16,); check_bounds=false)
@@ -424,7 +424,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "load_view"
                 @check_not "inbounds"
@@ -438,7 +438,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "cat" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile1 = ct.load(a, pid, (4, 4))
                 tile2 = ct.load(b, pid, (4, 4))
@@ -451,7 +451,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile1 = ct.load(a, pid, (4, 8))
                 tile2 = ct.load(b, pid, (4, 8))
@@ -463,8 +463,8 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         # Exercise validation at the intrinsic boundary.
-        @test_throws "ranks differ" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
-                                                     ct.TileArray{Float32,1,spec1d}}) do a, b
+        @test_throws "ranks differ" code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d},
+                                                     ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
             pid = ct.bid(1)
             tile1 = ct.load(a, pid, (4, 8))
             tile2 = ct.load(b, pid, (16,))
@@ -473,7 +473,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "element types differ" code_tiled(
-                Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Int32,2,spec2d}}) do a, b
+                Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Int32,2,Int32,spec2d}}) do a, b
             pid = ct.bid(1)
             tile1 = ct.load(a, pid, (4, 8))
             tile2 = ct.load(b, pid, (4, 8))
@@ -483,7 +483,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         # Differ on the non-cat axis to trigger the shape-mismatch check.
         @test_throws "non-cat dimension" code_tiled(
-                Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+                Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
             pid = ct.bid(1)
             tile1 = ct.load(a, pid, (4, 8))
             tile2 = ct.load(b, pid, (8, 8))  # 8 vs 4 on Julia axis 0
@@ -495,7 +495,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "broadcast" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (1, 16))
                 @check "broadcast"
@@ -521,7 +521,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # must vanish before codegen and the pow reduce to a multiply.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "mulf"
@@ -534,7 +534,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "cmpf" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b, c
                 pid = ct.bid(1)
                 tile_a = ct.load(a, pid, (16,))
                 tile_b = ct.load(b, pid, (16,))
@@ -550,7 +550,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "cmpi" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Int32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}, ct.TileArray{Int32,1,Int32,spec1d}, ct.TileArray{Int32,1,Int32,spec1d}}) do a, b, c
                 pid = ct.bid(1)
                 tile_a = ct.load(a, pid, (16,))
                 tile_b = ct.load(b, pid, (16,))
@@ -569,7 +569,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         for T in (Float16, ct.BFloat16, Float32, Float64)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{T,1,spec1d}}) do a
+                code_tiled(Tuple{ct.TileArray{T,1,Int32,spec1d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "cmpf not_equal unordered"
@@ -583,7 +583,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "mixed-type integer comparison" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do out
+            code_tiled(Tuple{ct.TileArray{Int64,1,Int32,spec1d}}) do out
                 a = ct.arange(16; dtype=Int64)
                 b = ct.arange(16)
                 # Should promote Int32 to Int64 and compare
@@ -606,7 +606,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # equivalent of cuTile Python ebaa570's tuple compare support).
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, n
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32}) do a, n
                 x = (ct.bid(1), Int32(2))
                 y = (n, Int32(2))
                 @check "cmpi"
@@ -629,7 +629,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test promote_type(UInt16, UInt64) === UInt64
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt64,1,spec1d}}) do out
+            code_tiled(Tuple{ct.TileArray{UInt64,1,Int32,spec1d}}) do out
                 a = ct.arange(16; dtype=UInt16)
                 b = ct.arange(16; dtype=UInt64)
                 @check "exti"
@@ -644,7 +644,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "constant" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "constant"
                 tile = zeros(Float32, (16,))
@@ -657,7 +657,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "constant with runtime value" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, val
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32}) do a, val
                 pid = ct.bid(1)
                 @check "itof"
                 @check "reshape"
@@ -672,7 +672,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "get_num_tile_blocks" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 @check "get_num_tile_blocks"
                 nb = ct.num_blocks(1)
                 Base.donotdelete(nb)
@@ -684,7 +684,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "get_tile_block_id" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 @check "get_tile_block_id"
                 pid = ct.bid(1)
                 Base.donotdelete(pid)
@@ -696,7 +696,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "iota" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "iota"
                 tile = ct.arange(16)
@@ -706,12 +706,12 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         # iota is restricted to 1-D integer tiles; reject the rest cleanly.
-        @test_throws "1-dimensional" code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+        @test_throws "1-dimensional" code_tiled(Tuple{ct.TileArray{Int32,2,Int32,spec2d}}) do a
             Base.donotdelete(ct.Intrinsics.iota((4, 4), Int32))
             return
         end
 
-        @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        @test_throws "integer" code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             Base.donotdelete(ct.Intrinsics.iota((16,), Float32))
             return
         end
@@ -720,7 +720,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "arange start and step" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do out
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do out
                 @check "iota"
                 @check "muli"
                 @check "addi"
@@ -733,7 +733,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "mmaf" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 tile_a = ct.load(a, bidx, (32, 16))
@@ -751,9 +751,9 @@ spec4d = ct.ArraySpec{4}(16, true)
         # i8 × i8 → i32 with signedness derived from the Julia element type.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int8,2,spec2d},
-                             ct.TileArray{Int8,2,spec2d},
-                             ct.TileArray{Int32,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Int8,2,Int32,spec2d},
+                             ct.TileArray{Int8,2,Int32,spec2d},
+                             ct.TileArray{Int32,2,Int32,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 tile_a = ct.load(a, bidx, (32, 16))
@@ -770,9 +770,9 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Mixed signedness: UInt8 × Int8 → Int32 should emit `unsigned signed`.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt8,2,spec2d},
-                             ct.TileArray{Int8,2,spec2d},
-                             ct.TileArray{Int32,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{UInt8,2,Int32,spec2d},
+                             ct.TileArray{Int8,2,Int32,spec2d},
+                             ct.TileArray{Int32,2,Int32,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 tile_a = ct.load(a, bidx, (32, 16))
@@ -795,9 +795,9 @@ spec4d = ct.ArraySpec{4}(16, true)
         # downcast back to BFloat16. Result element type is BFloat16.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{ct.BFloat16,2,spec2d},
-                             ct.TileArray{ct.BFloat16,2,spec2d},
-                             ct.TileArray{ct.BFloat16,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{ct.BFloat16,2,Int32,spec2d},
+                             ct.TileArray{ct.BFloat16,2,Int32,spec2d},
+                             ct.TileArray{ct.BFloat16,2,Int32,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 tile_a = ct.load(a, bidx, (32, 16))
@@ -818,9 +818,9 @@ spec4d = ct.ArraySpec{4}(16, true)
         # with the tileiras-allowed-acc message rather than producing a
         # mmaf op tileiras would later reject.
         @test_throws "tileiras requires acc" code_tiled(
-            Tuple{ct.TileArray{ct.BFloat16,2,spec2d},
-                  ct.TileArray{ct.BFloat16,2,spec2d},
-                  ct.TileArray{ct.BFloat16,2,spec2d}}) do a, b, c
+            Tuple{ct.TileArray{ct.BFloat16,2,Int32,spec2d},
+                  ct.TileArray{ct.BFloat16,2,Int32,spec2d},
+                  ct.TileArray{ct.BFloat16,2,Int32,spec2d}}) do a, b, c
             bidx = ct.bid(1)
             bidy = ct.bid(2)
             tile_a = ct.load(a, bidx, (32, 16))
@@ -834,7 +834,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "vec-mat outer product" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (16,))
                 tile_b = ct.load(b, bidx, (1, 16))
@@ -851,7 +851,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "mat-vec" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b, c
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (32, 16))
                 tile_b = ct.load(b, bidx, (16,))
@@ -868,7 +868,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "batched matmul with trailing batch dims" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,3,Int32,spec3d}, ct.TileArray{Float32,3,Int32,spec3d}, ct.TileArray{Float32,3,Int32,spec3d}}) do a, b, c
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (32, 16, 1))
                 tile_b = ct.load(b, bidx, (16, 32, 4))
@@ -884,7 +884,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
     @testset "vec-vec throws error" begin
         err = try
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (16,))
                 tile_b = ct.load(b, bidx, (16,))
@@ -903,7 +903,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "4D batched matmul (2 batch dims)" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,4,Int32,spec4d}, ct.TileArray{Float32,4,Int32,spec4d}, ct.TileArray{Float32,4,Int32,spec4d}}) do a, b, c
                 bidx = ct.bid(1)
                 tile_a = ct.load(a, bidx, (16, 8, 2, 4))
                 tile_b = ct.load(b, bidx, (8, 16, 2, 4))
@@ -918,7 +918,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "permute" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 tile = ct.load(a, (bidx, bidy), (32, 64))
@@ -933,7 +933,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "reduce" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -946,7 +946,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -960,7 +960,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # minimum
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -974,7 +974,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # prod
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -993,7 +993,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         ]
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{T,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{T,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "reduce"
@@ -1007,7 +1007,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Generic reduce with explicit function
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -1020,7 +1020,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # Reduce with custom combiner (lambda)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -1034,7 +1034,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # capturing the block-arg names and asserting subf's operand order.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "reduce"
@@ -1049,7 +1049,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             @check_label "entry"
             @check "reduce {{.*}} dim=1"
             @check "reduce {{.*}} dim=0"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 Base.donotdelete(sum(tile; dims=(2, 1, 2)))
@@ -1060,7 +1060,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         @test @filecheck begin
             @check_label "entry"
             @check_count 4 "reduce"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 Base.donotdelete(sum(tile; dims=1:2))
@@ -1071,7 +1071,7 @@ spec4d = ct.ArraySpec{4}(16, true)
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check_not "reduce"
@@ -1083,7 +1083,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(sum(tile; dims=0))
@@ -1091,7 +1091,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(sum(tile; dims=(0,)))
@@ -1099,7 +1099,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "reduced dimension(s) must be integers" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(sum(tile; dims=(1.0,)))
@@ -1107,7 +1107,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "region dimension(s) must be ≥ 1, got 0" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(ct.Intrinsics.reduce((tile,), -1, +, (0.0f0,)))
@@ -1115,7 +1115,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
 
         @test_throws "reduce() dimension must be in 1:2; got 3" code_tiled(
-            Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             pid = ct.bid(1)
             tile = ct.load(a, pid, (4, 16))
             Base.donotdelete(ct.Intrinsics.reduce((tile,), 2, +, (0.0f0,)))
@@ -1125,7 +1125,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # any
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 mask = tile .> 0.0f0
@@ -1139,7 +1139,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # all
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 mask = tile .> 0.0f0
@@ -1153,7 +1153,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # count
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "exti"
@@ -1169,7 +1169,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             # Float32: sum → 0.0, maximum → -Inf (0xFF800000), minimum → +Inf (0x7F800000)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "identities=[0.000000e+00 : f32]"
@@ -1179,7 +1179,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "identities=[0xFF800000 : f32]"
@@ -1189,7 +1189,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "identities=[0x7F800000 : f32]"
@@ -1201,7 +1201,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             # Float16: maximum → -Inf (0xFC00), minimum → +Inf (0x7C00)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float16,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{Float16,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "identities=[0xFC00 : f16]"
@@ -1211,7 +1211,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float16,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{Float16,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "identities=[0x7C00 : f16]"
@@ -1223,7 +1223,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             # Int32: maximum → typemin (zigzag of -2147483648)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+                code_tiled(Tuple{ct.TileArray{Int32,2,Int32,spec2d}}) do a
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "identities=[-2147483648"
@@ -1236,7 +1236,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # argmax
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "iota"
@@ -1251,7 +1251,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # argmin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "iota"
@@ -1268,7 +1268,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # map(abs, tile) should emit AbsFOp with correct shaped type
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "absf"
@@ -1280,7 +1280,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # map(x -> x * x, tile) should emit MulFOp
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "mulf"
@@ -1292,7 +1292,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # mapreduce(abs, +, tile) should emit AbsFOp then ReduceOp
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "absf"
@@ -1306,7 +1306,7 @@ spec4d = ct.ArraySpec{4}(16, true)
         # mapreduce(x -> x * x, +, tile) should emit MulFOp then ReduceOp
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 16))
                 @check "mulf"
@@ -1321,7 +1321,7 @@ spec4d = ct.ArraySpec{4}(16, true)
     @testset "select" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b, c
                 pid = ct.bid(1)
                 tile_a = ct.load(a, pid, (16,))
                 tile_b = ct.load(b, pid, (16,))
@@ -1341,7 +1341,7 @@ end
         a -> ct.load(a, ct.bid(1), (0,)),
     )
         @test_throws "tile dimension 1 must be positive" code_tiled(
-            f, Tuple{ct.TileArray{Float32,1,spec1d}})
+            f, Tuple{ct.TileArray{Float32,1,Int32,spec1d}})
     end
 end
 
@@ -1373,7 +1373,7 @@ end
         # Int32 -> UInt32 (same Tile IR type I32): no bitcast op emitted
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{UInt32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}, ct.TileArray{UInt32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check_not "bitcast"
@@ -1385,7 +1385,7 @@ end
         # Float32 -> Int32 (different Tile IR types): bitcast op emitted
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Int32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "bitcast"
@@ -1397,7 +1397,7 @@ end
         # Int32 -> Float32 (different Tile IR types): bitcast op emitted
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "bitcast"
@@ -1412,7 +1412,7 @@ end
         # reinterpret is a plain bitcast — no pack/unpack, shape preserved.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float16,1,spec1d}, ct.TileArray{Int16,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float16,1,Int32,spec1d}, ct.TileArray{Int16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "bitcast"
@@ -1426,7 +1426,7 @@ end
         # folded away.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "unpack"
@@ -1438,7 +1438,7 @@ end
         # Narrow UInt16 -> UInt8 (1D): lowers to a single pack.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt16,1,spec1d}, ct.TileArray{UInt8,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt16,1,Int32,spec1d}, ct.TileArray{UInt8,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (8,))
                 @check "pack"
@@ -1451,7 +1451,7 @@ end
         # (`literal` since the `+` in the message is a regex metachar to FileCheck.)
         @test @filecheck throws=ct.CodegenErrors begin
             @check literal=true "v13.3+"
-            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}};
+            code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}};
                        bytecode_version=v"13.2") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
@@ -1463,7 +1463,7 @@ end
         # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
         @test @filecheck throws=ct.CodegenErrors begin
             @check "do not evenly divide"
-            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (1,))))
                 return
@@ -1473,7 +1473,7 @@ end
         # reshape-widen: leading dim must equal the ratio (2); 1 fails the final reshape.
         @test @filecheck throws=ct.CodegenErrors begin
             @check "same number of elements"
-            code_tiled(Tuple{ct.TileArray{UInt8,2,spec2d}, ct.TileArray{UInt16,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt8,2,Int32,spec2d}, ct.TileArray{UInt16,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
                 return
@@ -1493,7 +1493,7 @@ end
         # Float32 -> Float16
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float16,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1506,7 +1506,7 @@ end
         # Float32 -> TFloat32
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1519,7 +1519,7 @@ end
         # Float32 -> BFloat16
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1532,7 +1532,7 @@ end
         # Broadcasting syntax: Float16.(tile)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float16,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1544,7 +1544,7 @@ end
         # Broadcasting syntax: BFloat16.(tile)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1557,7 +1557,7 @@ end
         # Broadcasting syntax: TFloat32.(tile)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1572,7 +1572,7 @@ end
         # convert.(Float16, tile) — Type arg via Ref{Type{Float16}}
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float16,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1584,7 +1584,7 @@ end
         # convert.(Float32, float16_tile) — upcast via Type arg
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float16,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float16,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftof"
@@ -1596,7 +1596,7 @@ end
         # unsafe_trunc.(Int32, float32_tile) — ftoi via Type arg
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Int32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "ftoi"
@@ -1615,7 +1615,7 @@ end
     @testset "@assert with message" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 @check "cmpi"
                 ct.@assert bid > Int32(0) "bid must be positive"
@@ -1631,7 +1631,7 @@ end
     @testset "@assert without message" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 @check "cmpi"
                 ct.@assert bid > Int32(0)
@@ -1649,7 +1649,7 @@ end
         # Empty if branches must emit YieldOp to satisfy MLIR block terminator requirements
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int,1,spec1d}, ct.TileArray{Int,1,spec1d}}) do counter, lock
+            code_tiled(Tuple{ct.TileArray{Int,1,Int32,spec1d}, ct.TileArray{Int,1,Int32,spec1d}}) do counter, lock
                 result = ct.atomic_cas(lock, 1, 0, 1)
                 @check "if"
                 if result == 0
@@ -1665,7 +1665,7 @@ end
     @testset "for" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Int32}) do a, b, n
                 pid = ct.bid(1)
                 acc = zeros(Float32, (16,))
                 @check "for"
@@ -1682,7 +1682,7 @@ end
     @testset "for with step (StepRange)" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Int32}) do a, b, n
                 pid = ct.bid(1)
                 acc = zeros(Float32, (16,))
                 @check "for"
@@ -1699,7 +1699,7 @@ end
     @testset "for with decrement (StepRange)" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Int32}) do a, b, n
                 pid = ct.bid(1)
                 acc = zeros(Float32, (16,))
                 # Decrementing StepRange compiles to a generic loop (not ForOp)
@@ -1717,7 +1717,7 @@ end
     @testset "loop" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do locks, data
+            code_tiled(Tuple{ct.TileArray{Int,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do locks, data
                 bid = ct.bid(1)
                 @check "loop"
                 # Spinloop - unbounded iteration
@@ -1736,7 +1736,7 @@ end
     @testset "return" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 @check "return"
                 return
             end
@@ -1756,7 +1756,7 @@ end
         # 1D
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 @check "load_view_tko"
                 tile = ct.load(a, pid, (16,))
@@ -1769,7 +1769,7 @@ end
         # 2D
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 @check "load_view_tko"
@@ -1784,7 +1784,7 @@ end
     @testset "make_token" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 # DCE removes unused make_token in empty kernels
                 @check_not "make_token"
                 return
@@ -1800,7 +1800,7 @@ end
     @testset "unary float math" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "absf"
@@ -1844,7 +1844,7 @@ end
         # On v13.2+ the active @fpmode rounding_mode is forwarded to TanHOp.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}};
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}};
                        bytecode_version=v"13.2") do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
@@ -1861,7 +1861,7 @@ end
     @testset "fma" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c, d
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b, c, d
                 pid = ct.bid(1)
                 tile_a = ct.load(a, pid, (16,))
                 tile_b = ct.load(b, pid, (16,))
@@ -1878,7 +1878,7 @@ end
         # Binary map → addf
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile_a = ct.load(a, pid, (16,))
                 tile_b = ct.load(a, pid, (16,))
@@ -1892,7 +1892,7 @@ end
         # Broadcasting via .+ → broadcast + addf
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 pid = ct.bid(1)
                 row = ct.load(a, pid, (1, 16))
                 col = ct.load(a, pid, (32, 1))
@@ -1907,7 +1907,7 @@ end
         # Ternary map → fma
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(a, pid, (16,))
@@ -1922,7 +1922,7 @@ end
         # map(max, ...) → maxf
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(a, pid, (16,))
@@ -1938,7 +1938,7 @@ end
         # a .+ b .* c → fma (fused by fma_fusion_pass!)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(a, pid, (16,))
@@ -1953,7 +1953,7 @@ end
         # a .- b .* c → fma(negf(b), c, a)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(a, pid, (16,))
@@ -1970,7 +1970,7 @@ end
     @testset "remf" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b, c
                 pid = ct.bid(1)
                 tile_a = ct.load(a, pid, (16,))
                 tile_b = ct.load(b, pid, (16,))
@@ -1985,7 +1985,7 @@ end
     @testset "binary float math" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
@@ -2006,7 +2006,7 @@ end
         # `fld(x, y)` on floats lowers to floor(divf).
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
@@ -2023,7 +2023,7 @@ end
         # scalars broadcast as shaped splat ConstantOps, not BroadcastOps.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "constant <f32: 1.000000e+00> : tile<16xf32>"
@@ -2058,8 +2058,8 @@ end
         # atan2 is available from Tile IR v13.2.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                             ct.TileArray{Float32,1,spec1d}};
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                             ct.TileArray{Float32,1,Int32,spec1d}};
                        bytecode_version=v"13.2") do y, x
                 pid = ct.bid(1)
                 ty = ct.load(y, pid, (16,))
@@ -2071,8 +2071,8 @@ end
         end
 
         # Older toolchains must reject the op cleanly.
-        @test_throws "v13.2" code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                                              ct.TileArray{Float32,1,spec1d}};
+        @test_throws "v13.2" code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                                              ct.TileArray{Float32,1,Int32,spec1d}};
                                         bytecode_version=v"13.1") do y, x
             pid = ct.bid(1)
             ty = ct.load(y, pid, (16,))
@@ -2085,7 +2085,7 @@ end
     @testset "power operations" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "pow"
@@ -2097,7 +2097,7 @@ end
         # scalar exponent (pow(x, 2) is strength-reduced to mulf(x, x))
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "mulf"
@@ -2110,7 +2110,7 @@ end
         # pow2 strength reduction works for Float64 too
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "mulf"
@@ -2122,8 +2122,8 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                             ct.TileArray{Int32,1,spec1d}}) do a, e
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                             ct.TileArray{Int32,1,Int32,spec1d}}) do a, e
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 exponent = ct.load(e, pid, (16,))
@@ -2140,8 +2140,8 @@ end
         if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                                 ct.TileArray{Int32,1,spec1d}}) do a, e
+                code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                                 ct.TileArray{Int32,1,Int32,spec1d}}) do a, e
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     exponent = ct.load(e, pid, (16,))
@@ -2153,7 +2153,7 @@ end
         end
 
         @test_throws "cuda_tile.fpowi requires Tile IR v13.4+" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}};
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Int32,1,Int32,spec1d}};
             bytecode_version=v"13.3") do a, e
             pid = ct.bid(1)
             tile = ct.load(a, pid, (16,))
@@ -2165,8 +2165,8 @@ end
         if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                                 ct.TileArray{UInt16,1,spec1d}}) do a, e
+                code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                                 ct.TileArray{UInt16,1,Int32,spec1d}}) do a, e
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     exponent = ct.load(e, pid, (16,))
@@ -2180,7 +2180,7 @@ end
 
         for T in (Int64, UInt32, UInt64)
             @test_throws "does not support $T exponents" code_tiled(
-                Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{T,1,spec1d}}) do a, e
+                Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{T,1,Int32,spec1d}}) do a, e
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 exponent = ct.load(e, pid, (16,))
@@ -2195,7 +2195,7 @@ end
         # Note: We pass scalar args to avoid constant folding at compile time
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Float32}) do a, b, x
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Float32}) do a, b, x
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "sin"
@@ -2210,7 +2210,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Float32}) do a, b, x
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Float32}) do a, b, x
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "exp"
@@ -2224,7 +2224,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Float32}) do a, b, x
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Float32}) do a, b, x
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "sqrt"
@@ -2238,7 +2238,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Float32}) do a, b, x
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}, Float32}) do a, b, x
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "rsqrt"
@@ -2261,7 +2261,7 @@ end
     @testset "unary" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec_i32}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "absi"
@@ -2277,8 +2277,8 @@ end
         spec_u32 = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec_u32},
-                             ct.TileArray{UInt32,1,spec_u32}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec_u32},
+                             ct.TileArray{UInt32,1,Int32,spec_u32}}) do a, b
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
@@ -2290,7 +2290,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec_i32}, ct.TileArray{Int32,1,Int32,spec_i32}}) do a, b
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
@@ -2307,7 +2307,7 @@ end
     # rather than silently emitting an unsigned multiply.
     @testset "mul_hi rejects signed integers" begin
         @test_throws "signed" code_tiled(
-                Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b
+                Tuple{ct.TileArray{Int32,1,Int32,spec_i32}, ct.TileArray{Int32,1,Int32,spec_i32}}) do a, b
             pid = ct.bid(1)
             ta = ct.load(a, pid, (16,))
             tb = ct.load(b, pid, (16,))
@@ -2329,7 +2329,7 @@ end
     @testset "andi, ori, xori" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}, ct.TileArray{Int32,1,spec_i32}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec_i32}, ct.TileArray{Int32,1,Int32,spec_i32}}) do a, b
                 pid = ct.bid(1)
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(b, pid, (16,))
@@ -2347,7 +2347,7 @@ end
     @testset "shli, shri" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec_i32}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "shli"
@@ -2361,7 +2361,7 @@ end
     @testset "bitwise NOT (~)" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec_i32}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec_i32}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "xori"
@@ -2380,7 +2380,7 @@ end
         spec = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do locks
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_cas_tko"
@@ -2396,7 +2396,7 @@ end
         # xchg
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do locks
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2410,7 +2410,7 @@ end
         spec_f32 = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do counters
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec_f32}}) do counters
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2422,7 +2422,7 @@ end
         # max
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2434,7 +2434,7 @@ end
         # min
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2446,7 +2446,7 @@ end
         # or
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2458,7 +2458,7 @@ end
         # and
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2470,7 +2470,7 @@ end
         # xor
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 bid = ct.bid(1)
                 @check "offset"
                 @check "atomic_rmw_tko"
@@ -2484,7 +2484,7 @@ end
         spec = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 @check "iota"
                 indices = ct.arange(16; dtype=Int)
                 @check "offset"
@@ -2499,7 +2499,7 @@ end
         spec3d = ct.ArraySpec{3}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,3,spec3d}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,3,Int32,spec3d}}) do arr
                 @check "iota"
                 i = ct.arange(4; dtype=Int)
                 j = ct.arange(4; dtype=Int)
@@ -2517,7 +2517,7 @@ end
         # xchg
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 @check "iota"
                 indices = ct.arange(16; dtype=Int)
                 @check "offset"
@@ -2530,7 +2530,7 @@ end
         # add (integer)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
                 @check "iota"
                 indices = ct.arange(16; dtype=Int)
                 @check "offset"
@@ -2544,7 +2544,7 @@ end
         spec_f32 = ct.ArraySpec{1}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do arr
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec_f32}}) do arr
                 @check "iota"
                 indices = ct.arange(16; dtype=Int)
                 @check "offset"
@@ -2558,7 +2558,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(
-                    Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                    Tuple{ct.TileArray{ct.BFloat16,1,Int32,spec_bf16}};
                     sm_arch=v"9.0",
                     bytecode_version=v"13.3") do arr
                 indices = ct.arange(16; dtype=Int)
@@ -2568,7 +2568,7 @@ end
             end
         end
         @test_throws "requires Hopper (sm_90) or newer, got sm_80" code_tiled(
-                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                Tuple{ct.TileArray{ct.BFloat16,1,Int32,spec_bf16}};
                 sm_arch=v"8.0",
                 bytecode_version=v"13.3") do arr
             indices = ct.arange(16; dtype=Int)
@@ -2576,7 +2576,7 @@ end
             return
         end
         @test_throws "BFloat16 requires Tile IR bytecode ≥ 13.3" code_tiled(
-                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                Tuple{ct.TileArray{ct.BFloat16,1,Int32,spec_bf16}};
                 sm_arch=v"9.0",
                 bytecode_version=v"13.2") do arr
             indices = ct.arange(16; dtype=Int)
@@ -2589,7 +2589,7 @@ end
         spec2d = ct.ArraySpec{2}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 tiles = ct.eachtile(a, (16, 16))
                 val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
                 @check "make_partition_view"
@@ -2601,7 +2601,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))
                 @check "atomic_red_view_tko relaxed device{{.*}}, add,"
@@ -2612,7 +2612,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 tiles = ct.eachtile(a, (16,); step=(8,))
                 val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
                 @check "make_strided_view"
@@ -2625,7 +2625,7 @@ end
         # Atomic views ignore TiledView padding.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 tiles = ct.eachtile(a, (16,); padding_mode=ct.PaddingMode.Zero)
                 val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
                 @check "make_partition_view"
@@ -2637,7 +2637,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 tiles = ct.eachtile(
                     a, (16,); step=(8,), padding_mode=ct.PaddingMode.Zero)
                 val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
@@ -2650,7 +2650,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{UInt32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 val = ct.broadcast_to(ct.Tile(UInt32(1)), (16,))
                 @check "atomic_red_view_tko relaxed device{{.*}}umax"
@@ -2661,7 +2661,7 @@ end
 
         spec_bf16 = ct.ArraySpec{1}(16, true)
         @test_throws "requires Hopper (sm_90) or newer, got sm_80" code_tiled(
-                Tuple{ct.TileArray{ct.BFloat16,1,spec_bf16}};
+                Tuple{ct.TileArray{ct.BFloat16,1,Int32,spec_bf16}};
                 sm_arch=v"8.0",
                 bytecode_version=v"13.3") do a
             val = ct.broadcast_to(ct.Tile(ct.BFloat16(1)), (16,))
@@ -2671,7 +2671,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 tile = ct.load(a, bid, (16,))
                 @check "store_view_tko{{.*}}token = [[TOK:%[^ ]+]]"
@@ -2682,14 +2682,14 @@ end
             end
         end
 
-        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do a
+        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,Int32,spec1d}}) do a
             bid = ct.bid(1)
             val = ct.broadcast_to(ct.Tile(Int32(1)), (16,))  # Int32 into Int64
             ct.atomic_store_or(a, bid, val)
             return
         end
 
-        @test_throws "expected" code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        @test_throws "expected" code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             tiles = ct.eachtile(a, (16, 16))
             val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
             ct.atomic_store_add(tiles, (1, 1, 1), val)  # 3 indices for a 2D view
@@ -2702,7 +2702,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 tiles = ct.eachtile(a, (16, 16))
                 v = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
                 @check "atomic_red_view_tko relaxed device{{.*}}addf"
@@ -2714,7 +2714,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             @check_not "atomic_red_view_tko"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 @check "atomic_rmw_tko acq_rel"
                 ct.@atomic :acquire_release a[bid] += Int32(1)
@@ -2724,7 +2724,7 @@ end
 
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 @check "atomic_rmw_tko"
                 pair = ct.@atomic a[bid] + Int32(3)
@@ -2750,7 +2750,7 @@ end
         for T in (UInt32, UInt64)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{T,1,spec1d}}) do arr
+                code_tiled(Tuple{ct.TileArray{T,1,Int32,spec1d}}) do arr
                     bid = ct.bid(1)
                     @check "atomic_rmw_tko{{.*}}umax"
                     ct.atomic_max(arr, bid, zero(eltype(arr)))
@@ -2763,7 +2763,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             @check_not "umax"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do arr
                 bid = ct.bid(1)
                 @check "atomic_rmw_tko{{.*}}max"
                 ct.atomic_max(arr, bid, Int32(0))
@@ -2773,14 +2773,14 @@ end
     end
 
     @testset "reject bitwise atomic dtype mismatch" begin
-        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
+        @test_throws "exactly match" code_tiled(Tuple{ct.TileArray{Int64,1,Int32,spec1d}}) do arr
             bid = ct.bid(1)
             ct.atomic_or(arr, bid, Int32(1))  # Int32 update into Int64 array
             return
         end
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do arr
+            code_tiled(Tuple{ct.TileArray{Int64,1,Int32,spec1d}}) do arr
                 bid = ct.bid(1)
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, bid, Int32(1))
@@ -2792,13 +2792,13 @@ end
     # `weak` ordering is not supported on atomics; reject at the boundary.
     @testset "reject MemoryOrder.Weak" begin
         spec = ct.ArraySpec{1}(16, true)
-        @test_throws "Weak" code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
+        @test_throws "Weak" code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do locks
             bid = ct.bid(1)
             ct.atomic_cas(locks, bid, Int32(0), Int32(1);
                           memory_order=ct.MemoryOrder.Weak)
             return
         end
-        @test_throws "Weak" code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+        @test_throws "Weak" code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
             bid = ct.bid(1)
             ct.atomic_xchg(arr, bid, Int32(0); memory_order=ct.MemoryOrder.Weak)
             return
@@ -2818,7 +2818,7 @@ end
         # 1D
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec}, ct.TileArray{Float32,1,Int32,spec}}) do a, b
                 pid = ct.bid(1)
                 @check "load_view_tko"
                 tile = ct.load(a, pid, (16,))
@@ -2832,7 +2832,7 @@ end
         spec2d = ct.ArraySpec{2}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 @check "load_view_tko"
@@ -2848,7 +2848,7 @@ end
         spec4d = ct.ArraySpec{4}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,4,Int32,spec4d}, ct.TileArray{Float32,4,Int32,spec4d}}) do a, b
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 bidz = ct.bid(3)
@@ -2863,7 +2863,7 @@ end
         # with padding_mode
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec}, ct.TileArray{Float32,1,Int32,spec}}) do a, b
                 pid = ct.bid(1)
                 @check "load_view_tko"
                 tile = ct.load(a, pid, (16,); padding_mode=ct.PaddingMode.Zero)
@@ -2875,7 +2875,7 @@ end
         # with order (dim_map)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 @check "dim_map=[1, 0]"
                 @check "load_view_tko"
@@ -2891,7 +2891,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             @check_not "dim_map"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, (pid, 1), (4, 8))
                 ct.store(b, (pid, 1), tile)
@@ -2904,7 +2904,7 @@ end
         # 1D shape on 2D array: should pad shape to (16, 1) internally
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
                 @check "load_view_tko"
                 tile = ct.load(a, (pid, 1), (16,))
@@ -2918,7 +2918,7 @@ end
     @testset "TileArray scalar getindex" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do lengths, out
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}) do lengths, out
                 bid = ct.bid(1)
                 @check "make_partition_view"
                 @check "load_view_tko"
@@ -2934,7 +2934,7 @@ end
         spec = ct.ArraySpec{2}(16, true)
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec}, ct.TileArray{Float32,2,Int32,spec}}) do a, b
                 @check "make_tensor_view"
                 @check "make_partition_view"
                 @check "get_index_space_shape"
@@ -2959,7 +2959,7 @@ end
     @testset "print constant string" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 @check "print_tko"
                 @check "hello\n"
@@ -2974,7 +2974,7 @@ end
     @testset "print with float tile" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 tile = ct.load(a, bid, (16,))
                 @check "print_tko"
@@ -3001,7 +3001,7 @@ end
     @testset "println with tile" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 tile = ct.load(a, bid, (16,))
                 @check "print_tko"
@@ -3016,7 +3016,7 @@ end
     @testset "print integer tile" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
                 bid = ct.bid(1)
                 tile = ct.load(a, bid, (16,))
                 @check "print_tko"
@@ -3033,7 +3033,7 @@ end
         # in the format string, mirroring cuTile Python's print behaviour.
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 tile = ct.load(a, (1, 1), (4, 16))
                 @check "print_tko"
                 @check "shape=(4, 16)"
@@ -3045,7 +3045,7 @@ end
         # 1-element tuples render `(x,)` not `(x)` (matches Julia/Python).
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
                 tile = ct.load(a, 1, (16,))
                 @check "print_tko"
                 @check "shape=(16,)"
@@ -3078,7 +3078,7 @@ end
     @testset "print multiple tiles" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Int32,1,Int32,spec1d}}) do a, b
                 bid = ct.bid(1)
                 ta = ct.load(a, bid, (16,))
                 tb = ct.load(b, bid, (16,))
@@ -3095,8 +3095,8 @@ end
     @testset "prints are globally ordered" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                             ct.TileArray{Float32,1,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                             ct.TileArray{Float32,1,Int32,spec1d}}) do a, b
                 ta = ct.load(a, 1, (16,))
                 tb = ct.load(b, 1, (16,))
                 @check "[[FIRST:%[^ ]+]] = print_tko"
@@ -3115,7 +3115,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             @check_count 1 "make_token"
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}};
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}};
                        bytecode_version=v"13.1") do a
                 bid = ct.bid(1)
                 tile = ct.load(a, bid, (16,))
@@ -3132,7 +3132,7 @@ end
 @testset "array construction" begin
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}, Float64}) do a, x
+        code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d}, Float64}) do a, x
             @check "cat {{.*}}-> tile<4xf64>"
             ct.store(a, ct.bid(1), [x, 2, 3, 4])
             return
@@ -3144,7 +3144,7 @@ end
     # reversed shape).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             @check "constant <f32: [{{\\[}}1.000000e+00, 3.000000e+00, 5.000000e+00, 7.000000e+00], [2.000000e+00, 4.000000e+00, 6.000000e+00, 8.000000e+00]]> : tile<2x4xf32>"
             ct.store(a, ct.bid(1), Float32[1 2; 3 4; 5 6; 7 8])
             return
@@ -3203,7 +3203,7 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Float32}) do a, x
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Float32}) do a, x
             @check "cat {{.*}}-> tile<4xf32>"
             t = ct.load(a, ct.bid(1), (2,))
             ct.store(a, ct.bid(1), cat(t, x, x; dims=1))
@@ -3213,8 +3213,8 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
-                         ct.TileArray{Float32,3,spec3d}}) do a, b
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d},
+                         ct.TileArray{Float32,3,Int32,spec3d}}) do a, b
             t = ct.load(a, ct.bid(1), (2, 2))
             @check "cat {{.*}}-> tile<2x4x2xf32>"
             ct.store(b, ct.bid(1), [t t;;; t t])
@@ -3224,7 +3224,7 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             t = ct.load(a, ct.bid(1), (2, 2))
             @check "cat {{.*}}-> tile<4x4xf32>"
             Base.donotdelete(cat(t, t; dims=(1, 2)))
@@ -3254,7 +3254,7 @@ end
     end
 
     @test_throws "positive integers" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
         t = ct.load(a, ct.bid(1), (2,))
         Base.donotdelete(cat(t, t; dims=0))
         return
@@ -3274,7 +3274,7 @@ end
     @test @filecheck begin
         @check_label "entry"
         @check_not "cat "
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
             t = ct.load(a, ct.bid(1), (2, 2))
             Base.donotdelete(hvncat(0, t))
             return
@@ -3282,13 +3282,13 @@ end
     end
 
     @test_throws "cannot infer an element type" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
         Base.donotdelete([])
         return
     end
 
     @test_throws "concatenation syntax" code_tiled(
-            Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
         t = ct.load(a, ct.bid(1), (4,))
         Base.donotdelete([t, t])
         return
@@ -3312,7 +3312,7 @@ end
     @test @filecheck begin
         @check_label "entry"
         @check_not "cat "
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             t = ct.load(a, ct.bid(1), (4,))
             ct.store(a, ct.bid(1), vcat(Float32[], t, Float32[]))
             return
@@ -3323,8 +3323,8 @@ end
         @check_label "entry"
         @check "ftof {{.*}}tile<4xf32> -> tile<4xf64>"
         @check_not "cat "
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
-                         ct.TileArray{Float64,1,spec1d}}) do input, output
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                         ct.TileArray{Float64,1,Int32,spec1d}}) do input, output
             t = ct.load(input, ct.bid(1), (4,))
             ct.store(output, ct.bid(1), vcat(Float64[], t))
             return
@@ -3334,7 +3334,7 @@ end
     @test @filecheck begin
         @check_label "entry"
         @check_not "cat "
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             t = ct.load(a, ct.bid(1), (4,))
             ct.store(a, ct.bid(1), Float32[Float64[]; t])
             return

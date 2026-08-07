@@ -16,7 +16,7 @@ spec2d = ct.ArraySpec{2}(16, true)
     # stride and base pointer are runtime kernel parameters.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[3:10]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)
@@ -34,7 +34,7 @@ spec2d = ct.ArraySpec{2}(16, true)
     # `subi(stop, start)` for the new axis size.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32, Int32}) do a, i, j
             sub = @view a[i:j]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)
@@ -54,7 +54,7 @@ end
     spec2d_nc = ct.ArraySpec{2}(16, false)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d_nc}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d_nc}, Int32, Int32}) do a, i, j
             sub = @view a[i:j, :]
             t = ct.load(sub, (1, 1), (4, 4))
             ct.store(sub, (1, 1), t)
@@ -69,7 +69,7 @@ end
     # Slice along axis 2; axis 1 is full (`:`).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, Int32, Int32}) do a, i, j
             sub = @view a[:, i:j]
             t = ct.load(sub, (1, 1), (4, 4))
             ct.store(sub, (1, 1), t)
@@ -86,7 +86,7 @@ end
     # Both axes sliced. Emits two offsets (one per axis).
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d},
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d},
                          Int32, Int32, Int32, Int32}) do a, i, j, k, l
             sub = @view a[i:j, k:l]
             t = ct.load(sub, (1, 1), (4, 4))
@@ -104,7 +104,7 @@ end
     # the tile-origin StridedView path.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[2:3:20]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)
@@ -120,7 +120,7 @@ end
     # A runtime-positive step remains dynamic in the TensorView stride.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, Int32, Int32, Int32}) do a, i, s, j
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, Int32, Int32, Int32}) do a, i, s, j
             sub = @view a[i:s:j, :]
             t = ct.load(sub, (1, 1), (4, 4))
             ct.store(sub, (1, 1), t)
@@ -136,7 +136,7 @@ end
     # the AssertOp is elided by the assert intrinsic's Const(true) fast path.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[3:10]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)
@@ -150,7 +150,7 @@ end
     # `last(r) >= first(r) - 1`, so any such assert would always pass.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}, Int32, Int32}) do a, i, j
             sub = @view a[i:j]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)
@@ -168,7 +168,7 @@ end
     # `emit_intrinsic!(::typeof(Intrinsics.assert), ...)`.)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[0:10]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)
@@ -183,7 +183,7 @@ end
     # IR or silently materializing a reversal.
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+        code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
             sub = @view a[10:-1:1]
             t = ct.load(sub, 1, (4,))
             ct.store(sub, 1, t)

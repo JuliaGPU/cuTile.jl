@@ -56,27 +56,27 @@ import REPL
         # 1D vec_add: load/add/store across float types.
         spec1d = ArraySpec{1}(16, true)
         for T in (Float32, Float16)
-            tt = Tuple{TileArray{T, 1, spec1d},
-                       TileArray{T, 1, spec1d},
-                       TileArray{T, 1, spec1d},
+            tt = Tuple{TileArray{T, 1, Int32, spec1d},
+                       TileArray{T, 1, Int32, spec1d},
+                       TileArray{T, 1, Int32, spec1d},
                        Constant{Int, 1024}}
             precompile_kernel(vadd_1d, tt)
         end
 
         # 2D vec_add: multi-dim block IDs and shapes.
         spec2d = ArraySpec{2}(16, true)
-        let tt = Tuple{TileArray{Float32, 2, spec2d},
-                       TileArray{Float32, 2, spec2d},
-                       TileArray{Float32, 2, spec2d},
+        let tt = Tuple{TileArray{Float32, 2, Int32, spec2d},
+                       TileArray{Float32, 2, Int32, spec2d},
+                       TileArray{Float32, 2, Int32, spec2d},
                        Constant{Int, 32}, Constant{Int, 32}}
             precompile_kernel(vadd_2d, tt)
         end
 
         # Gather/scatter path: arange, broadcast_to, gather, scatter, and
         # the contiguous_gather assume infrastructure.
-        let tt = Tuple{TileArray{Float32, 1, spec1d},
-                       TileArray{Float32, 1, spec1d},
-                       TileArray{Float32, 1, spec1d},
+        let tt = Tuple{TileArray{Float32, 1, Int32, spec1d},
+                       TileArray{Float32, 1, Int32, spec1d},
+                       TileArray{Float32, 1, Int32, spec1d},
                        Constant{Int, 1024}}
             precompile_kernel(vadd_gather, tt)
         end

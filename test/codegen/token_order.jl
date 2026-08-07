@@ -11,8 +11,8 @@ spec1d = ct.ArraySpec{1}(16, true, (0,), (16,))
 # Same layout facts, but distinct indices may map to the same memory
 # (e.g. a zero stride) — parallel stores must be disabled.
 spec1d_aliasing = ct.ArraySpec{1}(16, true, (0,), (16,), true)
-AT = ct.TileArray{Float32, 1, spec1d}
-AT_aliasing = ct.TileArray{Float32, 1, spec1d_aliasing}
+AT = ct.TileArray{Float32, 1, Int32, spec1d}
+AT_aliasing = ct.TileArray{Float32, 1, Int32, spec1d_aliasing}
 
 @testset "token_order — identity IV store is loop-parallel" begin
     # `store(b, i, _)` lowers the index as `subi(iv, 1)` — injective, so the
