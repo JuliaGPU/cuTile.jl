@@ -78,6 +78,15 @@ end
 for T in Floats, S in Floats
     T === S && continue
     @eval @overlay $T(x::$S) = Intrinsics.ftof(x, $T)
+    @eval Base.Experimental.@consistent_overlay cuTileMethodTable $T(x::$S, r::Base.Rounding.RoundingMode) = Intrinsics.ftof(x, $T, r)
+end
+for T in Floats
+    @eval Base.Experimental.@consistent_overlay cuTileMethodTable $T(x::$T, ::Base.Rounding.RoundingMode) = x
+end
+for T in Floats, S in (SignedInts..., UnsignedInts..., Bool)
+    @eval Base.Experimental.@consistent_overlay cuTileMethodTable function $T(x::$S, ::Base.Rounding.RoundingMode)
+        throw(ArgumentError("rounding modes are only supported for float-to-float conversions"))
+    end
 end
 
 # Integer to float

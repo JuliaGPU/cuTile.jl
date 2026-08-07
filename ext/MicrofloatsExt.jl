@@ -15,6 +15,11 @@ ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E5M2})   = ct.F8E5M2(
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E8M0FNU}) = ct.F8E8M0FNU(table)
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float4_E2M1FN})  = ct.F4E2M1FN(table)
 
+ct.float_dtype_tag(::Type{Float8_E4M3FN}) = ct.SimpleType.F8E4M3FN
+ct.float_dtype_tag(::Type{Float8_E5M2}) = ct.SimpleType.F8E5M2
+ct.float_dtype_tag(::Type{Float8_E8M0FNU}) = ct.SimpleType.F8E8M0FNU
+ct.float_dtype_tag(::Type{Float4_E2M1FN}) = ct.SimpleType.F4E2M1FN
+
 # Microfloats are byte-storage primitives, so cuTile's default
 # `bitwidth` (8 * sizeof) over-counts the sub-byte formats.
 ct.bitwidth(::Type{T}) where {T<:Microfloats.Microfloat} = Microfloats.bitwidth(T)
@@ -44,16 +49,20 @@ for MF in MicrofloatTypes
     # standard float → microfloat
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$F) = ct.Intrinsics.ftof(x, $MF)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$F, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $MF, r)
     end
     # microfloat → standard float
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F(x::$MF) = ct.Intrinsics.ftof(x, $F)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F(x::$MF, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $F, r)
     end
     # microfloat → microfloat
     for MFb in MicrofloatTypes
         MF === MFb && continue
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$MFb) = ct.Intrinsics.ftof(x, $MF)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$MFb, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $MF, r)
     end
+    @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$MF, ::Base.Rounding.RoundingMode) = x
 end
 
 end

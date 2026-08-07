@@ -199,18 +199,123 @@ ftof_rounding_mode(::Type) = RoundingMode.NearestEven
 @inline lookup_ftof_rounding_mode(@nospecialize(T::Type)) =
     Base.invokelatest(ftof_rounding_mode, T)::RoundingMode.T
 
+float_dtype_tag(::Type{Float16}) = SimpleType.F16
+float_dtype_tag(::Type{BFloat16}) = SimpleType.BF16
+float_dtype_tag(::Type{Float32}) = SimpleType.F32
+float_dtype_tag(::Type{TFloat32}) = SimpleType.TF32
+float_dtype_tag(::Type{Float64}) = SimpleType.F64
+
+@inline lookup_float_dtype_tag(@nospecialize(T::Type)) =
+    Base.invokelatest(float_dtype_tag, T)::UInt8
+
+const FTOF_ROUNDING_REGISTRY = let
+    all = (SimpleType.F64, SimpleType.F32, SimpleType.TF32, SimpleType.F16,
+           SimpleType.BF16, SimpleType.F8E5M2, SimpleType.F8E8M0FNU,
+           SimpleType.F8E4M3FN, SimpleType.F4E2M1FN)
+    registry = Dict{Tuple{UInt8,UInt8,RoundingMode.T},VersionNumber}()
+    add(from, to, mode, version) = foreach(f -> registry[(f, to, mode)] = version, from)
+
+    for to in (SimpleType.F64, SimpleType.F32, SimpleType.TF32, SimpleType.BF16,
+               SimpleType.F16, SimpleType.F8E4M3FN, SimpleType.F8E5M2, SimpleType.F4E2M1FN)
+        add(all, to, RoundingMode.NearestEven, v"13.0")
+    end
+    for to in (SimpleType.F64, SimpleType.F32, SimpleType.TF32, SimpleType.F16, SimpleType.BF16)
+        add(all, to, RoundingMode.Zero, v"13.4")
+    end
+
+    e8m0_early = filter(t -> t ∉ (SimpleType.F64, SimpleType.F8E5M2, SimpleType.F8E4M3FN), all)
+    e8m0_late = (SimpleType.F64, SimpleType.F8E5M2, SimpleType.F8E4M3FN)
+    for mode in (RoundingMode.Zero, RoundingMode.PositiveInf)
+        add(e8m0_early, SimpleType.F8E8M0FNU, mode, v"13.3")
+        add(e8m0_late, SimpleType.F8E8M0FNU, mode, v"13.4")
+    end
+
+    add(all, SimpleType.F64, RoundingMode.NegativeInf, v"13.4")
+    add(all, SimpleType.F64, RoundingMode.PositiveInf, v"13.4")
+    no_e8m0 = filter(!=(SimpleType.F8E8M0FNU), all)
+    for mode in (RoundingMode.NegativeInf, RoundingMode.PositiveInf)
+        add(no_e8m0, SimpleType.F32, mode, v"13.4")
+        add(filter(t -> t ∉ (SimpleType.F64, SimpleType.F32, SimpleType.TF32,
+                             SimpleType.F8E8M0FNU), all),
+            SimpleType.F16, mode, v"13.4")
+    end
+
+    add(all, SimpleType.F64, RoundingMode.NearestAway, v"13.4")
+    ra_f32 = filter(t -> t ∉ (SimpleType.F64, SimpleType.F8E8M0FNU), all)
+    add(ra_f32, SimpleType.F32, RoundingMode.NearestAway, v"13.4")
+    add(ra_f32, SimpleType.TF32, RoundingMode.NearestAway, v"13.4")
+    add(filter(t -> t ∉ (SimpleType.F64, SimpleType.F32, SimpleType.TF32,
+                         SimpleType.F8E8M0FNU), all),
+        SimpleType.F16, RoundingMode.NearestAway, v"13.4")
+    registry
+end
+
+bytecode_rounding_mode(::Base.Rounding.RoundingMode{:Nearest}) = RoundingMode.NearestEven
+bytecode_rounding_mode(::Base.Rounding.RoundingMode{:ToZero}) = RoundingMode.Zero
+bytecode_rounding_mode(::Base.Rounding.RoundingMode{:Down}) = RoundingMode.NegativeInf
+bytecode_rounding_mode(::Base.Rounding.RoundingMode{:Up}) = RoundingMode.PositiveInf
+bytecode_rounding_mode(::Base.Rounding.RoundingMode{:NearestTiesAway}) = RoundingMode.NearestAway
+bytecode_rounding_mode(mode::Base.Rounding.RoundingMode) =
+    throw(IRError("rounding mode $mode is not supported for float conversion"))
+
+function tile_eltype_tag(table::TypeTable, id::TypeId)
+    tile = only(encoded for (encoded, type_id) in table.types if type_id == id)
+    tile[1] == CompositeType.Tile || throw(IRError("ftof: expected a tile type"))
+    dtype_id = Int(tile[2] & 0x7f)
+    shift = 7
+    i = 3
+    while tile[i - 1] & 0x80 != 0
+        dtype_id |= Int(tile[i] & 0x7f) << shift
+        shift += 7
+        i += 1
+    end
+    dtype = only(encoded for (encoded, type_id) in table.types if type_id.id == dtype_id)
+    length(dtype) == 1 || throw(IRError("ftof: expected a simple element type"))
+    return only(dtype)
+end
+
+const FLOAT_DTYPE_NAMES = Dict(
+    SimpleType.F16 => "Float16", SimpleType.BF16 => "BFloat16",
+    SimpleType.F32 => "Float32", SimpleType.TF32 => "TFloat32",
+    SimpleType.F64 => "Float64", SimpleType.F8E4M3FN => "Float8_E4M3FN",
+    SimpleType.F8E5M2 => "Float8_E5M2", SimpleType.F8E8M0FNU => "Float8_E8M0FNU",
+    SimpleType.F4E2M1FN => "Float4_E2M1FN",
+)
+float_dtype_name(tag::UInt8) = get(FLOAT_DTYPE_NAMES, tag, string(tag))
+
+function validate_ftof_rounding(from_tag::UInt8, to_tag::UInt8, mode::RoundingMode.T,
+                                version::VersionNumber)
+    from = float_dtype_name(from_tag)
+    to = float_dtype_name(to_tag)
+    min_version = get(FTOF_ROUNDING_REGISTRY, (from_tag, to_tag, mode), nothing)
+    if min_version === nothing
+        supported = RoundingMode.T[
+            candidate for candidate in (RoundingMode.NearestEven, RoundingMode.Zero,
+                                         RoundingMode.NegativeInf, RoundingMode.PositiveInf,
+                                         RoundingMode.NearestAway)
+            if haskey(FTOF_ROUNDING_REGISTRY, (from_tag, to_tag, candidate))
+        ]
+        isempty(supported) && throw(IRError("float conversion from $from to $to is not supported"))
+        throw(IRError("rounding mode $mode is not supported for conversion from $from to $to; supported modes are $(Tuple(supported))"))
+    end
+    version >= min_version ||
+        throw(IRError("conversion from $from to $to with rounding mode $mode requires Tile IR bytecode v$min_version+, got v$version"))
+    return
+end
+
 """
-    Intrinsics.ftof(x::Tile{<:AbstractFloat}, ::Type{F2}) -> Tile{F2}     where {F2<:AbstractFloat}
+    Intrinsics.ftof(x::Tile{<:AbstractFloat}, ::Type{F2}, rounding=nothing) -> Tile{F2}
 
 Element-wise floating-point to floating-point conversion; lowers to
 `cuda_tile.ftof`.
 
 Also invocable with a scalar, promoted to a 0-D tile before codegen. `F2`
-must be a compile-time constant. The rounding mode is picked from
-[`ftof_rounding_mode`](@ref); the default is `NearestEven`.
+must be a compile-time constant. `rounding` accepts Base's `RoundNearest`,
+`RoundToZero`, `RoundDown`, `RoundUp`, and `RoundNearestTiesAway`; when omitted,
+the mode is picked from [`ftof_rounding_mode`](@ref).
 """
-@intrinsic ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
-function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type))
+@intrinsic ftof(x::F1, ::Type{F2}, rounding=nothing) where {F1<:AbstractFloat, F2<:AbstractFloat}
+function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type), @nospecialize(rest...))
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
@@ -226,7 +331,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
-    rounding_mode = lookup_ftof_rounding_mode(target_type)
+    rounding_mode = if length(args) == 3
+        mode = @something get_constant(ctx, args[3]) throw(IRError("ftof: requires a compile-time rounding mode"))
+        mode isa Base.Rounding.RoundingMode || throw(IRError("ftof: invalid rounding mode $mode"))
+        bytecode_rounding_mode(mode)
+    else
+        lookup_ftof_rounding_mode(target_type)
+    end
+    validate_ftof_rounding(tile_eltype_tag(tt, source.type_id),
+                           lookup_float_dtype_tag(target_type), rounding_mode, tt.version)
     result_v = encode_FToFOp!(cb, result_type_id, source.v; rounding_mode)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
