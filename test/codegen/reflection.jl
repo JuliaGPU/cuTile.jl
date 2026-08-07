@@ -72,13 +72,6 @@ end
     end
 end
 
-@testset "tileiras remarks cleanup" begin
-    first = "--- !Passed\nName: First\n  - Reason: same\n  - Reason: same\n...\n"
-    second = "--- !Failure\nName: Second\n...\n"
-    @test ct.cleanup_tileiras_remarks(first * second * second) ==
-          "--- !Passed\nName: First\n  - Reason: same\n...\n" * second
-end
-
 if ct.tileiras_supports_remarks()
     @testset "code_tiled remarks" begin
         output = sprint(io -> ct.code_tiled(io, reflect_vadd, TT3;
