@@ -108,11 +108,16 @@ constant_eltype(::Type{Constant{T,V}}) where {T,V} = T
 constant_value(::Type{Constant{T,V}}) where {T,V} = V
 
 """
-    code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps)
+    code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
+               num_worker_warps, remarks=false)
 
 Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
 Analogous to `code_llvm`/`code_native`. Calls the driver directly without
 caching in CuTileResults, so reflection never pollutes the compilation cache.
+
+Set `remarks=true` to also run `tileiras` and print its optimization remarks.
+This requires Tile IR 13.4 or newer. When no GPU is available, pass `sm_arch`
+explicitly.
 """
 function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     sm_arch::Union{VersionNumber, Nothing}=nothing,
@@ -122,6 +127,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     num_worker_warps::Union{Int, Nothing}=nothing,
                     bytecode_version::VersionNumber=cuTile.bytecode_version(),
                     debuginfo::Bool=false,
+                    remarks::Bool=false,
                     world::UInt=Base.get_world_counter())
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
     mi = lookup_method_instance(f, stripped; world)
@@ -135,6 +141,30 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                          name=sanitize_name(string(mi.def.name)),
                          opts, cache, const_argtypes)
     print(io, disassemble_tileir(bytecode; debuginfo))
+    if remarks
+        tileiras_supports_remarks() || throw(ArgumentError(
+            "tileiras optimization remarks require tileiras 13.4 or newer"))
+        target = if sm_arch === nothing
+            try
+                default_sm_arch()
+            catch
+                throw(ArgumentError(
+                    "sm_arch must be specified when requesting remarks without a CUDA device"))
+            end
+        else
+            sm_arch
+        end
+        resolved_opt_level = something(resolve_hint(opt_level, kernel_meta,
+                                                    :opt_level, target), 3)
+        _, text = run_tileiras(bytecode, target, resolved_opt_level; remarks=true)
+        if !isempty(text)
+            println(io)
+            println(io, "// tileiras optimization remarks")
+            for line in eachline(IOBuffer(text); keep=true)
+                print(io, "// ", line)
+            end
+        end
+    end
 end
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_tiled(stdout, f, argtypes; kwargs...)
@@ -182,9 +212,10 @@ function emit_hooked_compilation(inner_hook, ex...)
 end
 
 """
-    @device_code_tiled [io=stdout] expression
+    @device_code_tiled [io=stdout] [remarks=false] expression
 
 Print the Tile IR (MLIR) for all kernels compiled while evaluating the expression.
+With `remarks=true`, also print `tileiras` optimization remarks for each kernel.
 
 # Example
 ```julia

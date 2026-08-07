@@ -193,6 +193,81 @@ function run_and_collect(cmd)
     return proc, log
 end
 
+function cleanup_tileiras_remarks(remarks::AbstractString)
+    starts = findall(r"(?m)^---(?:[ \t].*)?\r?$", remarks)
+    if length(starts) >= 2
+        prefix = remarks[firstindex(remarks):prevind(remarks, first(starts).start)]
+        documents = String[]
+        seen = Set{String}()
+        for (i, start) in enumerate(starts)
+            stop = i == length(starts) ? lastindex(remarks) :
+                   prevind(remarks, starts[i + 1].start)
+            document = String(SubString(remarks, start.start, stop))
+            if document ∉ seen
+                push!(seen, document)
+                push!(documents, document)
+            end
+        end
+        remarks = prefix * join(documents)
+    end
+
+    lines = readlines(IOBuffer(remarks); keep=true)
+    folded = String[]
+    i = 1
+    while i <= length(lines)
+        line = lines[i]
+        push!(folded, line)
+        if startswith(line, "  - Reason:")
+            i += 1
+            while i <= length(lines) && lines[i] == line
+                i += 1
+            end
+        else
+            i += 1
+        end
+    end
+    return join(folded)
+end
+
+function run_tileiras(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
+                      opt_level::Int; remarks::Bool=false)
+    input_path = tempname() * ".tile"
+    output_path = tempname() * ".cubin"
+    remarks_path = tempname() * ".remarks.yaml"
+    compiled = false
+    try
+        write(input_path, bytecode)
+        args = String[input_path, "-o", output_path,
+                      "--gpu-name", format_sm_arch(sm_arch),
+                      "-O$(opt_level)", "--lineinfo"]
+        if remarks
+            append!(args, ["--remark-format=yaml", "--remarks=all",
+                           "--remarks-output-file=$(remarks_path)"])
+        end
+        proc, log = run_and_collect(tileiras_cmd(args...))
+        if !success(proc)
+            reason = proc.termsignal > 0 ? "tileiras received signal $(proc.termsignal)" :
+                                           "tileiras exited with code $(proc.exitcode)"
+            msg = "Failed to compile Tile IR ($reason)"
+            isempty(log) || (msg *= "\n" * log)
+            msg *= "\nIf you think this is a bug, please file an issue and attach $(input_path)"
+            if parse(Bool, get(ENV, "BUILDKITE", "false"))
+                run(`buildkite-agent artifact upload $(input_path)`)
+            end
+            error(msg)
+        end
+        compiled = true
+        cubin = read(output_path)
+        remark_text = remarks && isfile(remarks_path) ?
+                      cleanup_tileiras_remarks(read(remarks_path, String)) : ""
+        return cubin, remark_text
+    finally
+        compiled && rm(input_path, force=true)
+        rm(output_path, force=true)
+        rm(remarks_path, force=true)
+    end
+end
+
 const toolkit_version_cache =
     Base.Lockable(Base.RefValue{Union{Nothing, Some{Union{Nothing, String}}}}(nothing))
 
@@ -260,6 +335,13 @@ end
 function parse_toolkit_version(log::AbstractString)
     m = match(TILEIRAS_VERSION_REGEX, log)
     m === nothing ? (isempty(log) ? nothing : String(log)) : m.captures[1]
+end
+
+function tileiras_supports_remarks()
+    version = toolkit_version()
+    version === nothing && return false
+    parsed = tryparse(VersionNumber, version)
+    return parsed !== nothing && parsed >= v"13.4"
 end
 
 """
@@ -465,34 +547,7 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     end
 
     # Run tileiras to produce CUBIN
-    input_path = tempname() * ".tile"
-    output_path = tempname() * ".cubin"
-    compiled = false
-    try
-        write(input_path, bytecode)
-        cmd = tileiras_cmd(input_path, "-o", output_path,
-                           "--gpu-name", format_sm_arch(sm_arch),
-                           "-O$(opt_level)", "--lineinfo")
-        proc, log = run_and_collect(cmd)
-        if !success(proc)
-            reason = proc.termsignal > 0 ? "tileiras received signal $(proc.termsignal)" :
-                                           "tileiras exited with code $(proc.exitcode)"
-            msg = "Failed to compile Tile IR ($reason)"
-            if !isempty(log)
-                msg *= "\n" * log
-            end
-            msg *= "\nIf you think this is a bug, please file an issue and attach $(input_path)"
-            if parse(Bool, get(ENV, "BUILDKITE", "false"))
-                run(`buildkite-agent artifact upload $(input_path)`)
-            end
-            error(msg)
-        end
-        compiled = true
-        res.cuda_bin = read(output_path)
-    finally
-        compiled && rm(input_path, force=true)
-        rm(output_path, force=true)
-    end
+    res.cuda_bin, _ = run_tileiras(bytecode, sm_arch, opt_level)
 
     if cache_key !== nothing
         try
