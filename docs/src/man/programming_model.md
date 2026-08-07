@@ -19,7 +19,7 @@ memory accelerator.
 Two data structures show up in every kernel, and the difference between them
 matters:
 
-**Arrays** ([`ct.TileArray{T,N,Spec}`](@ref cuTile.TileArray)) live in global
+**Arrays** ([`ct.TileArray{T,N,I,Spec}`](@ref cuTile.TileArray)) live in global
 memory. They are mutable, have a strided memory layout, and their shapes are
 *runtime* values. Inside a kernel they support only a limited set of operations,
 mostly [loading and storing](memory.md) tiles and deriving views. A `CuArray`

@@ -259,6 +259,13 @@ function Base.size(arr::TileArray{<:Any, N, I}, d::Integer) where {N, I}
     return d > N ? one(I) : arr.sizes[d]
 end
 Base.length(arr::TileArray) = prod(size(arr))
+
+"""
+    indextype(array_or_type)
+
+Return the integer type used for a `TileArray`'s sizes, strides, and address
+calculations.
+"""
 indextype(::Type{<:TileArray{<:Any, <:Any, I}}) where {I} = I
 indextype(arr::TileArray) = indextype(typeof(arr))
 
