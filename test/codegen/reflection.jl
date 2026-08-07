@@ -72,6 +72,23 @@ end
     end
 end
 
+@testset "tileiras remarks cleanup" begin
+    first = "--- !Passed\nName: First\n  - Reason: same\n  - Reason: same\n...\n"
+    second = "--- !Failure\nName: Second\n...\n"
+    @test ct.cleanup_tileiras_remarks(first * second * second) ==
+          "--- !Passed\nName: First\n  - Reason: same\n...\n" * second
+end
+
+if ct.tileiras_supports_remarks()
+    @testset "code_tiled remarks" begin
+        output = sprint(io -> ct.code_tiled(io, reflect_vadd, TT3;
+                                            sm_arch=v"10.0", remarks=true))
+        @test occursin("// tileiras optimization remarks", output)
+        @test occursin("// --- !Passed", output)
+        @test occursin("// Name:", output)
+    end
+end
+
 @testset "Constant args" begin
     const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
     ConstTT = Tuple{ct.TileArray{Float32,1,Int32,const_spec}, ct.TileArray{Float32,1,Int32,const_spec},

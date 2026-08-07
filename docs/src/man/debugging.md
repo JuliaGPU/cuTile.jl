@@ -36,6 +36,18 @@ Spelling out those types is only worth it when you have no GPU, since
 `code_tiled` does not need CUDA.jl. Otherwise let the launch site derive them
 for you with `ct.@device_code_tiled`, described next.
 
+With a CUDA 13.4 or newer `tileiras`, pass `remarks=true` to compile the Tile IR
+and print optimization diagnostics after it:
+
+```julia
+ct.code_tiled(vadd, argtypes; remarks=true, sm_arch=v"10.0")
+```
+
+The remarks report successful and failed optimizations, including tensor-core
+selection and memory alignment issues. `sm_arch` may be omitted when a CUDA
+device is available. Remarks are generated afresh for reflection and are not
+read from or written to the compilation cache.
+
 
 ## Intercepting a launch
 
@@ -52,6 +64,13 @@ cuda_tile.module @kernels {
     return
   }
 }
+```
+
+Pass `remarks=true` to include `tileiras` optimization remarks for every
+intercepted kernel:
+
+```julia
+ct.@device_code_tiled remarks=true @cuda backend=cuTile blocks=grid kernel(args...)
 ```
 
 Three are available, corresponding to successive stages of the pipeline:
