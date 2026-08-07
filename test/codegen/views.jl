@@ -7,6 +7,8 @@ spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 
 @testset "make_tensor_view — imprecise type argument" begin
+    # The public codegen path normally keeps this argument precise in the test
+    # harness; call the inference hook directly to cover the cold-process case.
     @test ct.tfunc(nothing, ct.Intrinsics.make_tensor_view,
                    DataType, Any, Any, Any) === nothing
 end

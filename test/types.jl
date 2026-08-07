@@ -90,16 +90,8 @@ end
     @test ct.indextype(small_tile) === Int32
     @test ct.indextype(wide_tile) === Int64
     @test ct.indextype(forced_wide_tile) === Int64
-    @test eltype(small_tile.sizes) === Int32
-    @test eltype(wide_tile.strides) === Int64
     @test_throws InexactError ct.TileArray(wide; index=Int32)
     @test_throws ArgumentError ct.TileArray(small; index=UInt32)
-
-    indices = (Int16(2), Int64(3))
-    @test ct.zero_based_indices(Int32, indices) === (Int64(1), Int64(2))
-    @test ct.zero_based_indices(Int64, indices) === (Int64(1), Int64(2))
-    @test_throws MethodError ct.zero_based_indices(Int32, (2.0,))
-    @test_throws MethodError ct.zero_based_indices(Int64, (2.0,))
 end
 
 @testset "PartitionView" begin

@@ -79,7 +79,7 @@ end
             tile = ct.gather(a, (rows, cols))
             ct.scatter(a, (rows, cols), tile)
             ct.atomic_add(a, (rows, cols), tile)
-            ct.atomic_store_add(a, (ct.bid(1), ct.bid(2)), tile)
+            ct.atomic_store_add(a, (ct.bid(1), 1), tile)
             return
         end
     end

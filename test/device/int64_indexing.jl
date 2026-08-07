@@ -18,8 +18,14 @@ Base.getindex(::WideDeviceVector, ::Int) = error("not implemented")
     wide = WideDeviceVector(src, Int64(typemax(Int32)) + 1)
     dst = CUDA.zeros(Float32, 16)
 
-    @test ct.indextype(ct.cuTileconvert(wide)) === Int64
-    @test ct.indextype(ct.cuTileconvert(dst)) === Int32
+    @test ct.indextype(ct.TileArray(wide)) === Int64
     @cuda backend=cuTile blocks=1 copy_wide_prefix(wide, dst)
+    @test Array(dst) == Array(src)
+
+    fill!(dst, 0)
+    src64 = ct.TileArray(src; index=Int64)
+    dst64 = ct.TileArray(dst; index=Int64)
+    @test ct.indextype(src64) === ct.indextype(dst64) === Int64
+    @cuda backend=cuTile blocks=1 copy_wide_prefix(src64, dst64)
     @test Array(dst) == Array(src)
 end
