@@ -37,36 +37,38 @@ end
 # ============================================================================
 
 # Scalar index -> 0D pointer tile, no mask
-@inline function _atomic_ptr_and_mask(array::TileArray{T}, index::Integer; check_bounds::Bool=true) where {T}
-    idx_0 = Tile(Int32(index - One()))
+@inline function _atomic_ptr_and_mask(array::TileArray{T, <:Any, I}, index::Integer;
+                                      check_bounds::Bool=true) where {T, I}
+    idx_0 = Tile(I(index) - one(I))
     ptr_tile = Intrinsics.offset(Tile(array.ptr), idx_0)
     (ptr_tile, nothing, ())
 end
 
 # N-D tile indices -> N-D pointer tile with optional bounds mask
-@inline function _atomic_ptr_and_mask(array::TileArray{T, N},
+@inline function _atomic_ptr_and_mask(array::TileArray{T, N, I},
                                        indices::NTuple{N, Tile{<:Integer}};
-                                       check_bounds::Bool=true) where {T, N}
+                                       check_bounds::Bool=true) where {T, N, I}
     indices_0 = ntuple(Val(N)) do d
         indices[d] .- one(eltype(indices[d]))
     end
 
     S = reduce(broadcast_shape, ntuple(d -> size(indices[d]), Val(N)))
 
-    indices_i32 = ntuple(Val(N)) do d
-        convert(Tile{Int32}, broadcast_to(indices_0[d], S))
+    array_indices = ntuple(Val(N)) do d
+        convert(Tile{I}, broadcast_to(indices_0[d], S))
     end
 
     linear_idx = reduce(.+, ntuple(Val(N)) do d
-        indices_i32[d] .* broadcast_to(Tile(array.strides[d]), S)
+        array_indices[d] .* broadcast_to(Tile(array.strides[d]), S)
     end)
 
     ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
     mask = if check_bounds
-        zero_bc = broadcast_to(Tile(Int32(0)), S)
+        zero_bc = broadcast_to(Tile(zero(I)), S)
         reduce(.&, ntuple(Val(N)) do d
-            (indices_i32[d] .>= zero_bc) .& (indices_i32[d] .< broadcast_to(Tile(size(array, d)), S))
+            (array_indices[d] .>= zero_bc) .&
+                (array_indices[d] .< broadcast_to(Tile(size(array, d)), S))
         end)
     else
         nothing
@@ -284,7 +286,7 @@ for op in (:add, :max, :min, :or, :and, :xor)
         reshaped = _reshape_to_rank(update, Val(ndims(arr)))
         tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
         pv = Intrinsics.make_partition_view(tv, size(reshaped), PaddingMode.Undetermined, nothing)
-        Intrinsics.$intrinsic(pv, reshaped, promote(index...) .- One())
+        Intrinsics.$intrinsic(pv, reshaped, zero_based_indices(arr, index))
         return nothing
     end
     @eval @inline $fname(arr::TileArray{T}, index::Integer, tile::Tile) where {T} =
@@ -309,7 +311,7 @@ for op in (:add, :max, :min, :or, :and, :xor)
         update = atomic_red_update(eltype(A), tile, $bitwise)
         view = make_atomic_tile_view(tiles)
         Intrinsics.$intrinsic(view, broadcast_to(update, tiled_view_shape(tiles)),
-                              promote(index...) .- One())
+                              zero_based_indices(tiles.parent, index))
         return nothing
     end
     @eval @inline $fname(tiles::TiledView, index::Integer, tile::Tile) =

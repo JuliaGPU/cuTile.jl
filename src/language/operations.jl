@@ -399,6 +399,14 @@ end
     Int32(cld(size(arr, axis), shape[axis]))
 end
 
+@inline zero_based_indices(::Type{Int32}, indices::Tuple) = promote(indices...) .- One()
+@generated function zero_based_indices(::Type{Int64},
+                                       indices::NTuple{N, <:Integer}) where {N}
+    Expr(:tuple, [:(Int64(indices[$d]) - Int64(1)) for d in 1:N]...)
+end
+@inline zero_based_indices(arr::TileArray, indices::Tuple) =
+    zero_based_indices(indextype(arr), indices)
+
 # Match a shape tuple to a target rank N by padding trailing 1s or squeezing trailing singletons.
 @generated function _match_shape(::Val{Shape}, ::Val{N}) where {Shape, N}
     M = length(Shape)
@@ -531,7 +539,8 @@ end
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
     view = check_bounds ? make_tile_view(tiles) :
                           make_tile_view(tiles, PaddingMode.Undetermined)
-    tile = load_tile_view(view, latency, allow_tma, promote(index...) .- One(), check_bounds)
+    tile = load_tile_view(view, latency, allow_tma,
+                          zero_based_indices(tiles.parent, index), check_bounds)
     reshape(tile, tiled_view_requested_shape(tiles))
 end
 @inline function load(tiles::TiledView, index::Integer; kwargs...)
@@ -548,7 +557,8 @@ end
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
     reshaped = _reshape_to_rank(tile, Val(ndims(tiles)))
     view = make_tile_view(tiles)
-    store_tile_view(view, reshaped, latency, allow_tma, promote(index...) .- One(), check_bounds)
+    store_tile_view(view, reshaped, latency, allow_tma,
+                    zero_based_indices(tiles.parent, index), check_bounds)
     return tile
 end
 @inline function store(tiles::TiledView, index::Integer, tile::Tile; kwargs...)
@@ -639,7 +649,7 @@ tile = ct.load(arr, (bidy, bidx), (TN, TM); order=(2, 1))
          Intrinsics.make_partition_view(tv, matched, padding_mode, order) :
          Intrinsics.make_partition_view(tv, matched, PaddingMode.Undetermined, order)
     tile = Intrinsics.load_partition_view(
-        pv, latency, allow_tma, promote(index...) .- One(), check_bounds)
+        pv, latency, allow_tma, zero_based_indices(arr, index), check_bounds)
     reshape(tile, shape)
 end
 
@@ -648,16 +658,18 @@ end
     load(arr, (index,), shape; kwargs...)
 end
 
-@inline function _gather_scatter_sparse_index(index::Tile{I}) where {I<:Integer}
-    convert(Tile{Int32}, index .- one(I))
+@inline function _gather_scatter_sparse_index(::Type{I}, index::Tile{J}) where
+        {I<:Integer, J<:Integer}
+    convert(Tile{I}, index .- one(J))
 end
 
-Base.@constprop :aggressive function _gather_scatter_dense_index(index::AbstractUnitRange{I}) where {I<:Integer}
-    Intrinsics.assert(first(index) >= one(I), "GatherScatterView: dense range start must be ≥ 1")
-    Int32(first(index) - One())
+Base.@constprop :aggressive function _gather_scatter_dense_index(
+        ::Type{I}, index::AbstractUnitRange{J}) where {I<:Integer, J<:Integer}
+    Intrinsics.assert(first(index) >= one(J), "GatherScatterView: dense range start must be ≥ 1")
+    I(first(index)) - one(I)
 end
 # `:` starts at element 1 (0-based 0); its extent comes from the load/store shape.
-_gather_scatter_dense_index(::Colon) = Int32(0)
+_gather_scatter_dense_index(::Type{I}, ::Colon) where {I<:Integer} = zero(I)
 
 Base.@constprop :aggressive function _check_gather_scatter_dense_shape(
         index::AbstractUnitRange{I}, expected::Integer) where {I<:Integer}
@@ -671,11 +683,12 @@ _check_gather_scatter_dense_shape(::Colon, ::Integer) = nothing
 @generated function _gather_scatter_indices(view::GatherScatterTileView{A, I, SparseDim}) where
         {A, I <: Tuple, SparseDim}
     expressions = Any[]
+    index_type = indextype(A)
     for dim in 1:length(I.parameters)
         if dim == SparseDim
-            push!(expressions, :(_gather_scatter_sparse_index(view.indices[$dim])))
+            push!(expressions, :(_gather_scatter_sparse_index($index_type, view.indices[$dim])))
         else
-            push!(expressions, :(_gather_scatter_dense_index(view.indices[$dim])))
+            push!(expressions, :(_gather_scatter_dense_index($index_type, view.indices[$dim])))
         end
     end
     Expr(:tuple, expressions...)
@@ -730,7 +743,7 @@ end
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     tile = Intrinsics.load_partition_view(
-        pv, nothing, nothing, promote(indices...) .- One(), true)
+        pv, nothing, nothing, zero_based_indices(arr, indices), true)
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -794,7 +807,8 @@ behavior is undefined.
                        allow_tma::Union{Bool, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
     _store_reshaped(
-        arr, reshaped, order, check_bounds, latency, allow_tma, promote(index...) .- One())
+        arr, reshaped, order, check_bounds, latency, allow_tma,
+        zero_based_indices(arr, index))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
@@ -873,16 +887,18 @@ end
 # 1D bounds mask: index < size (unsigned comparison catches negative indices)
 # After 1→0 index conversion, valid indices are >= 0. Reinterpreting as unsigned
 # makes negative values wrap to large values, so a single .< catches both cases.
-@inline function _bounds_mask_1d(indices_i32, array)
-    reinterpret.(UInt32, indices_i32) .< reinterpret(UInt32, Int32(size(array, 1)))
+@inline function _bounds_mask_1d(indices::Tile{I}, array) where {I<:Integer}
+    U = unsigned(I)
+    reinterpret.(U, indices) .< reinterpret(U, size(array, 1))
 end
 
 # 2D bounds mask: idx0 < size0 && idx1 < size1 (unsigned)
-@inline function _bounds_mask_2d(idx0_i32, idx1_i32, array, S)
-    size0_bc = broadcast_to(Tile(reinterpret(UInt32, Int32(size(array, 1)))), S)
-    size1_bc = broadcast_to(Tile(reinterpret(UInt32, Int32(size(array, 2)))), S)
-    mask0 = reinterpret.(UInt32, idx0_i32) .< size0_bc
-    mask1 = reinterpret.(UInt32, idx1_i32) .< size1_bc
+@inline function _bounds_mask_2d(idx0::Tile{I}, idx1::Tile{I}, array, S) where {I<:Integer}
+    U = unsigned(I)
+    size0_bc = broadcast_to(Tile(reinterpret(U, size(array, 1))), S)
+    size1_bc = broadcast_to(Tile(reinterpret(U, size(array, 2))), S)
+    mask0 = reinterpret.(U, idx0) .< size0_bc
+    mask1 = reinterpret.(U, idx1) .< size1_bc
     mask0 .& mask1
 end
 
@@ -927,16 +943,17 @@ indices = base .+ ct.arange(TILE)
 tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 ```
 """
-@inline function gather(array::TileArray{T, 1}, indices::Tile{I};
+@inline function gather(array::TileArray{T, 1, I}, indices::Tile{J};
                         mask=nothing,
                         padding_value=nothing,
                         check_bounds::Bool=true,
-                        latency::Union{Int, Nothing}=nothing) where {T, I <: Integer}
-    indices_0 = indices .- one(I)
-    indices_i32 = convert(Tile{Int32}, indices_0)
-    ptr_tile = Intrinsics.offset(Tile(array.ptr), indices_i32)
+                        latency::Union{Int, Nothing}=nothing) where
+        {T, I, J <: Integer}
+    indices_0 = indices .- one(J)
+    array_indices = convert(Tile{I}, indices_0)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), array_indices)
 
-    bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
+    bounds_mask = check_bounds ? _bounds_mask_1d(array_indices, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
     _gather_load(ptr_tile, latency, final_mask, padding_value, T, size(indices))
 end
@@ -954,30 +971,31 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
   when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}};
+@inline function gather(array::TileArray{T, 2, I}, indices::Tuple{Tile{J0}, Tile{J1}};
                         mask=nothing,
                         padding_value=nothing,
                         check_bounds::Bool=true,
-                        latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
-    idx0_0 = indices[1] .- one(I0)
-    idx1_0 = indices[2] .- one(I1)
+                        latency::Union{Int, Nothing}=nothing) where
+        {T, I, J0 <: Integer, J1 <: Integer}
+    idx0_0 = indices[1] .- one(J0)
+    idx1_0 = indices[2] .- one(J1)
 
     S = broadcast_shape(size(indices[1]), size(indices[2]))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
 
-    idx0_i32 = convert(Tile{Int32}, idx0_bc)
-    idx1_i32 = convert(Tile{Int32}, idx1_bc)
+    idx0_array = convert(Tile{I}, idx0_bc)
+    idx1_array = convert(Tile{I}, idx1_bc)
 
     stride0_0d = Tile(array.strides[1])
     stride1_0d = Tile(array.strides[2])
     stride0 = broadcast_to(stride0_0d, S)
     stride1 = broadcast_to(stride1_0d, S)
 
-    linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
+    linear_idx = idx0_array .* stride0 + idx1_array .* stride1
     ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
-    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
+    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_array, idx1_array, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
     _gather_load(ptr_tile, latency, final_mask, padding_value, T, S)
 end
@@ -1001,15 +1019,16 @@ indices = base .+ ct.arange(TILE)
 ct.scatter(arr, indices, result_tile; mask=valid_mask)
 ```
 """
-@inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
+@inline function scatter(array::TileArray{T, 1, I}, indices::Tile{J, S}, tile::Tile{T, S};
                          mask=nothing,
                          check_bounds::Bool=true,
-                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
-    indices_0 = indices .- one(I)
-    indices_i32 = convert(Tile{Int32}, indices_0)
-    ptr_tile = Intrinsics.offset(Tile(array.ptr), indices_i32)
+                         latency::Union{Int, Nothing}=nothing) where
+        {T, I, J <: Integer, S}
+    indices_0 = indices .- one(J)
+    array_indices = convert(Tile{I}, indices_0)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), array_indices)
 
-    bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
+    bounds_mask = check_bounds ? _bounds_mask_1d(array_indices, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
     _scatter_store(ptr_tile, tile, latency, final_mask)
 end
@@ -1026,13 +1045,14 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
   when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}}, tile::Tile{T};
+@inline function scatter(array::TileArray{T, 2, I}, indices::Tuple{Tile{J0}, Tile{J1}}, tile::Tile{T};
                          mask=nothing,
                          check_bounds::Bool=true,
-                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
+                         latency::Union{Int, Nothing}=nothing) where
+        {T, I, J0 <: Integer, J1 <: Integer}
     # Convert to 0-indexed
-    idx0_0 = indices[1] .- one(I0)
-    idx1_0 = indices[2] .- one(I1)
+    idx0_0 = indices[1] .- one(J0)
+    idx1_0 = indices[2] .- one(J1)
 
     # Broadcast indices to common shape
     S = broadcast_shape(broadcast_shape(size(indices[1]), size(indices[2])), size(tile))
@@ -1040,9 +1060,8 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     idx1_bc = broadcast_to(idx1_0, S)
     tile_bc = broadcast_to(tile, S)
 
-    # Convert to Int32 for linear index computation
-    idx0_i32 = convert(Tile{Int32}, idx0_bc)
-    idx1_i32 = convert(Tile{Int32}, idx1_bc)
+    idx0_array = convert(Tile{I}, idx0_bc)
+    idx1_array = convert(Tile{I}, idx1_bc)
 
     # Get strides and broadcast to tile shape
     stride0_0d = Tile(array.strides[1])
@@ -1051,10 +1070,10 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
-    linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
+    linear_idx = idx0_array .* stride0 + idx1_array .* stride1
     ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
-    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
+    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_array, idx1_array, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
     _scatter_store(ptr_tile, tile_bc, latency, final_mask)
 end

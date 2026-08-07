@@ -300,6 +300,8 @@ end
 
 Create a TileArray from a device array (CuArray or similar).
 Automatically extracts pointer, sizes, strides, and computes ArraySpec.
+Sizes and strides use `Int32` when possible and `Int64` otherwise. Pass
+`index=Int32` or `index=Int64` to select the width explicitly.
 
 This method works with any array type that supports:
 - `pointer(arr)` - returns device pointer
