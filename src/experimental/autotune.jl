@@ -62,16 +62,18 @@ end
 @inline _hint_from_cfg(cfg, name::Symbol, fallback) =
     hasproperty(cfg, name) ? getproperty(cfg, name) : fallback
 
-function hints_from_cfg(cfg; static_num_ctas=nothing, static_occupancy=nothing)
+function hints_from_cfg(cfg; static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing)
     return (
         num_ctas=_hint_from_cfg(cfg, :num_ctas, static_num_ctas),
         occupancy=_hint_from_cfg(cfg, :occupancy, static_occupancy),
+        num_worker_warps=_hint_from_cfg(cfg, :num_worker_warps, static_num_worker_warps),
     )
 end
 
 function _check_static_hint_conflicts(configs; static_num_ctas=nothing,
-                                      static_occupancy=nothing)
-    statics = (num_ctas=static_num_ctas, occupancy=static_occupancy)
+                                      static_occupancy=nothing, static_num_worker_warps=nothing)
+    statics = (num_ctas=static_num_ctas, occupancy=static_occupancy,
+               num_worker_warps=static_num_worker_warps)
     for (hint, static_value) in pairs(statics)
         static_value === nothing && continue
         any(cfg -> hasproperty(cfg, hint), configs) && throw(ArgumentError(
@@ -94,11 +96,11 @@ end
 
 function _compile_cfg(@nospecialize(f), cfg, args_fn;
                       sm_arch::VersionNumber, opt_level::Int,
-                      static_num_ctas=nothing, static_occupancy=nothing)
+                      static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing)
     converted = _converted_args(args_fn, cfg)
     return temporary_cufunction(f, _argtypes(converted);
         sm_arch, opt_level,
-        hints_from_cfg(cfg; static_num_ctas, static_occupancy)...)
+        hints_from_cfg(cfg; static_num_ctas, static_occupancy, static_num_worker_warps)...)
 end
 
 function _time_ms(run_once, get_args;
@@ -128,11 +130,11 @@ end
 
 function eval_cfg(@nospecialize(f), cfg, grid_fn, args_fn;
                   sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
-                  static_num_ctas=nothing, static_occupancy=nothing,
+                  static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing,
                   verify=nothing, reset=nothing)
     grid = _grid_dims(grid_fn(cfg))
     kernel = _compile_cfg(f, cfg, args_fn; sm_arch, opt_level,
-                          static_num_ctas, static_occupancy)
+                          static_num_ctas, static_occupancy, static_num_worker_warps)
 
     run_once = converted -> kernel(converted...; blocks=grid)
     get_args = () -> _converted_args(args_fn, cfg)
@@ -141,9 +143,9 @@ end
 
 function precompile_cfg(@nospecialize(f), cfg, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
-                        static_num_ctas=nothing, static_occupancy=nothing)
+                        static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing)
     _compile_cfg(f, cfg, args_fn; sm_arch, opt_level,
-                 static_num_ctas, static_occupancy)
+                 static_num_ctas, static_occupancy, static_num_worker_warps)
     return nothing
 end
 
@@ -171,14 +173,14 @@ end
 function measure_candidates(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
                             sm_arch::VersionNumber, opt_level::Int,
                             warmup::Int, reps::Int,
-                            static_num_ctas=nothing, static_occupancy=nothing,
+                            static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing,
                             verify=nothing, reset=nothing)
     record = TimingRecord[]
     first_error = Ref{Any}(nothing)
     for cfg in configs
         _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn;
                       sm_arch, opt_level, warmup, reps,
-                      static_num_ctas, static_occupancy, verify, reset)
+                      static_num_ctas, static_occupancy, static_num_worker_warps, verify, reset)
     end
     return record, first_error[]
 end
@@ -193,14 +195,14 @@ task-local; workers only run the untimed temporary compile path.
 function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
                         warmup::Int, reps::Int, workers::Int,
-                        static_num_ctas=nothing, static_occupancy=nothing,
+                        static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing,
                         verify=nothing, reset=nothing)
     isempty(configs) && return TimingRecord[], nothing, nothing
 
     if iszero(workers) || length(configs) == 1
         record, first_error = measure_candidates(f, configs, grid_fn, args_fn;
             sm_arch, opt_level, warmup, reps,
-            static_num_ctas, static_occupancy, verify, reset)
+            static_num_ctas, static_occupancy, static_num_worker_warps, verify, reset)
         return record, nothing, first_error
     end
 
@@ -223,7 +225,7 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn
                     cancelled[] && break
                     try
                         precompile_cfg(f, cfg, args_fn; sm_arch, opt_level,
-                                        static_num_ctas, static_occupancy)
+                                        static_num_ctas, static_occupancy, static_num_worker_warps)
                         cancelled[] || put!(ready, cfg)
                     catch err
                         if err isa InterruptException
@@ -248,7 +250,7 @@ function pipelined_tune(@nospecialize(f), configs::Vector{Any}, grid_fn, args_fn
         for cfg in ready
             _measure_cfg!(record, first_error, f, cfg, grid_fn, args_fn;
                           sm_arch, opt_level, warmup, reps,
-                          static_num_ctas, static_occupancy, verify, reset)
+                          static_num_ctas, static_occupancy, static_num_worker_warps, verify, reset)
         end
         wait(producer)
     catch
@@ -307,7 +309,7 @@ end
 function _refine_record(@nospecialize(f), record::Vector{TimingRecord}, tuning::TuningOptions,
                         grid_fn, args_fn;
                         sm_arch::VersionNumber, opt_level::Int,
-                        static_num_ctas=nothing, static_occupancy=nothing,
+                        static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing,
                         verify=nothing, reset=nothing)
     (tuning.refine_topk > 0 && length(record) > 1) || return record
 
@@ -315,7 +317,7 @@ function _refine_record(@nospecialize(f), record::Vector{TimingRecord}, tuning::
     top = Any[first(r) for r in record[1:min(tuning.refine_topk, length(record))]]
     refined, _ = measure_candidates(f, top, grid_fn, args_fn;
         sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.refine_reps,
-        static_num_ctas, static_occupancy, verify, reset)
+        static_num_ctas, static_occupancy, static_num_worker_warps, verify, reset)
     return isempty(refined) ? record : refined
 end
 
@@ -327,11 +329,11 @@ end
 function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
                       grid_fn, args_fn, tuning::TuningOptions;
                       sm_arch::VersionNumber, opt_level::Int, kernel_key, arg_key,
-                      static_num_ctas=nothing, static_occupancy=nothing,
+                      static_num_ctas=nothing, static_occupancy=nothing, static_num_worker_warps=nothing,
                       verify=nothing, setup=nothing)
     trials = _collect_trials(space, tuning.seed)
     isempty(trials) && throw(ArgumentError("No valid config found in search space"))
-    _check_static_hint_conflicts(trials; static_num_ctas, static_occupancy)
+    _check_static_hint_conflicts(trials; static_num_ctas, static_occupancy, static_num_worker_warps)
 
     if !tuning.force
         entry = _cached_entry(kernel_key, arg_key, trials)
@@ -347,7 +349,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
                 sm_arch, opt_level,
                 warmup=tuning.warmup, reps=tuning.reps,
                 workers=tuning.precompile_workers,
-                static_num_ctas, static_occupancy,
+                static_num_ctas, static_occupancy, static_num_worker_warps,
                 verify=checker, reset)
         end
 
@@ -355,7 +357,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
 
     record = _refine_record(f, record, tuning, grid_fn, args_fn;
         sm_arch, opt_level,
-        static_num_ctas, static_occupancy,
+        static_num_ctas, static_occupancy, static_num_worker_warps,
         verify=checker, reset)
 
     candidate = _best_candidate(record)
@@ -370,14 +372,14 @@ end
 """
     autotune_launch(f, space, grid, args; key, launch_args, verify, setup,
                     tuning, sm_arch, opt_level,
-                    num_ctas=nothing, occupancy=nothing)
+                    num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing)
 
 Tune `f` over `space` and launch the fastest valid config.
 
 `space` can be an `AbstractSearchSpace`, a `NamedTuple` of cartesian axes, or
 an iterable of `NamedTuple` configs. `grid`, `args`, and `launch_args` can be
 plain values or `cfg -> value` functions. Results are cached per
-`(f, sm_arch, opt_level, num_ctas, occupancy)` and user `key`.
+`(f, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps)` and user `key`.
 """
 function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          grid, args;
@@ -389,17 +391,19 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          sm_arch::VersionNumber=default_sm_arch(),
                          opt_level::Int=3,
                          num_ctas=nothing,
-                         occupancy=nothing)
+                         occupancy=nothing,
+                         num_worker_warps=nothing)
     tuning = normalize_tuning(tuning)
 
     grid_fn = _as_cfg_fn(grid)
     args_fn = _as_cfg_fn(args)
     launch_args_fn = launch_args === nothing ? args_fn : _as_cfg_fn(launch_args)
 
-    kernel_key = (f, sm_arch, opt_level, num_ctas, occupancy)
+    kernel_key = (f, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps)
     entry, cache_hit, reset = find_or_tune(f, space, grid_fn, args_fn, tuning;
         sm_arch, opt_level, kernel_key, arg_key=key,
         static_num_ctas=num_ctas, static_occupancy=occupancy,
+        static_num_worker_warps=num_worker_warps,
         verify, setup)
 
     cfg = entry.best_config
@@ -410,7 +414,8 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
 
     cuTile.launch(f, grid, launched_args...; sm_arch, opt_level,
                   hints_from_cfg(cfg; static_num_ctas=num_ctas,
-                                      static_occupancy=occupancy)...)
+                                      static_occupancy=occupancy,
+                                      static_num_worker_warps=num_worker_warps)...)
 
     return (; tuned_config=cfg, grid, tuning_record=copy(entry.tuning_record), cache_hit)
 end

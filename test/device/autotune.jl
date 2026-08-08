@@ -290,6 +290,43 @@ const Exp = ct.Experimental
         @test Array(c) ≈ fill(3f0, n)
     end
 
+    @testset "num_worker_warps as axis and static kwarg" begin
+        Exp.clear_autotune_cache()
+        fill!(c, 0f0)
+        # Axis form: tunes between "no hint" and 8 worker warps.
+        result = Exp.autotune_launch(
+            vadd_kernel,
+            Exp.CartesianSpace(; tile=(16, 32), num_worker_warps=(nothing, 8)),
+            cfg -> cld(n, cfg.tile),
+            cfg -> (a, b, c, ct.Constant(cfg.tile));
+            key=(:warps_axis, n),
+            tuning=(preset=:fast, refine_topk=0))
+        @test hasproperty(result.tuned_config, :num_worker_warps)
+        @test Array(c) ≈ fill(3f0, n)
+
+        # Static form applies uniformly; conflict with the axis is rejected.
+        fill!(c, 0f0)
+        result = Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16), (; tile=32)],
+            cfg -> cld(n, cfg.tile),
+            cfg -> (a, b, c, ct.Constant(cfg.tile));
+            key=(:warps_static, n),
+            num_worker_warps=8,
+            tuning=(preset=:fast, refine_topk=0))
+        @test !result.cache_hit
+        @test Array(c) ≈ fill(3f0, n)
+
+        @test_throws ArgumentError Exp.autotune_launch(
+            vadd_kernel,
+            [(; tile=16, num_worker_warps=4)],
+            cfg -> cld(n, cfg.tile),
+            cfg -> (a, b, c, ct.Constant(cfg.tile));
+            key=(:warps_conflict, n),
+            num_worker_warps=8,
+            tuning=(preset=:fast, refine_topk=0))
+    end
+
     @testset "conflict: static + space axis" begin
         Exp.clear_autotune_cache()
         # Run-time path (opaque space): autotune_launch should reject.
