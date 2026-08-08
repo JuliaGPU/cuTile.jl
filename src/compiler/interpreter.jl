@@ -1,7 +1,16 @@
 # Integration with Julia's abstract interpreter
 
+using Base.ScopedValues: ScopedValue
 
 Base.Experimental.@MethodTable cuTileMethodTable
+
+# When assigned, every `cuTileInterpreter(cache)` constructed within
+# the dynamic scope reuses this inference cache instead of allocating
+# a fresh one. Lets batched inference passes (autotuning over many
+# const-seeded variants of the same kernel) share work; without it,
+# kernels that hit slow inference paths (e.g. `ct.load(..., order=...)`)
+# pay the cost on every config.
+const _SCOPED_INF_CACHE = ScopedValue{Any}()
 
 function get_method_table_view(world::UInt)
     CC.CachedMethodTable(CC.OverlayMethodTable(world, cuTileMethodTable))
@@ -21,10 +30,14 @@ end
 
 function cuTileInterpreter(cache::CacheView; always_inline::Bool=true)
     method_table = get_method_table_view(cache.world)
-    @static if isdefined(CC, :InferenceCache)
-        inf_cache = CC.InferenceCache()
+    inf_cache = if isassigned(_SCOPED_INF_CACHE)
+        _SCOPED_INF_CACHE[]
     else
-        inf_cache = Vector{CC.InferenceResult}()
+        @static if isdefined(CC, :InferenceCache)
+            CC.InferenceCache()
+        else
+            Vector{CC.InferenceResult}()
+        end
     end
     inf_params = CC.InferenceParams()
     opt_params = if always_inline
