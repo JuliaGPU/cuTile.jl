@@ -59,7 +59,7 @@ end
 
 const _AUTOTUNE_KWARGS = (:key, :space, :blocks, :tuning, :verify, :setup,
                           :sm_arch, :opt_level, :launch_args,
-                          :num_ctas, :occupancy)
+                          :num_ctas, :occupancy, :num_worker_warps)
 
 """
     @autotune key=... space=... blocks=... [kwargs...] kernel(args...)
@@ -86,11 +86,11 @@ tuning configuration being evaluated).
                   are throwaway copies (in-place kernels) and the final
                   launch should hit the real buffers
 - `sm_arch`, `opt_level` - forwarded to `cufunction`
-- `num_ctas`, `occupancy` - **static** hints applied uniformly to every
-                  cfg. May not coexist with same-named axes in `space`
-                  (the macro flags the conflict at expansion time when
-                  `space` is a literal NT; otherwise `autotune_launch`
-                  catches it at run time)
+- `num_ctas`, `occupancy`, `num_worker_warps` - **static** hints applied
+                  uniformly to every cfg. May not coexist with same-named
+                  axes in `space` (the macro flags the conflict at
+                  expansion time when `space` is a literal NT; otherwise
+                  `autotune_launch` catches it at run time)
 
 # Example
 
@@ -134,7 +134,7 @@ macro autotune(args...)
     # as a static kwarg. (Opaque spaces are caught at run time.)
     space_axes = _autotune_space_axes(space_expr)
     if space_axes !== nothing
-        for hint in (:num_ctas, :occupancy)
+        for hint in (:num_ctas, :occupancy, :num_worker_warps)
             if hint in space_axes && haskey(kwargs, hint)
                 error("@autotune: `$hint` appears both as an axis in `space=` and " *
                       "as a static kwarg. Pick one.")
@@ -165,7 +165,7 @@ macro autotune(args...)
     # Forward all macro kwargs (except space/blocks, which are positional
     # / lifted into the closures) to `autotune_launch`.
     forwarded_keys = (:key, :tuning, :verify, :setup, :sm_arch, :opt_level,
-                      :launch_args, :num_ctas, :occupancy)
+                      :launch_args, :num_ctas, :occupancy, :num_worker_warps)
     kw_exprs = [Expr(:kw, k, kwargs[k]) for k in forwarded_keys if haskey(kwargs, k)]
 
     launch = GlobalRef(@__MODULE__, :autotune_launch)
