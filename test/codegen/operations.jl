@@ -2041,6 +2041,28 @@ end
         end
     end
 
+    @testset "scalar literal promotion" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "addf {{.*}} : tile<16xf16>"
+            code_tiled(Tuple{ct.TileArray{Float16,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, tile .+ 2.5)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "addi {{.*}} : tile<16xi32>"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, tile .+ 1)
+                return
+            end
+        end
+    end
+
     @testset "remf" begin
         @test @filecheck begin
             @check_label "entry"
