@@ -9,3 +9,16 @@
 # bytecode version to emit, overriding the auto-probe of `tileiras`'s
 # capabilities. should be a version supported by cuTile.jl.
 #bytecode_version = "13.2"
+
+# maximum time in seconds for a `tileiras` invocation. compilation does not
+# time out by default.
+#compiler_timeout_seconds = 60
+
+# whether to cache compiled kernels on disk. enabled by default.
+#disk_cache = true
+
+# disk cache directory. defaults to cuTile's Scratch.jl-managed directory.
+#cache_dir = "/fast/local/cache"
+
+# maximum disk cache size in bytes. defaults to 1 GiB.
+#cache_size_bytes = 1073741824
