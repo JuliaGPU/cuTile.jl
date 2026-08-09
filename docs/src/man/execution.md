@@ -119,10 +119,10 @@ one down. But they do mean that arrays which look interchangeable are not:
 
 ```julia-repl
 julia> typeof(ct.TileArray(CUDA.rand(Float32, 1024)))
-cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false}()}
+cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false, (false,)}()}
 
 julia> typeof(ct.TileArray(view(CUDA.rand(Float32, 2048), 1:2:2048)))
-cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, false, (0,), (16,), false}()}
+cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, false, (0,), (16,), false, (false,)}()}
 ```
 
 The strided view is not contiguous, so it compiles to a second, more

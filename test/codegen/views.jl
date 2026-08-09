@@ -5,6 +5,19 @@
 
 spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
+singleton_spec2d = ct.ArraySpec{2}(16, true, (0, 4), (16, 0), false, (false, true))
+
+@testset "make_tensor_view — singleton stride specialization" begin
+    @test @filecheck begin
+        @check_label "entry"
+        @check "tensor_view<1x?xf32, strides=[4,1]>"
+        code_tiled(Tuple{ct.TileArray{Float32,2,Int32,singleton_spec2d}}) do a
+            tile = ct.load(a, (1, 1), (16, 1))
+            ct.store(a, (1, 1), tile)
+            return
+        end
+    end
+end
 
 @testset "make_tensor_view — imprecise type argument" begin
     # The public codegen path normally keeps this argument precise in the test

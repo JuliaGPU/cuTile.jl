@@ -516,36 +516,52 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_gather_scatter_vie
 end
 
 """
-    compute_tensor_view_strides(array_spec, ndim) -> Vector{Int64}
+    compute_tensor_view_shape(array_spec, ndim) -> RowMajorShape
+    compute_tensor_view_strides(array_spec, ndim, elem_type) -> Vector{Int64}
 
-Compute the stride values for a TensorView type based on ArraySpec.
-Returns static stride values where known, DYNAMIC_SHAPE where dynamic.
+Compute static TensorView dimensions and strides from an `ArraySpec`.
+Singleton axes use a 16-byte-aligned synthetic stride: their physical stride
+does not contribute to any in-bounds address.
 
 For contiguous column-major arrays (matching Julia's memory layout),
 stride[1] = 1 is statically known. Higher dimensions are typically dynamic.
 """
-function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
+function compute_tensor_view_shape(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
+    shape = fill(DYNAMIC_SHAPE, ndim)
+    if array_spec !== nothing
+        for i in 1:ndim
+            array_spec.singleton[i] && (shape[ndim + 1 - i] = 1)
+        end
+    end
+    return RowMajorShape(shape)
+end
+
+function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int,
+                                     elem_type::Type)
     strides = fill(DYNAMIC_SHAPE, ndim)
 
-    if array_spec !== nothing && array_spec.contiguous && ndim >= 1
-        # Contiguous column-major array: Julia stride[1]=1 becomes Tile IR stride[ndim]=1
-        strides[ndim] = 1
+    if array_spec !== nothing
+        if array_spec.contiguous && ndim >= 1 && !array_spec.singleton[1]
+            strides[ndim] = 1
+        end
+        for i in 1:ndim
+            array_spec.singleton[i] && (strides[ndim + 1 - i] = 16 ÷ sizeof(elem_type))
+        end
     end
 
     return strides
 end
 
 """
-    filter_dynamic_strides(stride_vals, tv_strides) -> Vector{Value}
+    filter_dynamic_values(values, static) -> Vector{Value}
 
-Filter stride values to only include those corresponding to dynamic dimensions.
-Only pass operands for dimensions where tv_strides[i] == DYNAMIC_SHAPE.
+Drop operands represented statically in a TensorView type.
 """
-function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{Int64})
+function filter_dynamic_values(values::Vector{Value}, static)
     dynamic_vals = Value[]
-    for (i, stride_type_val) in enumerate(tv_strides)
-        if stride_type_val == DYNAMIC_SHAPE && i <= length(stride_vals)
-            push!(dynamic_vals, stride_vals[i])
+    for (i, static_value) in enumerate(static)
+        if static_value == DYNAMIC_SHAPE && i <= length(values)
+            push!(dynamic_vals, values[i])
         end
     end
     return dynamic_vals
@@ -640,10 +656,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     ]
     stride_vals = Value[
         let elem_op = tuple_element_source(block, strides_arg, i),
-            # Skip the contiguous axis: its stride is statically `1`
-            # and never enters the bytecode kernel signature
-            # (`filter_dynamic_strides`).
-            chain = (spec !== nothing && spec.contiguous && i == 1) ? EMPTY_PREDS :
+            # Static TensorView strides never enter the bytecode operands.
+            chain = (spec !== nothing &&
+                     ((spec.contiguous && i == 1) || spec.singleton[i])) ? EMPTY_PREDS :
                     op_predicates(ctx.divby_info, ctx.bounds_info,
                                   elem_op, :stride, stride_hint(i))
             wrap_for(ctx, tv.v::Value, tv.type_id::TypeId, chain)
@@ -656,13 +671,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     reverse!(size_vals)
     reverse!(stride_vals)
 
-    tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
-    tv_strides = compute_tensor_view_strides(spec, ndim)
+    tv_shape = compute_tensor_view_shape(spec, ndim)
+    tv_strides = compute_tensor_view_strides(spec, ndim, elem_T)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
-    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
+    dynamic_size_vals = filter_dynamic_values(size_vals, tv_shape)
+    dynamic_stride_vals = filter_dynamic_values(stride_vals, tv_strides)
 
-    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr, size_vals, dynamic_stride_vals)
+    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr,
+                                           dynamic_size_vals, dynamic_stride_vals)
     result_jltype = TensorView{elem_T, ndim}
     return CGVal(tensor_view, tv_type, result_jltype)
 end

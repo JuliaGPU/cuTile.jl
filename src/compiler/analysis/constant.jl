@@ -122,19 +122,17 @@ function interpret_integer(value::Integer, width::Int, signed::Bool)
     signed && bits >= modulus >> 1 ? bits - modulus : bits
 end
 
-# Project a `TileArrayFieldRef` to a scalar constant when the spec pins
-# the field's value statically. Currently only the contiguous-axis stride
-# (= 1) qualifies; sizes are dynamic (only divisibility / bounds are
-# encoded), and the pointer is opaque to constant analysis. The
-# `contiguous ⟹ stride_div_by[1] ∈ {0, 1}` consistency is enforced by
-# `ArraySpec`'s inner constructor, so no defensive check is needed here.
+# Project fields fixed by the `ArraySpec`: singleton sizes/strides and the
+# contiguous first stride are one.
 function tilearray_field_constant(ref::TileArrayFieldRef)
-    ref.field === :strides || return nothing
-    ref.index == 1 || return nothing
-    ref.spec.contiguous || return nothing
-    # Match the strides field's element type: a contiguous-axis stride
-    # equals `1` in whatever integer width `TileArray.strides` carries.
-    return eltype(fieldtype(ref.T, :strides))(1)
+    ref.index isa Int || return nothing
+    if ref.field === :sizes && ref.spec.singleton[ref.index]
+        return eltype(fieldtype(ref.T, :sizes))(1)
+    elseif ref.field === :strides &&
+           ((ref.index == 1 && ref.spec.contiguous) || ref.spec.singleton[ref.index])
+        return eltype(fieldtype(ref.T, :strides))(1)
+    end
+    return nothing
 end
 
 #=============================================================================

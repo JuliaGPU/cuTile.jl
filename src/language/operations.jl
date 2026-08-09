@@ -102,7 +102,7 @@ function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray});
     # happens to be one; constprop of a literal step could recover it later.
     new_contiguous = spec.contiguous && stepped_axis !== 1
     new_spec = ArraySpec{N, 0, new_contiguous, spec.stride_div_by, ntuple(_ -> 0, N),
-                         spec.may_alias_internally}()
+                         spec.may_alias_internally, ntuple(_ -> false, N)}()
     return TileArray{elem_T, N, I, new_spec}
 end
 
@@ -207,9 +207,10 @@ function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     new_contiguous = spec.contiguous && Perm[1] == 1
     new_stride_div_by = ntuple(i -> spec.stride_div_by[Perm[i]], Val(N))
     new_shape_div_by  = ntuple(i -> spec.shape_div_by[Perm[i]],  Val(N))
+    new_singleton = ntuple(i -> spec.singleton[Perm[i]], Val(N))
     new_spec = ArraySpec{N, spec.alignment, new_contiguous,
                          new_stride_div_by, new_shape_div_by,
-                         spec.may_alias_internally}()
+                         spec.may_alias_internally, new_singleton}()
     return TileArray{elem_T, N, I, new_spec}
 end
 
@@ -242,13 +243,16 @@ function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     I = indextype(SrcT)
     M = length(NewShape)
     new_shape_div_by = ntuple(i -> NewShape[i], Val(M))
+    new_singleton = ntuple(i -> NewShape[i] == 1, Val(M))
     # Reshape recomputes dense column-major strides, so the result layout is
     # injective regardless of the source's internal-aliasing flag.
     if spec === nothing
-        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
+        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by,
+                             false, new_singleton}()
     else
         new_spec = ArraySpec{M, spec.alignment, true,
-                             ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
+                             ntuple(_ -> 0, Val(M)), new_shape_div_by,
+                             false, new_singleton}()
     end
     return TileArray{elem_T, M, I, new_spec}
 end

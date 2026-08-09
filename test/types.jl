@@ -79,6 +79,12 @@ end
     @test ct.array_spec(ct.sliced_arraytype(T; stepped_axis=2)).contiguous
     @test ct.array_spec(ct.sliced_arraytype(T; stepped_axis=1)).stride_div_by == (1, 4)
 
+    host_ptr = reinterpret(Ptr{Float32}, C_NULL + 128)
+    singleton = ct.compute_array_spec(host_ptr, (1, 16), (1, 1))
+    @test singleton.contiguous
+    @test singleton.singleton == (true, false)
+    @test singleton.stride_div_by == (4, 0)
+
     ptr = CUDA.CuPtr{Float32}(0)
     small = TestDeviceArray(ptr, (Int64(16), Int64(8)), (Int64(1), Int64(16)))
     wide = TestDeviceArray(ptr, (Int64(16), Int64(8)),

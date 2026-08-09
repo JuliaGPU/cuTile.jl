@@ -113,12 +113,11 @@ function arg_chain(::Type{T}, path::Vector{Int}) where {T <: TileArray}
         i = path[2]
         1 <= i <= ndims(T) || return EMPTY_PREDS
         if path[1] == 2  # sizes[i]
+            spec.singleton[i] && return EMPTY_PREDS
             return op_predicates(nothing, nothing, nothing, :size, Int(spec.shape_div_by[i]))
         elseif path[1] == 3  # strides[i]
-            # Contiguous axis: `make_tensor_view` inlines `1` and the
-            # `muli(x, 1)` algebra rule folds it out of scatter/gather
-            # offsets, so this slot never enters the bytecode signature.
-            spec.contiguous && i == 1 && return EMPTY_PREDS
+            # Static contiguous/singleton strides need no runtime assumption.
+            ((spec.contiguous && i == 1) || spec.singleton[i]) && return EMPTY_PREDS
             return op_predicates(nothing, nothing, nothing, :stride, Int(spec.stride_div_by[i]))
         end
     end
