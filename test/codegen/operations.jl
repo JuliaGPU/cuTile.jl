@@ -1466,7 +1466,7 @@ end
             @check "do not evenly divide"
             code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
-                ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (1,))))
+                Base.donotdelete(reinterpret(UInt16, ct.load(a, pid, (1,))))
                 return
             end
         end
@@ -1476,7 +1476,7 @@ end
             @check "same number of elements"
             code_tiled(Tuple{ct.TileArray{UInt8,2,Int32,spec2d}, ct.TileArray{UInt16,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
-                ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
+                Base.donotdelete(reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
                 return
             end
         end
@@ -1836,6 +1836,17 @@ end
                 tile = ct.load(a, pid, (16,))
                 @check "store_view_tko"
                 ct.store(b, pid, tile)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "ftof"
+            @check "store_view_tko"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                             ct.TileArray{Float16,1,Int32,spec1d}}) do a, b
+                ct.store(b; index=1, tile=ct.load(a, 1, (16,)))
                 return
             end
         end

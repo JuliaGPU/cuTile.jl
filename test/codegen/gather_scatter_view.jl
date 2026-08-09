@@ -4,6 +4,7 @@
 
 spec2d = ct.ArraySpec{2}(16, true)
 AT2d = ct.TileArray{Float32,2,Int32,spec2d}
+AT2d_f16 = ct.TileArray{Float16,2,Int32,spec2d}
 
 @testset "GatherScatterView — row-major dimension conversion" begin
     @test @filecheck begin
@@ -20,6 +21,20 @@ AT2d = ct.TileArray{Float32,2,Int32,spec2d}
                 view, nothing, nothing, (rows, Int32(0)), true,
                 ct.MemoryOrder.Weak, nothing)
             Base.donotdelete(tile)
+            return
+        end
+    end
+end
+
+@testset "GatherScatterView — implicit store conversion" begin
+    @test @filecheck begin
+        @check_label "entry"
+        @check "ftof"
+        @check "store_view_tko"
+        code_tiled(Tuple{AT2d, AT2d_f16}; bytecode_version=v"13.3") do a, b
+            rows = ct.arange(4)
+            dst = @view b[rows, Int32(1):Int32(4)]
+            ct.store(dst, ct.load(a, (1, 1), (4, 4)))
             return
         end
     end

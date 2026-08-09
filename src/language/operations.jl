@@ -566,19 +566,20 @@ end
     load(tiles, index; kwargs...)
 end
 
-@inline function store(tiles::TiledView{A}, index::NTuple{N, <:Integer}, tile::Tile{T};
+@inline function store(tiles::TiledView{A}, index::NTuple{N, <:Integer}, tile::Tile;
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing,
                        memory_order::MemoryOrder.T=MemoryOrder.Weak,
-                       memory_scope::Union{MemScope.T, Nothing}=nothing) where {A, N, T}
+                       memory_scope::Union{MemScope.T, Nothing}=nothing) where {T, A<:TileArray{T}, N}
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
-    reshaped = _reshape_to_rank(tile, Val(ndims(tiles)))
+    stored = convert(Tile{T}, tile)
+    reshaped = _reshape_to_rank(stored, Val(ndims(tiles)))
     view = make_tile_view(tiles)
     store_tile_view(view, reshaped, latency, allow_tma,
                     zero_based_indices(tiles.parent, index), check_bounds,
                     memory_order, memory_scope)
-    return tile
+    return stored
 end
 @inline function store(tiles::TiledView, index::Integer, tile::Tile; kwargs...)
     store(tiles, (index,), tile; kwargs...)
@@ -845,9 +846,15 @@ behavior is undefined.
         zero_based_indices(arr, index))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
+@inline function store(arr::TileArray{T}, index, tile::Tile; kwargs...) where {T}
+    store(arr, index, convert(Tile{T}, tile); kwargs...)
+end
 
 # Scalar index → wrap in tuple
 @inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T}; kwargs...) where {T}
+    store(arr, (index,), tile; kwargs...)
+end
+@inline function store(arr::TileArray, index::Integer, tile::Tile; kwargs...)
     store(arr, (index,), tile; kwargs...)
 end
 
@@ -858,13 +865,14 @@ end
 Store through a Julia gather/scatter view. Repeated sparse indices retain Tile
 IR's undefined conflicting-store semantics and are conservatively token-ordered.
 """
-@inline function store(view::GatherScatterTileView{A}, tile::Tile{T};
+@inline function store(view::GatherScatterTileView{A}, tile::Tile;
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing,
                        memory_order::MemoryOrder.T=MemoryOrder.Weak,
                        memory_scope::Union{MemScope.T, Nothing}=nothing) where {T, A<:TileArray{T}}
-    shape = size(tile)
+    stored = convert(Tile{T}, tile)
+    shape = size(stored)
     _check_gather_scatter_shape(view, shape)
     parent_array = parent(view)
     tensor_view = Intrinsics.make_tensor_view(typeof(parent_array), parent_array.ptr,
@@ -872,18 +880,18 @@ IR's undefined conflicting-store semantics and are conservatively token-ordered.
     gather_view = Intrinsics.make_gather_scatter_view(
         tensor_view, shape, gather_scatter_sparse_dim(view), PaddingMode.Undetermined)
     Intrinsics.store_gather_scatter_view(
-        gather_view, tile, latency, allow_tma, _gather_scatter_indices(view), check_bounds,
+        gather_view, stored, latency, allow_tma, _gather_scatter_indices(view), check_bounds,
         memory_order, memory_scope)
-    return tile
+    return stored
 end
 
 # Scalar value → wrap in 1-element tile and store
-@inline function store(arr::TileArray{T}, index, val::T; kwargs...) where {T}
+@inline function store(arr::TileArray{T}, index, val::Number; kwargs...) where {T}
     shape = ntuple(_ -> 1, Val(ndims(arr)))
-    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    tile = reshape(Intrinsics.from_scalar(convert(T, val), Tuple{}), shape)
     store(arr, index, tile; kwargs...)
 end
-@inline function store(arr::TileArray{T}, index::Integer, val::T; kwargs...) where {T}
+@inline function store(arr::TileArray, index::Integer, val::Number; kwargs...)
     store(arr, (index,), val; kwargs...)
 end
 
@@ -898,13 +906,13 @@ end
 end
 
 # Keyword argument version - dispatch to positional version
-@inline function store(arr::TileArray{T}; index, tile::Tile{T},
+@inline function store(arr::TileArray; index, tile::Tile,
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Union{Bool, Nothing}=nothing,
                        memory_order::MemoryOrder.T=MemoryOrder.Weak,
-                       memory_scope::Union{MemScope.T, Nothing}=nothing) where {T}
+                       memory_scope::Union{MemScope.T, Nothing}=nothing)
     store(arr, index, tile; order, check_bounds, latency, allow_tma,
           memory_order, memory_scope)
 end
@@ -913,9 +921,9 @@ end
 # NOTE: Cannot use @overlay (which adds @assume_effects :foldable) because
 # setindex! is a side-effecting operation returning nothing — the compiler
 # would DCE the entire call as a pure function with unused result.
-Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::T, indices::Vararg{Integer, N}) where {T, N}
+Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::Number, indices::Vararg{Integer, N}) where {T, N}
     shape = ntuple(_ -> 1, Val(N))
-    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    tile = reshape(Intrinsics.from_scalar(convert(T, val), Tuple{}), shape)
     store(arr, indices, tile)
     return
 end
@@ -1061,18 +1069,19 @@ indices = base .+ ct.arange(TILE)
 ct.scatter(arr, indices, result_tile; mask=valid_mask)
 ```
 """
-@inline function scatter(array::TileArray{T, 1, I}, indices::Tile{J, S}, tile::Tile{T, S};
+@inline function scatter(array::TileArray{T, 1, I}, indices::Tile{J, S}, tile::Tile{<:Any, S};
                          mask=nothing,
                          check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where
         {T, I, J <: Integer, S}
+    stored = convert(Tile{T}, tile)
     indices_0 = indices .- one(J)
     array_indices = convert(Tile{I}, indices_0)
     ptr_tile = Intrinsics.offset(Tile(array.ptr), array_indices)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(array_indices, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-    _scatter_store(ptr_tile, tile, latency, final_mask)
+    _scatter_store(ptr_tile, stored, latency, final_mask)
 end
 
 """
@@ -1087,20 +1096,22 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
   when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function scatter(array::TileArray{T, 2, I}, indices::Tuple{Tile{J0}, Tile{J1}}, tile::Tile{T};
+@inline function scatter(array::TileArray{T, 2, I}, indices::Tuple{Tile{J0}, Tile{J1}}, tile::Tile;
                          mask=nothing,
                          check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where
         {T, I, J0 <: Integer, J1 <: Integer}
+    stored = convert(Tile{T}, tile)
+
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(J0)
     idx1_0 = indices[2] .- one(J1)
 
     # Broadcast indices to common shape
-    S = broadcast_shape(broadcast_shape(size(indices[1]), size(indices[2])), size(tile))
+    S = broadcast_shape(broadcast_shape(size(indices[1]), size(indices[2])), size(stored))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
-    tile_bc = broadcast_to(tile, S)
+    tile_bc = broadcast_to(stored, S)
 
     idx0_array = convert(Tile{I}, idx0_bc)
     idx1_array = convert(Tile{I}, idx1_bc)

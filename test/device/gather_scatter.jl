@@ -47,6 +47,25 @@ end
     @test Array(b) ≈ Array(a)
 end
 
+@testset "implicit store and scatter conversion" begin
+    function convert_store_kernel(a::ct.TileArray{Float32,1},
+                                  b::ct.TileArray{Float16,1},
+                                  c::ct.TileArray{Float16,1})
+        tile = ct.load(a, 1, (16,))
+        ct.store(b, 1, tile)
+        ct.scatter(c, ct.arange(16), tile)
+        return
+    end
+
+    a = CUDA.rand(Float32, 16)
+    b = CUDA.zeros(Float16, 16)
+    c = CUDA.zeros(Float16, 16)
+    @cuda backend=cuTile convert_store_kernel(a, b, c)
+    expected = Float16.(Array(a))
+    @test Array(b) == expected
+    @test Array(c) == expected
+end
+
 #=========================================================================
  Gather/scatter with OOB bounds checking (regression: mask emission bug
  meant bounds checks were silently skipped — load_ptr_tko always loaded
