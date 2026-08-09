@@ -13,9 +13,8 @@ entirely.
 - A single LMDB env at `\$(scratchspace)/disk_cache/`. The directory
   contains `data.mdb` + `lock.mdb`; wiping the cache means `rm -rf` of
   that directory or `Scratch.delete_scratch!`.
-- Set `JULIA_CUTILE_CACHE_DIR` to override the cache directory. Values
-  `0`, `off`, `none`, and the empty string disable the disk cache. Set
-  `JULIA_CUTILE_CACHE_SIZE` to override the default 1 GiB LMDB map size.
+- The `disk_cache`, `cache_dir`, and `cache_size_bytes` preferences configure
+  or disable the cache. The default map size is 1 GiB.
 - Keys: `sha256(SCHEMA_VERSION || toolkit_version || sm_arch || opt_level || bytecode)`.
   Any input change produces a fresh key, so old-toolkit entries never
   match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate every
@@ -50,6 +49,7 @@ module DiskCache
 import LMDB
 using SHA: sha256
 using Scratch: @get_scratch!
+using Preferences: @load_preference
 
 # ===========================================================================
 # Value framing and key prefixes
@@ -173,6 +173,28 @@ end
 isopen(cache::Cache) = LMDB.isopen(cache.env)
 
 const DEFAULT_MAPSIZE = Csize_t(1) << 30
+
+function parse_cache_size(setting)
+    setting isa Integer && !(setting isa Bool) && 0 < setting <= typemax(Csize_t) ||
+        throw(ArgumentError("cache_size_bytes must be a positive integer byte count"))
+    return Csize_t(setting)
+end
+
+function parse_cache_dir(setting)
+    setting isa AbstractString && !isempty(setting) ||
+        throw(ArgumentError("cache_dir must be a non-empty path string"))
+    return String(setting)
+end
+
+const cache_enabled = let setting = @load_preference("disk_cache", true)
+    setting isa Bool || throw(ArgumentError("disk_cache must be a boolean"))
+    setting
+end
+const cache_dir_override = let setting = @load_preference("cache_dir", nothing)
+    setting === nothing ? nothing : parse_cache_dir(setting)
+end
+const cache_size = parse_cache_size(
+    @load_preference("cache_size_bytes", Int(DEFAULT_MAPSIZE)))
 
 """
     close(cache::Cache)
@@ -610,34 +632,17 @@ function try_init()
     end
 end
 
-function configured_cache_dir()
-    setting = Base.get(ENV, "JULIA_CUTILE_CACHE_DIR", nothing)
+function configured_cache_dir(enabled=cache_enabled, setting=cache_dir_override)
+    enabled || return nothing
     if setting === nothing
         # @get_scratch! resolves to cuTile's package UUID via moduleroot,
         # so the path is $DEPOT/scratchspaces/<cuTile-UUID>/disk_cache/.
         return @get_scratch!("disk_cache")
     end
-    cache_setting_disabled(setting) && return nothing
-    return abspath(expanduser(setting))
+    return abspath(expanduser(parse_cache_dir(setting)))
 end
 
-function configured_mapsize()
-    setting = Base.get(ENV, "JULIA_CUTILE_CACHE_SIZE", nothing)
-    setting === nothing && return DEFAULT_MAPSIZE
-    return parse_cache_size(setting)
-end
-
-function cache_setting_disabled(setting::AbstractString)
-    lowercase(strip(setting)) in ("", "0", "off", "none")
-end
-
-function parse_cache_size(setting::AbstractString)
-    value = tryparse(UInt64, strip(setting))
-    if value === nothing || value == 0
-        throw(ArgumentError("JULIA_CUTILE_CACHE_SIZE must be a positive integer byte count"))
-    end
-    return value
-end
+configured_mapsize(setting=cache_size) = parse_cache_size(setting)
 
 function wipe_lmdb_files(path::AbstractString)
     rm(joinpath(path, "data.mdb"); force=true)

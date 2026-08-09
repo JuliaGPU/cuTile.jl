@@ -872,3 +872,18 @@ end # type argument broadcasting
         @test Array(c) ≈ max.(Array(a), Array(b))
     end
 end
+@testset "scalar literal promotion" begin
+    function loose_literals(a::ct.TileArray{Float16,1}, b::ct.TileArray{Int32,1})
+        a_tile = ct.load(a, 1, (16,))
+        b_tile = ct.load(b, 1, (16,))
+        ct.store(a, 1, a_tile .+ 2.5)
+        ct.store(b, 1, b_tile .+ 1)
+        return
+    end
+
+    a = CUDA.fill(Float16(1), 16)
+    b = CUDA.fill(Int32(1), 16)
+    @cuda backend=cuTile loose_literals(a, b)
+    @test Array(a) == fill(Float16(3.5), 16)
+    @test Array(b) == fill(Int32(2), 16)
+end

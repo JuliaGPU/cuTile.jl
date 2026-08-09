@@ -87,11 +87,9 @@ function compute_block_memory_effects!(block::Block, alias_info::AliasInfo,
             mem_effect == MEM_NONE && continue
             alias_set = alias_class(alias_info, first(operands))
             effects.effects[alias_set] = max(get(effects.effects, alias_set, MEM_NONE), mem_effect)
-            if is_atomic_intrinsic(resolved_func)
-                mo = extract_memory_order(resolved_func, operands)
-                if has_acquire_order(mo)
-                    effects = MemoryEffects(effects.effects, true)
-                end
+            mo = extract_memory_order(resolved_func, operands)
+            if has_acquire_order(mo)
+                effects = MemoryEffects(effects.effects, true)
             end
         end
     end
@@ -149,13 +147,24 @@ end
 """
     extract_memory_order(resolved_func, operands) -> Union{MemoryOrder.T, Nothing}
 
-Extract the compile-time memory_order from an atomic intrinsic's operands.
+Extract the compile-time `memory_order` from an ordered memory intrinsic.
 """
 function extract_memory_order(resolved_func, operands)
-    is_atomic_intrinsic(resolved_func) || return nothing
-    # CAS: (ptr, expected, desired, mask, memory_order, memory_scope)
-    # RMW: (ptr, val, mask, memory_order, memory_scope)
-    mo_idx = resolved_func === Intrinsics.atomic_cas ? 5 : 4
+    mo_idx = if resolved_func === Intrinsics.atomic_cas
+        5
+    elseif is_atomic_intrinsic(resolved_func)
+        4
+    elseif resolved_func === Intrinsics.load_partition_view ||
+           resolved_func === Intrinsics.load_strided_view ||
+           resolved_func === Intrinsics.load_gather_scatter_view
+        6
+    elseif resolved_func === Intrinsics.store_partition_view ||
+           resolved_func === Intrinsics.store_strided_view ||
+           resolved_func === Intrinsics.store_gather_scatter_view
+        7
+    else
+        return nothing
+    end
     mo_idx > length(operands) && return nothing
     mo_arg = operands[mo_idx]
     # The memory_order is typically a compile-time constant (QuoteNode or literal)
@@ -450,10 +459,12 @@ function transform_statement!(block::Block, inst::Instruction,
     mem_effect == MEM_NONE && return
 
     alias_set = alias_class(alias_info, first(operands))
+    memory_order = extract_memory_order(resolved_func, operands)
 
     if mem_effect == MEM_LOAD
         input_token = get_input_token_ir!(block, SSAValue(inst),
-                                           last_store_key(alias_set), token_map)
+                                           last_store_key(alias_set), token_map,
+                                           memory_order)
         push!(s.args, input_token)
 
         result_inst = insert_after!(block, SSAValue(inst), TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
@@ -466,9 +477,14 @@ function transform_statement!(block::Block, inst::Instruction,
                        JoinTokensNode([last_op_tok, result_token]), TOKEN_TYPE)
         token_map[lop_key] = SSAValue(join_inst)
 
+        if has_acquire_order(memory_order)
+            token_map[ACQUIRE_TOKEN_KEY] = result_token
+        end
+
     elseif mem_effect == MEM_STORE
         # Loop parallel store optimization (Python _try_loop_parallel_store, lines 499-541)
-        if parallel_info !== nothing && inst.ssa_idx in parallel_info.parallel_stores
+        if parallel_info !== nothing && inst.ssa_idx in parallel_info.parallel_stores &&
+           !has_release_order(memory_order)
             lop_key = last_op_key(alias_set)
             lst_key = last_store_key(alias_set)
             parent_tok = parallel_info.parent_token_map[lop_key]
@@ -498,8 +514,7 @@ function transform_statement!(block::Block, inst::Instruction,
             return
         end
 
-        # For release-ordered atomics, join with ALL LAST_OP tokens (memory fence)
-        memory_order = extract_memory_order(resolved_func, operands)
+        # Release ordering joins with all prior memory operations.
         input_token = get_input_token_ir!(block, SSAValue(inst),
                                            last_op_key(alias_set), token_map,
                                            memory_order)
@@ -511,8 +526,7 @@ function transform_statement!(block::Block, inst::Instruction,
         token_map[last_op_key(alias_set)] = result_token
         token_map[last_store_key(alias_set)] = result_token
 
-        # Only acquire/acq_rel atomics update the ACQUIRE token
-        if is_atomic_intrinsic(resolved_func) && has_acquire_order(memory_order)
+        if has_acquire_order(memory_order)
             token_map[ACQUIRE_TOKEN_KEY] = result_token
         end
     end

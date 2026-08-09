@@ -1461,12 +1461,23 @@ end
             end
         end
 
+        @test_throws "reinterpret does not support Bool" code_tiled(
+            Tuple{ct.TileArray{UInt8,1,Int32,spec1d}}) do a
+            Base.donotdelete(reinterpret(Bool, ct.load(a, 1, (16,))))
+            return
+        end
+        @test_throws "reinterpret does not support Bool" code_tiled(
+            Tuple{ct.TileArray{Bool,1,Int32,spec1d}}) do a
+            Base.donotdelete(reinterpret(UInt8, ct.load(a, 1, (16,))))
+            return
+        end
+
         # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
         @test @filecheck throws=ct.CodegenErrors begin
             @check "do not evenly divide"
             code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
                 pid = ct.bid(1)
-                ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (1,))))
+                Base.donotdelete(reinterpret(UInt16, ct.load(a, pid, (1,))))
                 return
             end
         end
@@ -1476,7 +1487,7 @@ end
             @check "same number of elements"
             code_tiled(Tuple{ct.TileArray{UInt8,2,Int32,spec2d}, ct.TileArray{UInt16,2,Int32,spec2d}}) do a, b
                 pid = ct.bid(1)
-                ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
+                Base.donotdelete(reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
                 return
             end
         end
@@ -1840,6 +1851,17 @@ end
             end
         end
 
+        @test @filecheck begin
+            @check_label "entry"
+            @check "ftof"
+            @check "store_view_tko"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
+                             ct.TileArray{Float16,1,Int32,spec1d}}) do a, b
+                ct.store(b; index=1, tile=ct.load(a, 1, (16,)))
+                return
+            end
+        end
+
         # 2D
         @test @filecheck begin
             @check_label "entry"
@@ -2009,6 +2031,20 @@ end
     end
 
     @testset "nested broadcast" begin
+        # Reusing the product must keep the multiply separate.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "mulf"
+            @check_not "fma"
+            @check "addf"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                product = tile .* tile
+                ct.store(a, 1, product .+ product)
+                return
+            end
+        end
+
         # a .+ b .* c → fma (fused by fma_fusion_pass!)
         @test @filecheck begin
             @check_label "entry"
@@ -2036,6 +2072,28 @@ end
                 @check "fma"
                 result = ta .- tb .* tc
                 ct.store(a, pid, result)
+                return
+            end
+        end
+    end
+
+    @testset "scalar literal promotion" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "addf {{.*}} : tile<16xf16>"
+            code_tiled(Tuple{ct.TileArray{Float16,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, tile .+ 2.5)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check "addi {{.*}} : tile<16xi32>"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, tile .+ 1)
                 return
             end
         end

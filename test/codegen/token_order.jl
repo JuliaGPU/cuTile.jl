@@ -14,6 +14,35 @@ spec1d_aliasing = ct.ArraySpec{1}(16, true, (0,), (16,), true)
 AT = ct.TileArray{Float32, 1, Int32, spec1d}
 AT_aliasing = ct.TileArray{Float32, 1, Int32, spec1d_aliasing}
 
+@testset "token_order — load/store memory ordering" begin
+    @test @filecheck begin
+        @check_label "entry"
+        @check "load_view_tko acquire device"
+        @check "store_view_tko release device"
+        code_tiled(Tuple{AT, AT}) do a, b
+            tile = ct.load(a, 1, (16,); memory_order=ct.MemoryOrder.Acquire,
+                           memory_scope=ct.MemScope.Device)
+            ct.store(b, 1, tile; memory_order=ct.MemoryOrder.Release,
+                     memory_scope=ct.MemScope.Device)
+            return
+        end
+    end
+
+    @test_throws "invalid memory order" code_tiled(Tuple{AT}) do a
+        Base.donotdelete(ct.load(a, 1, (16,); memory_order=ct.MemoryOrder.Release,
+                                 memory_scope=ct.MemScope.Device))
+        return
+    end
+    @test_throws "requires a memory scope" code_tiled(Tuple{AT}) do a
+        ct.store(a, 1, ct.load(a, 1, (16,)); memory_order=ct.MemoryOrder.Release)
+        return
+    end
+    @test_throws "cannot specify a memory scope" code_tiled(Tuple{AT}) do a
+        Base.donotdelete(ct.load(a, 1, (16,); memory_scope=ct.MemScope.Device))
+        return
+    end
+end
+
 @testset "token_order — identity IV store is loop-parallel" begin
     # `store(b, i, _)` lowers the index as `subi(iv, 1)` — injective, so the
     # store consumes the pre-loop token and the loop carries no tokens.

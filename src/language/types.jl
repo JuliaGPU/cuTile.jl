@@ -16,6 +16,22 @@ Base.ndims(::Type{<:AbstractTileArray{<:Any,N}}) where N = N
 Base.eltype(arr::AbstractTileArray) = eltype(typeof(arr))
 Base.ndims(arr::AbstractTileArray) = ndims(typeof(arr))
 
+"""Memory ordering for loads, stores, and atomic operations."""
+@enumx MemoryOrder begin
+    Weak = 0
+    Relaxed = 1
+    Acquire = 2
+    Release = 3
+    AcqRel = 4
+end
+
+"""Scope of threads participating in an ordered memory operation."""
+@enumx MemScope begin
+    Block = 0
+    Device = 1
+    System = 2
+end
+
 
 """
     ArraySpec{N}
@@ -28,6 +44,7 @@ parameter to enable kernel specialization based on array properties.
 - `contiguous::Bool`: Whether stride[1] == 1 (contiguous in first dimension)
 - `stride_div_by::NTuple{N,Int}`: Per-dimension stride divisibility (0 = unknown)
 - `shape_div_by::NTuple{N,Int}`: Per-dimension shape divisibility (0 = unknown)
+- `singleton::NTuple{N,Bool}`: Axes whose size and stride are both one
 - `may_alias_internally::Bool`: Whether two distinct in-bounds indices may
   refer to the same memory location (e.g. a zero or repeated stride).
   `false` asserts the layout is internally non-overlapping, which enables
@@ -43,15 +60,21 @@ Divisibility values enable optimizations:
 - `stride_div_by[i] = 4` means `stride[i]` is divisible by 4 (enables vectorized access)
 - `shape_div_by[i] = 16` means `shape[i]` is divisible by 16 (no tile boundary handling needed)
 """
-struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
+struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally,
+                 Singleton}
     # Validate invariants once per concrete spec type (this struct is a
     # singleton, so the inner constructor runs on every instantiation but
     # the result is then cached as a type parameter). Catches synthetic
-    # specs that combine `contiguous=true` with a `stride_div_by[1]` that
-    # contradicts `stride[1] == 1` — `1 % d == 0` only for `d ∈ {0, 1}`.
-    function ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}() where
-            {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
-        if Contiguous && N >= 1
+    # specs that combine `contiguous=true` with a contradictory divisor on
+    # the first stride. Singleton axes are exempt because their stride has no
+    # address contribution.
+    function ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy,
+                       MayAliasInternally, Singleton}() where
+            {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally,
+             Singleton}
+        Singleton isa NTuple{N, Bool} || throw(ArgumentError(
+            "ArraySpec: singleton must be an NTuple{$N, Bool}; got $Singleton"))
+        if Contiguous && N >= 1 && !Singleton[1]
             sdb1 = StrideDivBy[1]
             (sdb1 == 0 || sdb1 == 1) || throw(ArgumentError(
                 "ArraySpec: contiguous=true requires stride_div_by[1] ∈ {0, 1} " *
@@ -59,20 +82,23 @@ struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInte
         end
         MayAliasInternally isa Bool || throw(ArgumentError(
             "ArraySpec: MayAliasInternally must be a Bool; got $MayAliasInternally"))
-        new{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}()
+        new{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally,
+            Singleton}()
     end
 end
 
 # Constructors
 function ArraySpec{N}(alignment::Int, contiguous::Bool,
                       stride_div_by::NTuple{N,Int}, shape_div_by::NTuple{N,Int},
-                      may_alias_internally::Bool=false) where N
-    ArraySpec{N, alignment, contiguous, stride_div_by, shape_div_by, may_alias_internally}()
+                      may_alias_internally::Bool=false,
+                      singleton::NTuple{N,Bool}=ntuple(_ -> false, N)) where N
+    ArraySpec{N, alignment, contiguous, stride_div_by, shape_div_by,
+              may_alias_internally, singleton}()
 end
 
 function ArraySpec(alignment::Int, contiguous::Bool)
     # 0-dimensional fallback (scalar pointers)
-    ArraySpec{0, alignment, contiguous, (), (), false}()
+    ArraySpec{0, alignment, contiguous, (), (), false, ()}()
 end
 
 function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
@@ -81,18 +107,21 @@ function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
 end
 
 # Property access — preserves existing dot-syntax (spec.alignment, etc.)
-function Base.getproperty(spec::ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally},
-                          s::Symbol) where {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy, MayAliasInternally}
+function Base.getproperty(spec::ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy,
+                                         MayAliasInternally, Singleton},
+                          s::Symbol) where {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy,
+                                           MayAliasInternally, Singleton}
     s === :alignment            && return Alignment
     s === :contiguous           && return Contiguous
     s === :stride_div_by        && return StrideDivBy
     s === :shape_div_by         && return ShapeDivBy
     s === :may_alias_internally && return MayAliasInternally
+    s === :singleton            && return Singleton
     getfield(spec, s)
 end
 
 Base.propertynames(::ArraySpec) = (:alignment, :contiguous, :stride_div_by, :shape_div_by,
-                                   :may_alias_internally)
+                                   :may_alias_internally, :singleton)
 Base.ndims(::ArraySpec{N}) where N = N
 
 """
@@ -200,6 +229,7 @@ function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, <:Integer},
     # For stride to enable 16-byte vectorization, stride * elem_size must be divisible by 16
     # E.g., for Float32 (4 bytes): stride must be divisible by 4 to get 16-byte alignment
     stride_div_by = ntuple(N) do i
+        sizes[i] == 1 && strides[i] == 1 && return 16 ÷ elem_size
         stride_bytes = strides[i] * elem_size
         # Check if stride in bytes is 16-byte divisible
         if stride_bytes % 16 == 0
@@ -214,8 +244,10 @@ function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, <:Integer},
         compute_divisibility(sizes[i], 16)
     end
 
+    singleton = ntuple(i -> sizes[i] == 1 && strides[i] == 1, N)
+
     ArraySpec{N}(alignment, contiguous, stride_div_by, shape_div_by,
-                 layout_may_alias_internally(sizes, strides))
+                 layout_may_alias_internally(sizes, strides), singleton)
 end
 
 function validate_axis_order(order, rank::Integer, first_axis::Integer, context::AbstractString)

@@ -66,16 +66,34 @@ end
 @inline _materialize_args(args::Tuple) =
     (_materialize_arg(args[1]), _materialize_args(Base.tail(args))...)
 
-# Promote Number arguments to 0-dimensional Tiles. Each Number is wrapped
-# using its own type (e.g., 0.0f0 → Tile(Float32(0.0))), preserving the
-# type that Julia's broadcast promotion chose. This avoids the pitfall of
-# using the first Tile's eltype (which could be Bool for ifelse conditions).
-# Base.RefValue arguments pass through unchanged — they carry no tile shape.
-@inline _promote_to_tiles() = ()
-@inline _promote_to_tiles(a::Tile, rest...) = (a, _promote_to_tiles(rest...)...)
-@inline _promote_to_tiles(a::T, rest...) where {T <: Number} =
-    (Tile(a), _promote_to_tiles(rest...)...)
-@inline _promote_to_tiles(a::Base.RefValue, rest...) = (a, _promote_to_tiles(rest...)...)
+# Promote scalars to the first same-category Tile element type. This keeps
+# integer and floating literals from widening narrower tiles; unrelated Tile
+# arguments such as an `ifelse` condition are skipped.
+@inline _promote_to_tiles(args...) = _promote_to_tiles(args, args)
+@inline _promote_to_tiles(::Tuple{}, ::Tuple) = ()
+@inline function _promote_to_tiles(args::Tuple, all::Tuple)
+    (_promote_to_tile(args[1], all), _promote_to_tiles(Base.tail(args), all)...)
+end
+
+@inline _promote_to_tile(a::Tile, ::Tuple) = a
+@inline _promote_to_tile(a::Base.RefValue, ::Tuple) = a
+@inline function _promote_to_tile(a::T, args::Tuple) where {T <: Number}
+    U = _loose_scalar_type(T, args)
+    Tile(convert(U, a))
+end
+
+@inline _loose_scalar_type(::Type{T}, ::Tuple{}) where {T} = T
+@inline function _loose_scalar_type(::Type{T}, args::Tuple{A, Vararg}) where {T, A<:Tile}
+    U = eltype(A)
+    if (T <: AbstractFloat && U <: AbstractFloat) ||
+       (T <: Integer && T !== Bool && U <: Integer && U !== Bool) ||
+       (T === Bool && U === Bool)
+        return U
+    end
+    _loose_scalar_type(T, Base.tail(args))
+end
+@inline _loose_scalar_type(::Type{T}, args::Tuple{Any, Vararg}) where {T} =
+    _loose_scalar_type(T, Base.tail(args))
 
 # Compute combined broadcast shape across all Tile arguments via tuple peeling.
 # Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for broadcast_shape.

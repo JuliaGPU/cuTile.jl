@@ -102,7 +102,7 @@ function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray});
     # happens to be one; constprop of a literal step could recover it later.
     new_contiguous = spec.contiguous && stepped_axis !== 1
     new_spec = ArraySpec{N, 0, new_contiguous, spec.stride_div_by, ntuple(_ -> 0, N),
-                         spec.may_alias_internally}()
+                         spec.may_alias_internally, ntuple(_ -> false, N)}()
     return TileArray{elem_T, N, I, new_spec}
 end
 
@@ -207,9 +207,10 @@ function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     new_contiguous = spec.contiguous && Perm[1] == 1
     new_stride_div_by = ntuple(i -> spec.stride_div_by[Perm[i]], Val(N))
     new_shape_div_by  = ntuple(i -> spec.shape_div_by[Perm[i]],  Val(N))
+    new_singleton = ntuple(i -> spec.singleton[Perm[i]], Val(N))
     new_spec = ArraySpec{N, spec.alignment, new_contiguous,
                          new_stride_div_by, new_shape_div_by,
-                         spec.may_alias_internally}()
+                         spec.may_alias_internally, new_singleton}()
     return TileArray{elem_T, N, I, new_spec}
 end
 
@@ -242,13 +243,16 @@ function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
     I = indextype(SrcT)
     M = length(NewShape)
     new_shape_div_by = ntuple(i -> NewShape[i], Val(M))
+    new_singleton = ntuple(i -> NewShape[i] == 1, Val(M))
     # Reshape recomputes dense column-major strides, so the result layout is
     # injective regardless of the source's internal-aliasing flag.
     if spec === nothing
-        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
+        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by,
+                             false, new_singleton}()
     else
         new_spec = ArraySpec{M, spec.alignment, true,
-                             ntuple(_ -> 0, Val(M)), new_shape_div_by, false}()
+                             ntuple(_ -> 0, Val(M)), new_shape_div_by,
+                             false, new_singleton}()
     end
     return TileArray{elem_T, M, I, new_spec}
 end
@@ -524,24 +528,35 @@ end
                                  tiled_view_order(tiles))
 end
 
-@inline load_tile_view(view::PartitionView, latency, allow_tma, indices, check_bounds) =
-    Intrinsics.load_partition_view(view, latency, allow_tma, indices, check_bounds)
-@inline load_tile_view(view::StridedView, latency, allow_tma, indices, check_bounds) =
-    Intrinsics.load_strided_view(view, latency, allow_tma, indices, check_bounds)
-@inline store_tile_view(view::PartitionView, tile, latency, allow_tma, indices, check_bounds) =
-    Intrinsics.store_partition_view(view, tile, latency, allow_tma, indices, check_bounds)
-@inline store_tile_view(view::StridedView, tile, latency, allow_tma, indices, check_bounds) =
-    Intrinsics.store_strided_view(view, tile, latency, allow_tma, indices, check_bounds)
+@inline load_tile_view(view::PartitionView, latency, allow_tma, indices, check_bounds,
+                       memory_order, memory_scope) =
+    Intrinsics.load_partition_view(view, latency, allow_tma, indices, check_bounds,
+                                   memory_order, memory_scope)
+@inline load_tile_view(view::StridedView, latency, allow_tma, indices, check_bounds,
+                       memory_order, memory_scope) =
+    Intrinsics.load_strided_view(view, latency, allow_tma, indices, check_bounds,
+                                 memory_order, memory_scope)
+@inline store_tile_view(view::PartitionView, tile, latency, allow_tma, indices, check_bounds,
+                        memory_order, memory_scope) =
+    Intrinsics.store_partition_view(view, tile, latency, allow_tma, indices, check_bounds,
+                                    memory_order, memory_scope)
+@inline store_tile_view(view::StridedView, tile, latency, allow_tma, indices, check_bounds,
+                        memory_order, memory_scope) =
+    Intrinsics.store_strided_view(view, tile, latency, allow_tma, indices, check_bounds,
+                                  memory_order, memory_scope)
 
 @inline function load(tiles::TiledView{A}, index::NTuple{N, <:Integer};
                       check_bounds::Bool=true,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Union{Bool, Nothing}=nothing) where {A, N}
+                      allow_tma::Union{Bool, Nothing}=nothing,
+                      memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                      memory_scope::Union{MemScope.T, Nothing}=nothing) where {A, N}
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
     view = check_bounds ? make_tile_view(tiles) :
                           make_tile_view(tiles, PaddingMode.Undetermined)
     tile = load_tile_view(view, latency, allow_tma,
-                          zero_based_indices(tiles.parent, index), check_bounds)
+                          zero_based_indices(tiles.parent, index), check_bounds,
+                          memory_order, memory_scope)
     reshape(tile, tiled_view_requested_shape(tiles))
 end
 @inline function load(tiles::TiledView, index::Integer; kwargs...)
@@ -551,16 +566,20 @@ end
     load(tiles, index; kwargs...)
 end
 
-@inline function store(tiles::TiledView{A}, index::NTuple{N, <:Integer}, tile::Tile{T};
+@inline function store(tiles::TiledView{A}, index::NTuple{N, <:Integer}, tile::Tile;
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Union{Bool, Nothing}=nothing) where {A, N, T}
+                       allow_tma::Union{Bool, Nothing}=nothing,
+                       memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                       memory_scope::Union{MemScope.T, Nothing}=nothing) where {T, A<:TileArray{T}, N}
     N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
-    reshaped = _reshape_to_rank(tile, Val(ndims(tiles)))
+    stored = convert(Tile{T}, tile)
+    reshaped = _reshape_to_rank(stored, Val(ndims(tiles)))
     view = make_tile_view(tiles)
     store_tile_view(view, reshaped, latency, allow_tma,
-                    zero_based_indices(tiles.parent, index), check_bounds)
-    return tile
+                    zero_based_indices(tiles.parent, index), check_bounds,
+                    memory_order, memory_scope)
+    return stored
 end
 @inline function store(tiles::TiledView, index::Integer, tile::Tile; kwargs...)
     store(tiles, (index,), tile; kwargs...)
@@ -600,7 +619,8 @@ end
 
 """
     load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined,
-         check_bounds=true, latency=nothing, allow_tma=nothing) -> Tile
+         check_bounds=true, latency=nothing, allow_tma=nothing,
+         memory_order=MemoryOrder.Weak, memory_scope=nothing) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -629,6 +649,8 @@ outside the array, the behavior is undefined regardless of `padding_mode`.
 - `check_bounds`: Set to `false` to promise the entire tile is in bounds. Requires Tile IR v13.4+.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
+- `memory_order`: `Weak`, `Relaxed`, or `Acquire`
+- `memory_scope`: Required for non-weak ordering; one of [`MemScope`](@ref)
 
 # Example
 ```julia
@@ -643,14 +665,17 @@ tile = ct.load(arr, (bidy, bidx), (TN, TM); order=(2, 1))
                       padding_mode::PaddingMode.T=PaddingMode.Undetermined,
                       check_bounds::Bool=true,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Union{Bool, Nothing}=nothing)
+                      allow_tma::Union{Bool, Nothing}=nothing,
+                      memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                      memory_scope::Union{MemScope.T, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = check_bounds ?
          Intrinsics.make_partition_view(tv, matched, padding_mode, order) :
          Intrinsics.make_partition_view(tv, matched, PaddingMode.Undetermined, order)
     tile = Intrinsics.load_partition_view(
-        pv, latency, allow_tma, zero_based_indices(arr, index), check_bounds)
+        pv, latency, allow_tma, zero_based_indices(arr, index), check_bounds,
+        memory_order, memory_scope)
     reshape(tile, shape)
 end
 
@@ -724,7 +749,9 @@ The sparse tile index and dense range starts are one-based at this boundary.
                       padding_mode::PaddingMode.T=PaddingMode.Undetermined,
                       check_bounds::Bool=true,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Union{Bool, Nothing}=nothing)
+                      allow_tma::Union{Bool, Nothing}=nothing,
+                      memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                      memory_scope::Union{MemScope.T, Nothing}=nothing)
     _check_gather_scatter_shape(view, shape)
     parent_array = parent(view)
     tensor_view = Intrinsics.make_tensor_view(typeof(parent_array), parent_array.ptr,
@@ -735,7 +762,8 @@ The sparse tile index and dense range starts are one-based at this boundary.
         Intrinsics.make_gather_scatter_view(tensor_view, shape, sparse_dim,
                                             PaddingMode.Undetermined)
     Intrinsics.load_gather_scatter_view(
-        gather_view, latency, allow_tma, _gather_scatter_indices(view), check_bounds)
+        gather_view, latency, allow_tma, _gather_scatter_indices(view), check_bounds,
+        memory_order, memory_scope)
 end
 
 # Scalar indexing: arr[i, j, ...] → scalar T
@@ -744,7 +772,8 @@ end
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     tile = Intrinsics.load_partition_view(
-        pv, nothing, nothing, zero_based_indices(arr, indices), true)
+        pv, nothing, nothing, zero_based_indices(arr, indices), true,
+        MemoryOrder.Weak, nothing)
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -781,7 +810,8 @@ end
 
 """
     store(arr::TileArray, index, tile::Tile; order=nothing, check_bounds=true,
-          latency=nothing, allow_tma=nothing) -> Tile
+          latency=nothing, allow_tma=nothing, memory_order=MemoryOrder.Weak,
+          memory_scope=nothing) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
@@ -800,21 +830,31 @@ behavior is undefined.
 - `check_bounds`: Set to `false` to promise the entire tile is in bounds. Requires Tile IR v13.4+.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 - `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
+- `memory_order`: `Weak`, `Relaxed`, or `Release`
+- `memory_scope`: Required for non-weak ordering; one of [`MemScope`](@ref)
 """
 @inline function store(arr::TileArray{T}, index, tile::Tile{T};
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Union{Bool, Nothing}=nothing) where {T}
+                       allow_tma::Union{Bool, Nothing}=nothing,
+                       memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                       memory_scope::Union{MemScope.T, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
     _store_reshaped(
-        arr, reshaped, order, check_bounds, latency, allow_tma,
+        arr, reshaped, order, check_bounds, latency, allow_tma, memory_order, memory_scope,
         zero_based_indices(arr, index))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
+end
+@inline function store(arr::TileArray{T}, index, tile::Tile; kwargs...) where {T}
+    store(arr, index, convert(Tile{T}, tile); kwargs...)
 end
 
 # Scalar index → wrap in tuple
 @inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T}; kwargs...) where {T}
+    store(arr, (index,), tile; kwargs...)
+end
+@inline function store(arr::TileArray, index::Integer, tile::Tile; kwargs...)
     store(arr, (index,), tile; kwargs...)
 end
 
@@ -825,11 +865,14 @@ end
 Store through a Julia gather/scatter view. Repeated sparse indices retain Tile
 IR's undefined conflicting-store semantics and are conservatively token-ordered.
 """
-@inline function store(view::GatherScatterTileView{A}, tile::Tile{T};
+@inline function store(view::GatherScatterTileView{A}, tile::Tile;
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Union{Bool, Nothing}=nothing) where {T, A<:TileArray{T}}
-    shape = size(tile)
+                       allow_tma::Union{Bool, Nothing}=nothing,
+                       memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                       memory_scope::Union{MemScope.T, Nothing}=nothing) where {T, A<:TileArray{T}}
+    stored = convert(Tile{T}, tile)
+    shape = size(stored)
     _check_gather_scatter_shape(view, shape)
     parent_array = parent(view)
     tensor_view = Intrinsics.make_tensor_view(typeof(parent_array), parent_array.ptr,
@@ -837,44 +880,50 @@ IR's undefined conflicting-store semantics and are conservatively token-ordered.
     gather_view = Intrinsics.make_gather_scatter_view(
         tensor_view, shape, gather_scatter_sparse_dim(view), PaddingMode.Undetermined)
     Intrinsics.store_gather_scatter_view(
-        gather_view, tile, latency, allow_tma, _gather_scatter_indices(view), check_bounds)
-    return tile
+        gather_view, stored, latency, allow_tma, _gather_scatter_indices(view), check_bounds,
+        memory_order, memory_scope)
+    return stored
 end
 
 # Scalar value → wrap in 1-element tile and store
-@inline function store(arr::TileArray{T}, index, val::T; kwargs...) where {T}
+@inline function store(arr::TileArray{T}, index, val::Number; kwargs...) where {T}
     shape = ntuple(_ -> 1, Val(ndims(arr)))
-    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    tile = reshape(Intrinsics.from_scalar(convert(T, val), Tuple{}), shape)
     store(arr, index, tile; kwargs...)
 end
-@inline function store(arr::TileArray{T}, index::Integer, val::T; kwargs...) where {T}
+@inline function store(arr::TileArray, index::Integer, val::Number; kwargs...)
     store(arr, (index,), val; kwargs...)
 end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
                                  order, check_bounds, latency, allow_tma,
+                                 memory_order, memory_scope,
                                  indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, size(tile), PaddingMode.Undetermined, order)
-    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices, check_bounds)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices, check_bounds,
+                                    memory_order, memory_scope)
 end
 
 # Keyword argument version - dispatch to positional version
-@inline function store(arr::TileArray{T}; index, tile::Tile{T},
+@inline function store(arr::TileArray; index, tile::Tile,
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        check_bounds::Bool=true,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Union{Bool, Nothing}=nothing) where {T}
-    store(arr, index, tile; order, check_bounds, latency, allow_tma)
+                       allow_tma::Union{Bool, Nothing}=nothing,
+                       memory_order::MemoryOrder.T=MemoryOrder.Weak,
+                       memory_scope::Union{MemScope.T, Nothing}=nothing)
+    store(arr, index, tile; order, check_bounds, latency, allow_tma,
+          memory_order, memory_scope)
 end
 
 # Scalar store: arr[i, j, ...] = val
 # NOTE: Cannot use @overlay (which adds @assume_effects :foldable) because
 # setindex! is a side-effecting operation returning nothing — the compiler
 # would DCE the entire call as a pure function with unused result.
-Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::T, indices::Vararg{Integer, N}) where {T, N}
+Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::Number, indices::Vararg{Integer, N}) where {T, N}
     shape = ntuple(_ -> 1, Val(N))
-    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    tile = reshape(Intrinsics.from_scalar(convert(T, val), Tuple{}), shape)
     store(arr, indices, tile)
     return
 end
@@ -1020,18 +1069,19 @@ indices = base .+ ct.arange(TILE)
 ct.scatter(arr, indices, result_tile; mask=valid_mask)
 ```
 """
-@inline function scatter(array::TileArray{T, 1, I}, indices::Tile{J, S}, tile::Tile{T, S};
+@inline function scatter(array::TileArray{T, 1, I}, indices::Tile{J, S}, tile::Tile{<:Any, S};
                          mask=nothing,
                          check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where
         {T, I, J <: Integer, S}
+    stored = convert(Tile{T}, tile)
     indices_0 = indices .- one(J)
     array_indices = convert(Tile{I}, indices_0)
     ptr_tile = Intrinsics.offset(Tile(array.ptr), array_indices)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(array_indices, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
-    _scatter_store(ptr_tile, tile, latency, final_mask)
+    _scatter_store(ptr_tile, stored, latency, final_mask)
 end
 
 """
@@ -1046,20 +1096,22 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
   when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function scatter(array::TileArray{T, 2, I}, indices::Tuple{Tile{J0}, Tile{J1}}, tile::Tile{T};
+@inline function scatter(array::TileArray{T, 2, I}, indices::Tuple{Tile{J0}, Tile{J1}}, tile::Tile;
                          mask=nothing,
                          check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where
         {T, I, J0 <: Integer, J1 <: Integer}
+    stored = convert(Tile{T}, tile)
+
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(J0)
     idx1_0 = indices[2] .- one(J1)
 
     # Broadcast indices to common shape
-    S = broadcast_shape(broadcast_shape(size(indices[1]), size(indices[2])), size(tile))
+    S = broadcast_shape(broadcast_shape(size(indices[1]), size(indices[2])), size(stored))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
-    tile_bc = broadcast_to(tile, S)
+    tile_bc = broadcast_to(stored, S)
 
     idx0_array = convert(Tile{I}, idx0_bc)
     idx1_array = convert(Tile{I}, idx1_bc)
@@ -1331,6 +1383,12 @@ end
     return bt > bs ? Base.tail(sz) : (div(bs, bt), sz...)
 end
 
+@inline function check_reinterpret_eltypes(::Type{T}, ::Type{S}) where {T, S}
+    (T === Bool || S === Bool) &&
+        throw(ArgumentError("reinterpret does not support Bool tile elements"))
+    return
+end
+
 """
     Base.reinterpret(::Type{T}, x::Tile) -> Tile{T}
 
@@ -1346,6 +1404,7 @@ in a `UInt8` array. The total bit-width is preserved, so it must divide evenly.
 
 Note `reinterpret.(T, x)` (with a dot) is the unrelated *element-wise* broadcast,
 which keeps the shape and requires `T` to be the same width as `eltype(x)`.
+`Bool` is not supported as either element type.
 
 ```julia
 bytes = ct.load(a, pid, (8,))                 # Tile{UInt8,Tuple{8}}
@@ -1354,6 +1413,7 @@ vals  = convert(ct.Tile{Float32}, fp4)        # widen for compute
 ```
 """
 @inline function Base.reinterpret(::Type{T}, x::Tile) where {T}
+    check_reinterpret_eltypes(T, eltype(x))
     rshape = reinterpret_scaled_shape(T, eltype(x), size(x))
     flat = Intrinsics.reshape(x, (prod(size(x)),))
     return Intrinsics.reshape(reinterpret_width(T, flat), rshape)
@@ -1368,6 +1428,7 @@ dimension it *removes* it when widening (the leading dim must equal
 `bitwidth(T) ÷ bitwidth(eltype(x))`) and *prepends* one when narrowing.
 """
 @inline function Base.reinterpret(::typeof(reshape), ::Type{T}, x::Tile) where {T}
+    check_reinterpret_eltypes(T, eltype(x))
     rshape = reinterpret_reshape_shape(T, eltype(x), size(x))
     flat = Intrinsics.reshape(x, (prod(size(x)),))
     return Intrinsics.reshape(reinterpret_width(T, flat), rshape)

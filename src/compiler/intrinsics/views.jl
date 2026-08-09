@@ -97,6 +97,21 @@ function default_view_indices(ctx::CGCtx, indices_arg, view_arg, ndim::Int, name
     return pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
 end
 
+function check_view_memory_order(memory_order, memory_scope, is_load::Bool, name::String)
+    valid = is_load ? (MemoryOrder.Weak, MemoryOrder.Relaxed, MemoryOrder.Acquire) :
+                      (MemoryOrder.Weak, MemoryOrder.Relaxed, MemoryOrder.Release)
+    memory_order in valid || throw(IRError(
+        "$name: invalid memory order $memory_order; expected one of $valid"))
+    if memory_order === MemoryOrder.Weak
+        memory_scope === nothing || throw(IRError(
+            "$name: weak memory ordering cannot specify a memory scope"))
+    else
+        memory_scope isa MemScope.T || throw(IRError(
+            "$name: $memory_order memory ordering requires a memory scope"))
+    end
+    return
+end
+
 function emit_view_load!(ctx::CGCtx, args, name::String; resolve_indices=default_view_indices)
     cb = ctx.cb
     tt = ctx.tt
@@ -104,7 +119,7 @@ function emit_view_load!(ctx::CGCtx, args, name::String; resolve_indices=default
     # Input token appended by token_order_pass!.
     input_token = extract_token_arg!(ctx, args)
 
-    # args: (view, latency, allow_tma, indices, check_bounds)
+    # args: (view, latency, allow_tma, indices, check_bounds, memory_order, memory_scope)
     view_arg = emit_value!(ctx, args[1])
     view_arg === nothing && throw(IRError("$name() requires a view argument"))
     view_arg.v === nothing && throw(IRError("$name() requires a materialized view"))
@@ -126,6 +141,9 @@ function emit_view_load!(ctx::CGCtx, args, name::String; resolve_indices=default
     allow_tma = @something get_constant(ctx, args[3]) throw(IRError("$name(): allow_tma must be a compile-time constant"))
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
     check_bounds = @something get_constant(ctx, args[5]) throw(IRError("$name(): check_bounds must be a compile-time constant"))
+    memory_order = @something get_constant(ctx, args[6]) throw(IRError("$name(): memory_order must be a compile-time constant"))
+    memory_scope = @something get_constant(ctx, args[7]) throw(IRError("$name(): memory_scope must be a compile-time constant"))
+    check_view_memory_order(memory_order, memory_scope, true, name)
 
     # Resolve indices to Julia-order values, then reverse for Tile IR row-major.
     index_vals = resolve_indices(ctx, args[4], view_arg, ndim, name)
@@ -135,7 +153,10 @@ function emit_view_load!(ctx::CGCtx, args, name::String; resolve_indices=default
 
     tile_val, result_token = encode_LoadViewTkoOp!(
         cb, tile_type, token_type, view_arg.v, index_vals;
-        token = input_token, optimization_hints, inbounds=fill(!check_bounds, ndim)
+        token = input_token,
+        memory_ordering=convert_enum(MemoryOrderingSemantics, memory_order),
+        memory_scope=memory_scope === nothing ? nothing : convert_enum(MemoryScope, memory_scope),
+        optimization_hints, inbounds=fill(!check_bounds, ndim)
     )
 
     # Store result token for TokenResultNode
@@ -153,7 +174,7 @@ function emit_view_store!(ctx::CGCtx, args, name::String;
     # Input token appended by token_order_pass!.
     input_token = extract_token_arg!(ctx, args)
 
-    # args: (view, tile, latency, allow_tma, indices, check_bounds)
+    # args: (view, tile, latency, allow_tma, indices, check_bounds, memory_order, memory_scope)
     view_arg = emit_value!(ctx, args[1])
     view_arg === nothing && throw(IRError("$name() requires a view argument"))
     view_arg.v === nothing && throw(IRError("$name() requires a materialized view"))
@@ -191,6 +212,9 @@ function emit_view_store!(ctx::CGCtx, args, name::String;
     allow_tma = @something get_constant(ctx, args[4]) throw(IRError("$name(): allow_tma must be a compile-time constant"))
     allow_tma_val = allow_tma isa Bool ? allow_tma : true
     check_bounds = @something get_constant(ctx, args[6]) throw(IRError("$name(): check_bounds must be a compile-time constant"))
+    memory_order = @something get_constant(ctx, args[7]) throw(IRError("$name(): memory_order must be a compile-time constant"))
+    memory_scope = @something get_constant(ctx, args[8]) throw(IRError("$name(): memory_scope must be a compile-time constant"))
+    check_view_memory_order(memory_order, memory_scope, false, name)
 
     # Resolve indices to Julia-order values, then reverse for Tile IR row-major.
     index_vals = resolve_indices(ctx, args[5], view_arg, actual_ndim, name)
@@ -201,7 +225,10 @@ function emit_view_store!(ctx::CGCtx, args, name::String;
 
     result_token = encode_StoreViewTkoOp!(
         cb, token_type, tile_val, view_arg.v, index_vals;
-        token = input_token, optimization_hints, inbounds=fill(!check_bounds, actual_ndim)
+        token = input_token,
+        memory_ordering=convert_enum(MemoryOrderingSemantics, memory_order),
+        memory_scope=memory_scope === nothing ? nothing : convert_enum(MemoryScope, memory_scope),
+        optimization_hints, inbounds=fill(!check_bounds, actual_ndim)
     )
 
     # Store result token for TokenResultNode
@@ -223,7 +250,8 @@ order and is reversed/zero-padded to match `pv`'s index space rank
 before emission. The token argument is appended by `token_order_pass!`
 and is not part of the user-visible signature.
 """
-@intrinsic load_partition_view(pv, latency, allow_tma, indices, check_bounds)
+@intrinsic load_partition_view(pv, latency, allow_tma, indices, check_bounds,
+                               memory_order, memory_scope)
 tfunc(𝕃, ::typeof(Intrinsics.load_partition_view), @nospecialize(pv), @nospecialize args...) =
     view_load_return_type(pv, 3)
 emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), args) =
@@ -236,7 +264,8 @@ Token-ordered load from a `StridedView`. It uses the same Tile IR load op as
 `load_partition_view`, but has a distinct intrinsic identity so analyses never
 assume that distinct tile indices access disjoint memory.
 """
-@intrinsic load_strided_view(sv, latency, allow_tma, indices, check_bounds)
+@intrinsic load_strided_view(sv, latency, allow_tma, indices, check_bounds,
+                             memory_order, memory_scope)
 tfunc(𝕃, ::typeof(Intrinsics.load_strided_view), @nospecialize(sv), @nospecialize args...) =
     view_load_return_type(sv, 4)
 emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_strided_view), args) =
@@ -249,7 +278,8 @@ Token-ordered load from a GatherScatterView. Its indices deliberately accept
 one one-dimensional tile plus scalar tiles, unlike PartitionView's homogeneous
 index tuple.
 """
-@intrinsic load_gather_scatter_view(view, latency, allow_tma, indices, check_bounds)
+@intrinsic load_gather_scatter_view(view, latency, allow_tma, indices, check_bounds,
+                                    memory_order, memory_scope)
 tfunc(𝕃, ::typeof(Intrinsics.load_gather_scatter_view), @nospecialize(view), @nospecialize args...) =
     view_load_return_type(view, 4)
 emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_gather_scatter_view), args) =
@@ -486,36 +516,52 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_gather_scatter_vie
 end
 
 """
-    compute_tensor_view_strides(array_spec, ndim) -> Vector{Int64}
+    compute_tensor_view_shape(array_spec, ndim) -> RowMajorShape
+    compute_tensor_view_strides(array_spec, ndim, elem_type) -> Vector{Int64}
 
-Compute the stride values for a TensorView type based on ArraySpec.
-Returns static stride values where known, DYNAMIC_SHAPE where dynamic.
+Compute static TensorView dimensions and strides from an `ArraySpec`.
+Singleton axes use a 16-byte-aligned synthetic stride: their physical stride
+does not contribute to any in-bounds address.
 
 For contiguous column-major arrays (matching Julia's memory layout),
 stride[1] = 1 is statically known. Higher dimensions are typically dynamic.
 """
-function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
+function compute_tensor_view_shape(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
+    shape = fill(DYNAMIC_SHAPE, ndim)
+    if array_spec !== nothing
+        for i in 1:ndim
+            array_spec.singleton[i] && (shape[ndim + 1 - i] = 1)
+        end
+    end
+    return RowMajorShape(shape)
+end
+
+function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int,
+                                     elem_type::Type)
     strides = fill(DYNAMIC_SHAPE, ndim)
 
-    if array_spec !== nothing && array_spec.contiguous && ndim >= 1
-        # Contiguous column-major array: Julia stride[1]=1 becomes Tile IR stride[ndim]=1
-        strides[ndim] = 1
+    if array_spec !== nothing
+        if array_spec.contiguous && ndim >= 1 && !array_spec.singleton[1]
+            strides[ndim] = 1
+        end
+        for i in 1:ndim
+            array_spec.singleton[i] && (strides[ndim + 1 - i] = 16 ÷ sizeof(elem_type))
+        end
     end
 
     return strides
 end
 
 """
-    filter_dynamic_strides(stride_vals, tv_strides) -> Vector{Value}
+    filter_dynamic_values(values, static) -> Vector{Value}
 
-Filter stride values to only include those corresponding to dynamic dimensions.
-Only pass operands for dimensions where tv_strides[i] == DYNAMIC_SHAPE.
+Drop operands represented statically in a TensorView type.
 """
-function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{Int64})
+function filter_dynamic_values(values::Vector{Value}, static)
     dynamic_vals = Value[]
-    for (i, stride_type_val) in enumerate(tv_strides)
-        if stride_type_val == DYNAMIC_SHAPE && i <= length(stride_vals)
-            push!(dynamic_vals, stride_vals[i])
+    for (i, static_value) in enumerate(static)
+        if static_value == DYNAMIC_SHAPE && i <= length(values)
+            push!(dynamic_vals, values[i])
         end
     end
     return dynamic_vals
@@ -610,10 +656,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     ]
     stride_vals = Value[
         let elem_op = tuple_element_source(block, strides_arg, i),
-            # Skip the contiguous axis: its stride is statically `1`
-            # and never enters the bytecode kernel signature
-            # (`filter_dynamic_strides`).
-            chain = (spec !== nothing && spec.contiguous && i == 1) ? EMPTY_PREDS :
+            # Static TensorView strides never enter the bytecode operands.
+            chain = (spec !== nothing &&
+                     ((spec.contiguous && i == 1) || spec.singleton[i])) ? EMPTY_PREDS :
                     op_predicates(ctx.divby_info, ctx.bounds_info,
                                   elem_op, :stride, stride_hint(i))
             wrap_for(ctx, tv.v::Value, tv.type_id::TypeId, chain)
@@ -626,13 +671,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     reverse!(size_vals)
     reverse!(stride_vals)
 
-    tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
-    tv_strides = compute_tensor_view_strides(spec, ndim)
+    tv_shape = compute_tensor_view_shape(spec, ndim)
+    tv_strides = compute_tensor_view_strides(spec, ndim, elem_T)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
-    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
+    dynamic_size_vals = filter_dynamic_values(size_vals, tv_shape)
+    dynamic_stride_vals = filter_dynamic_values(stride_vals, tv_strides)
 
-    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr, size_vals, dynamic_stride_vals)
+    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr,
+                                           dynamic_size_vals, dynamic_stride_vals)
     result_jltype = TensorView{elem_T, ndim}
     return CGVal(tensor_view, tv_type, result_jltype)
 end
@@ -703,7 +750,9 @@ views require at least 1-D. The token argument is appended by
                                           latency::Union{Int, Nothing},
                                           allow_tma::Bool,
                                           indices::NTuple{M, <:Integer},
-                                          check_bounds::Bool) where {T, N, Shape, M}
+                                          check_bounds::Bool,
+                                          memory_order,
+                                          memory_scope) where {T, N, Shape, M}
 tfunc(𝕃, ::typeof(Intrinsics.store_partition_view), @nospecialize args...) = Nothing
 efunc(::typeof(Intrinsics.store_partition_view), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
@@ -722,7 +771,9 @@ their loop-carried token dependency even when their tile indices differ.
                               latency::Union{Int, Nothing},
                               allow_tma::Bool,
                               indices::NTuple{M, <:Integer},
-                              check_bounds::Bool) where {T, N, Shape, Steps, M}
+                              check_bounds::Bool,
+                              memory_order,
+                              memory_scope) where {T, N, Shape, Steps, M}
 tfunc(𝕃, ::typeof(Intrinsics.store_strided_view), @nospecialize args...) = Nothing
 efunc(::typeof(Intrinsics.store_strided_view), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
@@ -741,7 +792,9 @@ indices as injective.
                                      latency::Union{Int, Nothing},
                                      allow_tma::Bool,
                                      indices,
-                                     check_bounds::Bool) where {T, N, Shape, SparseDim}
+                                     check_bounds::Bool,
+                                     memory_order,
+                                     memory_scope) where {T, N, Shape, SparseDim}
 tfunc(𝕃, ::typeof(Intrinsics.store_gather_scatter_view), @nospecialize args...) = Nothing
 efunc(::typeof(Intrinsics.store_gather_scatter_view), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)

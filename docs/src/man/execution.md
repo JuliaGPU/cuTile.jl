@@ -5,6 +5,23 @@ covers what happens at that point: how arguments cross to the device, which of
 them are compile-time values, what counts as a distinct kernel, and how the
 results are cached.
 
+Persistent settings are package preferences. For example:
+
+```toml
+[cuTile]
+compiler_timeout_seconds = 60
+disk_cache = true
+cache_dir = "/fast/local/cache"
+cache_size_bytes = 2147483648
+```
+
+The timeout covers each `tileiras` invocation. On expiry, cuTile terminates the
+compiler and reports a [`TileCompilerTimeoutError`](@ref cuTile.TileCompilerTimeoutError).
+
+```@docs
+cuTile.TileCompilerTimeoutError
+```
+
 Launching requires CUDA.jl to be imported. It supplies the `CuArray` type, the
 compiler artifacts, and the stream the kernel runs on.
 
@@ -119,10 +136,10 @@ one down. But they do mean that arrays which look interchangeable are not:
 
 ```julia-repl
 julia> typeof(ct.TileArray(CUDA.rand(Float32, 1024)))
-cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false}()}
+cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false, (false,)}()}
 
 julia> typeof(ct.TileArray(view(CUDA.rand(Float32, 2048), 1:2:2048)))
-cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, false, (0,), (16,), false}()}
+cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, false, (0,), (16,), false, (false,)}()}
 ```
 
 The strided view is not contiguous, so it compiles to a second, more
@@ -145,12 +162,6 @@ Across sessions, the Tile IR → CUBIN step is cached on disk, so the second run
 of a program skips the `tileiras` invocation entirely. The cache is
 content-addressed on the bytecode plus the toolkit version, architecture and
 optimization level, so a toolchain upgrade simply produces new entries rather
-than stale hits. Two environment variables control it:
-
-| Variable | Effect |
-|----------|--------|
-| `JULIA_CUTILE_CACHE_DIR` | Override the cache directory. `0`, `off`, `none` or empty disables the disk cache. |
-| `JULIA_CUTILE_CACHE_SIZE` | Override the maximum cache size (default 1 GiB). |
-
-These knobs are considered internal, and may disappear when cuTile.jl integrates
-more deeply with Julia's integrated code cache.
+than stale hits. The `disk_cache` preference disables it when set to `false`;
+`cache_dir` overrides its scratch directory, and `cache_size_bytes` overrides
+its default 1 GiB maximum size.

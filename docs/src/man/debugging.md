@@ -56,7 +56,7 @@ the argument types from the actual `CuArray`s:
 
 ```julia-repl
 julia> ct.@device_code_tiled @cuda backend=cuTile blocks=cld(vector_size, tile_size) vadd(a, b, c, ct.Constant(tile_size))
-// vadd(cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false}()}, …)
+// vadd(cuTile.TileArray{Float32, 1, Int32, cuTile.ArraySpec{1, 128, true, (0,), (16,), false, (false,)}()}, …)
 
 cuda_tile.module @kernels {
   entry @vadd(%arg0: tile<ptr<f32>>, …) {
