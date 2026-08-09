@@ -316,6 +316,63 @@ end
     @test all(Array(arr) .== 1)
 end
 
+@testset "masked atomic_add" begin
+    function masked_atomic_add_kernel(arr::ct.TileArray{Int,1})
+        indices = ct.arange(16; dtype=Int)
+        mask = indices .<= ct.Tile(8)
+        ct.atomic_add(arr, indices, 1; mask)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+    @cuda backend=cuTile masked_atomic_add_kernel(arr)
+
+    @test Array(arr) == [ones(Int, 8); zeros(Int, 8)]
+end
+
+@testset "masked atomic_cas" begin
+    function masked_atomic_cas_kernel(arr::ct.TileArray{Int,1}, out::ct.TileArray{Int,1})
+        indices = ct.arange(16; dtype=Int)
+        mask = indices .<= ct.Tile(8)
+        old = ct.atomic_cas(arr, indices, 0, 1; mask)
+        ct.scatter(out, indices, old)
+        return
+    end
+
+    arr = CuArray([zeros(Int, 8); fill(Int(42), 8)])
+    out = CUDA.fill(Int(-1), 16)
+    @cuda backend=cuTile masked_atomic_cas_kernel(arr, out)
+
+    @test Array(arr) == [ones(Int, 8); fill(Int(42), 8)]
+    @test Array(out) == zeros(Int, 16)
+end
+
+@testset "atomic mask and bounds" begin
+    function masked_atomic_oob_kernel(arr::ct.TileArray{Int,1})
+        indices = ct.arange(16; dtype=Int)
+        mask = indices .>= ct.Tile(8)
+        ct.atomic_add(arr, indices, 1; mask)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 8)
+    @cuda backend=cuTile masked_atomic_oob_kernel(arr)
+
+    @test Array(arr) == [zeros(Int, 7); 1]
+end
+
+@testset "scalar atomic mask" begin
+    function scalar_atomic_mask_kernel(counter::ct.TileArray{Int,1})
+        ct.atomic_add(counter, 1, 1; mask=ct.bid(1) == 1)
+        return
+    end
+
+    counter = CUDA.zeros(Int, 1)
+    @cuda backend=cuTile blocks=16 scalar_atomic_mask_kernel(counter)
+
+    @test Array(counter) == [1]
+end
+
 @testset "atomic_add tile-indexed 3D" begin
     function atomic_add_3d_kernel(arr::ct.TileArray{Int,3})
         # 3D index tiles — each is length 4, will broadcast to (4,4,4) = 64 elements
