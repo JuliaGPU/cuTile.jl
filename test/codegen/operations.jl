@@ -2020,6 +2020,20 @@ end
     end
 
     @testset "nested broadcast" begin
+        # Reusing the product must keep the multiply separate.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "mulf"
+            @check_not "fma"
+            @check "addf"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                product = tile .* tile
+                ct.store(a, 1, product .+ product)
+                return
+            end
+        end
+
         # a .+ b .* c → fma (fused by fma_fusion_pass!)
         @test @filecheck begin
             @check_label "entry"
