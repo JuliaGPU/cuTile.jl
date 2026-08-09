@@ -1461,6 +1461,17 @@ end
             end
         end
 
+        @test_throws "reinterpret does not support Bool" code_tiled(
+            Tuple{ct.TileArray{UInt8,1,Int32,spec1d}}) do a
+            Base.donotdelete(reinterpret(Bool, ct.load(a, 1, (16,))))
+            return
+        end
+        @test_throws "reinterpret does not support Bool" code_tiled(
+            Tuple{ct.TileArray{Bool,1,Int32,spec1d}}) do a
+            Base.donotdelete(reinterpret(UInt8, ct.load(a, 1, (16,))))
+            return
+        end
+
         # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
         @test @filecheck throws=ct.CodegenErrors begin
             @check "do not evenly divide"

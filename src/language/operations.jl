@@ -1383,6 +1383,12 @@ end
     return bt > bs ? Base.tail(sz) : (div(bs, bt), sz...)
 end
 
+@inline function check_reinterpret_eltypes(::Type{T}, ::Type{S}) where {T, S}
+    (T === Bool || S === Bool) &&
+        throw(ArgumentError("reinterpret does not support Bool tile elements"))
+    return
+end
+
 """
     Base.reinterpret(::Type{T}, x::Tile) -> Tile{T}
 
@@ -1398,6 +1404,7 @@ in a `UInt8` array. The total bit-width is preserved, so it must divide evenly.
 
 Note `reinterpret.(T, x)` (with a dot) is the unrelated *element-wise* broadcast,
 which keeps the shape and requires `T` to be the same width as `eltype(x)`.
+`Bool` is not supported as either element type.
 
 ```julia
 bytes = ct.load(a, pid, (8,))                 # Tile{UInt8,Tuple{8}}
@@ -1406,6 +1413,7 @@ vals  = convert(ct.Tile{Float32}, fp4)        # widen for compute
 ```
 """
 @inline function Base.reinterpret(::Type{T}, x::Tile) where {T}
+    check_reinterpret_eltypes(T, eltype(x))
     rshape = reinterpret_scaled_shape(T, eltype(x), size(x))
     flat = Intrinsics.reshape(x, (prod(size(x)),))
     return Intrinsics.reshape(reinterpret_width(T, flat), rshape)
@@ -1420,6 +1428,7 @@ dimension it *removes* it when widening (the leading dim must equal
 `bitwidth(T) ÷ bitwidth(eltype(x))`) and *prepends* one when narrowing.
 """
 @inline function Base.reinterpret(::typeof(reshape), ::Type{T}, x::Tile) where {T}
+    check_reinterpret_eltypes(T, eltype(x))
     rshape = reinterpret_reshape_shape(T, eltype(x), size(x))
     flat = Intrinsics.reshape(x, (prod(size(x)),))
     return Intrinsics.reshape(reinterpret_width(T, flat), rshape)
