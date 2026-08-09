@@ -15,6 +15,25 @@ keyword arguments; see [Memory Model](memory_model.md). Their indices may be
 scalars or tiles.
 
 
+## Masked atomics
+
+The read-modify-write `atomic_*` functions accept an optional `mask`. Use a
+`Bool` with a scalar index or a `Tile{Bool}` broadcastable to the common tile
+index shape:
+
+```julia
+indices = base .+ ct.arange(TILE)
+active = indices .<= n
+ct.atomic_add(counters, indices, Int32(1); mask=active)
+```
+
+With `check_bounds=true`, the effective mask is `mask .& bounds_mask`.
+Masked-out elements are not modified. [`atomic_cas`](@ref cuTile.atomic_cas)
+returns `expected` for those elements; the returned values of the other
+`atomic_*` functions are implementation-defined. View-based reductions and
+`ct.@atomic` do not accept a mask.
+
+
 ## View-based reductions
 
 The `atomic_store_*` functions use Tile IR's view-based atomic reductions and

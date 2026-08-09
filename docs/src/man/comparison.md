@@ -236,7 +236,10 @@ sides: `ct.bid`, `ct.num_blocks`, `ct.num_tiles`, `ct.load`, `ct.store`,
 `ct.extract`, `ct.insert`, `ct.divmod`, `ct.assume_divisible_by` and the
 `ct.atomic_*` family all keep their names, and so do their keyword arguments
 (`index`, `shape`, `order`, `padding_mode`, `padding_value`, `check_bounds`,
-`latency`, `memory_order`, `memory_scope`, `mask`).
+`latency`, `memory_order`, `memory_scope`). The `mask` keyword is shared by
+`gather` and `scatter`. Julia also accepts it on tile-indexed `atomic_*`
+functions; the Python equivalent is the lower-level
+`array.get_raw_memory().atomic_*_offset(..., mask=...)` API.
 
 Two rules cover most of the rest:
 

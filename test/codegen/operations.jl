@@ -2717,6 +2717,71 @@ end
         end
     end
 
+    @testset "masked atomics" begin
+        spec = ct.ArraySpec{1}(16, true)
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
+                indices = ct.arange(16; dtype=Int32)
+                user_mask = indices .<= ct.Tile(Int32(8))
+                @check "[[BOUNDS:%[^ ]+]] = andi"
+                @check "[[MASK:%[^ ]+]] = andi [[BOUNDS]],"
+                @check "atomic_rmw_tko{{.*}}, [[MASK]] token="
+                ct.atomic_add(arr, indices, 1; mask=user_mask)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
+                indices = ct.arange(16; dtype=Int32)
+                @check "[[MASK:%[^ ]+]] = cmpi less_than"
+                user_mask = indices .<= ct.Tile(Int32(8))
+                @check_not "less_than_or_equal"
+                @check "atomic_rmw_tko{{.*}}, [[MASK]] token="
+                ct.atomic_add(arr, indices, Int32(1);
+                              mask=user_mask, check_bounds=false)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "tile<16xi1>"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
+                indices = ct.arange(16; dtype=Int32)
+                @check "atomic_rmw_tko"
+                ct.atomic_add(arr, indices, Int32(1); check_bounds=false)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
+                indices = ct.arange(16; dtype=Int32)
+                user_mask = indices .<= ct.Tile(Int32(8))
+                @check "[[BOUNDS:%[^ ]+]] = andi"
+                @check "[[MASK:%[^ ]+]] = andi [[BOUNDS]],"
+                @check "atomic_cas_tko{{.*}}, [[MASK]] token="
+                ct.atomic_cas(arr, indices, 0, 1; mask=user_mask)
+                return
+            end
+        end
+
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec}}) do arr
+                @check "[[MASK:%[^ ]+]] = constant <i1: false>"
+                @check "atomic_rmw_tko{{.*}}, [[MASK]] token="
+                ct.atomic_add(arr, 1, Int32(1); mask=false)
+                return
+            end
+        end
+    end
+
     @testset "atomic_red_view_tko" begin
         spec2d = ct.ArraySpec{2}(16, true)
         @test @filecheck begin

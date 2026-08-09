@@ -14,17 +14,20 @@ public atomic_store_add, atomic_store_max, atomic_store_min,
 # then pass to a single set of intrinsics.
 # ============================================================================
 
-# Scalar index -> 0D pointer tile, no mask
+# Scalar index -> 0D pointer tile
 @inline function _atomic_ptr_and_mask(array::TileArray{T, <:Any, I}, index::Integer;
+                                      mask=nothing,
                                       check_bounds::Bool=true) where {T, I}
     idx_0 = Tile(I(index) - one(I))
     ptr_tile = Intrinsics.offset(Tile(array.ptr), idx_0)
-    (ptr_tile, nothing, ())
+    mask_tile = mask === nothing ? nothing : Tile(mask)
+    (ptr_tile, mask_tile, ())
 end
 
 # N-D tile indices -> N-D pointer tile with optional bounds mask
 @inline function _atomic_ptr_and_mask(array::TileArray{T, N, I},
                                        indices::NTuple{N, Tile{<:Integer}};
+                                       mask=nothing,
                                        check_bounds::Bool=true) where {T, N, I}
     indices_0 = ntuple(Val(N)) do d
         indices[d] .- one(eltype(indices[d]))
@@ -42,7 +45,7 @@ end
 
     ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
-    mask = if check_bounds
+    bounds_mask = if check_bounds
         zero_bc = broadcast_to(Tile(zero(I)), S)
         reduce(.&, ntuple(Val(N)) do d
             (array_indices[d] .>= zero_bc) .&
@@ -52,13 +55,15 @@ end
         nothing
     end
 
-    (ptr_tile, mask, S)
+    user_mask = mask === nothing ? nothing : broadcast_to(mask, S)
+    (ptr_tile, _combine_masks(bounds_mask, user_mask), S)
 end
 
 # 1D convenience: single Tile -> 1-tuple
 @inline function _atomic_ptr_and_mask(array::TileArray{T, 1}, indices::Tile{<:Integer};
+                                       mask=nothing,
                                        check_bounds::Bool=true) where {T}
-    _atomic_ptr_and_mask(array, (indices,); check_bounds)
+    _atomic_ptr_and_mask(array, (indices,); mask, check_bounds)
 end
 
 # ============================================================================
@@ -66,11 +71,16 @@ end
 # ============================================================================
 
 """
-    atomic_cas(array::TileArray, index, expected, desired; memory_order, memory_scope) -> T
+    atomic_cas(array::TileArray, index, expected, desired; mask, memory_order, memory_scope) -> T
 
 Atomic compare-and-swap. Atomically compares the value at `index` with `expected`,
 and if equal, replaces it with `desired`. Returns the original value.
 Index is 1-indexed.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified and return the
+corresponding `expected` value.
 
 # Example
 ```julia
@@ -82,23 +92,26 @@ end
 """
 @inline function atomic_cas(array::TileArray{T}, indices,
                             expected::TileOrScalar{T}, desired::TileOrScalar{T};
+                            mask=nothing,
                             check_bounds::Bool=true,
                             memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
                             memory_scope::MemScope.T=MemScope.Device) where {T}
-    ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices; check_bounds)
+    ptr_tile, final_mask, S = _atomic_ptr_and_mask(array, indices; mask, check_bounds)
     expected_bc = S === () ? Tile(expected) : broadcast_to(Tile(expected), S)
     desired_bc = S === () ? Tile(desired) : broadcast_to(Tile(desired), S)
-    result = Intrinsics.atomic_cas(ptr_tile, expected_bc, desired_bc, mask,
+    result = Intrinsics.atomic_cas(ptr_tile, expected_bc, desired_bc, final_mask,
                                    memory_order, memory_scope)
     S === () ? Intrinsics.to_scalar(result) : result
 end
 
 @inline function atomic_cas(array::TileArray{T}, indices,
                             expected::TileOrScalar, desired::TileOrScalar;
+                            mask=nothing,
                             check_bounds::Bool=true,
                             memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
                             memory_scope::MemScope.T=MemScope.Device) where {T}
-    atomic_cas(array, indices, T(expected), T(desired); check_bounds, memory_order, memory_scope)
+    atomic_cas(array, indices, T(expected), T(desired);
+               mask, check_bounds, memory_order, memory_scope)
 end
 
 # ============================================================================
@@ -106,11 +119,16 @@ end
 # ============================================================================
 
 """
-    atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_add(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic addition. Atomically adds `val` to the value at `index` and returns
 the original value. Index is 1-indexed. `BFloat16` requires Tile IR bytecode
 ≥ 13.3 and Hopper (sm_90) or newer.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 
 # Example
 ```julia
@@ -120,10 +138,15 @@ old_val = ct.atomic_add(counters, idx, Int32(1))
 function atomic_add end
 
 """
-    atomic_xchg(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_xchg(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic exchange. Atomically replaces the value at `index` with `val` and returns
 the original value. Index is 1-indexed.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 
 # Example
 ```julia
@@ -134,47 +157,72 @@ ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 function atomic_xchg end
 
 """
-    atomic_max(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_max(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic maximum. Atomically replaces the value at `index` with `max(old, val)`
 and returns the original value. Index is 1-indexed. The comparison is signed
 for `Signed` element types and unsigned for `Unsigned` ones.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 """
 function atomic_max end
 
 """
-    atomic_min(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_min(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic minimum. Atomically replaces the value at `index` with `min(old, val)`
 and returns the original value. Index is 1-indexed. The comparison is signed
 for `Signed` element types and unsigned for `Unsigned` ones.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 """
 function atomic_min end
 
 """
-    atomic_or(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_or(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic bitwise OR. Atomically replaces the value at `index` with `old | val`
 and returns the original value. Index is 1-indexed. `val` must already have the
 array's element type; bitwise atomics do not convert implicitly.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 """
 function atomic_or end
 
 """
-    atomic_and(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_and(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic bitwise AND. Atomically replaces the value at `index` with `old & val`
 and returns the original value. Index is 1-indexed. `val` must already have the
 array's element type; bitwise atomics do not convert implicitly.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 """
 function atomic_and end
 
 """
-    atomic_xor(array::TileArray, index, val; memory_order, memory_scope) -> T
+    atomic_xor(array::TileArray, index, val; mask, memory_order, memory_scope) -> T
 
 Atomic bitwise XOR. Atomically replaces the value at `index` with `old ⊻ val`
 and returns the original value. Index is 1-indexed. `val` must already have the
 array's element type; bitwise atomics do not convert implicitly.
+
+`mask` may be a `Bool` for a scalar index or a `Tile{Bool}` broadcastable to
+the common index shape. With `check_bounds=true`, it is AND'd with the
+automatic bounds mask. Masked-out elements are not modified; their returned
+values are implementation-defined.
 """
 function atomic_xor end
 
@@ -184,12 +232,13 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
     bitwise = op in (:or, :and, :xor)
 
     @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar{T};
+                                   mask=nothing,
                                    check_bounds::Bool=true,
                                    memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
                                    memory_scope::MemScope.T=MemScope.Device) where {T}
-        ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices; check_bounds)
+        ptr_tile, final_mask, S = _atomic_ptr_and_mask(array, indices; mask, check_bounds)
         val_bc = S === () ? Tile(val) : broadcast_to(Tile(val), S)
-        result = Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
+        result = Intrinsics.$intrinsic(ptr_tile, val_bc, final_mask, memory_order, memory_scope)
         S === () ? Intrinsics.to_scalar(result) : result
     end
 
@@ -202,10 +251,11 @@ for op in (:add, :xchg, :max, :min, :or, :and, :xor)
         end
     else
         @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
+                                       mask=nothing,
                                        check_bounds::Bool=true,
                                        memory_order::MemoryOrder.T=MemoryOrder.AcqRel,
                                        memory_scope::MemScope.T=MemScope.Device) where {T}
-            $fname(array, indices, T(val); check_bounds, memory_order, memory_scope)
+            $fname(array, indices, T(val); mask, check_bounds, memory_order, memory_scope)
         end
     end
 end
