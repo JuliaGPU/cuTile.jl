@@ -10,26 +10,16 @@ const DC = cuTile.DiskCache
     end
 
     @testset "configuration" begin
-        @test DC.cache_setting_disabled("")
-        @test DC.cache_setting_disabled("0")
-        @test DC.cache_setting_disabled(" OFF ")
-        @test DC.cache_setting_disabled("none")
-        @test !DC.cache_setting_disabled("cache-dir")
-
-        @test DC.parse_cache_size("4096") == 4096
+        @test DC.parse_cache_size(4096) == 4096
         @test_throws ArgumentError DC.parse_cache_size("0")
-        @test_throws ArgumentError DC.parse_cache_size("not-a-size")
+        @test_throws ArgumentError DC.parse_cache_size(true)
+        @test_throws ArgumentError DC.parse_cache_size(0)
+        @test_throws ArgumentError DC.parse_cache_dir("")
 
         mktempdir() do dir
-            withenv("JULIA_CUTILE_CACHE_DIR" => dir) do
-                @test DC.configured_cache_dir() == abspath(dir)
-            end
-            withenv("JULIA_CUTILE_CACHE_DIR" => "off") do
-                @test DC.configured_cache_dir() === nothing
-            end
-            withenv("JULIA_CUTILE_CACHE_SIZE" => "8192") do
-                @test DC.configured_mapsize() == 8192
-            end
+            @test DC.configured_cache_dir(true, dir) == abspath(dir)
+            @test DC.configured_cache_dir(false, dir) === nothing
+            @test DC.configured_mapsize(8192) == 8192
 
             write(joinpath(dir, "data.mdb"), "stale")
             write(joinpath(dir, "lock.mdb"), "stale")

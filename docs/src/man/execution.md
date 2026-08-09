@@ -5,11 +5,14 @@ covers what happens at that point: how arguments cross to the device, which of
 them are compile-time values, what counts as a distinct kernel, and how the
 results are cached.
 
-Persistent compiler settings are package preferences. For example:
+Persistent settings are package preferences. For example:
 
 ```toml
 [cuTile]
 compiler_timeout_seconds = 60
+disk_cache = true
+cache_dir = "/fast/local/cache"
+cache_size_bytes = 2147483648
 ```
 
 The timeout covers each `tileiras` invocation. On expiry, cuTile terminates the
@@ -159,12 +162,6 @@ Across sessions, the Tile IR → CUBIN step is cached on disk, so the second run
 of a program skips the `tileiras` invocation entirely. The cache is
 content-addressed on the bytecode plus the toolkit version, architecture and
 optimization level, so a toolchain upgrade simply produces new entries rather
-than stale hits. Two environment variables control it:
-
-| Variable | Effect |
-|----------|--------|
-| `JULIA_CUTILE_CACHE_DIR` | Override the cache directory. `0`, `off`, `none` or empty disables the disk cache. |
-| `JULIA_CUTILE_CACHE_SIZE` | Override the maximum cache size (default 1 GiB). |
-
-These knobs are considered internal, and may disappear when cuTile.jl integrates
-more deeply with Julia's integrated code cache.
+than stale hits. The `disk_cache` preference disables it when set to `false`;
+`cache_dir` overrides its scratch directory, and `cache_size_bytes` overrides
+its default 1 GiB maximum size.
