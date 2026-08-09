@@ -108,19 +108,25 @@ end
     a = CuArray([-value, value])
     b = CUDA.zeros(Float32, 2)
 
-    for (mode, expected) in ((RoundNearest, Float32[-high, high]),
-                             (RoundDown, Float32[-high, low]),
-                             (RoundUp, Float32[-low, high]),
-                             (RoundToZero, Float32[-low, low]))
-        @cuda backend=cuTile round_f64_f32(a, b, ct.Constant(mode))
-        @test Array(b) == expected
+    # Round-to-nearest is the default mode, supported on every bytecode version.
+    @cuda backend=cuTile round_f64_f32(a, b, ct.Constant(RoundNearest))
+    @test Array(b) == Float32[-high, high]
+
+    # The directed modes and ties-away need v13.4.
+    if ct.bytecode_version() >= v"13.4"
+        for (mode, expected) in ((RoundDown, Float32[-high, low]),
+                                 (RoundUp, Float32[-low, high]),
+                                 (RoundToZero, Float32[-low, low]))
+            @cuda backend=cuTile round_f64_f32(a, b, ct.Constant(mode))
+            @test Array(b) == expected
+        end
+
+        tie = Float32(1 + 2.0^-11)
+        @cuda backend=cuTile round_f32_tf32(CuArray([-tie, tie]), b)
+        @test Array(b) == Float32[-(1 + 2.0^-10), 1 + 2.0^-10]
+
+        scalar = CUDA.zeros(Float32, 1)
+        @cuda backend=cuTile round_scalar_f64_f32(value, scalar)
+        @test Array(scalar) == Float32[low]
     end
-
-    tie = Float32(1 + 2.0^-11)
-    @cuda backend=cuTile round_f32_tf32(CuArray([-tie, tie]), b)
-    @test Array(b) == Float32[-(1 + 2.0^-10), 1 + 2.0^-10]
-
-    scalar = CUDA.zeros(Float32, 1)
-    @cuda backend=cuTile round_scalar_f64_f32(value, scalar)
-    @test Array(scalar) == Float32[low]
 end

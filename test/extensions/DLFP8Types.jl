@@ -32,17 +32,19 @@ end
     end
 end
 
-# Float8_E5M2 -> Float32 with explicit rounding
-@test @filecheck begin
-    @check_label "entry"
-    code_tiled(Tuple{ct.TileArray{Float8_E5M2,1,Int32,spec1d},
-                     ct.TileArray{Float32,1,Int32,spec1d}};
-               bytecode_version=v"13.4") do a, b
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        @check "rounding<negative_inf>"
-        ct.store(b, pid, Float32.(tile, RoundDown))
-        return
+# Float8_E5M2 -> Float32 with explicit rounding (needs v13.4 to disassemble)
+if ct.bytecode_version() >= v"13.4"
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float8_E5M2,1,Int32,spec1d},
+                         ct.TileArray{Float32,1,Int32,spec1d}};
+                   bytecode_version=v"13.4") do a, b
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            @check "rounding<negative_inf>"
+            ct.store(b, pid, Float32.(tile, RoundDown))
+            return
+        end
     end
 end
 

@@ -1568,38 +1568,42 @@ end
             end
         end
 
-        for (mode, attr) in ((RoundToZero, "zero"),
-                             (RoundDown, "negative_inf"),
-                             (RoundUp, "positive_inf"))
+        # Directed rounding needs v13.4, which the disassembler only understands
+        # when the local toolkit is new enough.
+        if ct.bytecode_version() >= v"13.4"
+            for (mode, attr) in ((RoundToZero, "zero"),
+                                 (RoundDown, "negative_inf"),
+                                 (RoundUp, "positive_inf"))
+                @test @filecheck begin
+                    @check_label "entry"
+                    code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
+                                     ct.TileArray{Float32,1,Int32,spec1d}};
+                               bytecode_version=v"13.4") do a, b
+                        pid = ct.bid(1)
+                        tile = ct.load(a, pid, (16,))
+                        @check "ftof"
+                        @check "rounding<$attr>"
+                        ct.store(b, pid, Float32.(tile, mode))
+                        return
+                    end
+                end
+            end
+
+            # Explicit nearest-even and nearest-away through map and scalar conversion.
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
-                                 ct.TileArray{Float32,1,Int32,spec1d}};
-                           bytecode_version=v"13.4") do a, b
+                                 ct.TileArray{Float32,1,Int32,spec1d}, Float32};
+                           bytecode_version=v"13.4") do a, b, x
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
-                    @check "rounding<$attr>"
-                    ct.store(b, pid, Float32.(tile, mode))
+                    mapped = map(y -> Float32(y, RoundNearest), tile)
+                    @check "rounding<nearest_away>"
+                    Base.donotdelete(ct.TFloat32(x, RoundNearestTiesAway))
+                    ct.store(b, pid, mapped)
                     return
                 end
-            end
-        end
-
-        # Explicit nearest-even and nearest-away through map and scalar conversion.
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
-                             ct.TileArray{Float32,1,Int32,spec1d}, Float32};
-                       bytecode_version=v"13.4") do a, b, x
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (16,))
-                @check "ftof"
-                mapped = map(y -> Float32(y, RoundNearest), tile)
-                @check "rounding<nearest_away>"
-                Base.donotdelete(ct.TFloat32(x, RoundNearestTiesAway))
-                ct.store(b, pid, mapped)
-                return
             end
         end
 
