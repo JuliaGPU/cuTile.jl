@@ -1,5 +1,14 @@
 # Type system for Tile IR bytecode
 
+const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2", v"13.3", v"13.4")
+
+function validate_bytecode_version(version::VersionNumber)
+    version in SUPPORTED_BYTECODE_VERSIONS || throw(ArgumentError(
+        "unsupported Tile IR bytecode version v$version; supported versions are " *
+        join(("v$v" for v in SUPPORTED_BYTECODE_VERSIONS), ", ")))
+    return version
+end
+
 # Type ID wrapper
 struct TypeId
     id::Int
@@ -99,12 +108,15 @@ mutable struct TypeTable
 end
 
 function TypeTable(; version::VersionNumber)
+    validate_bytecode_version(version)
     table = TypeTable(Dict{Vector{UInt8}, TypeId}(), 0, version)
     # Pre-register I1 and I32 at fixed positions
     _predefine!(table, [SimpleType.I1], I1_TYPE_ID)
     _predefine!(table, [SimpleType.I32], I32_TYPE_ID)
     return table
 end
+
+bytecode_version(table::TypeTable) = table.version
 
 function _predefine!(table::TypeTable, tag::Vector{UInt8}, expected_id::TypeId)
     actual = _get_or_create!(table, tag)
@@ -177,13 +189,13 @@ F64(table::TypeTable) = simple_type!(table, SimpleType.F64)
 F8E4M3FN(table::TypeTable) = simple_type!(table, SimpleType.F8E4M3FN)
 F8E5M2(table::TypeTable) = simple_type!(table, SimpleType.F8E5M2)
 function F8E8M0FNU(table::TypeTable)
-    table.version >= v"13.2" ||
-        throw(IRError("Float8_E8M0FNU requires Tile IR bytecode v13.2+, got v$(table.version)"))
+    bytecode_version(table) >= v"13.2" ||
+        throw(IRError("Float8_E8M0FNU requires Tile IR bytecode v13.2+, got v$(bytecode_version(table))"))
     simple_type!(table, SimpleType.F8E8M0FNU)
 end
 function F4E2M1FN(table::TypeTable)
-    table.version >= v"13.3" ||
-        throw(IRError("Float4_E2M1FN requires Tile IR bytecode v13.3+, got v$(table.version)"))
+    bytecode_version(table) >= v"13.3" ||
+        throw(IRError("Float4_E2M1FN requires Tile IR bytecode v13.3+, got v$(bytecode_version(table))"))
     simple_type!(table, SimpleType.F4E2M1FN)
 end
 Token(table::TypeTable) = simple_type!(table, SimpleType.Token)
@@ -197,7 +209,7 @@ end
 
 function pointer_type!(table::TypeTable, pointee::TypeId)
     buf = UInt8[CompositeType.Pointer]
-    table.version >= v"13.4" && encode_varint!(buf, 0) # no PtrAttr
+    bytecode_version(table) >= v"13.4" && encode_varint!(buf, 0) # no PtrAttr
     encode_varint!(buf, pointee.id)
     _get_or_create!(table, buf)
 end
@@ -206,7 +218,7 @@ function tensor_view_type!(table::TypeTable, dtype::TypeId,
                            shape::TileShape,
                            strides::AbstractVector{<:Integer})
     buf = UInt8[CompositeType.TensorView]
-    table.version >= v"13.4" && encode_varint!(buf, 0) # no PtrAttr
+    bytecode_version(table) >= v"13.4" && encode_varint!(buf, 0) # no PtrAttr
     encode_varint!(buf, dtype.id)
     encode_int_list!(buf, collect(shape), 8)
     encode_int_list!(buf, strides, 8)
@@ -219,7 +231,7 @@ function partition_view_type!(table::TypeTable,
                               dim_map::AbstractVector{<:Integer},
                               padding_value::PaddingValue.T)
     buf = UInt8[CompositeType.PartitionView]
-    if table.version >= v"13.3"
+    if bytecode_version(table) >= v"13.3"
         # Unified bitfield encoding: an `optional_flags` varint up front
         # gates a bare padding byte at the tail (no separate present flag).
         encode_optional_flags!(buf, padding_value)
@@ -242,8 +254,8 @@ function strided_view_type!(table::TypeTable,
                             tensor_view::TypeId,
                             dim_map::AbstractVector{<:Integer},
                             padding_value::PaddingValue.T)
-    table.version >= v"13.3" ||
-        throw(IRError("StridedView requires Tile IR bytecode v13.3+, got v$(table.version)"))
+    bytecode_version(table) >= v"13.3" ||
+        throw(IRError("StridedView requires Tile IR bytecode v13.3+, got v$(bytecode_version(table))"))
     buf = UInt8[CompositeType.StridedView]
     encode_optional_flags!(buf, padding_value)
     encode_int_list!(buf, collect(tile_shape), 4)
@@ -259,8 +271,8 @@ function gather_scatter_view_type!(table::TypeTable,
                                    tensor_view::TypeId,
                                    sparse_dim::Integer,
                                    padding_value::PaddingValue.T)
-    table.version >= v"13.3" ||
-        throw(IRError("GatherScatterView requires Tile IR bytecode v13.3+, got v$(table.version)"))
+    bytecode_version(table) >= v"13.3" ||
+        throw(IRError("GatherScatterView requires Tile IR bytecode v13.3+, got v$(bytecode_version(table))"))
     sparse_dim >= 0 || throw(IRError("GatherScatterView sparse dimension must be non-negative, got $sparse_dim"))
     sparse_dim < length(tile_shape) ||
         throw(IRError("GatherScatterView sparse dimension $sparse_dim is outside rank $(length(tile_shape))"))

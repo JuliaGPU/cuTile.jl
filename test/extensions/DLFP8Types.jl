@@ -33,7 +33,7 @@ end
 end
 
 # Float8_E5M2 -> Float32 with explicit rounding (needs v13.4 to disassemble)
-if ct.bytecode_version() >= v"13.4"
+if ct.tileir_disassembler_version() >= v"13.4"
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float8_E5M2,1,Int32,spec1d},

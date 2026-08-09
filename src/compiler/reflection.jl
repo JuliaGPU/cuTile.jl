@@ -5,10 +5,14 @@
 export code_tiled
 public code_typed, code_ircode, code_structured
 
-function disassemble_tileir(bytecode::Vector{UInt8}; debuginfo::Bool=false)::String
-    disasm = @something tileir_disassembler(; debuginfo) throw(ErrorException(
-        "no `tileirdisasm` next to $(tileiras_path()); disassembling Tile IR " *
-        "requires a CUDA 13.4+ toolkit when the `tileiras` preference is set"))
+function disassemble_tileir(bytecode::Vector{UInt8}, version::VersionNumber;
+                            debuginfo::Bool=false)::String
+    validate_bytecode_version(version)
+    disassembler_version = tileir_disassembler_version()
+    version <= disassembler_version || throw(ArgumentError(
+        "Tile IR bytecode v$version cannot be decoded by the selected v$disassembler_version " *
+        "disassembler"))
+    disasm = tileir_disassembler(; debuginfo)
     mktempdir() do dir
         input_path = joinpath(dir, "kernel.tile")
         write(input_path, bytecode)
@@ -116,7 +120,7 @@ Analogous to `code_llvm`/`code_native`. Calls the driver directly without
 caching in CuTileResults, so reflection never pollutes the compilation cache.
 
 Set `remarks=true` to also run `tileiras` and print its optimization remarks.
-This requires Tile IR 13.4 or newer. When no GPU is available, pass `sm_arch`
+This requires `tileiras` 13.4 or newer. When no GPU is available, pass `sm_arch`
 explicitly.
 """
 function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
@@ -140,10 +144,11 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     bytecode = emit_tile(sci, rettype, kernel_meta;
                          name=sanitize_name(string(mi.def.name)),
                          opts, cache, const_argtypes)
-    print(io, disassemble_tileir(bytecode; debuginfo))
+    print(io, disassemble_tileir(bytecode, bytecode_version; debuginfo))
     if remarks
-        tileiras_supports_remarks() || throw(ArgumentError(
+        tileiras_version() >= v"13.4" || throw(ArgumentError(
             "tileiras optimization remarks require tileiras 13.4 or newer"))
+        validate_tileiras_target(bytecode_version)
         target = if sm_arch === nothing
             try
                 default_sm_arch()

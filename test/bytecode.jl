@@ -1,6 +1,6 @@
 make_builder(version) = let strings = cuTile.StringTable(), constants = cuTile.ConstantTable()
     types = cuTile.TypeTable(; version)
-    cuTile.CodeBuilder(strings, constants, types; version)
+    cuTile.CodeBuilder(strings, constants, types)
 end
 
 @testset "Tile IR v13.3 GatherScatterView encodings" begin
@@ -27,6 +27,7 @@ end
 
 @testset "Tile IR v13.4 encodings" begin
     @test v"13.4" in cuTile.SUPPORTED_BYTECODE_VERSIONS
+    @test_throws ArgumentError cuTile.TypeTable(; version=v"13.5")
 
     tt33 = cuTile.TypeTable(; version=v"13.3")
     tt34 = cuTile.TypeTable(; version=v"13.4")

@@ -1,3 +1,17 @@
+@testset "lazy toolchain discovery" begin
+    script = """
+        using cuTile
+        @assert cuTile.tileir_toolchain_cache.value === nothing
+        @assert cuTile.tileir_disassembler_cache.value === nothing
+        cuTile.bytecode_version()
+        @assert cuTile.tileir_toolchain_cache.value !== nothing
+        @assert cuTile.tileir_disassembler_cache.value === nothing
+        """
+    project = dirname(Base.active_project())
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project -e $script`
+    @test success(run(ignorestatus(cmd)))
+end
+
 @testset "compiler timeout" begin
     @test cuTile.parse_compiler_timeout(nothing) === nothing
     @test cuTile.parse_compiler_timeout(1) == 1.0

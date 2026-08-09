@@ -21,12 +21,12 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       cache::CacheView,
                       const_argtypes::Union{Vector{Any}, Nothing} = nothing)
     tt = writer.type_table
-    cb = CodeBuilder(writer.string_table, writer.constant_table, tt; version=writer.version)
+    cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
 
     # Create debug info emitter
     debug_emitter = DebugInfoEmitter(writer.debug_attr_table)
 
-    ctx = CGCtx(; cb, tt, sci, sm_arch, cache, debug_emitter, linkage_name=name)
+    ctx = CGCtx(; cb, sci, sm_arch, cache, debug_emitter, linkage_name=name)
 
     # Determine which argument positions are const-seeded
     # const_argtypes is 1-indexed: [Const(f), arg2, arg3, ...]
@@ -401,7 +401,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     sub_divby, sub_bounds = run_passes!(sci)
 
     # 3. Create sub-context (inherits active fpmode from caller)
-    sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
+    sub_ctx = CGCtx(; cb=ctx.cb, sci,
                       ctx.token_type,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)

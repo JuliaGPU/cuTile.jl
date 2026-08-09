@@ -371,13 +371,14 @@ mutable struct CGCtx
     touched_poison::Bool
 end
 
-function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
+function CGCtx(; cb::CodeBuilder, sci::StructuredIRCode,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
                  sm_arch::Union{VersionNumber, Nothing} = nothing,
                  cache::CacheView,
                  debug_emitter = nothing,
                  linkage_name::String = "")
+    tt = cb.type_table
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -407,6 +408,8 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         false,                           # touched_poison
     )
 end
+
+bytecode_version(ctx::CGCtx) = bytecode_version(ctx.tt)
 
 """
     current_fpmode(ctx::CGCtx) -> FPMode

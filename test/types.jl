@@ -246,7 +246,7 @@ end
 
     # Scalar TFloat32 must resolve to a 0-D tile; `tile_type_for_julia!`
     # used to skip it, breaking any call site that fed a bare scalar to codegen.
-    let tt = cuTile.TypeTable(; version=cuTile.bytecode_version())
+    let tt = cuTile.TypeTable(; version=v"13.1")
         tid = cuTile.tile_type_for_julia!(tt, ct.TFloat32)
         @test tid !== nothing
     end
@@ -325,6 +325,11 @@ end
     # Pre-Ampere is unsupported
     @test cuTile.tile_ir_requirement(v"7.5") === nothing
     @test cuTile.tile_ir_requirement(v"7.0") === nothing
+
+    @test isnothing(cuTile.validate_tile_ir_target(v"10.0", v"13.1"))
+    @test isnothing(cuTile.validate_tile_ir_target(v"9.0", v"13.3"))
+    @test_throws ArgumentError cuTile.validate_tile_ir_target(v"9.0", v"13.2")
+    @test_throws ArgumentError cuTile.validate_tile_ir_target(v"7.5", v"13.4")
 end
 
 @testset "@compiler_options validation" begin

@@ -222,10 +222,10 @@ function check_atomic_bf16_support(ctx::CGCtx, mode::AtomicRMWMode.T, @nospecial
             "atomic add on BFloat16 requires Hopper (sm_90) or newer, got " *
             format_sm_arch(ctx.sm_arch)))
     end
-    if ctx.cb.version < v"13.3"
+    if bytecode_version(ctx) < v"13.3"
         throw(IRError(
             "atomic add on BFloat16 requires Tile IR bytecode ≥ 13.3, got " *
-            "v$(ctx.cb.version)"))
+            "v$(bytecode_version(ctx))"))
     end
 end
 
@@ -234,8 +234,8 @@ function emit_atomic_red_view!(ctx::CGCtx, args::AbstractVector,
     cb = ctx.cb
     tt = ctx.tt
 
-    cb.version >= v"13.3" ||
-        throw(IRError("$name requires Tile IR bytecode ≥ 13.3 (tileiras too old), got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.3" ||
+        throw(IRError("$name requires Tile IR bytecode v13.3+, got v$(bytecode_version(cb))"))
 
     input_token = extract_token_arg!(ctx, args)
 

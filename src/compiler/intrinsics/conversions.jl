@@ -81,8 +81,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
     tt = ctx.tt
 
     source = @something emit_value!(ctx, args[1]) throw(IRError("pack: cannot resolve source"))
-    tt.version >= v"13.3" ||
-        throw(IRError("cuda_tile.pack requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    bytecode_version(tt) >= v"13.3" ||
+        throw(IRError("cuda_tile.pack requires Tile IR bytecode v13.3+, got v$(bytecode_version(tt))"))
     length(source.shape) == 1 ||
         throw(IRError("pack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
 
@@ -130,8 +130,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
 
     source = @something emit_value!(ctx, args[1]) throw(IRError("unpack: cannot resolve source"))
     target_type = @something get_constant(ctx, args[2]) throw(IRError("unpack: requires compile-time target type"))
-    tt.version >= v"13.3" ||
-        throw(IRError("cuda_tile.unpack requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    bytecode_version(tt) >= v"13.3" ||
+        throw(IRError("cuda_tile.unpack requires Tile IR bytecode v13.3+, got v$(bytecode_version(tt))"))
     length(source.shape) == 1 ||
         throw(IRError("unpack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
 
@@ -302,7 +302,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     end
     source_tag = simple_type_tag(tt, tile_eltype_id(tt, source.type_id))
     target_tag = simple_type_tag(tt, dtype)
-    validate_ftof_rounding(source_tag, target_tag, rounding_mode, tt.version)
+    validate_ftof_rounding(source_tag, target_tag, rounding_mode, bytecode_version(tt))
     result_v = encode_FToFOp!(cb, result_type_id, source.v; rounding_mode)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)

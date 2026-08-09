@@ -1579,9 +1579,8 @@ end
             end
         end
 
-        # Directed rounding needs v13.4, which the disassembler only understands
-        # when the local toolkit is new enough.
-        if ct.bytecode_version() >= v"13.4"
+        # Directed rounding needs a disassembler that understands v13.4.
+        if ct.tileir_disassembler_version() >= v"13.4"
             for (mode, attr) in ((RoundToZero, "zero"),
                                  (RoundDown, "negative_inf"),
                                  (RoundUp, "positive_inf"))

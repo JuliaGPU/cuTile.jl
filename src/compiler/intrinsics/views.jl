@@ -485,8 +485,8 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_gather_scatter_view), args)
     tensor_view = emit_value!(ctx, args[1])
     tensor_view === nothing && throw(IRError("make_gather_scatter_view() requires a TensorView argument"))
-    ctx.tt.version >= v"13.3" ||
-        throw(IRError("make_gather_scatter_view requires Tile IR bytecode v13.3+, got v$(ctx.tt.version)"))
+    bytecode_version(ctx) >= v"13.3" ||
+        throw(IRError("make_gather_scatter_view requires Tile IR bytecode v13.3+, got v$(bytecode_version(ctx))"))
 
     shape = @something get_constant(ctx, args[2]) throw(IRError("make_gather_scatter_view() shape must be a compile-time constant"))
     shape isa Tuple || throw(IRError("make_gather_scatter_view() shape must be a tuple, got $(typeof(shape))"))
@@ -607,8 +607,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     ndim = ndims(T)
     spec = array_spec(T)
     I = indextype(T)
-    I === Int64 && tt.version < v"13.3" &&
-        throw(IRError("Int64-indexed TileArray requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    I === Int64 && bytecode_version(tt) < v"13.3" &&
+        throw(IRError("Int64-indexed TileArray requires Tile IR bytecode v13.3+, got v$(bytecode_version(tt))"))
     dtype = lookup_dtype!(tt, elem_T)
 
     # Resolve operands. ptr is a single Value; sizes/strides expand to N values.

@@ -160,7 +160,7 @@ corresponding compiled result.
 
 Across sessions, the Tile IR → CUBIN step is cached on disk, so the second run
 of a program skips the `tileiras` invocation entirely. The cache is
-content-addressed on the bytecode plus the toolkit version, architecture and
+content-addressed on the bytecode plus the compiler identity, architecture and
 optimization level, so a toolchain upgrade simply produces new entries rather
 than stale hits. The `disk_cache` preference disables it when set to `false`;
 `cache_dir` overrides its scratch directory, and `cache_size_bytes` overrides

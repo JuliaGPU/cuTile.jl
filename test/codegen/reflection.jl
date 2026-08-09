@@ -72,7 +72,7 @@ end
     end
 end
 
-if ct.tileiras_supports_remarks()
+if ct.tileiras_version() >= v"13.4"
     @testset "code_tiled remarks" begin
         output = sprint(io -> ct.code_tiled(io, reflect_vadd, TT3;
                                             sm_arch=v"10.0", remarks=true))

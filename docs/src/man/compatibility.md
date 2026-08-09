@@ -25,7 +25,9 @@ artifacts, including `tileiras`.
 
 cuTile.jl can emit bytecode versions **v13.1 through v13.4**. By default it
 probes the `tileiras` binary in use and emits the newest version that binary
-accepts; the `bytecode_version` preference overrides this.
+accepts; the `bytecode_version` preference selects a version accepted by
+that binary. cuTile rejects preferences unsupported by either the package or
+the selected `tileiras`.
 `cuTile.versioninfo()` reports what will be used.
 
 Each architecture has a minimum bytecode version below which Tile IR is not
