@@ -135,6 +135,35 @@ const bytecode_version_override = let s = @load_preference("bytecode_version", n
     s === nothing ? nothing : VersionNumber(s)
 end
 
+function parse_compiler_timeout(value)
+    value === nothing && return nothing
+    value isa Real && !(value isa Bool) ||
+        throw(ArgumentError("compiler_timeout_seconds must be a positive number"))
+    timeout = Float64(value)
+    isfinite(timeout) && timeout > 0 ||
+        throw(ArgumentError("compiler_timeout_seconds must be a positive number"))
+    return timeout
+end
+
+const compiler_timeout =
+    parse_compiler_timeout(@load_preference("compiler_timeout_seconds", nothing))
+
+"""
+    TileCompilerTimeoutError
+
+The external Tile IR compiler exceeded the configured timeout.
+"""
+struct TileCompilerTimeoutError <: Exception
+    seconds::Float64
+end
+
+function Base.showerror(io::IO, err::TileCompilerTimeoutError)
+    print(io, "tileiras exceeded the ", err.seconds, " second compiler timeout; ",
+          "reducing the tile size may reduce compilation time")
+end
+
+public TileCompilerTimeoutError
+
 """
     tileiras_path() -> String
 
@@ -183,13 +212,29 @@ function tileir_disassembler(; debuginfo::Bool=false)
     return debuginfo ? `$translate --mlir-print-debuginfo` : translate
 end
 
-function run_and_collect(cmd)
+function run_and_collect(cmd; timeout=compiler_timeout)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
     close(stdout.in)
     reader = Threads.@spawn String(read(stdout))
-    Base.wait(proc)
+    timed_out = Ref(false)
+    timer = if timeout === nothing
+        nothing
+    else
+        Timer(timeout) do _
+            if process_running(proc)
+                timed_out[] = true
+                kill(proc, Base.SIGKILL)
+            end
+        end
+    end
+    try
+        Base.wait(proc)
+    finally
+        timer === nothing || close(timer)
+    end
     log = strip(fetch(reader))
+    timed_out[] && throw(TileCompilerTimeoutError(timeout))
     return proc, log
 end
 

@@ -5,6 +5,20 @@ covers what happens at that point: how arguments cross to the device, which of
 them are compile-time values, what counts as a distinct kernel, and how the
 results are cached.
 
+Persistent compiler settings are package preferences. For example:
+
+```toml
+[cuTile]
+compiler_timeout_seconds = 60
+```
+
+The timeout covers each `tileiras` invocation. On expiry, cuTile terminates the
+compiler and reports a [`TileCompilerTimeoutError`](@ref cuTile.TileCompilerTimeoutError).
+
+```@docs
+cuTile.TileCompilerTimeoutError
+```
+
 Launching requires CUDA.jl to be imported. It supplies the `CuArray` type, the
 compiler artifacts, and the stream the kernel runs on.
 
