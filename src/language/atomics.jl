@@ -7,28 +7,6 @@ public atomic_cas, atomic_xchg, atomic_add, atomic_max, atomic_min, atomic_or, a
 public atomic_store_add, atomic_store_max, atomic_store_min,
        atomic_store_or, atomic_store_and, atomic_store_xor
 
-"""
-Memory ordering constants. Atomic operations accept `Relaxed`, `Acquire`,
-`Release`, and `AcqRel`. `Weak` is reserved for non-atomic loads and stores and
-is rejected by the atomic APIs.
-"""
-@enumx MemoryOrder begin
-    Weak = 0
-    Relaxed = 1
-    Acquire = 2
-    Release = 3
-    AcqRel = 4
-end
-
-"""
-Memory scope for atomic operations.
-"""
-@enumx MemScope begin
-    Block = 0
-    Device = 1
-    System = 2
-end
-
 # ============================================================================
 # Pointer/mask helpers
 #

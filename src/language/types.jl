@@ -16,6 +16,22 @@ Base.ndims(::Type{<:AbstractTileArray{<:Any,N}}) where N = N
 Base.eltype(arr::AbstractTileArray) = eltype(typeof(arr))
 Base.ndims(arr::AbstractTileArray) = ndims(typeof(arr))
 
+"""Memory ordering for loads, stores, and atomic operations."""
+@enumx MemoryOrder begin
+    Weak = 0
+    Relaxed = 1
+    Acquire = 2
+    Release = 3
+    AcqRel = 4
+end
+
+"""Scope of threads participating in an ordered memory operation."""
+@enumx MemScope begin
+    Block = 0
+    Device = 1
+    System = 2
+end
+
 
 """
     ArraySpec{N}

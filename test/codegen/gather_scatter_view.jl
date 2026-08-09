@@ -17,7 +17,8 @@ AT2d = ct.TileArray{Float32,2,Int32,spec2d}
             view = ct.Intrinsics.make_gather_scatter_view(tv, (4, 8), 1, ct.PaddingMode.Zero)
             rows = ct.arange(4; start=0)
             tile = ct.Intrinsics.load_gather_scatter_view(
-                view, nothing, nothing, (rows, Int32(0)), true)
+                view, nothing, nothing, (rows, Int32(0)), true,
+                ct.MemoryOrder.Weak, nothing)
             Base.donotdelete(tile)
             return
         end
@@ -38,7 +39,8 @@ end
             for _ in 1:n
                 tile = ct.load(a, (1, 1), (4, 4))
                 ct.Intrinsics.store_gather_scatter_view(
-                    view, tile, nothing, nothing, (Int32(0), cols), true)
+                    view, tile, nothing, nothing, (Int32(0), cols), true,
+                    ct.MemoryOrder.Weak, nothing)
             end
             return
         end
