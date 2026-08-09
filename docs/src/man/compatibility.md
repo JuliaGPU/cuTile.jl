@@ -68,6 +68,7 @@ Everything not listed here works at v13.1.
 | `eachtile` with `step != shape` | Equal shape and step work at v13.1 |
 | `num_worker_warps` compiler option | |
 | Whole-tile `reinterpret` | Between element types of differing width |
+| Conversion to `Float8_E8M0FNU` | `RoundToZero` or `RoundUp`; some source types require v13.4 |
 
 ### Requires v13.4
 
@@ -76,6 +77,7 @@ Everything not listed here works at v13.1.
 | `ct.insert` | Replace a non-overlapping sub-tile |
 | `check_bounds=false` | On `ct.load` and `ct.store` only; on `ct.gather`/`ct.scatter` it merely skips the bounds mask |
 | `ct.Intrinsics.powi` | Integer exponents through `cuda_tile.fpowi` |
+| Directed float conversion rounding | `RoundToZero`, `RoundDown`, `RoundUp`, or `RoundNearestTiesAway`; supported pairs vary |
 
 
 ## Features by architecture

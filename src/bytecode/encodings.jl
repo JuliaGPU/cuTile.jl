@@ -119,6 +119,7 @@ end
     Approx = 4
     Full = 5
     NearestIntToZero = 6
+    NearestAway = 7
 end
 
 @enumx IntegerOverflow begin

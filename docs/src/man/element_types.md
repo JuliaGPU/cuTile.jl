@@ -46,6 +46,7 @@ tutorial](../tutorials/matmul.md) works through that in context.
 |-----------|-------------|
 | `convert(Tile{T}, tile)` | Convert element type of a whole tile |
 | `T(x)`, `T.(tile)` | Scalar conversion, broadcast element-wise over a tile |
+| `T(x, mode)`, `T.(tile, mode)` | Float-to-float conversion with explicit rounding |
 | `reinterpret` | Reinterpret bits rather than convert values |
 
 Converting a `Float32` tile to `TFloat32` is the usual way to opt into tensor-core
@@ -55,6 +56,35 @@ acceleration for a matmul:
 a = ct.load(A; index=(bid_m, k), shape=(tm, tk))
 a_tf32 = convert(ct.Tile{ct.TFloat32}, a)
 ```
+
+Float conversions use round-to-nearest, ties-to-even by default. Pass a Base
+rounding mode to choose a mode for one conversion:
+
+```julia
+down = Float32.(a, RoundDown)
+up = map(x -> Float32(x, RoundUp), a)
+```
+
+| Mode | Meaning |
+|------|---------|
+| `RoundNearest` | Nearest, ties to even |
+| `RoundToZero` | Toward zero |
+| `RoundDown` | Toward negative infinity |
+| `RoundUp` | Toward positive infinity |
+| `RoundNearestTiesAway` | Nearest, ties away from zero |
+
+Explicit rounding applies only to float-to-float conversions. The supported
+source/target pairs follow Tile IR: round-to-nearest supports every float target
+except `Float8_E8M0FNU`; the directed modes are limited to particular targets,
+and most require bytecode v13.4. Unsupported pairs report their available modes
+at compilation. `RoundNearestTiesUp` and `RoundFromZero` have no Tile IR
+equivalent.
+
+`Float8_E8M0FNU` is the exception: its ordinary conversion defaults to
+`RoundToZero`. Conversions to it with `RoundToZero` or `RoundUp` work from
+bytecode v13.3 for `Float32`, `TFloat32`, `Float16`, `BFloat16`,
+`Float8_E8M0FNU`, and `Float4_E2M1FN`; `Float64`, `Float8_E5M2`, and
+`Float8_E4M3FN` sources require v13.4.
 
 `reinterpret` covers same-width bit reinterpretation directly. When the element
 width changes, it preserves the total bit count by scaling the first tile

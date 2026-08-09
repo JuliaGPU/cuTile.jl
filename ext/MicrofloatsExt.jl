@@ -44,16 +44,20 @@ for MF in MicrofloatTypes
     # standard float → microfloat
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$F) = ct.Intrinsics.ftof(x, $MF)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$F, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $MF, r)
     end
     # microfloat → standard float
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F(x::$MF) = ct.Intrinsics.ftof(x, $F)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F(x::$MF, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $F, r)
     end
     # microfloat → microfloat
     for MFb in MicrofloatTypes
         MF === MFb && continue
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$MFb) = ct.Intrinsics.ftof(x, $MF)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$MFb, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $MF, r)
     end
+    @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$MF, ::Base.Rounding.RoundingMode) = x
 end
 
 end

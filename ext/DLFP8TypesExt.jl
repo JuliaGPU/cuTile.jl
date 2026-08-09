@@ -30,16 +30,20 @@ for F8 in FP8Types
     # Standard float → FP8
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F8(x::$F) = ct.Intrinsics.ftof(x, $F8)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F8(x::$F, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $F8, r)
     end
     # FP8 → standard float
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F(x::$F8) = ct.Intrinsics.ftof(x, $F)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F(x::$F8, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $F, r)
     end
     # FP8 → FP8
     for F8b in FP8Types
         F8 === F8b && continue
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F8(x::$F8b) = ct.Intrinsics.ftof(x, $F8)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F8(x::$F8b, r::Base.Rounding.RoundingMode) = ct.Intrinsics.ftof(x, $F8, r)
     end
+    @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F8(x::$F8, ::Base.Rounding.RoundingMode) = x
 end
 
 end
