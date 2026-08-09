@@ -157,11 +157,10 @@ mutable struct CodeBuilder
     next_value_id::Int
     cur_debug_attr::DebugAttrId
     num_ops::Int
-    version::VersionNumber
 end
 
-function CodeBuilder(string_table::StringTable, constant_table::ConstantTable, type_table::TypeTable;
-                     version::VersionNumber)
+function CodeBuilder(string_table::StringTable, constant_table::ConstantTable,
+                     type_table::TypeTable)
     CodeBuilder(
         UInt8[],
         string_table,
@@ -170,10 +169,11 @@ function CodeBuilder(string_table::StringTable, constant_table::ConstantTable, t
         DebugAttrId[],
         0,
         DebugAttrId(0),  # No debug info
-        0,
-        version
+        0
     )
 end
+
+bytecode_version(cb::CodeBuilder) = bytecode_version(cb.type_table)
 
 """
 Create a new SSA value(s) for an operation result.
@@ -443,7 +443,6 @@ mutable struct BytecodeWriter
     debug_attr_table::DebugAttrTable
     debug_info::Vector{Vector{DebugAttrId}}
     num_functions::Int
-    version::VersionNumber
 end
 
 function BytecodeWriter(; version::VersionNumber)
@@ -455,10 +454,11 @@ function BytecodeWriter(; version::VersionNumber)
         TypeTable(; version),
         DebugAttrTable(string_table),
         Vector{Vector{DebugAttrId}}[],
-        0,
-        version
+        0
     )
 end
+
+bytecode_version(writer::BytecodeWriter) = bytecode_version(writer.type_table)
 
 """
 Write the bytecode header.
@@ -645,8 +645,7 @@ function add_function!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # Create code builder for function body
-    cb = CodeBuilder(writer.string_table, writer.constant_table, writer.type_table;
-                     version=writer.version)
+    cb = CodeBuilder(writer.string_table, writer.constant_table, writer.type_table)
 
     return cb
 end
@@ -775,9 +774,10 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
             "$(format_sm_arch(sm_arch))"))
     end
 
-    if hints.num_worker_warps !== nothing && writer.version < v"13.3"
+    version = bytecode_version(writer)
+    if hints.num_worker_warps !== nothing && version < v"13.3"
         throw(ArgumentError(
-            "num_worker_warps requires Tile IR bytecode v13.3+, got v$(writer.version)"))
+            "num_worker_warps requires Tile IR bytecode v13.3+, got v$version"))
     end
 
     # Build items list (only non-nothing values)
@@ -791,7 +791,7 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     # so the CUBIN compiler knows the target architecture. On v13.3+ the hints
     # are keyed under "default" instead, applying them to every architecture.
     sm_arch === nothing && isempty(items) && return nothing
-    arch = if writer.version >= v"13.3"
+    arch = if version >= v"13.3"
         "default"
     else
         arch_ver = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))

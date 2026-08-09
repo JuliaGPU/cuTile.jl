@@ -3,10 +3,16 @@ using SHA: sha256
 const DC = cuTile.DiskCache
 
 @testset "DiskCache" begin
-    @testset "toolkit version parsing" begin
-        @test cuTile.parse_toolkit_version("tileiras V13.2.78\nBuild local") == "13.2.78"
-        @test cuTile.parse_toolkit_version("future version format") == "future version format"
-        @test cuTile.parse_toolkit_version("") === nothing
+    @testset "toolchain versions" begin
+        @test cuTile.parse_tileiras_version("tileiras V13.2.78\nBuild local") == v"13.2.78"
+        @test_throws ArgumentError cuTile.parse_tileiras_version("future version format")
+        @test_throws ArgumentError cuTile.parse_tileiras_version("")
+
+        @test cuTile.select_bytecode_version(v"13.4", nothing) == v"13.4"
+        @test cuTile.select_bytecode_version(v"13.4", v"13.2") == v"13.2"
+        @test_throws ArgumentError cuTile.select_bytecode_version(v"13.3", v"13.4")
+        @test_throws ArgumentError cuTile.select_bytecode_version(v"13.4", v"13.5")
+        @test_throws ArgumentError cuTile.select_bytecode_version(v"13.5", nothing)
     end
 
     @testset "configuration" begin

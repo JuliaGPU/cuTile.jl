@@ -370,23 +370,23 @@ function encode_PrintTkoOp!(cb::CodeBuilder,
                              format_string::String)
     encode_varint!(cb.buf, Opcode.PrintOp)
     # Variadic result types: [token] in v13.2+, empty in v13.1
-    if cb.version >= v"13.2"
+    if bytecode_version(cb) >= v"13.2"
         encode_typeid_seq!(cb.buf, [token_type])
     else
         encode_typeid_seq!(cb.buf, TypeId[])
     end
     # Flags: bit 0 = has input token (v13.2+ only)
-    if cb.version >= v"13.2"
+    if bytecode_version(cb) >= v"13.2"
         encode_varint!(cb.buf, token !== nothing ? 1 : 0)
     end
     # Attributes: format string
     encode_opattr_str!(cb, format_string)
     # Operands: sized variadic args + optional token
     encode_sized_operands!(cb.buf, args)
-    if cb.version >= v"13.2"
+    if bytecode_version(cb) >= v"13.2"
         encode_optional_operand!(cb.buf, token)
     end
-    num_results = cb.version >= v"13.2" ? 1 : 0
+    num_results = bytecode_version(cb) >= v"13.2" ? 1 : 0
     result = new_op!(cb, num_results)
     return result  # Value for v13.2+, nothing for v13.1
 end
@@ -477,8 +477,8 @@ Opcode: 115 (Tile IR v13.3+)
 """
 function encode_MakeGatherScatterViewOp!(cb::CodeBuilder, result_type::TypeId,
                                          tensor_view::Value)
-    cb.version >= v"13.3" ||
-        throw(IRError("MakeGatherScatterViewOp requires Tile IR v13.3+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.3" ||
+        throw(IRError("MakeGatherScatterViewOp requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.MakeGatherScatterViewOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, tensor_view)
@@ -492,8 +492,8 @@ Create a strided view from a tensor view.
 Opcode: 116 (Tile IR v13.3+)
 """
 function encode_MakeStridedViewOp!(cb::CodeBuilder, result_type::TypeId, tensor_view::Value)
-    cb.version >= v"13.3" ||
-        throw(IRError("MakeStridedViewOp requires Tile IR v13.3+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.3" ||
+        throw(IRError("MakeStridedViewOp requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.MakeStridedViewOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, tensor_view)
@@ -583,10 +583,10 @@ function encode_LoadViewTkoOp!(cb::CodeBuilder,
     if optimization_hints !== nothing
         encode_opattr_optimization_hints!(cb, optimization_hints)
     end
-    if cb.version >= v"13.4"
+    if bytecode_version(cb) >= v"13.4"
         encode_dense_bool_array!(cb, inbounds)
     elseif any(inbounds)
-        throw(IRError("load: check_bounds=false requires Tile IR v13.4+, got v$(cb.version)"))
+        throw(IRError("load: check_bounds=false requires Tile IR v13.4+, got v$(bytecode_version(cb))"))
     end
 
     # Operands
@@ -638,10 +638,10 @@ function encode_StoreViewTkoOp!(cb::CodeBuilder,
     if optimization_hints !== nothing
         encode_opattr_optimization_hints!(cb, optimization_hints)
     end
-    if cb.version >= v"13.4"
+    if bytecode_version(cb) >= v"13.4"
         encode_dense_bool_array!(cb, inbounds)
     elseif any(inbounds)
-        throw(IRError("store: check_bounds=false requires Tile IR v13.4+, got v$(cb.version)"))
+        throw(IRError("store: check_bounds=false requires Tile IR v13.4+, got v$(bytecode_version(cb))"))
     end
 
     # Operands
@@ -911,8 +911,8 @@ Floating-point power with an integer exponent (base^exponent).
 Opcode: 130
 """
 function encode_FPowIOp!(cb::CodeBuilder, result_type::TypeId, base::Value, exponent::Value)
-    cb.version >= v"13.4" ||
-        throw(IRError("cuda_tile.fpowi requires Tile IR v13.4+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.4" ||
+        throw(IRError("cuda_tile.fpowi requires Tile IR v13.4+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.FPowIOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, base)
@@ -927,8 +927,8 @@ Floating-point element-wise atan2(x, y). Available in Tile IR v13.2+.
 Opcode: 110
 """
 function encode_Atan2Op!(cb::CodeBuilder, result_type::TypeId, x::Value, y::Value)
-    cb.version >= v"13.2" ||
-        throw(IRError("cuda_tile.atan2 requires Tile IR v13.2+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.2" ||
+        throw(IRError("cuda_tile.atan2 requires Tile IR v13.2+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.Atan2Op)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, x)
@@ -1013,11 +1013,11 @@ function encode_ExpOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
     encode_typeid!(cb.buf, result_type)
     # v13.3 added a `rounding_mode` attribute (approx/full). Prior versions
     # only support `full`, so refuse to silently downgrade `approx`.
-    if cb.version >= v"13.3"
+    if bytecode_version(cb) >= v"13.3"
         encode_enum!(cb.buf, rounding_mode)
     else
         rounding_mode == RoundingMode.Full ||
-            throw(IRError("ExpOp rounding_mode != Full requires Tile IR v13.3+, got v$(cb.version)"))
+            throw(IRError("ExpOp rounding_mode != Full requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     end
     encode_operand!(cb.buf, source)
     return new_op!(cb)
@@ -1300,7 +1300,7 @@ function encode_ForOp!(body::Function, cb::CodeBuilder,
     encode_varint!(cb.buf, Opcode.ForOp)
     encode_typeid_seq!(cb.buf, result_types)
     # Flags
-    if cb.version >= v"13.2"
+    if bytecode_version(cb) >= v"13.2"
         encode_varint!(cb.buf, unsigned_cmp ? 1 : 0)
     end
     # Operands: lower, upper, step, init_values...
@@ -1346,10 +1346,10 @@ function encode_MmaFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
     encode_typeid!(cb.buf, result_type)
     # v13.3 added `fast_acc` flag (Hopper FP8 fast accumulation hint),
     # encoded as a varint flags field between the result type and operands.
-    if cb.version >= v"13.3"
+    if bytecode_version(cb) >= v"13.3"
         encode_varint!(cb.buf, fast_acc ? 1 : 0)
     else
-        fast_acc && throw(IRError("MmaFOp fast_acc requires Tile IR v13.3+, got v$(cb.version)"))
+        fast_acc && throw(IRError("MmaFOp fast_acc requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     end
     encode_operand!(cb.buf, lhs)
     encode_operand!(cb.buf, rhs)
@@ -1391,8 +1391,8 @@ Opcode: 114
 function encode_MmaFScaledOp!(cb::CodeBuilder, result_type::TypeId,
                               lhs::Value, rhs::Value, acc::Value,
                               lhs_scale::Value, rhs_scale::Value)
-    cb.version >= v"13.3" ||
-        throw(IRError("MmaFScaledOp requires Tile IR v13.3+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.3" ||
+        throw(IRError("MmaFScaledOp requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.MmaFScaledOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, lhs)
@@ -1790,7 +1790,7 @@ function encode_NegIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
                         overflow::IntegerOverflow.T=IntegerOverflow.None)
     encode_varint!(cb.buf, Opcode.NegIOp)
     encode_typeid!(cb.buf, result_type)
-    if cb.version >= v"13.2"
+    if bytecode_version(cb) >= v"13.2"
         encode_enum!(cb.buf, overflow)
     end
     encode_operand!(cb.buf, source)
@@ -1857,7 +1857,7 @@ function encode_FToIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
                         rounding_mode::RoundingMode.T=RoundingMode.NearestIntToZero)
     encode_varint!(cb.buf, Opcode.FToIOp)
     encode_typeid!(cb.buf, result_type)
-    cb.version >= v"13.4" && encode_varint!(cb.buf, 0) # saturating=false
+    bytecode_version(cb) >= v"13.4" && encode_varint!(cb.buf, 0) # saturating=false
     encode_enum!(cb.buf, signedness)
     encode_enum!(cb.buf, rounding_mode)
     encode_operand!(cb.buf, source)
@@ -1971,8 +1971,8 @@ end
 
 function encode_InsertOp!(cb::CodeBuilder, result_type::TypeId, source::Value,
                           destination::Value, indices::Vector{Value})
-    cb.version >= v"13.4" ||
-        throw(IRError("cuda_tile.insert requires Tile IR v13.4+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.4" ||
+        throw(IRError("cuda_tile.insert requires Tile IR v13.4+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.InsertOp)
     encode_typeid_seq!(cb.buf, [result_type])
     encode_varint!(cb.buf, 2 + length(indices))
@@ -2163,8 +2163,8 @@ function encode_AtomicRedViewTkoOp!(cb::CodeBuilder,
                                     memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Relaxed,
                                     memory_scope::MemoryScope.T=MemoryScope.Device,
                                     mode::AtomicRMWMode.T=AtomicRMWMode.ADD)
-    cb.version >= v"13.3" ||
-        throw(IRError("AtomicRedViewTkoOp requires Tile IR v13.3+, got v$(cb.version)"))
+    bytecode_version(cb) >= v"13.3" ||
+        throw(IRError("AtomicRedViewTkoOp requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.AtomicRedViewTkoOp)
     encode_typeid_seq!(cb.buf, [token_type])
     flags = token !== nothing ? 1 : 0
@@ -2285,7 +2285,7 @@ function encode_TanHOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
                         rounding_mode::RoundingMode.T=RoundingMode.Full)
     encode_varint!(cb.buf, Opcode.TanHOp)
     encode_typeid!(cb.buf, result_type)
-    if cb.version >= v"13.2"
+    if bytecode_version(cb) >= v"13.2"
         encode_enum!(cb.buf, rounding_mode)
     end
     encode_operand!(cb.buf, source)

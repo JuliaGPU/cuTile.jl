@@ -49,9 +49,11 @@ cuTile toolchain:
 ```
 
 The bytecode version is probed from the `tileiras` binary in use, and can be
-overridden with the `bytecode_version` preference; `cuTile.bytecode_version()`
-returns the value on its own. Which features are available at which version is
-documented in [Compatibility](man/compatibility.md).
+set to an older supported version with the `bytecode_version` preference;
+`cuTile.bytecode_version()` returns the selected target and
+`cuTile.tileiras_version()` returns the compiler version. Which features are
+available at which version is documented in
+[Compatibility](man/compatibility.md).
 
 To run the test suite:
 

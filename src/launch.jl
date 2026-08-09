@@ -6,9 +6,9 @@
 # `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, bytecode_version)`.
 
 using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
-                deviceid, AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
+                AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
 using CUDA_Compiler_jll
-using GPUToolbox: @memoize
+using GPUToolbox: LazyInitialized
 using Preferences: @load_preference
 
 using Adapt: Adapt, adapt
@@ -126,7 +126,7 @@ TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
 
 
 #=============================================================================
- Toolkit / device validation (cached: once per `(capability, cuda_version)`).
+ Toolchain and target validation.
 =============================================================================#
 
 # User overrides from `LocalPreferences.toml`.
@@ -197,19 +197,42 @@ function tileiras_cmd(args...)
 end
 
 """
-    tileir_disassembler(; debuginfo=false) -> Union{Cmd, Nothing}
+    tileir_disassembler(; debuginfo=false) -> Cmd
 
-Return a disassembler matching the selected `tileiras`. An override requires
-`tileirdisasm` in the same directory.
+Return the lazily-resolved Tile IR disassembler. An override requires
+`tileirdisasm` from the same toolkit.
 """
 function tileir_disassembler(; debuginfo::Bool=false)
+    info = get!(discover_tileir_disassembler, tileir_disassembler_cache)
+    cmd = info.command
+    return debuginfo ? `$cmd $(info.debuginfo_flag)` : cmd
+end
+
+tileir_disassembler_version() =
+    get!(discover_tileir_disassembler, tileir_disassembler_cache).version
+
+struct TileIRDisassembler
+    command::Cmd
+    debuginfo_flag::String
+    version::VersionNumber
+end
+
+const tileir_disassembler_cache = LazyInitialized{TileIRDisassembler}()
+
+function discover_tileir_disassembler()
     if tileiras_override !== nothing
         disasm = joinpath(dirname(tileiras_override), "tileirdisasm")
-        isfile(disasm) || return nothing
-        return debuginfo ? `$disasm --print-debug-info` : `$disasm`
+        isfile(disasm) || error("no `tileirdisasm` next to $(tileiras_path())")
+        proc, log = run_and_collect(`$disasm --version`)
+        success(proc) || error("tileirdisasm --version failed with exit code " *
+                               "$(proc.exitcode):\n$log")
+        return TileIRDisassembler(`$disasm`, "--print-debug-info",
+                                  parse_tileiras_version(log))
     end
+    CUDA_Tile_jll.is_available() || error("CUDA_Tile_jll is not available")
     translate = `$(CUDA_Tile_jll.cuda_tile_translate()) --cudatilebc-to-mlir`
-    return debuginfo ? `$translate --mlir-print-debuginfo` : translate
+    return TileIRDisassembler(translate, "--mlir-print-debuginfo",
+                              Base.pkgversion(CUDA_Tile_jll))
 end
 
 function run_and_collect(cmd; timeout=compiler_timeout)
@@ -313,114 +336,24 @@ function run_tileiras(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
     end
 end
 
-const toolkit_version_cache =
-    Base.Lockable(Base.RefValue{Union{Nothing, Some{Union{Nothing, String}}}}(nothing))
-
-# Bytecode versions cuTile.jl can emit, in ascending order. Each version listed
-# here is one we have explicit `cb.version >= v"X.Y"` handling for in
-# `bytecode/encodings.jl`. `bytecode_version()` probes `tileiras` to find the
-# highest entry it accepts (or returns the user's preference override).
-const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2", v"13.3", v"13.4")
-
-const max_bytecode_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, VersionNumber}}(nothing))
-
-# Matches the `V<major>.<minor>.<patch>` component of `tileiras --version`,
-# e.g. `V13.2.78`. That's the part that actually identifies the compiler;
-# the surrounding `Built on …` / `Build local.local.…` lines vary across
-# rebuilds of the same logical version and would over-invalidate the cache.
 const TILEIRAS_VERSION_REGEX = r"V(\d+\.\d+\.\d+)"
 
-"""
-    toolkit_version() -> Union{String, Nothing}
-
-Lazy-cached `tileiras` toolkit identity, used as the toolkit-identity
-component of the disk-cache key so distinct CUDA Toolkit patches
-(e.g. `13.2.51` vs `13.2.78`) produce distinct cubins.
-
-We invoke `tileiras --version` once per process and pull out the
-`V<major>.<minor>.<patch>` token (the only thing that actually
-identifies the compiler — `Built on …` and `Build local.local.…`
-lines also vary across rebuilds of the same logical version, which
-would over-invalidate the cache).
-
-`CUDA_Compiler_jll.cuda_version` is not enough on its own: it only
-exposes major.minor, so different patches would alias. cuTile Python
-sidesteps the parsing problem by hashing the entire `--version`
-stdout (`_get_compiler_version_string` in `_compile.py`); we extract
-the V-token instead and fall back to the full stdout only if the
-regex misses, so a future format change degrades to Python-style
-over-invalidation rather than aliasing distinct compilers.
-
-Failure to invoke `tileiras --version` returns `nothing`; callers should
-skip disk-cache use rather than collapsing distinct compilers into an
-unknown bucket.
-"""
-function toolkit_version()
-    Base.@lock toolkit_version_cache begin
-        ref = toolkit_version_cache[]
-        ref[] === nothing || return ref[].value
-
-        version = try
-            proc, log = run_and_collect(tileiras_cmd("--version"))
-            if success(proc)
-                parse_toolkit_version(log)
-            else
-                @debug "tileiras --version failed; disabling disk cache" exitcode=proc.exitcode log
-                nothing
-            end
-        catch err
-            @debug "tileiras --version failed; disabling disk cache" exception=(err, catch_backtrace())
-            nothing
-        end
-        ref[] = Some(version)
-        return version
-    end
-end
-
-function parse_toolkit_version(log::AbstractString)
+function parse_tileiras_version(log::AbstractString)
     m = match(TILEIRAS_VERSION_REGEX, log)
-    m === nothing ? (isempty(log) ? nothing : String(log)) : m.captures[1]
+    m === nothing && throw(ArgumentError(
+        "version output does not contain a V<major>.<minor>.<patch> token:\n$log"))
+    return VersionNumber(m.captures[1])
 end
 
-function tileiras_supports_remarks()
-    version = toolkit_version()
-    version === nothing && return false
-    parsed = tryparse(VersionNumber, version)
-    return parsed !== nothing && parsed >= v"13.4"
-end
-
-"""
-    bytecode_version() -> VersionNumber
-
-The Tile IR bytecode version that `cuTile` will emit by default. Either
-the highest version the current `tileiras` binary accepts (probed by
-emitting a minimal empty bytecode buffer at each entry of
-`SUPPORTED_BYTECODE_VERSIONS` newest-first and picking the first that
-compiles cleanly), or, if the `bytecode_version` preference is set, that
-value.
-
-Result is cached for the lifetime of the process.
-
-We probe rather than reading `CUDA_Compiler_jll.cuda_version` because
-users can override `tileiras` via JLL preferences, in which case the
-JLL's static `cuda_version` no longer reflects the actual binary's
-capabilities. Mirrors `_get_max_supported_bytecode_version` in cuTile
-Python's `_compile.py`.
-"""
-function bytecode_version()
-    Base.@lock max_bytecode_version_cache begin
-        ref = max_bytecode_version_cache[]
-        ref[] === nothing || return ref[]::VersionNumber
-        if bytecode_version_override !== nothing
-            bytecode_version_override in SUPPORTED_BYTECODE_VERSIONS ||
-                error("preference bytecode_version=v$bytecode_version_override " *
-                      "is not in $SUPPORTED_BYTECODE_VERSIONS")
-            ref[] = bytecode_version_override
-        else
-            ref[] = probe_max_bytecode_version()
-        end
-        return ref[]::VersionNumber
-    end
+function select_bytecode_version(max_version::VersionNumber,
+                                 requested::Union{VersionNumber, Nothing})
+    validate_bytecode_version(max_version)
+    requested === nothing && return max_version
+    validate_bytecode_version(requested)
+    requested <= max_version || throw(ArgumentError(
+        "bytecode_version=v$requested was requested, but the selected tileiras only " *
+        "accepts through v$max_version"))
+    return requested
 end
 
 function probe_max_bytecode_version()
@@ -446,6 +379,59 @@ function probe_max_bytecode_version()
           "($(join(reverse(SUPPORTED_BYTECODE_VERSIONS), ", "))); last log:\n$last_log")
 end
 
+struct TileIRToolchain
+    tileiras_version::VersionNumber
+    compiler_identity::String
+    max_bytecode_version::VersionNumber
+    bytecode_version::VersionNumber
+end
+
+const tileir_toolchain_cache = LazyInitialized{TileIRToolchain}()
+
+function discover_tileir_toolchain()
+    bytecode_version_override === nothing ||
+        validate_bytecode_version(bytecode_version_override)
+    if tileiras_override === nothing && !CUDA_Compiler_jll.is_available()
+        error("CUDA_Compiler_jll is not available and no `tileiras` preference is set")
+    end
+
+    proc, identity = run_and_collect(tileiras_cmd("--version"))
+    success(proc) || error("tileiras --version failed with exit code " *
+                           "$(proc.exitcode):\n$identity")
+    version = parse_tileiras_version(identity)
+    max_version = probe_max_bytecode_version()
+    selected_version = select_bytecode_version(max_version, bytecode_version_override)
+    return TileIRToolchain(version, identity, max_version, selected_version)
+end
+
+tileir_toolchain() = get!(discover_tileir_toolchain, tileir_toolchain_cache)
+
+"""
+    tileiras_version() -> VersionNumber
+
+Version of the selected `tileiras` executable. The executable is resolved and
+queried lazily, once per process.
+"""
+tileiras_version() = tileir_toolchain().tileiras_version
+
+"""
+    bytecode_version() -> VersionNumber
+
+The validated Tile IR bytecode version emitted by default. This is either the
+highest version accepted by the selected `tileiras`, or the `bytecode_version`
+preference after checking that both cuTile and `tileiras` support it.
+"""
+bytecode_version() = tileir_toolchain().bytecode_version
+
+function validate_tileiras_target(version::VersionNumber)
+    validate_bytecode_version(version)
+    max_version = tileir_toolchain().max_bytecode_version
+    version <= max_version || throw(ArgumentError(
+        "Tile IR bytecode v$version cannot be compiled by the selected tileiras, which " *
+        "accepts through v$max_version"))
+    return nothing
+end
+
 """
     tile_ir_requirement(cap::VersionNumber) -> Union{Tuple{String,VersionNumber}, Nothing}
 
@@ -467,45 +453,29 @@ function tile_ir_requirement(cap::VersionNumber)
 end
 
 """
-    check_tile_ir_support()
+    check_tile_ir_support(sm_arch)
 
-Validate that the current `tileiras` toolkit supports Tile IR on the active
-device. Returns the bytecode version cuTile should emit for this device
-(per [`bytecode_version`]), provided it meets the device's minimum
-requirement (Blackwell ≥ v13.1, Hopper ≥ v13.3, Ampere/Ada ≥ v13.2).
+Validate that the selected bytecode version supports Tile IR on `sm_arch`.
+Returns the bytecode version cuTile should emit, provided it meets the target's
+minimum requirement (Blackwell ≥ v13.1, Hopper ≥ v13.3, Ampere/Ada ≥ v13.2).
 """
-function check_tile_ir_support()
-    if tileiras_override === nothing && !CUDA_Compiler_jll.is_available()
-        error("CUDA_Compiler_jll is not available and no `tileiras` preference is set; " *
-              "cannot compile Tile IR kernels")
-    end
-
-    dev = device()
-    ver = @memoize index=deviceid(dev)+1 begin
-        ver = bytecode_version()
-
-        cap = capability(dev)
-        sm_str = format_sm_arch(cap)
-        req = tile_ir_requirement(cap)
-        if req === nothing
-            @error "Tile IR is not supported on compute capability $cap ($sm_str)"
-            return nothing
-        end
-        arch, min_ver = req
-        if ver < min_ver
-            @error "Tile IR on $arch ($sm_str) requires bytecode ≥ v$min_ver, detected v$ver"
-            return nothing
-        end
-
-        return ver
-    end::Union{Nothing, VersionNumber}
-
-    if ver === nothing
-        error("CUDA Tile is not supported on the current device")
-    end
-    return ver::VersionNumber
+function check_tile_ir_support(sm_arch::VersionNumber)
+    version = bytecode_version()
+    validate_tile_ir_target(sm_arch, version)
+    return version
 end
 
+function validate_tile_ir_target(sm_arch::VersionNumber, version::VersionNumber)
+    validate_bytecode_version(version)
+    requirement = tile_ir_requirement(sm_arch)
+    requirement === nothing && throw(ArgumentError(
+        "Tile IR is not supported on compute capability $sm_arch ($(format_sm_arch(sm_arch)))"))
+    arch, min_version = requirement
+    version >= min_version || throw(ArgumentError(
+        "Tile IR on $arch ($(format_sm_arch(sm_arch))) requires bytecode v$min_version+, " *
+        "got v$version"))
+    return nothing
+end
 
 #=============================================================================
  Argument-type unwrapping for cufunction.
@@ -571,14 +541,14 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
                                        kernel_meta, :opt_level, sm_arch), 3)
 
     # Disk cache lookup. The hash covers every input that changes the CUBIN
-    # — bytecode + sm_arch + opt_level + tileiras toolkit version — so
-    # different toolkit versions never collide. `bytecode_version` is encoded
+    # — bytecode + sm_arch + opt_level + tileiras identity — so different
+    # compiler builds never collide. `bytecode_version` is encoded
     # in the bytecode itself, so it's covered transitively by the bytecode hash.
     dc = DiskCache.global_cache()
     cache_key = nothing
-    toolkit_id = toolkit_version()
-    if dc !== nothing && toolkit_id !== nothing
-        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, toolkit_id)
+    if dc !== nothing
+        identity = tileir_toolchain().compiler_identity
+        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, identity)
         cubin = try
             DiskCache.get(dc, cache_key)
         catch err
@@ -666,8 +636,8 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                     occupancy::Union{Int, Nothing}=nothing,
                     num_worker_warps::Union{Int, Nothing}=nothing,
                     name::Union{String, Nothing}=nothing)
-    bytecode_version = check_tile_ir_support()
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
+    bytecode_version = check_tile_ir_support(resolved_sm_arch)
 
     key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
                        num_worker_warps)
@@ -695,6 +665,8 @@ by [`link`](@ref) to load the result onto the GPU. No CUDA context required.
 function compile(@nospecialize(f), @nospecialize(argtypes),
                  const_argtypes::Union{Vector{Any}, Nothing},
                  key::TileCacheKey)
+    validate_tile_ir_target(unpack_version(key.sm_arch),
+                            unpack_version(key.bytecode_version))
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
@@ -873,17 +845,20 @@ default_sm_arch() = capability(device())
 """
     versioninfo([io::IO=stdout])
 
-Print information about the active `tileiras` toolkit, the bytecode version
+Print information about the active `tileiras`, the bytecode version
 cuTile.jl will emit for it, and any user overrides set via
 `LocalPreferences.toml`.
 """
 function versioninfo(io::IO=stdout)
     println(io, "cuTile toolchain:")
 
+    toolchain = tileir_toolchain()
     install = tileiras_override === nothing ? "artifact installation" : "local installation"
-    println(io, "- tileiras $(something(toolkit_version(), "unknown")), $install")
+    println(io, "- tileiras $(toolchain.tileiras_version), $install")
 
-    bv = bytecode_version()
+    bv = toolchain.bytecode_version
     bv_src = bytecode_version_override === nothing ? "auto-detected" : "set via preference"
-    println(io, "- bytecode v$(bv.major).$(bv.minor), $bv_src")
+    max_bv = toolchain.max_bytecode_version
+    max_suffix = bv == max_bv ? "" : " (tileiras accepts through v$(max_bv.major).$(max_bv.minor))"
+    println(io, "- bytecode v$(bv.major).$(bv.minor), $bv_src$max_suffix")
 end

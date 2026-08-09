@@ -15,8 +15,8 @@ entirely.
   that directory or `Scratch.delete_scratch!`.
 - The `disk_cache`, `cache_dir`, and `cache_size_bytes` preferences configure
   or disable the cache. The default map size is 1 GiB.
-- Keys: `sha256(SCHEMA_VERSION || toolkit_version || sm_arch || opt_level || bytecode)`.
-  Any input change produces a fresh key, so old-toolkit entries never
+- Keys: `sha256(SCHEMA_VERSION || compiler_identity || sm_arch || opt_level || bytecode)`.
+  Any input change produces a fresh key, so entries from other compiler builds never
   match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate every
   existing entry on the next access (e.g. after a value-framing change).
 - Values: prefixed records in the LMDB keyspace. Data records hold CUBIN
@@ -533,23 +533,22 @@ and LRU eventually evicts them.
 const SCHEMA_VERSION = UInt32(3)
 
 """
-    compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
+    compute_key(bytecode, sm_arch, opt_level, compiler_identity) -> Vector{UInt8}
 
 Derive a SHA-256 content-addressable cache key for a Tile IR compilation.
 The key covers the bytecode plus every input that changes the resulting
-CUBIN: target arch, opt level, and the `tileiras` toolkit version
-(typically the full `--version` stdout; see `cuTile.toolkit_version()`).
+CUBIN: target arch, opt level, and the complete `tileiras --version` output.
 
-Any change to those inputs produces a fresh key. Old-toolkit entries no
-longer match on lookup, and eventually evict via LRU. The
+Any change to those inputs produces a fresh key. Entries from other compiler
+builds no longer match on lookup, and eventually evict via LRU. The
 [`SCHEMA_VERSION`](@ref) prefix lets us invalidate every entry at once
 when the value layout changes.
 """
 function compute_key(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
-                     opt_level::Integer, toolkit_version::AbstractString)
+                     opt_level::Integer, compiler_identity::AbstractString)
     data = UInt8[]
     append_uint32_be!(data, SCHEMA_VERSION)
-    append_field!(data, codeunits(toolkit_version))
+    append_field!(data, codeunits(compiler_identity))
     append_field!(data, codeunits(string(sm_arch)))
     append_uint32_be!(data, opt_level)
     append_field!(data, bytecode)

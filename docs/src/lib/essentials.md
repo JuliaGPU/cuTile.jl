@@ -33,6 +33,7 @@ TileOrFloat
 ## Toolchain
 
 ```@docs
+tileiras_version
 bytecode_version
 versioninfo
 ```
