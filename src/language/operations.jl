@@ -2172,6 +2172,39 @@ ptr_offset = base + n  # compiler knows this is 128-divisible
     Intrinsics.assume(x, DivBy(Int(divisor)))
 
 #=============================================================================
+ Grid dependency control
+=============================================================================#
+
+public grid_dependency_control_launch_dependents, grid_dependency_control_wait
+
+"""
+    grid_dependency_control_launch_dependents()
+
+Allow dependent kernels later in the same stream to start executing. At least
+one thread in every block must call this function; blocks that exit without
+calling it trigger completion implicitly.
+
+This does not make the current kernel's writes visible to a dependent kernel.
+The dependent kernel must call [`grid_dependency_control_wait`](@ref) before
+accessing them.
+
+Requires Tile IR 13.4 or newer.
+"""
+@inline grid_dependency_control_launch_dependents() =
+    Intrinsics.gdc_launch_dependents_tko()
+
+"""
+    grid_dependency_control_wait()
+
+Wait for prerequisite kernels to complete and make their global-memory writes
+visible to the current kernel. All accesses to their results must occur after
+this call.
+
+Requires Tile IR 13.4 or newer.
+"""
+@inline grid_dependency_control_wait() = Intrinsics.gdc_wait_tko()
+
+#=============================================================================
  Assert
 =============================================================================#
 

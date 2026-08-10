@@ -15,14 +15,14 @@
 # alias set:
 #   - LAST_OP:    token from the most recent load or store (RAW/WAR tracking)
 #   - LAST_STORE: token from the most recent store only (WAW tracking)
-# Plus a global ACQUIRE token for acquire-ordered atomics.
+# Plus a global ACQUIRE token for acquire operations.
 #
 # For loads, the input token comes from LAST_STORE of the same alias set
 # (read-after-write dependency). For stores, the input token joins all
 # LAST_OP tokens of overlapping alias sets (write-after-read + write-after-write).
 # Release-ordered atomics additionally join ALL LAST_OP tokens across all alias
-# sets (memory fence semantics). Acquire-ordered atomics update the global
-# ACQUIRE token.
+# sets (memory fence semantics). Acquire-ordered atomics and grid dependency
+# waits update the global ACQUIRE token.
 #
 # The pass adds token carries to loops (init_values + block args + terminator
 # operands) and token results to IfOp types, then inserts getfield extractions
@@ -85,10 +85,11 @@ function compute_block_memory_effects!(block::Block, alias_info::AliasInfo,
             resolved_func, operands = call
             mem_effect = classify_memory_op(resolved_func)
             mem_effect == MEM_NONE && continue
-            alias_set = alias_class(alias_info, first(operands))
+            alias_set = isempty(operands) ? ALIAS_UNIVERSE :
+                                           alias_class(alias_info, first(operands))
             effects.effects[alias_set] = max(get(effects.effects, alias_set, MEM_NONE), mem_effect)
             mo = extract_memory_order(resolved_func, operands)
-            if has_acquire_order(mo)
+            if has_acquire_order(mo) || resolved_func === Intrinsics.gdc_wait_tko
                 effects = MemoryEffects(effects.effects, true)
             end
         end
@@ -458,7 +459,8 @@ function transform_statement!(block::Block, inst::Instruction,
     mem_effect = classify_memory_op(resolved_func)
     mem_effect == MEM_NONE && return
 
-    alias_set = alias_class(alias_info, first(operands))
+    alias_set = isempty(operands) ? ALIAS_UNIVERSE :
+                                   alias_class(alias_info, first(operands))
     memory_order = extract_memory_order(resolved_func, operands)
 
     if mem_effect == MEM_LOAD
@@ -477,7 +479,7 @@ function transform_statement!(block::Block, inst::Instruction,
                        JoinTokensNode([last_op_tok, result_token]), TOKEN_TYPE)
         token_map[lop_key] = SSAValue(join_inst)
 
-        if has_acquire_order(memory_order)
+        if has_acquire_order(memory_order) || resolved_func === Intrinsics.gdc_wait_tko
             token_map[ACQUIRE_TOKEN_KEY] = result_token
         end
 

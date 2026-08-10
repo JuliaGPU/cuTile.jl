@@ -200,6 +200,28 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.print_tko), args)
     nothing  # print returns Nothing
 end
 
+@intrinsic gdc_launch_dependents_tko()
+tfunc(𝕃, ::typeof(Intrinsics.gdc_launch_dependents_tko)) = Nothing
+efunc(::typeof(Intrinsics.gdc_launch_dependents_tko), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.gdc_launch_dependents_tko), args)
+    input_token = extract_token_arg!(ctx, args)
+    result = encode_GdcLaunchDependentsTkoOp!(ctx.cb, Token(ctx.tt); token=input_token)
+    ctx.result_tokens[ctx.current_ssa_idx] = result
+    return nothing
+end
+
+@intrinsic gdc_wait_tko()
+tfunc(𝕃, ::typeof(Intrinsics.gdc_wait_tko)) = Nothing
+efunc(::typeof(Intrinsics.gdc_wait_tko), effects::CC.Effects) =
+    CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.gdc_wait_tko), args)
+    input_token = extract_token_arg!(ctx, args)
+    result = encode_GdcWaitTkoOp!(ctx.cb, Token(ctx.tt); token=input_token)
+    ctx.result_tokens[ctx.current_ssa_idx] = result
+    return nothing
+end
+
 """
     Intrinsics.format_string(xs...) -> String
 
