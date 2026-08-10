@@ -45,15 +45,57 @@ ct.launch(vadd, grid, a, b, c, ct.Constant(tile_size))                   # funct
 is easier to call from generated code or when the argument list is built
 programmatically. Both accept the optimization hints described in
 [Performance](performance.md), and both use the current task-bound CUDA stream;
-cuTile has no stream argument of its own. To run a kernel on a different stream,
-set the task's stream as you would for any CUDA.jl operation; see CUDA.jl's
-[task and stream
-documentation](https://cuda.juliagpu.org/stable/usage/multitasking/).
+pass `stream=other_stream` to either form to choose a different one. See
+CUDA.jl's [task and stream
+documentation](https://cuda.juliagpu.org/stable/usage/multitasking/) for the
+stream model shared by both packages.
 
 `blocks` sizes the grid, in up to three dimensions. It counts *blocks*, so it is
 almost always a ceiling division of the problem size by the tile shape. Inside
 the kernel, a block finds its place in the grid with `ct.bid`; see [Programming
 Model](programming_model.md#The-grid).
+
+
+## Programmatic dependent launch
+
+[Programmatic dependent launch](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/programmatic-dependent-launch.html)
+can overlap the tail of a producer kernel with an independent preamble in the
+next kernel on the same stream. The producer signals when the consumer may
+start, and the consumer waits before reading the producer's results:
+
+```julia
+function producer(a, producer_out)
+    ct.grid_dependency_control_launch_dependents()
+
+    # This work may overlap with the consumer's preamble.
+    tile = ct.load(a, 1, (32,))
+    ct.store(producer_out, 1, tile)
+    return
+end
+
+function consumer(b, producer_out, out)
+    tile = ct.load(b, 1, (32,)) # Independent work can run before the wait.
+
+    ct.grid_dependency_control_wait()
+    ct.store(out, 1, tile + ct.load(producer_out, 1, (32,)))
+    return
+end
+
+stream = CUDA.stream()
+@cuda backend=cuTile blocks=1 stream producer(a, producer_out)
+@cuda backend=cuTile blocks=1 dependent=true stream consumer(b, producer_out, out)
+```
+
+The `dependent=true` attribute belongs on the consumer launch. Every producer
+block should call `ct.grid_dependency_control_launch_dependents`; a block that
+exits without calling it triggers completion implicitly. The consumer must call
+`ct.grid_dependency_control_wait` before accessing any producer results because
+the producer's signal does not make its writes visible.
+
+Overlap is opportunistic. Correctness must not require the kernels to run
+concurrently, as doing so can deadlock. Without `dependent=true`, normal stream
+serialization still applies. Programmatic dependent launch requires Tile IR
+13.4 and compute capability 9.0 or newer.
 
 
 ## Argument conversion

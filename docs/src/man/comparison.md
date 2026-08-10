@@ -65,7 +65,8 @@ end
 
 ## Launch syntax
 
-cuTile.jl implicitly uses the current task-bound stream from CUDA.jl:
+cuTile.jl uses the current task-bound CUDA.jl stream by default, or accepts it
+as a `stream` keyword:
 
 ```python
 # Python
@@ -75,8 +76,17 @@ ct.launch(cp.cuda.get_current_stream(), grid, vadd, (a, b, c))
 
 ```julia
 # Julia
-@cuda backend=cuTile blocks=grid vadd(a, b, c)
+@cuda backend=cuTile blocks=grid stream vadd(a, b, c)
 ```
+
+Programmatic dependent launch uses the shorter CUDA.jl launch keyword while
+keeping the same device-operation names:
+
+| cuTile Python | cuTile.jl |
+|---------------|-----------|
+| `ct.launch(..., programmatic_dependent_launch=True)` | `@cuda backend=cuTile dependent=true ...` |
+| `ct.grid_dependency_control_launch_dependents()` | `ct.grid_dependency_control_launch_dependents()` |
+| `ct.grid_dependency_control_wait()` | `ct.grid_dependency_control_wait()` |
 
 
 ## 1-based indexing

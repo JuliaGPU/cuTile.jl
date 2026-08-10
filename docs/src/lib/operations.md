@@ -14,6 +14,14 @@ particular Tile IR version or GPU architecture are noted inline and collected in
 [Compatibility](../man/compatibility.md).
 
 
+## Grid dependency control
+
+```@docs
+grid_dependency_control_launch_dependents
+grid_dependency_control_wait
+```
+
+
 ## Arithmetic
 
 | Operation | Description |

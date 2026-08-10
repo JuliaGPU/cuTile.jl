@@ -80,6 +80,7 @@ Everything not listed here works at v13.1.
 | `check_bounds=false` | On `ct.load` and `ct.store` only; on `ct.gather`/`ct.scatter` it merely skips the bounds mask |
 | `ct.Intrinsics.powi` | Integer exponents through `cuda_tile.fpowi` |
 | Directed float conversion rounding | `RoundToZero`, `RoundDown`, `RoundUp`, or `RoundNearestTiesAway`; supported pairs vary |
+| Programmatic dependent launch | Also requires Hopper (sm_90) or newer |
 
 
 ## Features by architecture
@@ -89,6 +90,7 @@ Everything not listed here works at v13.1.
 | `ct.muladd_scaled` | Blackwell (≥ sm_100) | Error |
 | Atomic add on `BFloat16` | Hopper (≥ sm_90) | Error |
 | `fast_acc=true` | Hopper (sm_90) | Silently ignored |
+| Programmatic dependent launch | Hopper (≥ sm_90) | Error |
 
 `fast_acc` is the exception to the pattern: it is a throughput hint rather than
 a capability, so on architectures where it does nothing, it is accepted and
