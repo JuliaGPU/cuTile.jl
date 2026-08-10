@@ -821,12 +821,18 @@ end
 
 """
     launch(f, grid, args...; sm_arch=nothing, opt_level=nothing,
-           num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing, name=nothing)
+           num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing,
+           dependent=false, stream=CUDACore.stream(), name=nothing)
 
 Compile and launch a Tile IR kernel. `args` are converted via
 `cuTileconvert` (CuArray → TileArray, Type → Constant). Equivalent to
 `@cuda backend=cuTile blocks=grid f(args...)` modulo
 slight kwarg naming.
+
+Set `dependent=true` on a consumer kernel to allow it to overlap with the
+preceding kernel in `stream`. The producer should call
+[`grid_dependency_control_launch_dependents`](@ref), and the consumer must call
+[`grid_dependency_control_wait`](@ref) before accessing the producer's results.
 
 # Example
 ```julia
@@ -852,11 +858,13 @@ function launch(@nospecialize(f), grid, args...;
                 num_ctas::Union{Int, Nothing}=nothing,
                 occupancy::Union{Int, Nothing}=nothing,
                 num_worker_warps::Union{Int, Nothing}=nothing,
+                dependent::Bool=false,
+                stream=CUDACore.stream(),
                 name::Union{String, Nothing}=nothing)
     converted = map(cuTileconvert, args)
     tt = Tuple{map(Core.Typeof, converted)...}
     kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name)
-    kernel(converted...; blocks=grid)
+    kernel(converted...; blocks=grid, dependent, stream)
     return nothing
 end
 
