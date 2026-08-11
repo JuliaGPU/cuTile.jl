@@ -55,15 +55,7 @@ steps:
               - "13.2"
               - "13.1"
         commands: |
-          # CUDA 13.1 predates `tileiras`, and its bytecode cannot target the
-          # A100 CI agents (sm_80 requires v13.2+). Instead, emit v13.1
-          # bytecode with the default compiler; the test suite detects the
-          # incompatible GPU and restricts itself to host-side tests.
-          if [[ "{{matrix.cuda}}" == "13.1" ]]; then
-            echo -e "[cuTile]\nbytecode_version = \"13.1\"" >LocalPreferences.toml
-          else
-            echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
-          fi
+          echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
 
   - wait: ~
     continue_on_failure: true
