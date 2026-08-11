@@ -93,7 +93,7 @@ include("launch.jl")
 
 public launch, cufunction, TileKernel, TileBackend, DefaultBackend, Tiled, ByTarget,
        @compiler_options, @fpmode, @.,
-       tileiras_version, bytecode_version, reflection_bytecode_version, versioninfo
+       tileiras_version, bytecode_version, versioninfo
 
 # World age captured at __init__ time. The compilation pipeline
 # (typeinf!, codegen, bytecode emission) is invoked in this world via

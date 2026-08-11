@@ -337,7 +337,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        if ct.reflection_bytecode_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
@@ -408,7 +408,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             return
         end
 
-        if ct.reflection_bytecode_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
@@ -1423,7 +1423,7 @@ end
             end
         end
 
-        if ct.reflection_bytecode_version() >= v"13.3"
+        if ct.bytecode_version() >= v"13.3"
             # Widen UInt8 -> UInt16 (1D): lowers to a single unpack, identity
             # reshapes folded away.
             @test @filecheck begin
@@ -2274,7 +2274,7 @@ end
             end
         end
 
-        if ct.reflection_bytecode_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
@@ -2299,7 +2299,7 @@ end
             return
         end
 
-        if ct.reflection_bytecode_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
@@ -2787,7 +2787,7 @@ end
         end
     end
 
-    if ct.reflection_bytecode_version() >= v"13.3"
+    if ct.bytecode_version() >= v"13.3"
     @testset "atomic_red_view_tko" begin
         spec2d = ct.ArraySpec{2}(16, true)
         @test @filecheck begin
@@ -2904,7 +2904,7 @@ end
     @testset "@atomic macro" begin
         spec2d = ct.ArraySpec{2}(16, true)
 
-        if ct.reflection_bytecode_version() >= v"13.3"
+        if ct.bytecode_version() >= v"13.3"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
@@ -3299,7 +3299,7 @@ end
     end
 
     # v13.1's PrintOp has no token result, so prints cannot be ordered there.
-    if ct.reflection_bytecode_version() >= v"13.2"
+    if ct.bytecode_version() >= v"13.2"
     @testset "prints are globally ordered" begin
         @test @filecheck begin
             @check_label "entry"
@@ -3380,9 +3380,9 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        @check cond=(ct.reflection_bytecode_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
+        @check cond=(ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
         # Pre-v13.4 disassemblers print packed i1 data as a splat.
-        @check cond=(ct.reflection_bytecode_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
+        @check cond=(ct.bytecode_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
         @check_not "cat"
         code_tiled(Tuple{}) do
             Base.donotdelete(Bool[true, false, false, true])

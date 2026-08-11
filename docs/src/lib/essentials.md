@@ -35,6 +35,5 @@ TileOrFloat
 ```@docs
 tileiras_version
 bytecode_version
-reflection_bytecode_version
 versioninfo
 ```

@@ -253,6 +253,15 @@ function discover_tileir_disassembler()
         return TileIRDisassembler(`$disasm`, "--print-debug-info",
                                   parse_tileiras_version(log))
     end
+    # Prefer the disassembler shipped next to `tileiras` (CUDA 13.4+), which is
+    # version-matched to the compiler and thus decodes any bytecode we emit.
+    if CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :tileirdisasm)
+        proc, log = run_and_collect(`$(CUDA_Compiler_jll.tileirdisasm()) --version`)
+        success(proc) || error("tileirdisasm --version failed with exit code " *
+                               "$(proc.exitcode):\n$log")
+        return TileIRDisassembler(CUDA_Compiler_jll.tileirdisasm(), "--print-debug-info",
+                                  parse_tileiras_version(log))
+    end
     CUDA_Tile_jll.is_available() || error("CUDA_Tile_jll is not available")
     translate = `$(CUDA_Tile_jll.cuda_tile_translate()) --cudatilebc-to-mlir`
     return TileIRDisassembler(translate, "--mlir-print-debuginfo",
@@ -444,23 +453,6 @@ highest version accepted by the selected `tileiras`, or the `bytecode_version`
 preference after checking that both cuTile and `tileiras` support it.
 """
 bytecode_version() = tileir_toolchain().bytecode_version
-
-"""
-    reflection_bytecode_version() -> VersionNumber
-
-The default Tile IR bytecode version for reflection (`code_tiled`): the emitted
-[`bytecode_version`](@ref), clamped to the newest version the selected
-disassembler can decode. The kernel bytecode passed to `tileiras` may thus be
-newer than what reflection displays.
-"""
-function reflection_bytecode_version()
-    version = bytecode_version()
-    disasm = tileir_disassembler_version()
-    version <= disasm && return version
-    supported = filter(<=(disasm), SUPPORTED_BYTECODE_VERSIONS)
-    isempty(supported) && return version  # let disassemble_tileir raise the error
-    return maximum(supported)
-end
 
 function validate_tileiras_target(version::VersionNumber)
     validate_bytecode_version(version)
