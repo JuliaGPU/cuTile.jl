@@ -12,7 +12,7 @@ steps:
         agents:
           queue: "cuda"
           gpu: "a100"
-        timeout_in_minutes: 15
+        timeout_in_minutes: 25
         matrix:
           setup:
             julia:
