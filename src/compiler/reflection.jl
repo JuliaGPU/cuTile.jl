@@ -129,7 +129,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
                     num_worker_warps::Union{Int, Nothing}=nothing,
-                    bytecode_version::VersionNumber=cuTile.bytecode_version(),
+                    bytecode_version::VersionNumber=cuTile.reflection_bytecode_version(),
                     debuginfo::Bool=false,
                     remarks::Bool=false,
                     world::UInt=Base.get_world_counter())

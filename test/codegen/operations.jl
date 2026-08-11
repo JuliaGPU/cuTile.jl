@@ -337,7 +337,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        if ct.bytecode_version() >= v"13.4"
+        if ct.reflection_bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
@@ -408,7 +408,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             return
         end
 
-        if ct.bytecode_version() >= v"13.4"
+        if ct.reflection_bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
@@ -1423,28 +1423,30 @@ end
             end
         end
 
-        # Widen UInt8 -> UInt16 (1D): lowers to a single unpack, identity reshapes
-        # folded away.
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (16,))
-                @check "unpack"
-                ct.store(b, pid, reinterpret(UInt16, tile))
-                return
+        if ct.reflection_bytecode_version() >= v"13.3"
+            # Widen UInt8 -> UInt16 (1D): lowers to a single unpack, identity
+            # reshapes folded away.
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "unpack"
+                    ct.store(b, pid, reinterpret(UInt16, tile))
+                    return
+                end
             end
-        end
 
-        # Narrow UInt16 -> UInt8 (1D): lowers to a single pack.
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{UInt16,1,Int32,spec1d}, ct.TileArray{UInt8,1,Int32,spec1d}}) do a, b
-                pid = ct.bid(1)
-                tile = ct.load(a, pid, (8,))
-                @check "pack"
-                ct.store(b, pid, reinterpret(UInt8, tile))
-                return
+            # Narrow UInt16 -> UInt8 (1D): lowers to a single pack.
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{UInt16,1,Int32,spec1d}, ct.TileArray{UInt8,1,Int32,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (8,))
+                    @check "pack"
+                    ct.store(b, pid, reinterpret(UInt8, tile))
+                    return
+                end
             end
         end
 
@@ -1473,9 +1475,12 @@ end
         end
 
         # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
+        # (Explicit `bytecode_version`: the shape validation being tested must not
+        # be masked by the pack/unpack version gate on older toolchains.)
         @test @filecheck throws=ct.CodegenErrors begin
             @check "do not evenly divide"
-            code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt8,1,Int32,spec1d}, ct.TileArray{UInt16,1,Int32,spec1d}};
+                       bytecode_version=v"13.3") do a, b
                 pid = ct.bid(1)
                 Base.donotdelete(reinterpret(UInt16, ct.load(a, pid, (1,))))
                 return
@@ -1485,7 +1490,8 @@ end
         # reshape-widen: leading dim must equal the ratio (2); 1 fails the final reshape.
         @test @filecheck throws=ct.CodegenErrors begin
             @check "same number of elements"
-            code_tiled(Tuple{ct.TileArray{UInt8,2,Int32,spec2d}, ct.TileArray{UInt16,2,Int32,spec2d}}) do a, b
+            code_tiled(Tuple{ct.TileArray{UInt8,2,Int32,spec2d}, ct.TileArray{UInt16,2,Int32,spec2d}};
+                       bytecode_version=v"13.3") do a, b
                 pid = ct.bid(1)
                 Base.donotdelete(reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
                 return
@@ -2268,7 +2274,7 @@ end
             end
         end
 
-        if ct.bytecode_version() >= v"13.4"
+        if ct.reflection_bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
@@ -2293,7 +2299,7 @@ end
             return
         end
 
-        if ct.bytecode_version() >= v"13.4"
+        if ct.reflection_bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
@@ -2781,6 +2787,7 @@ end
         end
     end
 
+    if ct.reflection_bytecode_version() >= v"13.3"
     @testset "atomic_red_view_tko" begin
         spec2d = ct.ArraySpec{2}(16, true)
         @test @filecheck begin
@@ -2892,18 +2899,21 @@ end
             return
         end
     end
+    end
 
     @testset "@atomic macro" begin
         spec2d = ct.ArraySpec{2}(16, true)
 
-        @test @filecheck begin
-            @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
-                tiles = ct.eachtile(a, (16, 16))
-                v = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
-                @check "atomic_red_view_tko relaxed device{{.*}}addf"
-                ct.@atomic tiles[1, 1] += v
-                return
+        if ct.reflection_bytecode_version() >= v"13.3"
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
+                    tiles = ct.eachtile(a, (16, 16))
+                    v = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+                    @check "atomic_red_view_tko relaxed device{{.*}}addf"
+                    ct.@atomic tiles[1, 1] += v
+                    return
+                end
             end
         end
 
@@ -3288,6 +3298,8 @@ end
         end
     end
 
+    # v13.1's PrintOp has no token result, so prints cannot be ordered there.
+    if ct.reflection_bytecode_version() >= v"13.2"
     @testset "prints are globally ordered" begin
         @test @filecheck begin
             @check_label "entry"
@@ -3303,6 +3315,7 @@ end
                 return
             end
         end
+    end
     end
 
     # On v13.1 we forward print_tko's input token; a second make_token here
@@ -3367,9 +3380,9 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        @check cond=(ct.bytecode_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
+        @check cond=(ct.reflection_bytecode_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
         # Pre-v13.4 disassemblers print packed i1 data as a splat.
-        @check cond=(ct.bytecode_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
+        @check cond=(ct.reflection_bytecode_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
         @check_not "cat"
         code_tiled(Tuple{}) do
             Base.donotdelete(Bool[true, false, false, true])

@@ -155,6 +155,7 @@ end
 # fast_acc only has an effect on Hopper (sm_90); ignored elsewhere. So off
 # Hopper we assert the exact result (the flag must ride through without
 # perturbing the output); on Hopper we make no numeric claim.
+if cuTile.bytecode_version() >= v"13.3"
 @testset "mma fast_acc (exact off Hopper)" begin
     M = 16
     ah = Float8_E4M3FN.(Float32.(rand(0:2, M, M)) ./ 2)
@@ -164,6 +165,7 @@ end
     D = CUDA.zeros(Float32, M, M)
     @cuda backend=cuTile blocks=1 mma_dl_fast(CuArray(ah), CuArray(bh), CuArray(ch), D)
     @test (Array(D) == ref) || (v"9" <= capability(device()) < v"10")
+end
 end
 
 end

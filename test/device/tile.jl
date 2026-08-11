@@ -1333,6 +1333,8 @@ end
 end
 
 @testset "reinterpret matches Base.reinterpret" begin
+    # pack/unpack require Tile IR bytecode v13.3
+    if cuTile.bytecode_version() >= v"13.3"
     @testset "2D narrowing" begin
         function u16_to_u8(a::ct.TileArray{UInt16,2}, b::ct.TileArray{UInt8,2})
             pid = ct.bid(1)
@@ -1388,6 +1390,7 @@ end
             @cuda backend=cuTile blocks=1 u16_reshape_u8(a, b)
             @test Array(b) == reinterpret(reshape, UInt8, M)
         end
+    end
     end
 
     @testset "Equal-with round-trip preserves values and shape" begin

@@ -7,6 +7,8 @@ Base.strides(::WideDeviceVector) = (Int64(1),)
 Base.pointer(a::WideDeviceVector) = pointer(a.parent)
 Base.getindex(::WideDeviceVector, ::Int) = error("not implemented")
 
+# Int64-indexed TileArrays require Tile IR bytecode v13.3
+if cuTile.bytecode_version() >= v"13.3"
 @testset "Int64 indexing" begin
     function copy_wide_prefix(src::ct.TileArray{Float32, 1},
                               dst::ct.TileArray{Float32, 1})
@@ -28,4 +30,5 @@ Base.getindex(::WideDeviceVector, ::Int) = error("not implemented")
     @test ct.indextype(src64) === ct.indextype(dst64) === Int64
     @cuda backend=cuTile blocks=1 copy_wide_prefix(src64, dst64)
     @test Array(dst) == Array(src)
+end
 end

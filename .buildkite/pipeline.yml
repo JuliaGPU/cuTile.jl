@@ -46,7 +46,7 @@ steps:
           build.message !~ /\[only/ && !build.pull_request.draft &&
             build.message !~ /\[skip tests\]/ &&
             build.message !~ /\[skip cuda\]/
-        timeout_in_minutes: 15
+        timeout_in_minutes: 25
         matrix:
           setup:
             cuda:
@@ -55,7 +55,13 @@ steps:
               - "13.2"
               - "13.1"
         commands: |
-          echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
+          # CUDA 13.1 predates `tileiras`, so its compiler cannot be tested;
+          # emit v13.1 bytecode with the default compiler instead.
+          if [[ "{{matrix.cuda}}" == "13.1" ]]; then
+            echo -e "[cuTile]\nbytecode_version = \"13.1\"" >LocalPreferences.toml
+          else
+            echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
+          fi
 
   - wait: ~
     continue_on_failure: true

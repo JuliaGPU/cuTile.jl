@@ -1,5 +1,8 @@
 using CUDA
 
+# GatherScatterView requires Tile IR bytecode v13.3
+if cuTile.bytecode_version() >= v"13.3"
+
 @testset "GatherScatterView — sparse rows with dynamic dense start" begin
     function gather_rows(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2}, col_start::Int32)
         rows = ct.arange(4; start=1, step=2)
@@ -114,4 +117,5 @@ end
     b = CUDA.zeros(Float32, 2, 4, 2)
     @cuda backend=cuTile gather_middle(a, b)
     @test Array(b) == Array(a)[1:2, [1, 3, 5, 7], 3:4]
+end
 end
