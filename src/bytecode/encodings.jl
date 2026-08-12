@@ -104,7 +104,9 @@ module Opcode
     const MakeStridedViewOp = 116 # since 13.3
     const AtomicRedViewTkoOp = 117 # since 13.3
     const InsertOp = 118     # since 13.4
-    # 119-121, 128-129 (Gdc*, Multimem*) not implemented
+    const GdcLaunchDependentsTkoOp = 119 # since 13.4
+    const GdcWaitTkoOp = 120 # since 13.4
+    # 121, 128-129 (Gdc*, Multimem*) not implemented
     const FPowIOp = 130      # since 13.4
     # 131 (MemoryFenceAliasTkoOp) not implemented
 end
@@ -389,6 +391,40 @@ function encode_PrintTkoOp!(cb::CodeBuilder,
     num_results = bytecode_version(cb) >= v"13.2" ? 1 : 0
     result = new_op!(cb, num_results)
     return result  # Value for v13.2+, nothing for v13.1
+end
+
+"""
+    encode_GdcLaunchDependentsTkoOp!(cb, token_type; token=nothing) -> Value
+
+Allow dependent kernels to start executing.
+Opcode: 119
+"""
+function encode_GdcLaunchDependentsTkoOp!(cb::CodeBuilder, token_type::TypeId;
+                                          token::Union{Value, Nothing}=nothing)
+    bytecode_version(cb) >= v"13.4" ||
+        throw(IRError("cuda_tile.gdc_launch_dependents_tko requires Tile IR v13.4+, got v$(bytecode_version(cb))"))
+    encode_varint!(cb.buf, Opcode.GdcLaunchDependentsTkoOp)
+    encode_typeid!(cb.buf, token_type)
+    encode_varint!(cb.buf, token === nothing ? 0 : 1)
+    encode_optional_operand!(cb.buf, token)
+    return new_op!(cb)
+end
+
+"""
+    encode_GdcWaitTkoOp!(cb, token_type; token=nothing) -> Value
+
+Wait for prerequisite kernels to finish and make their writes visible.
+Opcode: 120
+"""
+function encode_GdcWaitTkoOp!(cb::CodeBuilder, token_type::TypeId;
+                              token::Union{Value, Nothing}=nothing)
+    bytecode_version(cb) >= v"13.4" ||
+        throw(IRError("cuda_tile.gdc_wait_tko requires Tile IR v13.4+, got v$(bytecode_version(cb))"))
+    encode_varint!(cb.buf, Opcode.GdcWaitTkoOp)
+    encode_typeid!(cb.buf, token_type)
+    encode_varint!(cb.buf, token === nothing ? 0 : 1)
+    encode_optional_operand!(cb.buf, token)
+    return new_op!(cb)
 end
 
 """

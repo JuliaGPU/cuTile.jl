@@ -16,8 +16,8 @@
 
 Return the memory effect of a resolved intrinsic call. `MEM_NONE` for pure
 ops, `MEM_LOAD` for reads, `MEM_STORE` for writes (including atomics, which
-are conservatively classified as stores, and `print_tko` which has an
-externally observable side effect).
+are conservatively classified as stores, and ordering-only operations with
+externally observable effects).
 """
 function classify_memory_op(resolved_func)
     if resolved_func === Intrinsics.load_partition_view ||
@@ -30,7 +30,7 @@ function classify_memory_op(resolved_func)
            resolved_func === Intrinsics.store_gather_scatter_view ||
            resolved_func === Intrinsics.store_ptr_tko
         return MEM_STORE
-    elseif resolved_func === Intrinsics.print_tko
+    elseif resolved_func === Intrinsics.print_tko || is_gdc_intrinsic(resolved_func)
         return MEM_STORE
     elseif is_atomic_intrinsic(resolved_func) || is_atomic_red_view(resolved_func)
         return MEM_STORE
@@ -38,6 +38,9 @@ function classify_memory_op(resolved_func)
         return MEM_NONE
     end
 end
+
+is_gdc_intrinsic(func) = func === Intrinsics.gdc_launch_dependents_tko ||
+                         func === Intrinsics.gdc_wait_tko
 
 function is_atomic_intrinsic(func)
     isdefined(Intrinsics, :atomic_cas) && func === Intrinsics.atomic_cas && return true

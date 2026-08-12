@@ -66,6 +66,15 @@ end
         cuTile.encode_InsertOp!(cb, cuTile.TypeId(1), cuTile.Value(0),
                                cuTile.Value(1), cuTile.Value[])
     end
+
+    cb = make_builder(v"13.4")
+    @test cuTile.encode_GdcLaunchDependentsTkoOp!(cb, cuTile.TypeId(1)) == cuTile.Value(0)
+    @test cuTile.encode_GdcWaitTkoOp!(cb, cuTile.TypeId(1); token=cuTile.Value(7)) == cuTile.Value(1)
+    @test cb.buf == UInt8[119, 1, 0, 120, 1, 1, 7]
+    @test_throws "requires Tile IR v13.4+" cuTile.encode_GdcLaunchDependentsTkoOp!(
+        make_builder(v"13.3"), cuTile.TypeId(1))
+    @test_throws "requires Tile IR v13.4+" cuTile.encode_GdcWaitTkoOp!(
+        make_builder(v"13.3"), cuTile.TypeId(1))
 end
 
 @testset "Tile IR v13.3 StridedView encodings" begin
