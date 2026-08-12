@@ -42,25 +42,40 @@ function ParallelTestRunner.execute(::Type{cuTileTestRecord}, mod::Module, f, na
     data = @eval mod begin
         GC.gc(true)
         Random.seed!(1)
-        stats = CUDA.@timed @testset WorkerTestSet "placeholder" begin
-            @testset DefaultTestSet $name begin
-                $f
+        if CUDA.functional()
+            stats = CUDA.@timed @testset WorkerTestSet "placeholder" begin
+                @testset DefaultTestSet $name begin
+                    $f
+                end
             end
+            (; testset = stats.value,
+               stats.time,
+               cpu_bytes = UInt64(stats.cpu_bytes),
+               cpu_gctime = Float64(stats.cpu_gctime),
+               gpu_bytes = UInt64(stats.gpu_bytes),
+               gpu_time = Float64(stats.gpu_memtime))
+        else
+            stats = @timed @testset WorkerTestSet "placeholder" begin
+                @testset DefaultTestSet $name begin
+                    $f
+                end
+            end
+            (; testset = stats.value,
+               stats.time,
+               cpu_bytes = UInt64(stats.bytes),
+               cpu_gctime = Float64(stats.gctime),
+               gpu_bytes = UInt64(0),
+               gpu_time = 0.0)
         end
-        (; testset = stats.value,
-           stats.time,
-           cpu_bytes = UInt64(stats.cpu_bytes),
-           cpu_gctime = Float64(stats.cpu_gctime),
-           gpu_bytes = UInt64(stats.gpu_bytes),
-           gpu_time = Float64(stats.gpu_memtime))
     end
 
     rss = Sys.maxrss()
     base = TestRecord(data.testset, data.time, data.cpu_bytes, data.cpu_gctime,
                       0.0, rss, time() - start_time)
-    record = cuTileTestRecord(base, data.gpu_bytes, data.gpu_time, gpu_rss_nvml())
+    record = cuTileTestRecord(base, data.gpu_bytes, data.gpu_time,
+                              CUDA.functional() ? gpu_rss_nvml() : missing)
     GC.gc(true)
-    CUDA.reclaim()
+    CUDA.functional() && CUDA.reclaim()
     return record
 end
 

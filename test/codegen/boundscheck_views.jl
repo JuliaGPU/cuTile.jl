@@ -95,7 +95,7 @@ has_padding(f, argtypes; bytecode_version) =
         @test has_padding(f, two_dim; bytecode_version=v"13.3")
     end
 
-    if ct.bytecode_version() >= v"13.4"
+    if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
         # An explicit false is the only way to select the v13.4 `inbounds`
         # encoding. It also drops padding, which Tile IR rejects on an
         # unchecked view.

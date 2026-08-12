@@ -74,6 +74,8 @@ end
     @test Array(b)[1:2, 1:2, 1:2] == expected[1:2, 1:2, 1:2]
 end
 
+# Stepped `eachtile` windows lower to StridedView, which requires v13.3.
+if cuTile.bytecode_version() >= v"13.3"
 @testset "eachtile — adjacent, overlapping, and gapped windows" begin
     function copy_windows(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, n::Int32)
         src = eachtile(a, (4,); step=(2,))
@@ -169,4 +171,5 @@ end
     expected = zeros(Float32, 8, 1)
     expected[3:6, 1] .= Array(a2)[3:6, 1]
     @test Array(b2) == expected
+end
 end

@@ -153,6 +153,7 @@ end
     end
 end
 
+if ct.bytecode_version() >= v"13.3"
 @testset "token_order — StridedView stores keep token carry" begin
     # Tile indices are injective, but overlapping windows are not disjoint in
     # memory. `store_strided_view` therefore must never take the partition
@@ -171,6 +172,7 @@ end
             return
         end
     end
+end
 end
 
 @testset "layout_may_alias_internally" begin

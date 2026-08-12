@@ -1,11 +1,30 @@
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
+CUDATools = "9ec180c6-1c07-47c7-9e6e-ebefa4d1f6d0"
+CUPTI = "9e67e8f6-ba02-4b6c-a7db-3b11ae1e7ab7"
 DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Microfloats = "31c70f10-a750-4521-b13c-797315ae2933"
+NVML = "611af6d1-644e-4c5d-bd58-854d7d1254b9"
+cuBLAS = "182d3088-87b7-4494-8cad-fc6afaa545bc"
+cuFFT = "533571aa-0936-420e-b4be-9c66f5f626ca"
+cuRAND = "20fd9a0b-12d5-4c2f-a8af-7c34e9e60431"
+cuSOLVER = "887afef0-6a32-4de5-add4-7827692ba8fc"
+cuSPARSE = "b26da814-b3bc-49ef-b0ee-c816305aa060"
 cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"
 
 [sources]
+CUDA = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main"}
+CUDACore = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "CUDACore"}
+CUDATools = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "CUDATools"}
+CUPTI = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/cupti"}
+NVML = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/nvml"}
+cuBLAS = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/cublas"}
+cuFFT = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/cufft"}
+cuRAND = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/curand"}
+cuSOLVER = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/cusolver"}
+cuSPARSE = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "lib/cusparse"}
 cuTile = {path = ".."}
 
 [compat]

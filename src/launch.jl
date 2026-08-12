@@ -165,12 +165,35 @@ end
 public TileCompilerTimeoutError
 
 """
+    tileiras_available() -> Bool
+
+Whether a `tileiras` binary is available, either through the `tileiras`
+preference or through `CUDA_Compiler_jll`. The JLL lacks `tileiras` when its
+selected CUDA version predates the compiler (CUDA 13.2) or when no artifact is
+available for the platform.
+"""
+tileiras_available() =
+    tileiras_override !== nothing ||
+    (CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :tileiras))
+
+function check_tileiras_available()
+    tileiras_available() && return
+    error("The selected CUDA_Compiler_jll (CUDA $(CUDA_Compiler_jll.cuda_version)) " *
+          "does not provide `tileiras`; select CUDA 13.2 or newer, or set the " *
+          "`tileiras` preference to a local binary.")
+end
+
+"""
     tileiras_path() -> String
 
 Path to the `tileiras` binary. Honors the `tileiras` preference when set,
 otherwise falls back to `CUDA_Compiler_jll.tileiras_path`.
 """
-tileiras_path() = something(tileiras_override, CUDA_Compiler_jll.tileiras_path)
+function tileiras_path()
+    tileiras_override === nothing || return tileiras_override
+    check_tileiras_available()
+    return CUDA_Compiler_jll.tileiras_path
+end
 
 """
     tileiras_root() -> String
@@ -190,6 +213,7 @@ Construct a Cmd to invoke `tileiras` with `args`, with `CUDA_ROOT` set
 to [`tileiras_root`](@ref).
 """
 function tileiras_cmd(args...)
+    check_tileiras_available()
     cmd = tileiras_override === nothing ?
         `$(CUDA_Compiler_jll.tileiras()) $args` :
         Cmd([tileiras_override, args...])
@@ -227,6 +251,15 @@ function discover_tileir_disassembler()
         success(proc) || error("tileirdisasm --version failed with exit code " *
                                "$(proc.exitcode):\n$log")
         return TileIRDisassembler(`$disasm`, "--print-debug-info",
+                                  parse_tileiras_version(log))
+    end
+    # Prefer the disassembler shipped next to `tileiras` (CUDA 13.4+), which is
+    # version-matched to the compiler and thus decodes any bytecode we emit.
+    if CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :tileirdisasm)
+        proc, log = run_and_collect(`$(CUDA_Compiler_jll.tileirdisasm()) --version`)
+        success(proc) || error("tileirdisasm --version failed with exit code " *
+                               "$(proc.exitcode):\n$log")
+        return TileIRDisassembler(CUDA_Compiler_jll.tileirdisasm(), "--print-debug-info",
                                   parse_tileiras_version(log))
     end
     CUDA_Tile_jll.is_available() || error("CUDA_Tile_jll is not available")
@@ -391,9 +424,7 @@ const tileir_toolchain_cache = LazyInitialized{TileIRToolchain}()
 function discover_tileir_toolchain()
     bytecode_version_override === nothing ||
         validate_bytecode_version(bytecode_version_override)
-    if tileiras_override === nothing && !CUDA_Compiler_jll.is_available()
-        error("CUDA_Compiler_jll is not available and no `tileiras` preference is set")
-    end
+    check_tileiras_available()
 
     proc, identity = run_and_collect(tileiras_cmd("--version"))
     success(proc) || error("tileiras --version failed with exit code " *

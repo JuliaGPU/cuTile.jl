@@ -67,7 +67,7 @@ if capability(device()) >= v"9"
         @test Array(d) == av .* bv .+ cv
     end
 end
-if capability(device()) >= v"10"
+if capability(device()) >= v"10" && cuTile.bytecode_version() >= v"13.3"
     # E8M0 round-trip: exponent-only, so representable values are powers of two.
     representable_e8m0 = Float32(2) .^ Float32[-8, -6, -4, -2, -1, 0, 1, 2,
                                                3, 4, 5, 6, 7, 8, 10, 16]
@@ -119,7 +119,7 @@ end
 
 # Float4_E2M1FN requires Blackwell (sm_100+).
 @testset "reinterpret" begin
-if capability(device()) >= v"10"
+if capability(device()) >= v"10" && cuTile.bytecode_version() >= v"13.3"
     # Pure pack/unpack round-trip: UInt8 → FP4 → UInt8 must be a no-op.
     let av = UInt8[0x00, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde],
         b = CUDA.zeros(UInt8, 8)
@@ -208,6 +208,7 @@ if capability(device()) >= v"9"
     # and ptxas without perturbing the output. On Hopper we make no numeric
     # claim: fast accumulation may legitimately diverge there, and we have no
     # fast-accum reference to compare against.
+    if cuTile.bytecode_version() >= v"13.3"
     @testset "fast_acc (exact off Hopper)" begin
         ah = Float8_E4M3FN.(Float32.(rand(0:2, M, K)) ./ 2)
         bh = Float8_E4M3FN.(Float32.(rand(0:2, K, N)) ./ 2)
@@ -216,6 +217,7 @@ if capability(device()) >= v"9"
         D = CUDA.zeros(Float32, M, N)
         @cuda backend=cuTile blocks=1 mma_e4m3_fast(CuArray(ah), CuArray(bh), CuArray(ch), D)
         @test (Array(D) == ref) || (v"9" <= capability(device()) < v"10")
+    end
     end
 end
 end
@@ -300,7 +302,7 @@ const F4_VALUES = Float32[0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.5, -1, -1.5, -2, -3, -4
 
 # Block-scaled mma is Blackwell-only (sm_100+), for both FP8 and FP4 operands.
 @testset "mma_scaled" begin
-if capability(device()) >= v"10"
+if capability(device()) >= v"10" && cuTile.bytecode_version() >= v"13.3"
     m, n, k, ks, B = 16, 16, 64, 2, 32
 
     # MXFP8: f8 operands with an f8e8m0fnu scale, B = 32. 2D × 2D, each f8 type.

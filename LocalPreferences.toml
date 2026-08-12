@@ -22,3 +22,11 @@
 
 # maximum disk cache size in bytes. defaults to 1 GiB.
 #cache_size_bytes = 1073741824
+
+
+[CUDA_Compiler_jll]
+# which CUDA compiler to use. it should not be necessary to set this preference.
+#version = "13.4"
+
+# whether to use a local CUDA compiler.
+#local = "false"

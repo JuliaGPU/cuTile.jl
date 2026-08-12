@@ -1,5 +1,7 @@
 steps:
+  # first, test supported Julia versions
   - group: ":julia: Julia"
+    key: "julia"
     steps:
       - label: "Julia {{matrix.julia}}"
         plugins:
@@ -10,7 +12,7 @@ steps:
         agents:
           queue: "cuda"
           gpu: "a100"
-        timeout_in_minutes: 15
+        timeout_in_minutes: 25
         matrix:
           setup:
             julia:
@@ -23,6 +25,37 @@ steps:
           build.message !~ /\[only/ &&
             build.message !~ /\[skip tests\]/ &&
             build.message !~ /\[skip julia\]/
+
+  # then, test supported CUDA compilers
+  - group: "CUDA"
+    key: "cuda"
+    depends_on: "julia"
+    steps:
+      - label: "CUDA {{matrix.cuda}}"
+        plugins:
+          - JuliaCI/julia#v1:
+              version: "1.12"
+          - JuliaCI/julia-test#v1:
+              coverage: false
+        agents:
+          queue: "cuda"
+          gpu: "a100"
+        if: |
+          build.message =~ /\[only tests\]/ ||
+          build.message =~ /\[only cuda\]/ ||
+          build.message !~ /\[only/ && !build.pull_request.draft &&
+            build.message !~ /\[skip tests\]/ &&
+            build.message !~ /\[skip cuda\]/
+        timeout_in_minutes: 25
+        matrix:
+          setup:
+            cuda:
+              - "13.4"
+              - "13.3"
+              - "13.2"
+              - "13.1"
+        commands: |
+          echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
 
   - wait: ~
     continue_on_failure: true
