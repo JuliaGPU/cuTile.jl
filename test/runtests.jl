@@ -69,11 +69,7 @@ args = parse_args(ARGS)
 # (Set `CUDA_VISIBLE_DEVICES` to choose which device is used.)
 gpu_jobs = if device_tests
     first_gpu = first(CUDA.devices())
-    gpu_free = CUDA.device!(first_gpu) do
-        mem = CUDA.free_memory()
-        CUDA.device_reset!()
-        mem
-    end
+    gpu_free = CUDA.device!(CUDA.free_memory, first_gpu)
     max(1, Int(gpu_free) ÷ (2 * 2^30))
 else
     typemax(Int)
