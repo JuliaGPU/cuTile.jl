@@ -25,9 +25,6 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Scratch = "6c6a2e73-6563-6170-7368-637461726353"
 
-[sources]
-CUDACore = {url = "https://github.com/JuliaGPU/CUDA.jl", rev = "main", subdir = "CUDACore"}
-
 [weakdeps]
 DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 Microfloats = "31c70f10-a750-4521-b13c-797315ae2933"
@@ -39,7 +36,7 @@ MicrofloatsExt = "Microfloats"
 [compat]
 Adapt = "4.4"
 BFloat16s = "0.6"
-CUDACore = "6.1"
+CUDACore = "6.3"
 CUDA_Compiler_jll = "0.5"
 CUDA_Tile_jll = "13.3"
 CompilerCaching = "0.3.1, 0.4"
