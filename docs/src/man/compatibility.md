@@ -100,9 +100,5 @@ inputs on any architecture.
 
 ## API stability
 
-cuTile.jl is in beta. Most Tile IR features are implemented, and the package is
-verified against the benchmarks and tests in the repository, but interfaces may
-change without notice between releases. Pin a version if you need stability.
-
 Symbols are marked `public` or `export`ed when they are intended for use;
 anything else is internal, and will change without a deprecation cycle.

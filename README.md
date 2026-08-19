@@ -17,10 +17,6 @@ that operate on *tiles* — multi-dimensional array fragments — and leave it t
 compiler to map those onto the hardware, including tensor cores and the tensor memory
 accelerator.
 
-**This package is in beta.** Most Tile IR features are implemented and the package has been
-verified on the benchmarks and tests included in the repository. Interfaces and APIs may
-still change without notice.
-
 
 ## Requirements
 

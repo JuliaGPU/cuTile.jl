@@ -16,12 +16,11 @@ thread does, you write kernels that operate on *tiles* — multi-dimensional arr
 fragments — and leave it to the Tile IR compiler to map those onto the hardware,
 including tensor cores and the tensor memory accelerator.
 
-!!! warning "This package is in beta"
+!!! info "API stability"
 
-    Most Tile IR features are implemented, and the package has been verified on
-    the benchmarks and tests included in the repository. Interfaces and APIs may
-    still change without notice. See [Compatibility](man/compatibility.md) for
-    what is and isn't guaranteed.
+    Symbols marked `public` or exported are intended for use; anything else is
+    internal. See [Compatibility](man/compatibility.md) for what each feature
+    requires from the Tile IR version and the GPU architecture.
 
 
 ## Quick start
