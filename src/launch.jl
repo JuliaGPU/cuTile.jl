@@ -404,6 +404,142 @@ function run_tileiras(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
     end
 end
 
+# Minimal ELF64 section lookup. Binutils does not recognize the CUBIN machine
+# type, so locate the section by parsing the headers directly. Returns the
+# section contents, or `nothing` if absent or not a little-endian ELF64 file.
+function elf_section(elf::Vector{UInt8}, name::String)
+    read_at(T, pos) = reinterpret(T, @view elf[pos+1:pos+sizeof(T)])[]
+    length(elf) >= 64 || return nothing
+    (view(elf, 1:4) == b"\x7fELF" && elf[5] == 2 && elf[6] == 1) || return nothing
+    shoff = Int(read_at(UInt64, 0x28))
+    shentsize = Int(read_at(UInt16, 0x3a))
+    shnum = Int(read_at(UInt16, 0x3c))
+    shstrndx = Int(read_at(UInt16, 0x3e))
+    (shstrndx < shnum && shoff + shnum * shentsize <= length(elf)) || return nothing
+    strtab = Int(read_at(UInt64, shoff + shstrndx * shentsize + 0x18))
+    for i in 0:shnum-1
+        header = shoff + i * shentsize
+        name_pos = strtab + Int(read_at(UInt32, header))
+        name_end = findnext(iszero, elf, name_pos + 1)
+        name_end === nothing && continue
+        String(elf[name_pos+1:name_end-1]) == name || continue
+        offset = Int(read_at(UInt64, header + 0x18))
+        size = Int(read_at(UInt64, header + 0x20))
+        offset + size <= length(elf) || return nothing
+        return elf[offset+1:offset+size]
+    end
+    return nothing
+end
+
+"""
+    extract_ptx(cubin::Vector{UInt8}) -> String
+
+The PTX source embedded in `cubin`. [`run_tileiras`](@ref) compiles with
+`--lineinfo`, which makes the assembler record the PTX it consumed in a
+`.nv_debug_ptx_txt` section (used by `cuda-gdb` to display PTX-level source).
+The section stores one NUL-terminated entry per PTX line, with comment and
+`.loc` lines blanked and leading whitespace stripped; runs of blank lines are
+collapsed and the original indentation is reconstructed to match what
+`tileiras` wrote before embedding: one tab per brace level in PTX code with
+labels and debug-`.section` contents flush-left, and — in the
+`.nv_intermediate_source_section` that CUDA 13.4+ emits — two-space
+scaffolding around a verbatim Tile IR block, identical to
+[`code_tiled`](@ref) output.
+"""
+function extract_ptx(cubin::Vector{UInt8})
+    section = elf_section(cubin, ".nv_debug_ptx_txt")
+    section === nothing && error(
+        "CUBIN does not embed PTX (no .nv_debug_ptx_txt section); " *
+        "it was compiled without line info")
+    lines = split(replace(String(section), '\0' => '\n'), '\n')
+    io = IOBuffer()
+    depth = 0
+    mlir_base = -1       # depth of `.nv_intermediate_source_section`, or -1
+    src_base = -1        # depth of `.source_begin`, or -1 outside the block
+    section_base = -1    # depth of a debug `.section` block, or -1
+    pending_section = false
+    blank_run = true     # suppress leading blanks; collapse runs
+    for line in lines
+        if isempty(line)
+            blank_run || println(io)
+            blank_run = true
+            continue
+        end
+        blank_run = false
+        closer = startswith(line, '}') || startswith(line, ')')
+        d = max(closer ? depth - 1 : depth, 0)
+        opens = count(==('{'), line)
+        # Parentheses nest only as function-header parameter lists: a line
+        # ending in `(` opens one, a line starting with `)` closes it.
+        depth += opens - count(==('}'), line) +
+                 (endswith(line, '(') ? 1 : 0) - (startswith(line, ')') ? 1 : 0)
+
+        indent = if mlir_base >= 0
+            src_base >= 0 ? "  "^max(d - src_base, 0) :
+                            "  "^max(d - mlir_base, 0)
+        elseif pending_section || startswith(line, ".section") ||
+               (section_base >= 0 && closer)
+            # NVVM writes the `.section` directive and its braces with one
+            # tab, the block contents flush-left.
+            "\t"
+        elseif section_base >= 0 || occursin(r"^[\w\$]+:$", line)
+            ""
+        else
+            "\t"^d
+        end
+        println(io, indent, line)
+
+        if startswith(line, ".nv_intermediate_source_section")
+            mlir_base = d
+        elseif mlir_base >= 0
+            line == ".source_begin" && (src_base = d)
+            line == ".source_end" && (src_base = -1)
+            depth <= mlir_base && (mlir_base = -1; src_base = -1)
+        elseif pending_section || startswith(line, ".section")
+            if opens > 0
+                section_base = d
+                pending_section = false
+            else
+                pending_section = startswith(line, ".section")
+            end
+        elseif section_base >= 0 && depth <= section_base
+            section_base = -1
+        end
+    end
+    return rstrip(String(take!(io)), '\n') * "\n"
+end
+
+"""
+    nvdisasm_cmd(args...) -> Cmd
+
+Construct a Cmd to invoke `nvdisasm` with `args`. With the `tileiras`
+preference set, requires `nvdisasm` from the same toolkit; otherwise uses
+`CUDA_Compiler_jll`.
+"""
+function nvdisasm_cmd(args...)
+    if tileiras_override !== nothing
+        disasm = joinpath(dirname(tileiras_override), "nvdisasm")
+        isfile(disasm) || error("no `nvdisasm` next to $(tileiras_path())")
+        return `$disasm $args`
+    end
+    CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :nvdisasm) ||
+        error("CUDA_Compiler_jll does not provide `nvdisasm`")
+    return `$(CUDA_Compiler_jll.nvdisasm()) $args`
+end
+
+"""
+    disassemble_cubin(cubin::Vector{UInt8}) -> String
+
+Disassemble a CUBIN to SASS using `nvdisasm`.
+"""
+function disassemble_cubin(cubin::Vector{UInt8})
+    mktempdir() do dir
+        path = joinpath(dir, "kernel.cubin")
+        write(path, cubin)
+        read(nvdisasm_cmd(path), String)
+    end
+end
+
 const TILEIRAS_VERSION_REGEX = r"V(\d+\.\d+\.\d+)"
 
 function parse_tileiras_version(log::AbstractString)
