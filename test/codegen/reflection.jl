@@ -72,6 +72,23 @@ end
     end
 end
 
+if ct.tileiras_available()
+    @testset "code_ptx" begin
+        @test @filecheck begin
+            @check ".visible .entry reflect_vadd"
+            @check "add.rn.f32"
+            @check "ret;"
+            ct.code_ptx(reflect_vadd, TT3; sm_arch=v"10.0")
+        end
+    end
+
+    @testset "code_sass" begin
+        output = sprint(io -> ct.code_sass(io, reflect_vadd, TT3; sm_arch=v"10.0"))
+        @test occursin(r"\.target\s+sm_100", output)
+        @test occursin(".text.reflect_vadd", output)
+    end
+end
+
 if ct.tileiras_version() >= v"13.4"
     @testset "code_tiled remarks" begin
         output = sprint(io -> ct.code_tiled(io, reflect_vadd, TT3;
