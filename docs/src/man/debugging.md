@@ -66,8 +66,7 @@ code, disassembled with `nvdisasm`. Both compile the Tile IR with `tileiras`
 but do not need a GPU: `sm_arch` may be omitted when a CUDA device is
 available, and must be given explicitly otherwise.
 
-The PTX is recovered from a debug section `tileiras` embeds in the CUBIN, in
-which comment lines are blanked; the code itself is unaffected.
+The PTX is read from a debug section `tileiras` embeds in the CUBIN.
 
 Note that `tileiras` always generates architecture-specific code: targeting
 `sm_arch=v"10.0"` produces `sm_100a` PTX and SASS, which only runs on that
