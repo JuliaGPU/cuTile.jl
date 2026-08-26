@@ -230,8 +230,8 @@ thread-level SIMT program the tile-level kernel is lowered to, with every
 compiler decision (thread mapping, CTA size, pipelining, synchronization)
 already made. When no GPU is available, pass `sm_arch` explicitly.
 
-The PTX is recovered from the `.nv_debug_ptx_txt` section the assembler embeds
-in the CUBIN when compiling with line info, so header comments are blanked.
+The PTX is read from the `.nv_debug_ptx_txt` section the assembler embeds in
+the CUBIN when compiling with line info.
 """
 function code_ptx(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...)
     cubin = compile_to_cubin(f, argtypes; kwargs...)
