@@ -343,8 +343,11 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
     checker = verify !== nothing ? verify() : nothing
     reset = setup !== nothing ? setup() : nothing
 
+    # One inference cache per worker for the whole pass, so the per-config
+    # const-seeded inference shares results instead of paying slow paths
+    # (e.g. `ct.load(..., order=...)`) once per config.
     record, precompile_error, first_error =
-        with(_SCOPED_INF_CACHE => _fresh_inf_cache()) do
+        inference_batch() do
             pipelined_tune(f, trials, grid_fn, args_fn;
                 sm_arch, opt_level,
                 warmup=tuning.warmup, reps=tuning.reps,

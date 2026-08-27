@@ -98,25 +98,35 @@ const _UNSET = -1
 """
     TileCacheKey
 
-Owner stamped onto every launch-cached `CodeInstance`. `lookup` (called once
-per `cufunction` via `ensure_compiled`) ccalls `jl_rettype_inferred` with the
-owner as `Any`, which forces a heap box; making the owner `isbits` shrinks the
-box from ~80 B (the previous `Tuple{Symbol, NamedTuple{…}}` shape, dominated by
-`VersionNumber`'s non-isbits prerelease/build tuples) to ~32 B.
+Owner stamped onto every launch-cached `CodeInstance`.
+
+Keys are interned: equal fields give the identical object. Julia's inference
+engine serializes concurrent inference of a `MethodInstance` per owner by
+*identity*, so an owner that is re-boxed on every call (any `isbits` value)
+lets every task infer the whole callee graph for itself. Interning also keeps
+the hot `lookup` path allocation-free: the owner reaches `jl_rettype_inferred`
+as a pointer to the interned object rather than a fresh box.
 
 `VersionNumber` fields are packed into `UInt16` and `Union{Int, Nothing}`
 hint fields use `_UNSET` (`-1`) as the `nothing` sentinel. Decoding back to
 the original types happens once per cache miss in `emit_binary!` /
 `emit_tile!`, never on the hot lookup path.
 """
-struct TileCacheKey
-    sm_arch::UInt16
-    bytecode_version::UInt16
-    opt_level::Int
-    num_ctas::Int
-    occupancy::Int
-    num_worker_warps::Int
+mutable struct TileCacheKey
+    const sm_arch::UInt16
+    const bytecode_version::UInt16
+    const opt_level::Int
+    const num_ctas::Int
+    const occupancy::Int
+    const num_worker_warps::Int
+
+    function TileCacheKey(sm_arch::UInt16, bytecode_version::UInt16, opt_level::Int,
+                          num_ctas::Int, occupancy::Int, num_worker_warps::Int)
+        fields = (sm_arch, bytecode_version, opt_level, num_ctas, occupancy, num_worker_warps)
+        Base.@lock TILE_CACHE_KEYS get!(() -> new(fields...), TILE_CACHE_KEYS[], fields)
+    end
 end
+const TILE_CACHE_KEYS = Base.Lockable(Dict{Tuple{UInt16, UInt16, Int, Int, Int, Int}, TileCacheKey}())
 TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
              opt_level::Union{Int, Nothing}, num_ctas::Union{Int, Nothing},
              occupancy::Union{Int, Nothing}, num_worker_warps::Union{Int, Nothing}) =
@@ -124,9 +134,14 @@ TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
                  pack_hint(opt_level), pack_hint(num_ctas), pack_hint(occupancy),
                  pack_hint(num_worker_warps))
 
-struct TemporaryTileCacheKey
-    key::TileCacheKey
+# Interned per `TileCacheKey`, for the same reason.
+mutable struct TemporaryTileCacheKey
+    const key::TileCacheKey
+
+    TemporaryTileCacheKey(key::TileCacheKey) =
+        Base.@lock TEMPORARY_TILE_CACHE_KEYS get!(() -> new(key), TEMPORARY_TILE_CACHE_KEYS[], key)
 end
+const TEMPORARY_TILE_CACHE_KEYS = Base.Lockable(IdDict{TileCacheKey, TemporaryTileCacheKey}())
 
 # Autotune candidates compile under this owner so they share inference/codegen
 # work without becoming visible to (or polluting) the normal `cufunction` cache
@@ -560,14 +575,13 @@ end
  Compilation: bytecode → CUBIN → CuFunction.
 =============================================================================#
 
-# Serializes the Julia-side codegen pipeline (inference, structured IR,
-# tile-IR emission). `emit_tile!` and everything it calls into mutates shared
-# state: `CacheView` entries, `CuTileResults` fields, the inference cache,
-# and CompilerCaching's per-CI const_entries vector. None of that is
-# thread-safe. We hold the lock only across `emit_tile!`; the tileiras
-# subprocess below runs unlocked so concurrent `cufunction` calls (e.g.
-# from autotuning's precompile fan-out) can still overlap their tileiras
-# shell-outs.
+# Serializes `emit_tile!`, which mutates the cached `res.julia_ir` in place
+# (`run_passes!`, `hoist_returns!`) and fills `CuTileResults` fields without
+# compare-and-swap, so two `cufunction`s of the same kernel racing on one cache
+# entry would corrupt it. Inference and CompilerCaching are safe to run
+# concurrently (as of CompilerCaching's concurrent `typeinf!`), and the tileiras
+# subprocess below runs unlocked, so concurrent compiles (e.g. autotuning's
+# precompile fan-out) overlap everything but this phase.
 const EMIT_TILE_LOCK = ReentrantLock()
 
 """
@@ -757,12 +771,7 @@ function compile(@nospecialize(f), @nospecialize(argtypes),
     # underlying `CodeInstance` via CompilerCaching; the `TileKernel` wrapper
     # rides along in the same `CuTileResults`, so kernel-instance lifecycle
     # follows the CI's instead of needing a separate global Dict.
-    #
-    # Held under EMIT_TILE_LOCK so concurrent compiles (e.g. autotuning's
-    # precompile fan-out) don't race on inference / CompilerCaching state.
-    # The lock-protected region also includes the lookup fast path; that
-    # path is just a hashtable read, so brief contention here is fine.
-    ci, res = Base.@lock EMIT_TILE_LOCK ensure_compiled(cache, mi, const_argtypes)
+    ci, res = ensure_compiled(cache, mi, const_argtypes)
 
     # Always walk the emit chain (each phase short-circuits on its own cached
     # field, but `emit_structured!` also fires `compile_hook` for reflection,
