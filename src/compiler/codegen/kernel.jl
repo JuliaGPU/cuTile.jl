@@ -387,7 +387,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     if !haskey(ctx.cache, mi)
         error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
     end
-    sci, _, _ = emit_structured!(ctx.cache, mi)
+    sci, _, _ = emit_structured(emit_julia(ctx.cache, mi)...)
 
     # 2b. Run the pass pipeline on subprogram IR
     sub_divby, sub_bounds = run_passes!(sci)

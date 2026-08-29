@@ -3,11 +3,12 @@
 # Compiles a Julia function with `TileArray` arguments to Tile IR bytecode,
 # runs `tileiras` to lower bytecode → CUBIN, loads the cubin into the active
 # CUDA context, and launches it via `cudacall`. Compilation is cached per
-# `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, bytecode_version)`.
+# `TileJob` on the kernel's CodeInstance.
 
-using ObjectFile: readmeta, Sections
-using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
-                AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
+using ObjectFile: ObjectFile, readmeta, Sections
+using CUDACore: CUDACore, CuArray, CuModule, CuFunction, CuContext, context, cudacall,
+                device, capability, AbstractBackend, AbstractKernel, kernel_convert,
+                kernel_compile
 using CUDA_Compiler_jll
 using GPUToolbox: LazyInitialized
 using Preferences: @load_preference
@@ -78,53 +79,6 @@ CUDACore.kernel_convert(::TileBackend, x) = cuTileconvert(x)
 
 CUDACore.kernel_compile(::TileBackend, f::F, tt::TT=Tuple{}; kwargs...) where {F,TT} =
     cufunction(f, tt; kwargs...)
-
-
-#=============================================================================
- Cache sharding key.
-=============================================================================#
-
-# Pack a `VersionNumber` into a `UInt16` as `(major << 8) | minor`. Lossy: drops
-# patch/prerelease/build (none of which we need for SM architectures or Tile IR
-# bytecode versions). Used by `TileCacheKey` to keep the owner isbits.
-@inline pack_version(v::VersionNumber) = (UInt16(v.major) << 8) | UInt16(v.minor)
-@inline unpack_version(x::UInt16) = VersionNumber(Int(x >> 8), Int(x & 0xff))
-
-# isbits sentinel codec for `Union{Int, Nothing}` hint fields (`opt_level`,
-# `num_ctas`, `occupancy`, `num_worker_warps`). `-1` is unused as a value, so we
-# use it for `nothing`.
-const _UNSET = -1
-@inline pack_hint(x::Union{Int, Nothing}) = x === nothing ? _UNSET : x
-@inline unpack_hint(x::Int) = x == _UNSET ? nothing : x
-
-"""
-    TileCacheKey
-
-Owner stamped onto every launch-cached `CodeInstance`. `lookup` (called once
-per `cufunction` via `ensure_compiled`) ccalls `jl_rettype_inferred` with the
-owner as `Any`, which forces a heap box; making the owner `isbits` shrinks the
-box from ~80 B (the previous `Tuple{Symbol, NamedTuple{…}}` shape, dominated by
-`VersionNumber`'s non-isbits prerelease/build tuples) to ~32 B.
-
-`VersionNumber` fields are packed into `UInt16` and `Union{Int, Nothing}`
-hint fields use `_UNSET` (`-1`) as the `nothing` sentinel. Decoding back to
-the original types happens once per cache miss in `emit_binary!` /
-`emit_tile!`, never on the hot lookup path.
-"""
-struct TileCacheKey
-    sm_arch::UInt16
-    bytecode_version::UInt16
-    opt_level::Int
-    num_ctas::Int
-    occupancy::Int
-    num_worker_warps::Int
-end
-TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
-             opt_level::Union{Int, Nothing}, num_ctas::Union{Int, Nothing},
-             occupancy::Union{Int, Nothing}, num_worker_warps::Union{Int, Nothing}) =
-    TileCacheKey(pack_version(sm_arch), pack_version(bytecode_version),
-                 pack_hint(opt_level), pack_hint(num_ctas), pack_hint(occupancy),
-                 pack_hint(num_worker_warps))
 
 
 #=============================================================================
@@ -638,58 +592,85 @@ end
 =============================================================================#
 
 """
-    emit_binary!(cache, mi, ci, res; const_argtypes=nothing) -> Vector{UInt8}
+    assemble(bytecode, sm_arch, opt_level) -> Vector{UInt8}
 
-Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
+Assemble Tile IR bytecode to a CUBIN with `tileiras`, through the disk cache.
 """
-function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
-                      ci::Core.CodeInstance, res::CuTileResults;
-                      const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    res.cuda_bin !== nothing && return res.cuda_bin
-
-    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
-
-    sm_arch = unpack_version(cache.owner.sm_arch)
-
-    # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
-    # num_ctas/occupancy/num_worker_warps are resolved in emit_tile because they're encoded in bytecode.
-    _, _, kernel_meta = emit_structured!(cache, mi, ci, res; const_argtypes)
-    opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
-                                       kernel_meta, :opt_level, sm_arch), 3)
-
+function assemble(bytecode::Vector{UInt8}, sm_arch::VersionNumber, opt_level::Int)
     # Cross-session cache of the tileiras output. The key covers every input
     # that changes the CUBIN: bytecode, sm_arch, opt_level and the tileiras
     # identity, so different compiler builds never collide. `bytecode_version`
     # is encoded in the bytecode itself, so it's covered transitively. CUBIN is
     # address-free, so it is always persistable.
-    res.cuda_bin = if disk_cache_enabled
-        ObjCache.get!(CUBIN_CACHE_NS, cubin_cache_fields(bytecode, sm_arch, opt_level)...;
-                      schema=CUBIN_CACHE_SCHEMA, persistable=true) do
-            first(run_tileiras(bytecode, sm_arch, opt_level))
-        end
-    else
+    disk_cache_enabled || return first(run_tileiras(bytecode, sm_arch, opt_level))
+    return ObjCache.get!(CUBIN_CACHE_NS, cubin_cache_fields(bytecode, sm_arch, opt_level)...;
+                         schema=CUBIN_CACHE_SCHEMA, persistable=true) do
         first(run_tileiras(bytecode, sm_arch, opt_level))
     end
+end
 
-    return res.cuda_bin
+# The compilation results of a job: its CUBIN, shared by every context, and the
+# session-local kernels linked from it.
+mutable struct CuTileResults
+    cuda_bin::Union{Nothing, Vector{UInt8}}
+    # linear-scanned by context; usually holds a single entry
+    kernels::Vector{Tuple{CuContext, Any}}
+    CuTileResults() = new(nothing, Tuple{CuContext, Any}[])
+end
+
+# Results for every configuration of a kernel, attached to its CodeInstance by
+# CompilerCaching (and persisted with it into package images). One CodeInstance
+# serves every target, hint and constant configuration of a kernel, so entries are
+# keyed by config; the CodeInstance itself outlives any one world.
+mutable struct TileResults
+    entries::Vector{Pair{TileConfig, CuTileResults}}
+    TileResults() = new(Pair{TileConfig, CuTileResults}[])
+end
+
+# The results struct for `job`, or `nothing` while its kernel has not been inferred.
+# Once it has, an empty struct is created on first access and returned ever after.
+function cached_results(job::TileJob)
+    ci = get(inference_cache(job), job.source, nothing)
+    ci === nothing && return nothing
+    results = CompilerCaching.results(TileResults, ci)
+    for (config, res) in results.entries
+        # configs are immutable, so `===` compares them structurally
+        config === job.config && return res
+    end
+    res = CuTileResults()
+    push!(results.entries, job.config => res)
+    return res
+end
+
+const compile_lock = ReentrantLock()
+
+"""
+    compile_or_lookup(job::TileJob) -> CuTileResults
+
+The cached compilation results for `job`, running the compiler on a miss. The
+`compile_hook` check forces the compile path so that `@device_code_*` observe
+the compilation even on a hit. No CUDA context required.
+"""
+function compile_or_lookup(job::TileJob)::CuTileResults
+    Base.@lock compile_lock begin
+        res = cached_results(job)
+        if res === nothing || res.cuda_bin === nothing || compile_hook[] !== nothing
+            cubin = compile(job)
+            res = @something res cached_results(job)
+            res.cuda_bin = cubin
+        end
+        return res
+    end
 end
 
 """
-    link(cache, mi, ci, res) -> CuFunction
+    link(job::TileJob, res::CuTileResults) -> CuFunction
 
-GPU-side link phase: load the CUBIN cached in `res.cuda_bin` (produced by
-[`compile`](@ref)) onto the active CUDA device and return the resulting
-`CuFunction`.
+Load the job's CUBIN onto the active CUDA context.
 """
-function link(cache::CacheView, mi::Core.MethodInstance,
-              ci::Core.CodeInstance, res::CuTileResults)
-    res.cuda_func !== nothing && return res.cuda_func
-
-    kernel_name = sanitize_name(string(mi.def.name))
+function link(job::TileJob, res::CuTileResults)
     cumod = CuModule(res.cuda_bin::Vector{UInt8})
-    cufunc = CuFunction(cumod, kernel_name)
-    res.cuda_func = cufunc
-    return cufunc
+    return CuFunction(cumod, job.config.name)
 end
 
 
@@ -698,7 +679,7 @@ end
 
  Mirrors the `cufunction(f, tt) -> HostKernel` pattern in CUDACore. Once
  obtained, calling `(::TileKernel)(args...; blocks=…)` skips the MI lookup
- and CompilerCaching dispatch — only argument flatten + `cudacall` runs.
+ and cache dispatch — only argument flatten + `cudacall` runs.
 =============================================================================#
 
 """
@@ -723,10 +704,9 @@ argument types (i.e. after `cuTileconvert`/`Adapt.adapt(KernelAdaptor(), …)`).
 Compilation is cached; calling `cufunction` repeatedly with the same
 `(f, tt, opts)` is O(1) after the first compile.
 
-Mirrors `CUDACore.cufunction` but produces a [`TileKernel`](@ref). Caching
-is delegated to CompilerCaching: the resulting `TileKernel` is stored in
-the `CuTileResults` attached to the underlying Julia `CodeInstance`, so
-invalidation rides on Julia's normal CI lifecycle.
+Mirrors `CUDACore.cufunction` but produces a [`TileKernel`](@ref). Results are
+stored on the kernel's Julia `CodeInstance`, so invalidation rides on Julia's
+normal CI lifecycle.
 """
 function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                     sm_arch::Union{VersionNumber, Nothing}=nothing,
@@ -738,9 +718,6 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
     bytecode_version = check_tile_ir_support(resolved_sm_arch)
 
-    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
-                       num_worker_warps)
-
     # Single pass over `tt.parameters`: build the unwrapped argtypes tuple
     # (Constant{T,V} → T for MI lookup) and the const_argtypes vector
     # (Constant{T,V} → CC.Const(V) for inference) together. cufunction
@@ -751,21 +728,15 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # invalidated by any package that defines methods on Base.Compiler hooks
     # like `OptimizationParams(::AbstractInterpreter)`. To reuse precompiled
     # native code, run the pipeline in the world captured at __init__.
-    invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, key)::TileKernel{Core.Typeof(f), tt}
+    opts = (; sm_arch=resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy,
+              num_worker_warps, name)
+    invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, opts)::TileKernel{Core.Typeof(f), tt}
 end
 
-"""
-    compile(f, argtypes, const_argtypes, key) -> (cache, mi, ci, res)
-
-Host-side compile phase: run inference, codegen, bytecode emission, and
-`tileiras` to produce a CUBIN. Returns the compilation cache state needed
-by [`link`](@ref) to load the result onto the GPU. No CUDA context required.
-"""
-function compile(@nospecialize(f), @nospecialize(argtypes),
-                 const_argtypes::Union{Vector{Any}, Nothing},
-                 key::TileCacheKey)
-    validate_tile_ir_target(unpack_version(key.sm_arch),
-                            unpack_version(key.bytecode_version))
+# The job of a launch: the kernel's MethodInstance for the unwrapped argument
+# types, in the current world, with the launch's options.
+function launch_job(@nospecialize(f), @nospecialize(argtypes),
+                    const_argtypes::Union{Vector{Any}, Nothing}; kwargs...)
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
@@ -773,41 +744,31 @@ function compile(@nospecialize(f), @nospecialize(argtypes),
         sig = Base.signature_type(f, argtypes)
         mi = CC.specialize_method(mi.def, sig, mi.sparam_vals)::Core.MethodInstance
     end
-
-    cache = CacheView{CuTileResults}(key, world)
-
-    # Single resolution of (ci, res) up front — threaded through the emit_*!
-    # chain so each phase only does its own short-circuit, not redundant
-    # cache lookups. The cached compilation results are attached to the
-    # underlying `CodeInstance` via CompilerCaching; the `TileKernel` wrapper
-    # rides along in the same `CuTileResults`, so kernel-instance lifecycle
-    # follows the CI's instead of needing a separate global Dict.
-    ci, res = ensure_compiled(cache, mi, const_argtypes)
-
-    # Report the compilation to the `@device_code_*` hook. This runs through
-    # `invoke_frozen`, but the hook closure lives in the user's latest world —
-    # `invokelatest` it.
-    if compile_hook[] !== nothing
-        Base.invokelatest(compile_hook[], hook_signature(mi, const_argtypes)...)
-    end
-
-    emit_binary!(cache, mi, ci, res; const_argtypes)
-    return cache, mi, ci, res
+    return tile_job(mi, world; const_argtypes, kwargs...)
 end
 
 # Inner compilation routine; called via `invoke_frozen` so its method dispatches
 # happen in the world captured at __init__, reusing precompiled native code
 # even when later-loaded packages would otherwise have invalidated it.
 function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
-                             const_argtypes::Union{Vector{Any}, Nothing},
-                             key::TileCacheKey)
-    cache, mi, ci, res = compile(f, argtypes, const_argtypes, key)
+                             const_argtypes::Union{Vector{Any}, Nothing}, opts::NamedTuple)
+    validate_tile_ir_target(opts.sm_arch, opts.bytecode_version)
+    job = launch_job(f, argtypes, const_argtypes; opts...)
+    res = compile_or_lookup(job)
 
-    cufunc = link(cache, mi, ci, res)
-
-    res.tile_kernel !== nothing && return res.tile_kernel::TileKernel{Core.Typeof(f), tt}
-    kernel = TileKernel{Core.Typeof(f), tt}(f, cufunc)
-    res.tile_kernel = kernel
+    # Resolve the kernel for the active context. `CuFunction`s are session-local
+    # handles, so they live in the results struct's linear cache rather than being
+    # persisted; the scan is almost always over a single entry.
+    ctx = context()
+    for (cached_ctx, cached_kernel) in res.kernels
+        cached_ctx === ctx && return cached_kernel::TileKernel{Core.Typeof(f), tt}
+    end
+    kernel = TileKernel{Core.Typeof(f), tt}(f, link(job, res))
+    # don't cache session-local handles while generating output: the results struct
+    # is serialized into the package image along with its CodeInstance.
+    if ccall(:jl_generating_output, Cint, ()) != 1
+        push!(res.kernels, (ctx, kernel))
+    end
     return kernel
 end
 

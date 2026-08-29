@@ -22,7 +22,7 @@ using EnumX
 public BFloat16
 
 import CompilerCaching
-using CompilerCaching: CacheView, method_instance, match_method_instance, typeinf!, results, lookup,
+using CompilerCaching: CacheView, method_instance, match_method_instance, typeinf!,
                        specialization, get_source
 
 # Shared definitions

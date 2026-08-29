@@ -33,11 +33,11 @@ const CUBIN_CACHE_PRELUDE = quote
         return
     end
 
-    key() = ct.TileCacheKey(SM_ARCH, ct.bytecode_version(), OPT_LEVEL,
-                            nothing, nothing, nothing)
+    vadd_job() = ct.tile_job(cached_vadd, TT; sm_arch=SM_ARCH, opt_level=OPT_LEVEL)
     function compile_vadd()
-        _, _, _, res = ct.compile(cached_vadd, TT, nothing, key())
-        return res
+        job = vadd_job()
+        res = ct.compile_or_lookup(job)
+        return (; cuda_bin=res.cuda_bin, tile_bc=ct.emit_bytecode(job).bytecode)
     end
     cubin_key(res) = OC.keyhash(ct.CUBIN_CACHE_SCHEMA,
                                 ct.cubin_cache_fields(res.tile_bc,
