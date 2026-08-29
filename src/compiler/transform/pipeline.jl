@@ -207,7 +207,10 @@ const COMPARISON_RULES = RewriteRule[
 
     # Nested: cmpi(addi(a, addi(b, 1)), y, <=, signed) → cmpi(addi(a, b), y, <, signed)
     # Uses inplace=true to modify the existing addi and cmpi ops' operands rather
-    # than creating new ones (which would cascade the worklist).
+    # than creating new ones (which would cascade the worklist). When the addi
+    # chain has users besides the cmpi — e.g. the same 1-based index tile also
+    # feeds a gather, whose lowering subtracts the 1 itself — the driver applies
+    # the rule in standard mode instead, leaving the chain intact for them.
     @rewrite(inplace=true,
              Intrinsics.cmpi(Intrinsics.addi(~a, Intrinsics.addi(~b, $(1))), ~y,
                               $(ComparisonPredicate.LessThanOrEqual), $(Signedness.Signed)) =>

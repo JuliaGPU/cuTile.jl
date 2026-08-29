@@ -78,6 +78,9 @@ rather than creating new ops. The LHS and RHS trees are walked in parallel: wher
 they share the same function, the existing op is modified in-place; where the RHS
 has a different binding or constant, the operand is replaced. This avoids the
 worklist cascade that occurs when the standard mode creates new instructions.
+When an op that would be mutated has users outside the match, the driver applies
+the rule in standard (op-building) mode instead, so shared sub-expressions keep
+their value for the other users.
 """
 macro rewrite(args...)
     # Parse keyword arguments
@@ -491,9 +494,31 @@ function find_matched_ssa(driver, pat::PCall, bindings)
     return nothing
 end
 
+"""
+An in-place rewrite mutates every matched inner op (an LHS `PCall` paired with
+an RHS `RCall` below the root). That is only sound when each such op's single
+use is the match itself — any other user keeps referring to the mutated op and
+silently sees the new value. Returns `false` when an op that would be mutated
+is shared (or cannot be located).
+"""
+function inplace_mutation_sound(driver::RewriteDriver, rhs::RCall, lhs::PCall, bindings)
+    for (sub_rhs, sub_lhs) in zip(rhs.operands, lhs.operands)
+        sub_rhs isa RCall && sub_lhs isa PCall || continue
+        ssa = find_matched_ssa(driver, sub_lhs, bindings)
+        ssa isa SSAValue && use_count(driver, ssa) == 1 || return false
+        inplace_mutation_sound(driver, sub_rhs, sub_lhs, bindings) || return false
+    end
+    return true
+end
+
 function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
-    # In-place mode: modify matched ops' operands without creating new instructions
-    if rule.inplace
+    # In-place mode: modify matched ops' operands without creating new
+    # instructions. Only sound when the match is the single user of every op it
+    # mutates — e.g. a 1-based index tile feeding both a mask comparison and a
+    # gather (whose lowering subtracts 1) must keep its value for the gather.
+    # Shared matches fall through to the standard path below, which builds
+    # fresh ops and replaces only the root.
+    if rule.inplace && inplace_mutation_sound(driver, rule.rhs::RCall, rule.lhs, match.bindings)
         return apply_inplace_rewrite!(driver, block, val, rule, match)
     end
 

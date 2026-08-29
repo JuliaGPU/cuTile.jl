@@ -565,6 +565,33 @@ end
             end
         end
 
+        @testset "masked gather: shared 1-based index survives comparison rewrite" begin
+            # `c` feeds both the mask comparison and the gather (whose lowering
+            # subtracts the 1 itself). The comparison strength reduction
+            # (x+1 ≤ y → x < y) must not mutate the shared addi chain in place:
+            # the gather would then subtract 1 from an already 0-based index and
+            # read every lane one element too low. The mask's 0-based operand
+            # must never itself be decremented again.
+            @test @filecheck begin
+                @check_label "entry"
+                @check_not "less_than_or_equal"
+                @check "cmpi less_than [[C:%[^,]+]], {{[^,]+}}, signed"
+                @check_not "subi [[C]],"
+                @check "load_ptr_tko"
+                code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec},
+                                 ct.TileArray{Float32,1,Int32,spec},
+                                 Int32}) do a, b, lim
+                    pid = ct.bid(1)
+                    off = (pid - Int32(1)) * Int32(16)
+                    c = off .+ ct.arange(16)
+                    mask = c .≤ lim
+                    tile = ct.gather(a, c; mask)
+                    ct.store(b, pid, tile)
+                    return
+                end
+            end
+        end
+
         @testset "contiguous-axis stride folds out of 2D gather offset" begin
             spec_out = ct.ArraySpec{1}(16, true)
 
