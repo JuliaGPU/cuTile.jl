@@ -495,11 +495,8 @@ function find_matched_ssa(driver, pat::PCall, bindings)
 end
 
 """
-An in-place rewrite mutates every matched inner op (an LHS `PCall` paired with
-an RHS `RCall` below the root). That is only sound when each such op's single
-use is the match itself — any other user keeps referring to the mutated op and
-silently sees the new value. Returns `false` when an op that would be mutated
-is shared (or cannot be located).
+Return true if an in-place rewrite is sound for the given match, return false
+if the op to be mutated is shared and referenced elsewhere.
 """
 function inplace_mutation_sound(driver::RewriteDriver, rhs::RCall, lhs::PCall, bindings)
     for (sub_rhs, sub_lhs) in zip(rhs.operands, lhs.operands)
@@ -512,13 +509,10 @@ function inplace_mutation_sound(driver::RewriteDriver, rhs::RCall, lhs::PCall, b
 end
 
 function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
-    # In-place mode: modify matched ops' operands without creating new
-    # instructions. Only sound when the match is the single user of every op it
-    # mutates — e.g. a 1-based index tile feeding both a mask comparison and a
-    # gather (whose lowering subtracts 1) must keep its value for the gather.
-    # Shared matches fall through to the standard path below, which builds
-    # fresh ops and replaces only the root.
-    if rule.inplace && inplace_mutation_sound(driver, rule.rhs::RCall, rule.lhs, match.bindings)
+    # In-place mode: modify matched ops' operands without creating new instructions.
+    # Needs to check `inplace_mutation_sound` to ensure the matched ops are not used
+    # anywhere else.
+    if rule.inplace && inplace_mutation_sound(driver, rule.rhs, rule.lhs, match.bindings)
         return apply_inplace_rewrite!(driver, block, val, rule, match)
     end
 

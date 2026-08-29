@@ -566,12 +566,9 @@ end
         end
 
         @testset "masked gather: shared 1-based index survives comparison rewrite" begin
-            # `c` feeds both the mask comparison and the gather (whose lowering
-            # subtracts the 1 itself). The comparison strength reduction
-            # (x+1 ≤ y → x < y) must not mutate the shared addi chain in place:
-            # the gather would then subtract 1 from an already 0-based index and
-            # read every lane one element too low. The mask's 0-based operand
-            # must never itself be decremented again.
+            # `c` is used in both the mask comparison and the gather. The rewrite
+            # rule `x + 1 ≤ y => x < y` must not mutate the shared addi in place,
+            # otherwise the gather sees the wrong index
             @test @filecheck begin
                 @check_label "entry"
                 @check_not "less_than_or_equal"
