@@ -387,15 +387,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     if !haskey(ctx.cache, mi)
         error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
     end
-    # Suppress compile_hook to avoid @device_code_tiled treating
-    # region bodies (e.g. reduce combiners) as standalone entries.
-    old_hook = compile_hook[]
-    compile_hook[] = nothing
-    sci, _, _ = try
-        emit_structured!(ctx.cache, mi)
-    finally
-        compile_hook[] = old_hook
-    end
+    sci, _, _ = emit_structured!(ctx.cache, mi)
 
     # 2b. Run the pass pipeline on subprogram IR
     sub_divby, sub_bounds = run_passes!(sci)
