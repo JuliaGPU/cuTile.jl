@@ -22,9 +22,8 @@ code_sass
 @device_code_typed
 @device_code_structured
 @device_code_ptx
-@device_code_sass
 ```
 
-`CUDA.@device_code_sass` also works for cuTile kernels: it intercepts module
-loads at the driver level (via CUPTI), so it captures any backend's kernels
-without backend-specific support.
+`CUDA.@device_code_sass` works for cuTile kernels: it intercepts module loads
+at the driver level (via CUPTI), so it captures any backend's kernels without
+backend-specific support.

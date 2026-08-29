@@ -645,18 +645,15 @@ Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
                       ci::Core.CodeInstance, res::CuTileResults;
                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Recurse first — emit_structured! at the bottom of the chain fires
-    # `compile_hook` for `@device_code_*` reflection, which must run on every
-    # launch even when downstream artifacts are fully cached.
-    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
-
     res.cuda_bin !== nothing && return res.cuda_bin
+
+    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
 
     sm_arch = unpack_version(cache.owner.sm_arch)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
     # num_ctas/occupancy/num_worker_warps are resolved in emit_tile because they're encoded in bytecode.
-    _, _, kernel_meta = res.julia_ir
+    _, _, kernel_meta = emit_structured!(cache, mi, ci, res; const_argtypes)
     opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
 
@@ -787,9 +784,13 @@ function compile(@nospecialize(f), @nospecialize(argtypes),
     # follows the CI's instead of needing a separate global Dict.
     ci, res = ensure_compiled(cache, mi, const_argtypes)
 
-    # Always walk the emit chain (each phase short-circuits on its own cached
-    # field, but `emit_structured!` also fires `compile_hook` for reflection,
-    # which has to run on every launch even when the cube/cufunc is cached).
+    # Report the compilation to the `@device_code_*` hook. This runs through
+    # `invoke_frozen`, but the hook closure lives in the user's latest world —
+    # `invokelatest` it.
+    if compile_hook[] !== nothing
+        Base.invokelatest(compile_hook[], hook_signature(mi, const_argtypes)...)
+    end
+
     emit_binary!(cache, mi, ci, res; const_argtypes)
     return cache, mi, ci, res
 end
