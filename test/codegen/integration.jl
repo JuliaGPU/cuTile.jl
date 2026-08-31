@@ -1,4 +1,6 @@
 
+import IRStructurizer
+
 #=============================================================================
  Type Support
 =============================================================================#
@@ -59,6 +61,33 @@
             end
         end
     end
+end
+
+#=============================================================================
+ Rewrite Pipeline
+=============================================================================#
+
+@testset "comparison rewrite preserves the type of kernel arguments" begin
+    sci, _ = only(IRStructurizer.code_structured(Tuple{Int,Int,Int}) do a::Int, b::Int, y::Int
+        a + (b + 1) <= y
+    end)
+
+    ct.run_passes!(sci)
+
+    addis = [inst for inst in IRStructurizer.instructions(sci.entry)
+             if let call = IRStructurizer.resolve_call(sci.entry, inst)
+                 call !== nothing && first(call) === ct.Intrinsics.addi
+             end]
+    @test length(addis) == 1
+    @test IRStructurizer.value_type(only(addis)) === ct.Tile{Int,Tuple{}}
+
+    cmpis = [inst for inst in IRStructurizer.instructions(sci.entry)
+             if let call = IRStructurizer.resolve_call(sci.entry, inst)
+                 call !== nothing && first(call) === ct.Intrinsics.cmpi
+             end]
+    @test length(cmpis) == 1
+    _, operands = IRStructurizer.resolve_call(sci.entry, only(cmpis))
+    @test operands[3] === ct.ComparisonPredicate.LessThan
 end
 
 #=============================================================================
@@ -560,6 +589,58 @@ end
                     @check "offset"
                     @check "store_ptr_tko"
                     ct.scatter(b, indices, tile)
+                    return
+                end
+            end
+        end
+
+        @testset "masked gather: shared 1-based index survives comparison rewrite" begin
+            # `c` is used in both the mask comparison and the gather. The rewrite
+            # rule `x + 1 ≤ y => x < y` must not mutate the shared addi,
+            # otherwise the gather sees the wrong index
+            @test @filecheck implicit_check_not="less_than_or_equal" begin
+                @check_label "entry"
+                @check "cmpi less_than [[C:%[^,]+]], {{[^,]+}}, signed"
+                @check_not "subi [[C]],"
+                @check "load_ptr_tko"
+                code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec},
+                                 ct.TileArray{Float32,1,Int32,spec},
+                                 Int32}) do a, b, lim
+                    pid = ct.bid(1)
+                    off = (pid - Int32(1)) * Int32(16)
+                    c = off .+ ct.arange(16)
+                    mask = c .≤ lim
+                    tile = ct.gather(a, c; mask)
+                    ct.store(b, pid, tile)
+                    return
+                end
+            end
+        end
+
+        @testset "masked gather: decoy addi sharing an operand is not clobbered" begin
+            # `d = s + s` shares operand `s` with the addi the comparison rule
+            # matches (`c = s + arange`), and precedes it in the use index. A
+            # rewrite of the mask comparison must leave `d` intact: the gather
+            # must still index off `addi(s, s)`, not off the rewritten mask
+            # operand `addi(s, iota)`.
+            @test @filecheck implicit_check_not="less_than_or_equal" begin
+                @check_label "entry"
+                @check "[[S:%[^ ]+]] = addi [[U:%[^,]+]], [[U]] :"
+                @check "[[D:%[^ ]+]] = addi [[S]], [[S]] :"
+                @check_dag "cmpi less_than"
+                @check_dag "subi [[D]],"
+                @check "load_ptr_tko"
+                code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec},
+                                 ct.TileArray{Float32,1,Int32,spec},
+                                 Int32}) do a, b, lim
+                    pid = ct.bid(1)
+                    u = ct.arange(16)
+                    s = u .+ u
+                    d = s + s
+                    c = s + ct.arange(16)
+                    mask = c .≤ lim
+                    tile = ct.gather(a, d; mask)
+                    ct.store(b, pid, tile)
                     return
                 end
             end

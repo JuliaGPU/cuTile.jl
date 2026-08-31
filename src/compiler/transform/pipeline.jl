@@ -206,10 +206,7 @@ const COMPARISON_RULES = RewriteRule[
              Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.LessThan), $(Signedness.Signed))
 
     # Nested: cmpi(addi(a, addi(b, 1)), y, <=, signed) → cmpi(addi(a, b), y, <, signed)
-    # Uses inplace=true to modify the existing addi and cmpi ops' operands rather
-    # than creating new ones (which would cascade the worklist).
-    @rewrite(inplace=true,
-             Intrinsics.cmpi(Intrinsics.addi(~a, Intrinsics.addi(~b, $(1))), ~y,
+    @rewrite(Intrinsics.cmpi(Intrinsics.addi(~a, Intrinsics.addi(~b, $(1))), ~y,
                               $(ComparisonPredicate.LessThanOrEqual), $(Signedness.Signed)) =>
              Intrinsics.cmpi(Intrinsics.addi(~a, ~b), ~y,
                               $(ComparisonPredicate.LessThan), $(Signedness.Signed)))
