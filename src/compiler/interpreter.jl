@@ -1,6 +1,5 @@
 # Integration with Julia's abstract interpreter
 
-
 Base.Experimental.@MethodTable cuTileMethodTable
 
 function get_method_table_view(world::UInt)
@@ -21,11 +20,10 @@ end
 
 function cuTileInterpreter(cache::CacheView; always_inline::Bool=true)
     method_table = get_method_table_view(cache.world)
-    @static if isdefined(CC, :InferenceCache)
-        inf_cache = CC.InferenceCache()
-    else
-        inf_cache = Vector{CC.InferenceResult}()
-    end
+    # Fresh per interpreter, unless inside `GPUCompiler.inference_batch`, which
+    # shares one per (task, owner, world) so const-prop results carry across
+    # the batch (e.g. autotuning over many const-seeded variants of a kernel).
+    inf_cache = GPUCompiler.inference_cache(cache.owner, cache.world)
     inf_params = CC.InferenceParams()
     opt_params = if always_inline
         CC.OptimizationParams(; inline_cost_threshold=typemax(Int))
