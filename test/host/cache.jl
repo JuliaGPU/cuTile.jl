@@ -1,213 +1,123 @@
-using SHA: sha256
+using Serialization
 
-const DC = cuTile.DiskCache
+@testset "toolchain versions" begin
+    @test cuTile.parse_tileiras_version("tileiras V13.2.78\nBuild local") == v"13.2.78"
+    @test_throws ArgumentError cuTile.parse_tileiras_version("future version format")
+    @test_throws ArgumentError cuTile.parse_tileiras_version("")
 
-@testset "DiskCache" begin
-    @testset "toolchain versions" begin
-        @test cuTile.parse_tileiras_version("tileiras V13.2.78\nBuild local") == v"13.2.78"
-        @test_throws ArgumentError cuTile.parse_tileiras_version("future version format")
-        @test_throws ArgumentError cuTile.parse_tileiras_version("")
+    @test cuTile.select_bytecode_version(v"13.4", nothing) == v"13.4"
+    @test cuTile.select_bytecode_version(v"13.4", v"13.2") == v"13.2"
+    @test_throws ArgumentError cuTile.select_bytecode_version(v"13.3", v"13.4")
+    @test_throws ArgumentError cuTile.select_bytecode_version(v"13.4", v"13.5")
+    @test_throws ArgumentError cuTile.select_bytecode_version(v"13.5", nothing)
+end
 
-        @test cuTile.select_bytecode_version(v"13.4", nothing) == v"13.4"
-        @test cuTile.select_bytecode_version(v"13.4", v"13.2") == v"13.2"
-        @test_throws ArgumentError cuTile.select_bytecode_version(v"13.3", v"13.4")
-        @test_throws ArgumentError cuTile.select_bytecode_version(v"13.4", v"13.5")
-        @test_throws ArgumentError cuTile.select_bytecode_version(v"13.5", nothing)
+const CUBIN_CACHE_PRELUDE = quote
+    using cuTile, Test
+    import cuTile as ct
+
+    const OC = cuTile.ObjCache
+    const SM_ARCH = v"10.0"
+    const OPT_LEVEL = 3
+
+    spec = ct.ArraySpec{1}(16, true)
+    const TT = Tuple{ct.TileArray{Float32,1,Int32,spec},
+                     ct.TileArray{Float32,1,Int32,spec},
+                     ct.TileArray{Float32,1,Int32,spec}}
+
+    function cached_vadd(a, b, c)
+        pid = ct.bid(1)
+        tile_a = ct.load(a; index=pid, shape=(16,))
+        tile_b = ct.load(b; index=pid, shape=(16,))
+        ct.store(c; index=pid, tile=tile_a + tile_b)
+        return
     end
 
-    @testset "configuration" begin
-        @test DC.parse_cache_size(4096) == 4096
-        @test_throws ArgumentError DC.parse_cache_size("0")
-        @test_throws ArgumentError DC.parse_cache_size(true)
-        @test_throws ArgumentError DC.parse_cache_size(0)
-        @test_throws ArgumentError DC.parse_cache_dir("")
+    key() = ct.TileCacheKey(SM_ARCH, ct.bytecode_version(), OPT_LEVEL,
+                            nothing, nothing, nothing)
+    function compile_vadd()
+        _, _, _, res = ct.compile(cached_vadd, TT, nothing, key())
+        return res
+    end
+    cubin_key(res) = OC.keyhash(ct.CUBIN_CACHE_SCHEMA,
+                                ct.cubin_cache_fields(res.tile_bc,
+                                                      SM_ARCH, OPT_LEVEL)...)
+end
 
-        mktempdir() do dir
-            @test DC.configured_cache_dir(true, dir) == abspath(dir)
-            @test DC.configured_cache_dir(false, dir) === nothing
-            @test DC.configured_mapsize(8192) == 8192
+"""
+Evaluate `expr` in a child Julia whose object cache is isolated at `objcache_path`.
+Returns `(success, output)`.
+"""
+function run_objcache_child(expr::Expr, objcache_path::AbstractString; env=())
+    project = dirname(Base.active_project())
+    runner = joinpath(@__DIR__, "..", "objcache_child.jl")
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project $runner`
+    cmd = addenv(cmd, "JULIA_OBJCACHE_PATH" => objcache_path, env...)
 
-            write(joinpath(dir, "data.mdb"), "stale")
-            write(joinpath(dir, "lock.mdb"), "stale")
-            write(joinpath(dir, "keep"), "user data")
-            DC.wipe_lmdb_files(dir)
-            @test !isfile(joinpath(dir, "data.mdb"))
-            @test !isfile(joinpath(dir, "lock.mdb"))
-            @test isfile(joinpath(dir, "keep"))
+    input = IOBuffer()
+    serialize(input, (CUBIN_CACHE_PRELUDE, expr))
+    seekstart(input)
+    out = IOBuffer()
+    proc = run(pipeline(ignorestatus(cmd); stdin=input, stdout=out, stderr=out))
+    return success(proc), String(take!(out))
+end
+
+# Capture the final argument as Julia code, with `$` interpolation from the caller.
+# The cache path comes first; any intervening arguments are environment key/value pairs.
+macro with_objcache(objcache_path, args...)
+    isempty(args) && error("@with_objcache requires a code block")
+    expr = last(args)
+    env = Expr(:tuple, map(esc, args[1:end-1])...)
+    quote
+        run_objcache_child($(esc(Expr(:quote, expr))), $(esc(objcache_path)); env=$env)
+    end
+end
+
+function check_child(ok::Bool, out::AbstractString)
+    ok || println(stderr, "--- child output ---\n", out, "\n--- end ---")
+    @test ok
+    return ok
+end
+
+digest(out) = match(r"CUBIN_SHA=([0-9a-f]+)", out)
+
+# Cross-process persistence of the tileiras output. Process one compiles a kernel
+# host-side (no CUDA context needed) and polls until the store has committed the CUBIN;
+# process two must obtain the same CUBIN without invoking tileiras. Both run with the
+# object cache isolated at a temporary JULIA_OBJCACHE_PATH.
+@testset "cross-process CUBIN cache" begin
+    mktempdir() do dir
+        # Process one: compile, then wait for the asynchronous store commit before exiting.
+        ok, out = @with_objcache dir "JULIA_OBJCACHE" => "1" begin
+            @test OC.enabled()
+            res = compile_vadd()
+            @test res.cuda_bin isa Vector{UInt8} && !isempty(res.cuda_bin)
+            k = cubin_key(res)
+            t0 = time()
+            while OC.get(ct.CUBIN_CACHE_NS, k) === nothing && time() - t0 < 10
+                sleep(0.01)
+            end
+            @test OC.get(ct.CUBIN_CACHE_NS, k) == res.cuda_bin
+            println("CUBIN_SHA=", bytes2hex(OC.keyhash(0, res.cuda_bin)))
         end
-    end
+        check_child(ok, out)
+        sha1 = digest(out)
+        @test sha1 !== nothing
+        expected_sha = sha1 === nothing ? "" : sha1[1]
 
-    @testset "compute_key" begin
-        bc = collect(b"some bytecode bytes")
-        k = DC.compute_key(bc, v"12.0", 3, "13.1")
-        @test length(k) == 32
-        @test bytes2hex(k) == "18e56484bf2c7013c94b9c32d505359be46dc77269b9a0d20b1f74bfced0f120"
-        @test DC.compute_key(bc, v"12.0", 3, "13.1") == k
-        @test DC.compute_key(bc, v"12.0", 3, "13.2") != k
-        @test DC.compute_key(bc, v"12.0", 2, "13.1") != k
-        @test DC.compute_key(bc, v"12.1", 3, "13.1") != k
-        @test DC.compute_key(vcat(bc, [0x00]), v"12.0", 3, "13.1") != k
-    end
-
-    @testset "open / close / roundtrip" begin
-        mktempdir() do dir
-            cache = DC.open(dir; mapsize = 4 * 1024 * 1024)
-            try
-                k = sha256(b"hello")
-                @test DC.get(cache, k) === nothing
-                v = collect(b"world payload")
-                DC.put!(cache, k, v)
-                @test DC.get(cache, k) == v
-                # idempotent: same key+value, same observable state
-                DC.put!(cache, k, v)
-                @test DC.get(cache, k) == v
-                # content-addressed keys are first-writer-wins
-                DC.put!(cache, k, collect(b"different payload"))
-                @test DC.get(cache, k) == v
-            finally
-                DC.close(cache)
+        # Process two: tileiras must not run; the CUBIN comes from the store.
+        ok, out = @with_objcache dir "JULIA_OBJCACHE" => "1" begin
+            @test OC.enabled()
+            ct.tileir_toolchain()  # discover the toolchain (runs `tileiras --version`) first
+            @eval ct function run_tileiras(bytecode::Vector{UInt8},
+                                           sm_arch::VersionNumber, opt_level::Int;
+                                           remarks::Bool=false)
+                error("tileiras invoked despite a warm object cache")
             end
+            res = compile_vadd()
+            @test res.cuda_bin isa Vector{UInt8} && !isempty(res.cuda_bin)
+            @test bytes2hex(OC.keyhash(0, res.cuda_bin)) == $expected_sha
         end
-    end
-
-    @testset "eviction prefers older writes (within one session)" begin
-        # 4 MB map, ~50 KB blobs ⇒ ~75 entries fit before eviction kicks in.
-        # Write 25 "old" keys followed by 80 "new" keys (5+ MB total) and
-        # confirm the LRU sort drops the older writes first.
-        mktempdir() do dir
-            blob_size = 50_000
-            mapsize   = 4 * 1024 * 1024
-            cache = DC.open(dir; mapsize)
-            try
-                old_keys = [sha256(UInt8[1, i % 256, (i ÷ 256) % 256]) for i in 1:25]
-                for k in old_keys
-                    DC.put!(cache, k, rand(UInt8, blob_size))
-                end
-                new_keys = [sha256(UInt8[2, i % 256, (i ÷ 256) % 256]) for i in 1:80]
-                for k in new_keys
-                    DC.put!(cache, k, rand(UInt8, blob_size))
-                end
-
-                old_present = count(k -> DC.get(cache, k) !== nothing, old_keys)
-                new_present = count(k -> DC.get(cache, k) !== nothing, new_keys)
-                total_before = length(old_keys) + length(new_keys)
-                total_after  = old_present + new_present
-
-                # Eviction must have run (we wrote ~5 MB into a 4 MB map)
-                @test total_after < total_before
-                # LRU honored recency — newer writes survive better
-                @test new_present > old_present
-                # Most of the old set is gone
-                @test old_present < length(old_keys) ÷ 2
-                # And most of the new set is intact
-                @test new_present >= 0.6 * length(new_keys)
-            finally
-                DC.close(cache)
-            end
-        end
-    end
-
-    @testset "put! reserves room for incoming value" begin
-        mktempdir() do dir
-            blob_size = 50_000
-            mapsize   = 4 * 1024 * 1024
-            cache = DC.open(dir; mapsize)
-            try
-                i = 0
-                while DC.env_info(cache).used_bytes <= 0.82 * mapsize
-                    i += 1
-                    k = sha256(UInt8[0x33, i % 256, (i ÷ 256) % 256])
-                    DC.put!(cache, k, rand(UInt8, blob_size))
-                end
-                @test DC.env_info(cache).used_bytes < 0.90 * mapsize
-
-                large_key = sha256(b"large incoming blob")
-                large_blob = rand(UInt8, 900_000)
-                DC.put!(cache, large_key, large_blob)
-                @test DC.get(cache, large_key) == large_blob
-            finally
-                DC.close(cache)
-            end
-        end
-    end
-
-    @testset "cross-session atime refresh keeps read-hot keys" begin
-        # The atime-refresh-on-hit path is throttled to once per session
-        # per key. To exercise it we need at least three opens of the
-        # same env: write everything, read the "hot" ones in a fresh
-        # session (bumping their atime), then overflow in a third.
-        mktempdir() do dir
-            blob_size = 50_000
-            mapsize   = 4 * 1024 * 1024
-
-            keys = [sha256(UInt8[1, i]) for i in 1:25]
-
-            # Session 1 — populate
-            cache = DC.open(dir; mapsize)
-            try
-                for k in keys
-                    DC.put!(cache, k, rand(UInt8, blob_size))
-                end
-            finally
-                DC.close(cache)
-            end
-
-            # Session 2 — touch the "hot" half on read; bumps their atime
-            hot  = keys[1:12]
-            cold = keys[13:end]
-            cache = DC.open(dir; mapsize)
-            try
-                for k in hot
-                    @test DC.get(cache, k) !== nothing
-                end
-            finally
-                DC.close(cache)
-            end
-
-            # Session 3 — write enough overflow to force *some* eviction
-            # but not so much that it exhausts both cold and hot. With
-            # 25 baseline + 50 overflow = 75 entries × ~52 KB ≈ 3.9 MB,
-            # we cross HIGH_WATER once and drop ~10 entries (the oldest:
-            # all cold, plus possibly a few first-bumped hot).
-            overflow = [sha256(UInt8[2, i]) for i in 1:50]
-            cache = DC.open(dir; mapsize)
-            try
-                for k in overflow
-                    DC.put!(cache, k, rand(UInt8, blob_size))
-                end
-                hot_present  = count(k -> DC.get(cache, k) !== nothing, hot)
-                cold_present = count(k -> DC.get(cache, k) !== nothing, cold)
-                ovl_present  = count(k -> DC.get(cache, k) !== nothing, overflow)
-
-                # Eviction must have triggered.
-                @test (hot_present + cold_present + ovl_present) <
-                      (length(hot) + length(cold) + length(overflow))
-                # LRU honored recency: more "hot" survives than "cold".
-                @test hot_present > cold_present
-                # Strict LRU: if any cold survived, all hot must have too
-                # (cold's atime < hot's atime by construction).
-                @test cold_present == 0 || hot_present == length(hot)
-            finally
-                DC.close(cache)
-            end
-        end
-    end
-
-    @testset "manual evict_lru!" begin
-        mktempdir() do dir
-            cache = DC.open(dir; mapsize = 4 * 1024 * 1024)
-            try
-                for i in 1:50
-                    DC.put!(cache, sha256(UInt8[i % 256, 0xff]), rand(UInt8, 50_000))
-                end
-                before = DC.env_info(cache).used_bytes
-                n = DC.evict_lru!(cache, 0.25)
-                after = DC.env_info(cache).used_bytes
-                @test n > 0
-                @test after < before
-            finally
-                DC.close(cache)
-            end
-        end
+        check_child(ok, out)
     end
 end

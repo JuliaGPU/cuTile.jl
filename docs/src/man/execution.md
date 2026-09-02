@@ -11,8 +11,6 @@ Persistent settings are package preferences. For example:
 [cuTile]
 compiler_timeout_seconds = 60
 disk_cache = true
-cache_dir = "/fast/local/cache"
-cache_size_bytes = 2147483648
 ```
 
 The timeout covers each `tileiras` invocation. On expiry, cuTile terminates the
@@ -200,10 +198,16 @@ Within a session, a compiled kernel is attached to the underlying Julia
 machinery: redefining the kernel or a method it depends on invalidates the
 corresponding compiled result.
 
-Across sessions, the Tile IR → CUBIN step is cached on disk, so the second run
-of a program skips the `tileiras` invocation entirely. The cache is
-content-addressed on the bytecode plus the compiler identity, architecture and
+Across sessions, the Tile IR → CUBIN step is cached in Julia's object cache, so
+the second run of a program skips the `tileiras` invocation entirely. Entries
+are keyed on the bytecode plus the compiler identity, architecture and
 optimization level, so a toolchain upgrade simply produces new entries rather
-than stale hits. The `disk_cache` preference disables it when set to `false`;
-`cache_dir` overrides its scratch directory, and `cache_size_bytes` overrides
-its default 1 GiB maximum size.
+than stale hits. The `disk_cache` preference disables this tier when set to
+`false`. The store itself is Julia's: on Julia 1.14 it is the runtime's object
+cache, shared with the JIT and living in the depot; on older versions
+CompilerCaching.jl provides an equivalent store in its scratch space. Either way
+it is configured through the same environment variables: `JULIA_OBJCACHE=0`
+disables it, `JULIA_OBJCACHE_PATH` relocates it, and `JULIA_OBJCACHE_CAPACITY`
+sets its size in bytes (default 512 MiB), with least-recently-used eviction
+beyond that. The former `cache_dir` and `cache_size_bytes` preferences no longer
+apply; cuTile warns at load time if they are still set.

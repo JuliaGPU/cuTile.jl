@@ -30,6 +30,7 @@ CUDA.functional() && @info "CUDA information:\n" * sprint(io -> CUDA.versioninfo
 
 testsuite = find_tests(@__DIR__)
 delete!(testsuite, "setup")
+delete!(testsuite, "objcache_child")
 
 if !device_tests
     # Besides device/, a couple of host and extension tests launch kernels too.

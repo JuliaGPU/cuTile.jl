@@ -17,11 +17,8 @@
 # whether to cache compiled kernels on disk. enabled by default.
 #disk_cache = true
 
-# disk cache directory. defaults to cuTile's Scratch.jl-managed directory.
-#cache_dir = "/fast/local/cache"
-
-# maximum disk cache size in bytes. defaults to 1 GiB.
-#cache_size_bytes = 1073741824
+# the cache's location and capacity belong to Julia's object cache and are
+# configured with JULIA_OBJCACHE_PATH and JULIA_OBJCACHE_CAPACITY.
 
 
 [CUDA_Compiler_jll]

@@ -88,7 +88,6 @@ include("utils.jl")
 include("tiled.jl")
 include("broadcast.jl")
 include("mapreduce.jl")
-include("cache.jl")
 include("launch.jl")
 
 public launch, cufunction, TileKernel, TileBackend, DefaultBackend, Tiled, ByTarget,
@@ -122,6 +121,12 @@ end
 
 function __init__()
     _initialization_world[] = Base.get_world_counter()
+    if !isempty(stale_cache_preferences)
+        @warn """The cuTile preference(s) $(join(stale_cache_preferences, ", ")) no longer apply: \
+                 compiled kernels are stored in Julia's object cache. Use the \
+                 JULIA_OBJCACHE_PATH and JULIA_OBJCACHE_CAPACITY environment variables instead, \
+                 and remove the preference(s) to silence this warning."""
+    end
     return
 end
 

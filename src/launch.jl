@@ -10,6 +10,7 @@ using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capab
 using CUDA_Compiler_jll
 using GPUToolbox: LazyInitialized
 using Preferences: @load_preference
+using CompilerCaching: ObjCache
 
 using Adapt: Adapt, adapt
 
@@ -147,6 +148,40 @@ end
 
 const compiler_timeout =
     parse_compiler_timeout(@load_preference("compiler_timeout_seconds", nothing))
+
+# Cross-session CUBIN cache (see `emit_binary!`). The `disk_cache` preference gates it;
+# location and capacity follow Julia's object cache (`JULIA_OBJCACHE_PATH`,
+# `JULIA_OBJCACHE_CAPACITY`, `JULIA_OBJCACHE=0`).
+const disk_cache_enabled = let setting = @load_preference("disk_cache", true)
+    setting isa Bool || throw(ArgumentError("disk_cache must be a boolean"))
+    setting
+end
+# Preferences of the former private disk cache; no longer honoured (warned about in `__init__`).
+const stale_cache_preferences = filter(!isnothing, [
+    @load_preference("cache_dir", nothing) === nothing ? nothing : "cache_dir",
+    @load_preference("cache_size_bytes", nothing) === nothing ? nothing : "cache_size_bytes"])
+
+"Namespace of cuTile's CUBIN entries in the object cache."
+const CUBIN_CACHE_NS = "cuTile/cubin"
+
+"""
+    CUBIN_CACHE_SCHEMA
+
+Schema of the CUBIN cache key. Bump when the key framing or the meaning of the value
+changes incompatibly; no existing entry matches afterwards.
+"""
+const CUBIN_CACHE_SCHEMA = 4
+
+"""
+    cubin_cache_fields(bytecode, sm_arch, opt_level)
+
+Key fields of the CUBIN cache entry for compiling `bytecode` with `tileiras` for
+`sm_arch` at `opt_level`: the full `tileiras --version` output, the target, the
+optimization level and the bytecode. Hash with
+`ObjCache.keyhash(CUBIN_CACHE_SCHEMA, cubin_cache_fields(...)...)`.
+"""
+cubin_cache_fields(bytecode::Vector{UInt8}, sm_arch::VersionNumber, opt_level::Integer) =
+    (tileir_toolchain().compiler_identity, sm_arch, opt_level, bytecode)
 
 """
     TileCompilerTimeoutError
@@ -571,36 +606,18 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
 
-    # Disk cache lookup. The hash covers every input that changes the CUBIN
-    # — bytecode + sm_arch + opt_level + tileiras identity — so different
-    # compiler builds never collide. `bytecode_version` is encoded
-    # in the bytecode itself, so it's covered transitively by the bytecode hash.
-    dc = DiskCache.global_cache()
-    cache_key = nothing
-    if dc !== nothing
-        identity = tileir_toolchain().compiler_identity
-        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, identity)
-        cubin = try
-            DiskCache.get(dc, cache_key)
-        catch err
-            @debug "cuTile disk cache lookup failed" exception=(err, catch_backtrace())
-            nothing
+    # Cross-session cache of the tileiras output. The key covers every input
+    # that changes the CUBIN: bytecode, sm_arch, opt_level and the tileiras
+    # identity, so different compiler builds never collide. `bytecode_version`
+    # is encoded in the bytecode itself, so it's covered transitively. CUBIN is
+    # address-free, so it is always persistable.
+    res.cuda_bin = if disk_cache_enabled
+        ObjCache.get!(CUBIN_CACHE_NS, cubin_cache_fields(bytecode, sm_arch, opt_level)...;
+                      schema=CUBIN_CACHE_SCHEMA, persistable=true) do
+            first(run_tileiras(bytecode, sm_arch, opt_level))
         end
-        if cubin !== nothing
-            res.cuda_bin = cubin
-            return cubin
-        end
-    end
-
-    # Run tileiras to produce CUBIN
-    res.cuda_bin, _ = run_tileiras(bytecode, sm_arch, opt_level)
-
-    if cache_key !== nothing
-        try
-            DiskCache.put!(dc, cache_key, res.cuda_bin)
-        catch err
-            @debug "cuTile disk cache store failed" exception=(err, catch_backtrace())
-        end
+    else
+        first(run_tileiras(bytecode, sm_arch, opt_level))
     end
 
     return res.cuda_bin
