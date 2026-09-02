@@ -54,8 +54,7 @@ function main()
         # Only `public`/`export`ed symbols are API; everything else is internal, and
         # deliberately undocumented here.
         checkdocs = :public,
-        checkdocs_ignored_modules = [cuTile.DiskCache, cuTile.MemoryOrderingSemantics,
-                                     cuTile.MemoryScope],
+        checkdocs_ignored_modules = [cuTile.MemoryOrderingSemantics, cuTile.MemoryScope],
     )
 
     if ci
