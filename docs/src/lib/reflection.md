@@ -15,6 +15,13 @@ code_ptx
 code_sass
 ```
 
+## Jobs
+
+```@docs
+TileJob
+tile_job
+```
+
 ## Intercepting a launch
 
 ```@docs

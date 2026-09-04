@@ -9,6 +9,16 @@ function reflect_vadd(a, b, c)
     return
 end
 
+function capture_stdout(f)
+    mktemp() do _, io
+        redirect_stdout(io) do
+            f()
+        end
+        seekstart(io)
+        read(io, String)
+    end
+end
+
 @testset "code_typed" begin
     @test @filecheck begin
         @check "get_tile_block_id"
@@ -86,6 +96,57 @@ if ct.tileiras_available()
         output = sprint(io -> ct.code_sass(io, reflect_vadd, TT3; sm_arch=v"10.0"))
         @test occursin(r"\.target\s+sm_100", output)
         @test occursin(".text.reflect_vadd", output)
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        stdout_output = capture_stdout(() -> ct.code_sass(job))
+        @test stdout_output == output
+    end
+
+    @testset "compile(job)" begin
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        cubin = ct.compile(job)
+        @test cubin isa Vector{UInt8} && cubin[1:4] == b"\x7fELF"
+        ptx = ct.extract_ptx(cubin)
+        @test startswith(ptx, ".version") && occursin(".entry reflect_vadd", ptx)
+        @test ptx == ct.extract_ptx(IOBuffer(cubin)) == sprint(ct.code_ptx, job)
+        stdout_ptx = capture_stdout(() -> ct.code_ptx(job))
+        @test stdout_ptx == ptx
+        @test_throws ct.ObjectFile.MagicMismatch ct.extract_ptx(UInt8[0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0])
+    end
+
+    @testset "jobs" begin
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        @test job isa ct.TileJob && job.config.name == "reflect_vadd"
+        @test job === ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        @test job !== ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", opt_level=1)
+        @test ct.job_signature(job) == (reflect_vadd, TT3)
+        @test sprint(show, only(ct.code_typed(job))) == sprint(show, only(ct.code_typed(reflect_vadd, TT3)))
+        stdout_tiled = capture_stdout(() -> ct.code_tiled(job))
+        @test stdout_tiled == sprint(ct.code_tiled, job)
+    end
+
+    @testset "shared inference" begin
+        # Inference is independent of target and hints, so every Tile job shares
+        # one partition and one CodeInstance; codegen results are per job.
+        job1 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        job2 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"8.9", opt_level=1)
+        res1, res2 = ct.compile_or_lookup(job1), ct.compile_or_lookup(job2)
+        ci1, ci2 = (get(ct.inference_cache(job), job.source, nothing) for job in (job1, job2))
+        @test ci1 === ci2 !== nothing
+        @test ci1.owner === ct.TILE_CACHE_OWNER
+        @test res1 !== res2 && res1.cuda_bin != res2.cuda_bin
+        # results are keyed by config, not job: they survive a world bump
+        bump() = nothing
+        job3 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        @test job3.world > job1.world && job3.config === job1.config
+        @test ct.compile_or_lookup(job3) === res1
+
+        # A targetless cached job is normalized before lookup, so its CUBIN is
+        # stored under the architecture it was assembled for.
+        if CUDA.functional() && !isempty(CUDA.devices())
+            targetless = ct.tile_job(reflect_vadd, TT3)
+            targeted = ct.with_target(targetless, ct.default_sm_arch())
+            @test ct.compile_or_lookup(targetless) === ct.compile_or_lookup(targeted)
+        end
     end
 end
 
