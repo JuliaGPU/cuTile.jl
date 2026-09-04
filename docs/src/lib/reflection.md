@@ -11,6 +11,8 @@ code_tiled
 code_typed
 code_ircode
 code_structured
+code_ptx
+code_sass
 ```
 
 ## Intercepting a launch
@@ -19,4 +21,9 @@ code_structured
 @device_code_tiled
 @device_code_typed
 @device_code_structured
+@device_code_ptx
 ```
+
+`CUDA.@device_code_sass` works for cuTile kernels: it intercepts module loads
+at the driver level (via CUPTI), so it captures any backend's kernels without
+backend-specific support.

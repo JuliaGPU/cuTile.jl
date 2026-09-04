@@ -5,6 +5,7 @@
 # CUDA context, and launches it via `cudacall`. Compilation is cached per
 # `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, bytecode_version)`.
 
+using ObjectFile: readmeta, Sections
 using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
                 AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
 using CUDA_Compiler_jll
@@ -404,6 +405,59 @@ function run_tileiras(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
     end
 end
 
+"""
+    extract_ptx(io::IO) -> String
+    extract_ptx(cubin::AbstractVector{UInt8}) -> String
+
+The PTX recorded in a CUBIN. [`run_tileiras`](@ref) compiles with
+`--lineinfo`, which makes the assembler embed the PTX it consumed in a
+`.nv_debug_ptx_txt` section (one NUL-terminated entry per line, used by
+`cuda-gdb` for PTX-level source display).
+"""
+function extract_ptx(io::IO)
+    # CUBINs are ELF64 files with a machine type binutils does not know;
+    # ObjectFile.jl only needs the section headers.
+    handle = only(readmeta(io))
+    section = findfirst(Sections(handle), ".nv_debug_ptx_txt")
+    section === nothing && error(
+        "CUBIN does not embed PTX (no .nv_debug_ptx_txt section); " *
+        "it was compiled without line info")
+    lines = split(String(read(section)), '\0'; keepempty=false)
+    return join(lines, '\n') * "\n"
+end
+extract_ptx(cubin::AbstractVector{UInt8}) = extract_ptx(IOBuffer(cubin))
+
+"""
+    nvdisasm_cmd(args...) -> Cmd
+
+Construct a Cmd to invoke `nvdisasm` with `args`. With the `tileiras`
+preference set, requires `nvdisasm` from the same toolkit; otherwise uses
+`CUDA_Compiler_jll`.
+"""
+function nvdisasm_cmd(args...)
+    if tileiras_override !== nothing
+        disasm = joinpath(dirname(tileiras_override), "nvdisasm")
+        isfile(disasm) || error("no `nvdisasm` next to $(tileiras_path())")
+        return `$disasm $args`
+    end
+    CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :nvdisasm) ||
+        error("CUDA_Compiler_jll does not provide `nvdisasm`")
+    return `$(CUDA_Compiler_jll.nvdisasm()) $args`
+end
+
+"""
+    disassemble_cubin(cubin::Vector{UInt8}) -> String
+
+Disassemble a CUBIN to SASS using `nvdisasm`.
+"""
+function disassemble_cubin(cubin::Vector{UInt8})
+    mktempdir() do dir
+        path = joinpath(dir, "kernel.cubin")
+        write(path, cubin)
+        read(nvdisasm_cmd(path), String)
+    end
+end
+
 const TILEIRAS_VERSION_REGEX = r"V(\d+\.\d+\.\d+)"
 
 function parse_tileiras_version(log::AbstractString)
@@ -591,18 +645,15 @@ Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
                       ci::Core.CodeInstance, res::CuTileResults;
                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Recurse first — emit_structured! at the bottom of the chain fires
-    # `compile_hook` for `@device_code_*` reflection, which must run on every
-    # launch even when downstream artifacts are fully cached.
-    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
-
     res.cuda_bin !== nothing && return res.cuda_bin
+
+    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
 
     sm_arch = unpack_version(cache.owner.sm_arch)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
     # num_ctas/occupancy/num_worker_warps are resolved in emit_tile because they're encoded in bytecode.
-    _, _, kernel_meta = res.julia_ir
+    _, _, kernel_meta = emit_structured!(cache, mi, ci, res; const_argtypes)
     opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
 
@@ -733,9 +784,13 @@ function compile(@nospecialize(f), @nospecialize(argtypes),
     # follows the CI's instead of needing a separate global Dict.
     ci, res = ensure_compiled(cache, mi, const_argtypes)
 
-    # Always walk the emit chain (each phase short-circuits on its own cached
-    # field, but `emit_structured!` also fires `compile_hook` for reflection,
-    # which has to run on every launch even when the cube/cufunc is cached).
+    # Report the compilation to the `@device_code_*` hook. This runs through
+    # `invoke_frozen`, but the hook closure lives in the user's latest world —
+    # `invokelatest` it.
+    if compile_hook[] !== nothing
+        Base.invokelatest(compile_hook[], hook_signature(mi, const_argtypes)...)
+    end
+
     emit_binary!(cache, mi, ci, res; const_argtypes)
     return cache, mi, ci, res
 end

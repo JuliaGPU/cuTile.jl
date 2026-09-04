@@ -4,6 +4,7 @@
 
 export code_tiled
 public code_typed, code_ircode, code_structured
+public code_ptx, code_sass
 
 function disassemble_tileir(bytecode::Vector{UInt8}, version::VersionNumber;
                             debuginfo::Bool=false)::String
@@ -174,6 +175,92 @@ end
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_tiled(stdout, f, argtypes; kwargs...)
 
+"""
+    compile_to_cubin(f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
+                     num_worker_warps, bytecode_version, world) -> Vector{UInt8}
+
+Compile a Julia function all the way to a CUBIN for reflection: emit Tile IR
+bytecode (like [`code_tiled`](@ref)) and assemble it with `tileiras`. Like the
+rest of the reflection entry points, this calls the driver directly without
+caching in CuTileResults or the disk cache.
+"""
+function compile_to_cubin(@nospecialize(f), @nospecialize(argtypes);
+                          sm_arch::Union{VersionNumber, Nothing}=nothing,
+                          opt_level::Union{Int, Nothing}=nothing,
+                          num_ctas::Union{Int, Nothing}=nothing,
+                          occupancy::Union{Int, Nothing}=nothing,
+                          num_worker_warps::Union{Int, Nothing}=nothing,
+                          bytecode_version::VersionNumber=cuTile.bytecode_version(),
+                          world::UInt=Base.get_world_counter())
+    target = if sm_arch === nothing
+        try
+            default_sm_arch()
+        catch
+            throw(ArgumentError(
+                "sm_arch must be specified when compiling without a CUDA device"))
+        end
+    else
+        sm_arch
+    end
+    validate_tileiras_target(bytecode_version)
+
+    stripped, const_argtypes = process_const_argtypes(f, argtypes)
+    mi = lookup_method_instance(f, stripped; world)
+    opts = CGOpts((sm_arch=target, opt_level=opt_level, num_ctas=num_ctas,
+                   occupancy=occupancy, num_worker_warps=num_worker_warps,
+                   bytecode_version=bytecode_version))
+    cache = CacheView{CuTileResults}(:cuTile, world)
+    ir, rettype = emit_julia(cache, mi; const_argtypes)
+    sci, rettype, kernel_meta = emit_structured(ir, rettype)
+    bytecode = emit_tile(sci, rettype, kernel_meta;
+                         name=sanitize_name(string(mi.def.name)),
+                         opts, cache, const_argtypes)
+    resolved_opt_level = something(resolve_hint(opt_level, kernel_meta,
+                                                :opt_level, target), 3)
+    cubin, _ = run_tileiras(bytecode, target, resolved_opt_level)
+    return cubin
+end
+
+"""
+    code_ptx([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
+             num_worker_warps)
+
+Print the PTX that `tileiras` generates for a Julia function. This shows the
+thread-level SIMT program the tile-level kernel is lowered to, with every
+compiler decision (thread mapping, CTA size, pipelining, synchronization)
+already made. When no GPU is available, pass `sm_arch` explicitly.
+
+!!! warning "Unstable"
+    PTX is an implementation detail of `tileiras`, not an interface. It is read
+    from an undocumented debug section of the CUBIN and may stop being produced
+    or recorded at any time; `code_ptx` will be removed with it.
+"""
+function code_ptx(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...)
+    cubin = compile_to_cubin(f, argtypes; kwargs...)
+    print(io, extract_ptx(cubin))
+end
+code_ptx(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
+    code_ptx(stdout, f, argtypes; kwargs...)
+
+"""
+    code_sass([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
+              num_worker_warps)
+
+Print the SASS machine code that a Julia function compiles to, by assembling
+the Tile IR with `tileiras` and disassembling the resulting CUBIN with
+`nvdisasm`. When no GPU is available, pass `sm_arch` explicitly.
+
+For the binary a launch actually loaded, use `CUDA.@device_code_sass`. Unlike
+that, this needs no CUPTI subscription, so it also works under Nsight or
+another active profiler.
+"""
+function code_sass(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...)
+    cubin = compile_to_cubin(f, argtypes; kwargs...)
+    print(io, disassemble_cubin(cubin))
+end
+code_sass(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
+    code_sass(stdout, f, argtypes; kwargs...)
+
 
 #=============================================================================
  Device code reflection macros
@@ -181,6 +268,7 @@ code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
 
 export @device_code_tiled
 public @device_code_typed, @device_code_structured
+public @device_code_ptx
 
 # Following GPUCompiler's pattern for @device_code_* macros
 function emit_hooked_compilation(inner_hook, ex...)
@@ -232,6 +320,27 @@ macro device_code_tiled(ex...)
         println(io, "// $f($(join(tt.parameters, ", ")))")
         println(io)
         code_tiled(io, f, Tuple(tt.parameters); kwargs...)
+        println(io)
+    end
+    emit_hooked_compilation(hook, ex...)
+end
+
+"""
+    @device_code_ptx [io=stdout] expression
+
+Print the PTX generated by `tileiras` for all kernels compiled while
+evaluating the expression. Unstable, like [`code_ptx`](@ref).
+
+# Example
+```julia
+@device_code_ptx @cuda backend=cuTile blocks=grid vadd(a, b, c)
+```
+"""
+macro device_code_ptx(ex...)
+    function hook(f, tt; io::IO=stdout, kwargs...)
+        println(io, "// $f($(join(tt.parameters, ", ")))")
+        println(io)
+        code_ptx(io, f, Tuple(tt.parameters); kwargs...)
         println(io)
     end
     emit_hooked_compilation(hook, ex...)
