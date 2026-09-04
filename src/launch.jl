@@ -652,6 +652,10 @@ The cached compilation results for `job`, running the compiler on a miss. The
 the compilation even on a hit. No CUDA context required.
 """
 function compile_or_lookup(job::TileJob)::CuTileResults
+    # A targetless job is useful for pre-tileiras reflection, but a cached CUBIN
+    # must be identified by the architecture it was assembled for. Resolve the
+    # target before looking up results so it becomes part of the cache identity.
+    job = with_target(job, resolve_target(job, "compiling"))
     Base.@lock compile_lock begin
         res = cached_results(job)
         if res === nothing || res.cuda_bin === nothing || compile_hook[] !== nothing
