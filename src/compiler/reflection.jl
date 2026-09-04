@@ -167,6 +167,7 @@ code_structured(@nospecialize(f), @nospecialize(argtypes); optimize::Bool=true, 
     code_structured(tile_job(f, argtypes; kwargs...); optimize)
 
 """
+    code_tiled([io::IO], job::TileJob; debuginfo=false, remarks=false)
     code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
                num_worker_warps, remarks=false)
 
@@ -200,6 +201,7 @@ end
 code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
            debuginfo::Bool=false, remarks::Bool=false, kwargs...) =
     code_tiled(io, tile_job(f, argtypes; kwargs...); debuginfo, remarks)
+code_tiled(job::TileJob; kwargs...) = code_tiled(stdout, job; kwargs...)
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_tiled(stdout, f, argtypes; kwargs...)
 
@@ -224,6 +226,7 @@ function compile(job::TileJob)
 end
 
 """
+    code_ptx([io::IO], job::TileJob)
     code_ptx([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
              num_worker_warps)
 
@@ -239,10 +242,12 @@ already made. When no GPU is available, pass `sm_arch` explicitly.
 code_ptx(io::IO, job::TileJob) = print(io, extract_ptx(compile(job)))
 code_ptx(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_ptx(io, tile_job(f, argtypes; kwargs...))
+code_ptx(job::TileJob) = code_ptx(stdout, job)
 code_ptx(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_ptx(stdout, f, argtypes; kwargs...)
 
 """
+    code_sass([io::IO], job::TileJob)
     code_sass([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
               num_worker_warps)
 
@@ -254,6 +259,7 @@ binary a launch actually loaded, use `CUDA.@device_code_sass`.
 code_sass(io::IO, job::TileJob) = print(io, disassemble_cubin(compile(job)))
 code_sass(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_sass(io, tile_job(f, argtypes; kwargs...))
+code_sass(job::TileJob) = code_sass(stdout, job)
 code_sass(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_sass(stdout, f, argtypes; kwargs...)
 
