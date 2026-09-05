@@ -117,17 +117,9 @@ function get_inferred(cache::CacheView{K,V}, ci::Core.CodeInstance,
     if const_argtypes === nothing
         src = @something get_source(ci)
     else
-        src = @something get_source(ci, const_argtypes)
-
-        # Extract the return type from a const-specialized entry.
-        cached = CC.traverse_analysis_results(ci) do @nospecialize(result)
-            result isa CompilerCaching.CachedResult{V} ? result : nothing
-        end
-        for entry in cached.const_entries
-            if entry.argtypes == const_argtypes
-                rettype = CC.widenconst(entry.rettype)
-            end
-        end
+        entry = @something specialization(cache, ci, const_argtypes)
+        src = @something get_source(entry)
+        rettype = CC.widenconst(entry.rettype)
     end
     ir = CC.inflate_ir(src, mi)
     return ir, rettype
@@ -214,16 +206,20 @@ to resolve them on every phase.
 @inline function ensure_compiled(cache::CacheView{K,CuTileResults},
                                  mi::Core.MethodInstance,
                                  const_argtypes::Union{Vector{Any}, Nothing}) where {K}
-    # Fast path: already cached
-    hit = const_argtypes === nothing ? lookup(cache, mi) :
-                                       lookup(cache, mi, const_argtypes)
-    hit !== nothing && return hit
+    if const_argtypes === nothing
+        hit = lookup(cache, mi)
+        hit !== nothing && return hit
 
-    # Slow path: run inference (and const-prop, if requested) and re-resolve.
-    ci = get_ci(cache, mi; const_argtypes)
-    res = const_argtypes === nothing ? results(cache, ci) :
-                                       results(cache, ci, const_argtypes)
-    return (ci, res)
+        ci = get_ci(cache, mi; const_argtypes)
+        return (ci, results(cache, ci))
+    else
+        hit = lookup(cache, mi, const_argtypes)
+        hit !== nothing && return (hit[1], results(hit[2]))
+
+        ci = get_ci(cache, mi; const_argtypes)
+        entry = @something specialization(cache, ci, const_argtypes)
+        return (ci, results(entry))
+    end
 end
 
 # Cached wrappers around the driver's emit_* functions. These check/populate
