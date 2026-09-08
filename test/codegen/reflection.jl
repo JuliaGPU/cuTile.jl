@@ -203,6 +203,18 @@ if ct.tileiras_available()
         @test occursin("reflect_vadd", warntype) && occursin("Body::Nothing", warntype)
         @test_throws ArgumentError GPUCompiler.@device_code_llvm ct.compile_or_lookup(job)
 
+        # Warntype must inspect the const-seeded source, just like typed reflection.
+        select_type(n) = n == 16 ? 1 : 1.0f0
+        const_job = ct.tile_job(select_type, Tuple{ct.Constant{Int,16}}; sm_arch=v"10.0")
+        @test occursin("Body::Int", sprint(GPUCompiler.code_warntype, const_job))
+        float_job = ct.tile_job(select_type, Tuple{ct.Constant{Int,32}}; sm_arch=v"10.0")
+        @test occursin("Body::Float32", sprint(GPUCompiler.code_warntype, float_job))
+        shape_job = ct.tile_job(reflect_vadd_n, Tuple{TT3.parameters..., ct.Constant{Int,16}};
+                               sm_arch=v"10.0")
+        @test occursin("Body::Nothing", sprint(GPUCompiler.code_warntype, shape_job))
+        @test sprint(GPUCompiler.code_native, job) == sprint(ct.code_ptx, job)
+
+
         # Nested macros restore the outer hook; child tasks inherit it, and
         # repeated jobs are printed only once in each scope.
         outer, inner = IOBuffer(), IOBuffer()

@@ -58,3 +58,56 @@ end
         @test ct.compile_or_lookup(job).cubin === cubin
     end
 end
+
+@testset "mixed-backend reflection" begin
+    function tile_kernel(a)
+        ct.store(a, 1, fill(1.0f0, (16,)))
+        return
+    end
+    function cuda_kernel(a)
+        a[1] = 2.0f0
+        return
+    end
+    a = CUDA.zeros(Float32, 16)
+
+    # Warm both launch caches before inspecting the same expression.
+    @cuda cuda_kernel(a)
+    @cuda backend=cuTile tile_kernel(a)
+    typed = CUDA.@device_code_typed begin
+        @cuda cuda_kernel(a)
+        @cuda backend=cuTile tile_kernel(a)
+    end
+    @test length(typed) == 2
+    @test count(job -> job isa ct.TileJob, keys(typed)) == 1
+    @test count(job -> job isa GPUCompiler.CompilerJob, keys(typed)) == 1
+
+    warntype = sprint() do io
+        CUDA.@device_code_warntype io=io begin
+            @cuda cuda_kernel(a)
+            @cuda backend=cuTile tile_kernel(a)
+        end
+    end
+    @test occursin("cuda_kernel", warntype)
+    @test occursin("tile_kernel", warntype)
+
+    ptx = sprint() do io
+        CUDA.@device_code_ptx io=io begin
+            @cuda cuda_kernel(a)
+            @cuda backend=cuTile tile_kernel(a)
+        end
+    end
+    @test occursin("cuda_kernel", ptx)
+    @test occursin("tile_kernel", ptx)
+
+    tiled = sprint() do io
+        ct.@device_code_tiled io=io begin
+            @cuda cuda_kernel(a)
+            @cuda backend=cuTile tile_kernel(a)
+        end
+    end
+    @test occursin("tile_kernel", tiled)
+    @test !occursin("cuda_kernel", tiled)
+    @test_throws "no kernels executed" ct.@device_code_tiled @cuda cuda_kernel(a)
+    @test GPUCompiler.compile_hook[] === nothing
+    CUDA.synchronize()
+end

@@ -99,13 +99,13 @@ end
 code_typed(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_typed(tile_job(f, argtypes; kwargs...))
 
-# GPUCompiler's reflection protocol, for its `@device_code_*` macros: the job
-# selects cuTile's inference partition (and const-seeded source) for the
-# typed IR, and its interpreter for the warntype view of the generic source.
 GPUCompiler.code_typed(job::TileJob) = code_typed(job)
-GPUCompiler.code_warntype(io::IO, job::TileJob; kwargs...) =
-    GPUCompiler.code_warntype_by_type(io, job.source.specTypes;
-                                      interp=cuTileInterpreter(inference_cache(job)), kwargs...)
+function GPUCompiler.code_warntype(io::IO, job::TileJob; debuginfo::Symbol=:default)
+    inferred = infer(job)
+    src = @something get_source(inferred) error("No inferred source for $(job.source)")
+    GPUCompiler.code_warntype(io, src, inferred_rettype(inferred); debuginfo)
+end
+
 
 """
     code_structured(job::TileJob; optimize=true) -> Vector{Pair{StructuredIRCode, DataType}}
@@ -181,6 +181,7 @@ code_ptx(io::IO, job::TileJob) = print(io, extract_ptx(compile(job)))
 code_ptx(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_ptx(io, tile_job(f, argtypes; kwargs...))
 code_ptx(job::TileJob) = code_ptx(stdout, job)
+GPUCompiler.code_native(io::IO, job::TileJob) = code_ptx(io, job)
 code_ptx(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_ptx(stdout, f, argtypes; kwargs...)
 
@@ -214,8 +215,9 @@ public @device_code_structured, @device_code_ptx
 using GPUCompiler: @device_code_typed, @device_code_warntype
 public @device_code_typed, @device_code_warntype
 
-# cuTile's stage macros are GPUCompiler's, over cuTile's `code_*` functions.
-const emit_hooked_compilation = GPUCompiler.emit_hooked_compilation
+# Tile-specific stages ignore other back-ends sharing the compile hook.
+emit_hooked_compilation(hook, ex...) =
+    GPUCompiler.emit_hooked_compilation(hook, ex...; job_filter=job -> job isa TileJob)
 
 # A hook printing a signature header around `inner(io, job; kwargs...)`.
 function tile_hook(inner)

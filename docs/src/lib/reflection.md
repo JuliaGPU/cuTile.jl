@@ -30,7 +30,7 @@ tile_job
 @device_code_ptx
 ```
 
-`@device_code_typed` and `@device_code_warntype` are GPUCompiler's, re-exported;
+`@device_code_typed` and `@device_code_warntype` are shared with GPUCompiler;
 they work for cuTile kernels through the shared compile hook.
 
 `CUDA.@device_code_sass` works for cuTile kernels: it intercepts module loads
