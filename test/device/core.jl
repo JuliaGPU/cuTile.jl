@@ -202,16 +202,16 @@ end # invalidations
         String(take!(buf))
     end
 
-    # @device_code_typed: check typed Julia IR output
+    # @device_code_typed: GPUCompiler's macro, returning the typed Julia IR per job
     @test @filecheck begin
-        @check "// reflect_vadd"
         @check "get_tile_block_id"
         @check "load_partition_view"
         @check "addf"
         @check "store_partition_view"
-        buf = IOBuffer()
-        ct.@device_code_typed io=buf @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
-        String(take!(buf))
+        typed = ct.@device_code_typed @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
+        job = only(keys(typed))
+        @test job isa ct.TileJob && ct.job_signature(job)[1] === reflect_vadd
+        string(first(only(typed[job])))
     end
 
     # @device_code_tiled with debug info

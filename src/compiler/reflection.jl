@@ -207,8 +207,12 @@ code_sass(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
 =============================================================================#
 
 export @device_code_tiled
-public @device_code_typed, @device_code_structured
-public @device_code_ptx
+public @device_code_structured, @device_code_ptx
+
+# The Julia-level stages are inspected with GPUCompiler's macros, which cover
+# every backend through the shared hook; cuTile only adds its own stages.
+using GPUCompiler: @device_code_typed, @device_code_warntype
+public @device_code_typed, @device_code_warntype
 
 # cuTile's stage macros are GPUCompiler's, over cuTile's `code_*` functions.
 const emit_hooked_compilation = GPUCompiler.emit_hooked_compilation
@@ -252,21 +256,6 @@ Print the StructuredIRCode for all kernels compiled while evaluating the express
 """
 macro device_code_structured(ex...)
     hook = tile_hook((io, job; kwargs...) -> println(io, first(only(code_structured(job; kwargs...)))))
-    emit_hooked_compilation(hook, ex...)
-end
-
-"""
-    @device_code_typed [io=stdout] expression
-
-Print the typed Julia IR for all kernels compiled while evaluating the expression.
-
-# Example
-```julia
-@device_code_typed @cuda backend=cuTile blocks=grid vadd(a, b, c)
-```
-"""
-macro device_code_typed(ex...)
-    hook = tile_hook((io, job) -> println(io, first(only(code_typed(job)))))
     emit_hooked_compilation(hook, ex...)
 end
 

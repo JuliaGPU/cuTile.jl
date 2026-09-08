@@ -191,8 +191,10 @@ if ct.tileiras_available()
         @test seen == [job, job]
         @test GPUCompiler.compile_hook[] === nothing
 
-        # GPUCompiler's own macros accept Tile jobs through the shared protocol
-        typed = GPUCompiler.@device_code_typed ct.compile_or_lookup(job)
+        # GPUCompiler's macros accept Tile jobs through the shared protocol; cuTile
+        # re-exports the Julia-level ones rather than defining its own
+        @test ct.var"@device_code_typed" === GPUCompiler.var"@device_code_typed"
+        typed = ct.@device_code_typed ct.compile_or_lookup(job)
         @test collect(keys(typed)) == [job]
         @test sprint(show, only(typed[job])) == sprint(show, only(ct.code_typed(job)))
         warntype = sprint() do io
@@ -204,15 +206,15 @@ if ct.tileiras_available()
         # Nested macros restore the outer hook; child tasks inherit it, and
         # repeated jobs are printed only once in each scope.
         outer, inner = IOBuffer(), IOBuffer()
-        ct.@device_code_typed io=outer begin
-            ct.@device_code_typed io=inner ct.compile_or_lookup(job)
+        ct.@device_code_structured io=outer begin
+            ct.@device_code_structured io=inner ct.compile_or_lookup(job)
             @sync for _ in 1:2
                 @async ct.compile_or_lookup(job)
             end
         end
         @test String(take!(outer)) == String(take!(inner)) != ""
         @test GPUCompiler.compile_hook[] === nothing
-        @test_throws ErrorException ct.@device_code_typed error("reflection failed")
+        @test_throws ErrorException ct.@device_code_structured error("reflection failed")
         @test GPUCompiler.compile_hook[] === nothing
     end
 
