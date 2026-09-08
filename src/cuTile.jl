@@ -25,6 +25,10 @@ import CompilerCaching
 using CompilerCaching: CacheView, SpecializedResult, method_instance, match_method_instance,
                        typeinf!, specialization, results, get_source
 
+# cuTile has its own compiler, but shares GPUCompiler's reflection protocol: the
+# compile hook behind the `@device_code_*` macros, and the `code_*` generics.
+import GPUCompiler
+
 # Shared definitions
 include("shapes.jl")
 

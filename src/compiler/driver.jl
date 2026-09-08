@@ -1,5 +1,3 @@
-using Base.ScopedValues: ScopedValue, with
-
 #=============================================================================
  Compiler jobs
 
@@ -132,16 +130,15 @@ end
 #=============================================================================
  Compilation hook
 
- `@device_code_*` observe compilations through a task-scoped hook, called
- with the job of every kernel that is compiled or launched while it is set.
+ `@device_code_*` macros, cuTile's and GPUCompiler's alike, observe
+ compilations through `GPUCompiler.compile_hook`, called with the job of every
+ kernel that is compiled or launched while it is set.
 =============================================================================#
-
-const compile_hook = ScopedValue{Union{Nothing, Function}}(nothing)
 
 # Launches run in the frozen world (`invoke_frozen`), but the hook closure
 # lives in the user's latest one, hence `invokelatest`.
 function run_compile_hook(job::TileJob)
-    hook = compile_hook[]
+    hook = GPUCompiler.compile_hook[]
     hook === nothing || Base.invokelatest(hook, job)
     return
 end

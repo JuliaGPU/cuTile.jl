@@ -99,6 +99,14 @@ end
 code_typed(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_typed(tile_job(f, argtypes; kwargs...))
 
+# GPUCompiler's reflection protocol, for its `@device_code_*` macros: the job
+# selects cuTile's inference partition (and const-seeded source) for the
+# typed IR, and its interpreter for the warntype view of the generic source.
+GPUCompiler.code_typed(job::TileJob) = code_typed(job)
+GPUCompiler.code_warntype(io::IO, job::TileJob; kwargs...) =
+    GPUCompiler.code_warntype_by_type(io, job.source.specTypes;
+                                      interp=cuTileInterpreter(inference_cache(job)), kwargs...)
+
 """
     code_structured(job::TileJob; optimize=true) -> Vector{Pair{StructuredIRCode, DataType}}
     code_structured(f, argtypes; optimize=true, kwargs...)
@@ -202,36 +210,8 @@ export @device_code_tiled
 public @device_code_typed, @device_code_structured
 public @device_code_ptx
 
-# Install `inner_hook` as the compile hook for the duration of the expression,
-# called once per distinct job.
-function emit_hooked_compilation(inner_hook, ex...)
-    user_code = ex[end]
-    user_kwargs = ex[1:end-1]
-    quote
-        # The job set is shared with any child task compiling under the hook.
-        jobs = Set{TileJob}()
-        jobs_lock = ReentrantLock()
-        function outer_hook(job::TileJob)
-            Base.@lock jobs_lock begin
-                job in jobs && return
-                push!(jobs, job)
-                # the user hook might invoke the compiler again, so disable the hook
-                $with($compile_hook => nothing) do
-                    $inner_hook(job; $(map(esc, user_kwargs)...))
-                end
-            end
-        end
-
-        $with($compile_hook => outer_hook) do
-            $(esc(user_code))
-        end
-
-        if isempty(jobs)
-            error("no kernels executed while evaluating the given expression")
-        end
-        nothing
-    end
-end
+# cuTile's stage macros are GPUCompiler's, over cuTile's `code_*` functions.
+const emit_hooked_compilation = GPUCompiler.emit_hooked_compilation
 
 # A hook printing a signature header around `inner(io, job; kwargs...)`.
 function tile_hook(inner)

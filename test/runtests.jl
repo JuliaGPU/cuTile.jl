@@ -95,6 +95,8 @@ const init_code = quote
     using CUDA
     using cuTile
     import cuTile as ct
+    import GPUCompiler
+    using Base.ScopedValues: with
 
     using FileCheck
 end

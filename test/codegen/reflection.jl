@@ -182,14 +182,24 @@ if ct.tileiras_available()
     @testset "compile hook" begin
         job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
         ct.compile_or_lookup(job)
-        # the hook observes hits as well as misses, once per distinct job
+        # GPUCompiler's hook observes hits as well as misses, once per distinct job
         seen = ct.TileJob[]
-        ct.with(ct.compile_hook => (job -> push!(seen, job))) do
+        with(GPUCompiler.compile_hook => (job -> push!(seen, job))) do
             ct.compile_or_lookup(job)
             ct.compile_or_lookup(job)
         end
         @test seen == [job, job]
-        @test ct.compile_hook[] === nothing
+        @test GPUCompiler.compile_hook[] === nothing
+
+        # GPUCompiler's own macros accept Tile jobs through the shared protocol
+        typed = GPUCompiler.@device_code_typed ct.compile_or_lookup(job)
+        @test collect(keys(typed)) == [job]
+        @test sprint(show, only(typed[job])) == sprint(show, only(ct.code_typed(job)))
+        warntype = sprint() do io
+            GPUCompiler.@device_code_warntype io=io ct.compile_or_lookup(job)
+        end
+        @test occursin("reflect_vadd", warntype) && occursin("Body::Nothing", warntype)
+        @test_throws ArgumentError GPUCompiler.@device_code_llvm ct.compile_or_lookup(job)
 
         # Nested macros restore the outer hook; child tasks inherit it, and
         # repeated jobs are printed only once in each scope.
@@ -201,16 +211,16 @@ if ct.tileiras_available()
             end
         end
         @test String(take!(outer)) == String(take!(inner)) != ""
-        @test ct.compile_hook[] === nothing
+        @test GPUCompiler.compile_hook[] === nothing
         @test_throws ErrorException ct.@device_code_typed error("reflection failed")
-        @test ct.compile_hook[] === nothing
+        @test GPUCompiler.compile_hook[] === nothing
     end
 
     @testset "concurrent cache misses" begin
         job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", name="concurrent_vadd")
         ct.cached_results(job)
         entered, resume = Channel{Nothing}(1), Channel{Nothing}(1)
-        late = @async ct.with(ct.compile_hook => (_ -> (put!(entered, nothing); take!(resume)))) do
+        late = @async with(GPUCompiler.compile_hook => (_ -> (put!(entered, nothing); take!(resume)))) do
             ct.compile_or_lookup(job)
         end
         take!(entered)
