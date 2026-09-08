@@ -33,11 +33,11 @@ const CUBIN_CACHE_PRELUDE = quote
         return
     end
 
-    key() = ct.TileCacheKey(SM_ARCH, ct.bytecode_version(), OPT_LEVEL,
-                            nothing, nothing, nothing)
+    vadd_job() = ct.tile_job(cached_vadd, TT; sm_arch=SM_ARCH, opt_level=OPT_LEVEL)
     function compile_vadd()
-        _, _, _, res = ct.compile(cached_vadd, TT, nothing, key())
-        return res
+        job = vadd_job()
+        res = ct.compile_or_lookup(job)
+        return (; cubin=res.cubin, tile_bc=ct.emit_tile(job).bytecode)
     end
     cubin_key(res) = OC.keyhash(ct.CUBIN_CACHE_SCHEMA,
                                 ct.cubin_cache_fields(res.tile_bc,
@@ -91,14 +91,14 @@ digest(out) = match(r"CUBIN_SHA=([0-9a-f]+)", out)
         ok, out = @with_objcache dir "JULIA_OBJCACHE" => "1" begin
             @test OC.enabled()
             res = compile_vadd()
-            @test res.cuda_bin isa Vector{UInt8} && !isempty(res.cuda_bin)
+            @test res.cubin isa Vector{UInt8} && !isempty(res.cubin)
             k = cubin_key(res)
             t0 = time()
             while OC.get(ct.CUBIN_CACHE_NS, k) === nothing && time() - t0 < 10
                 sleep(0.01)
             end
-            @test OC.get(ct.CUBIN_CACHE_NS, k) == res.cuda_bin
-            println("CUBIN_SHA=", bytes2hex(OC.keyhash(0, res.cuda_bin)))
+            @test OC.get(ct.CUBIN_CACHE_NS, k) == res.cubin
+            println("CUBIN_SHA=", bytes2hex(OC.keyhash(0, res.cubin)))
         end
         check_child(ok, out)
         sha1 = digest(out)
@@ -115,8 +115,8 @@ digest(out) = match(r"CUBIN_SHA=([0-9a-f]+)", out)
                 error("tileiras invoked despite a warm object cache")
             end
             res = compile_vadd()
-            @test res.cuda_bin isa Vector{UInt8} && !isempty(res.cuda_bin)
-            @test bytes2hex(OC.keyhash(0, res.cuda_bin)) == $expected_sha
+            @test res.cubin isa Vector{UInt8} && !isempty(res.cubin)
+            @test bytes2hex(OC.keyhash(0, res.cubin)) == $expected_sha
         end
         check_child(ok, out)
     end

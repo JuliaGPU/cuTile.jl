@@ -9,6 +9,24 @@ function reflect_vadd(a, b, c)
     return
 end
 
+function reflect_vadd_n(a, b, c, n)
+    pid = ct.bid(1)
+    tile_a = ct.load(a; index=pid, shape=(n,))
+    tile_b = ct.load(b; index=pid, shape=(n,))
+    ct.store(c; index=pid, tile=tile_a + tile_b)
+    return
+end
+
+function capture_stdout(f)
+    mktemp() do _, io
+        redirect_stdout(io) do
+            f()
+        end
+        seekstart(io)
+        read(io, String)
+    end
+end
+
 @testset "code_typed" begin
     @test @filecheck begin
         @check "get_tile_block_id"
@@ -86,6 +104,128 @@ if ct.tileiras_available()
         output = sprint(io -> ct.code_sass(io, reflect_vadd, TT3; sm_arch=v"10.0"))
         @test occursin(r"\.target\s+sm_100", output)
         @test occursin(".text.reflect_vadd", output)
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        stdout_output = capture_stdout(() -> ct.code_sass(job))
+        @test stdout_output == output
+    end
+
+    @testset "compile(job)" begin
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        cubin = ct.compile(job)
+        @test cubin isa Vector{UInt8} && cubin[1:4] == b"\x7fELF"
+        ptx = ct.extract_ptx(cubin)
+        @test startswith(ptx, ".version") && occursin(".entry reflect_vadd", ptx)
+        @test ptx == ct.extract_ptx(IOBuffer(cubin)) == sprint(ct.code_ptx, job)
+        stdout_ptx = capture_stdout(() -> ct.code_ptx(job))
+        @test stdout_ptx == ptx
+        @test_throws ct.ObjectFile.MagicMismatch ct.extract_ptx(UInt8[0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0])
+    end
+
+    @testset "jobs" begin
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        @test job isa ct.TileJob && job.config.name == "reflect_vadd"
+        @test job.const_argtypes === nothing
+        @test job === ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        @test job !== ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", opt_level=1)
+        @test ct.job_signature(job) == (reflect_vadd, TT3)
+        @test sprint(show, job) == "TileJob(reflect_vadd($(join(TT3.parameters, ", "))); " *
+                                   "sm_arch=10.0.0, bytecode_version=v\"$(ct.bytecode_version())\")"
+        @test sprint(show, only(ct.code_typed(job))) == sprint(show, only(ct.code_typed(reflect_vadd, TT3)))
+        stdout_tiled = capture_stdout(() -> ct.code_tiled(job))
+        @test stdout_tiled == sprint(ct.code_tiled, job)
+
+        # Constant arguments seed inference; the job restores them in its signature.
+        const_tt = Tuple{TT3.parameters..., ct.Constant{Int, 16}}
+        const_job = ct.tile_job(reflect_vadd_n, const_tt; sm_arch=v"10.0")
+        @test const_job.const_argtypes == (ct.CC.Const(reflect_vadd_n), TT3.parameters..., ct.CC.Const(16))
+        @test ct.job_signature(const_job) == (reflect_vadd_n, const_tt)
+        @test const_job === ct.tile_job(reflect_vadd_n, const_tt; sm_arch=v"10.0")
+        @test occursin("Constant{Int64, 16}", sprint(show, const_job))
+        @test ct.compile_or_lookup(const_job) === ct.compile_or_lookup(const_job)
+
+        # A job created without a target can run every stage before tileiras.
+        targetless = ct.TileJob(job.source, nothing, job.world,
+                                ct.TileConfig(ct.TileCompilerTarget(nothing, job.config.target.bytecode_version),
+                                              job.config.params, job.config.name))
+        @test occursin("addf", sprint(ct.code_tiled, targetless))
+        @test_throws ArgumentError ct.compile(targetless)
+        @test_throws ArgumentError ct.code_tiled(devnull, targetless; remarks=true)
+
+        # Incompatible targets are rejected when the job is built.
+        @test_throws ArgumentError ct.tile_job(reflect_vadd, TT3; sm_arch=v"7.5")
+    end
+
+    @testset "shared inference" begin
+        # Inference is independent of target and hints, so every Tile job shares
+        # one partition and one CodeInstance; codegen results are per job.
+        job1 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        job2 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"8.9", opt_level=1)
+        res1, res2 = ct.compile_or_lookup(job1), ct.compile_or_lookup(job2)
+        ci1, ci2 = ct.infer(job1), ct.infer(job2)
+        @test ci1 === ci2
+        @test ci1.owner === ct.TILE_CACHE_OWNER
+        @test res1 !== res2 && res1.cubin != res2.cubin
+        # results are keyed by config, not job: they survive a world bump
+        bump() = nothing
+        job3 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        @test job3.world > job1.world && job3.config === job1.config
+        @test ct.compile_or_lookup(job3) === res1
+
+        # The default target is the active device's, so reflection matches a launch.
+        if CUDA.functional() && !isempty(CUDA.devices())
+            job = ct.tile_job(reflect_vadd, TT3)
+            @test job.config.target.sm_arch == ct.default_sm_arch()
+            @test job === ct.tile_job(reflect_vadd, TT3; sm_arch=ct.default_sm_arch())
+        end
+    end
+
+    @testset "compile hook" begin
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
+        ct.compile_or_lookup(job)
+        # the hook observes hits as well as misses, once per distinct job
+        seen = ct.TileJob[]
+        ct.with(ct.compile_hook => (job -> push!(seen, job))) do
+            ct.compile_or_lookup(job)
+            ct.compile_or_lookup(job)
+        end
+        @test seen == [job, job]
+        @test ct.compile_hook[] === nothing
+
+        # Nested macros restore the outer hook; child tasks inherit it, and
+        # repeated jobs are printed only once in each scope.
+        outer, inner = IOBuffer(), IOBuffer()
+        ct.@device_code_typed io=outer begin
+            ct.@device_code_typed io=inner ct.compile_or_lookup(job)
+            @sync for _ in 1:2
+                @async ct.compile_or_lookup(job)
+            end
+        end
+        @test String(take!(outer)) == String(take!(inner)) != ""
+        @test ct.compile_hook[] === nothing
+        @test_throws ErrorException ct.@device_code_typed error("reflection failed")
+        @test ct.compile_hook[] === nothing
+    end
+
+    @testset "concurrent cache misses" begin
+        job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", name="concurrent_vadd")
+        ct.cached_results(job)
+        entered, resume = Channel{Nothing}(1), Channel{Nothing}(1)
+        late = @async ct.with(ct.compile_hook => (_ -> (put!(entered, nothing); take!(resume)))) do
+            ct.compile_or_lookup(job)
+        end
+        take!(entered)
+        first_res = try
+            # A different configuration can compile while the first is suspended.
+            other = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", name="concurrent_other")
+            @test !isempty(ct.compile_or_lookup(other).cubin)
+            ct.compile_or_lookup(job)
+        finally
+            put!(resume, nothing)
+        end
+        first_cubin = first_res.cubin
+        last_res = fetch(late)
+        @test last_res === first_res
+        @test last_res.cubin === first_cubin
     end
 end
 

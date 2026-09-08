@@ -22,20 +22,6 @@ function disassemble_tileir(bytecode::Vector{UInt8}, version::VersionNumber;
 end
 
 """
-    code_typed(f, argtypes; world, kwargs...) -> Vector{Any}
-
-Return typed code for a cuTile function. Analogous to `Base.code_typed`.
-"""
-function code_typed(@nospecialize(f), @nospecialize(argtypes);
-                    world::UInt=Base.get_world_counter(), kwargs...)
-    stripped, const_argtypes = process_const_argtypes(f, argtypes)
-    mi = lookup_method_instance(f, stripped; world)
-    cache = CacheView{CuTileResults}(:cuTile, world)
-    ir, rettype = emit_julia(cache, mi; const_argtypes)
-    [ir => rettype]
-end
-
-"""
     code_ircode(mi::MethodInstance; world, always_inline=true) -> (IRCode, rettype)
 
 Get optimized IRCode for a MethodInstance using cuTile's overlay method table.
@@ -43,8 +29,7 @@ If always_inline=true (default), forces all functions to be inlined.
 """
 function code_ircode(mi::MethodInstance; world::UInt=Base.get_world_counter(),
                      always_inline::Bool=true)
-    cache = CacheView{CuTileResults}(:cuTile, world)
-    interp = cuTileInterpreter(cache; always_inline)
+    interp = cuTileInterpreter(inference_cache(world); always_inline)
     result = CC.typeinf_ircode(interp, mi, nothing)
 
     if result === nothing
@@ -56,30 +41,11 @@ function code_ircode(mi::MethodInstance; world::UInt=Base.get_world_counter(),
 end
 
 """
-    code_structured(f, argtypes; kwargs...) -> Vector{Pair{StructuredIRCode, DataType}}
-
-Return the structured IR for a cuTile function.
-"""
-function code_structured(@nospecialize(f), @nospecialize(argtypes);
-                         world::UInt=Base.get_world_counter(),
-                         optimize::Bool=true)
-    stripped, const_argtypes = process_const_argtypes(f, argtypes)
-    mi = lookup_method_instance(f, stripped; world)
-    cache = CacheView{CuTileResults}(:cuTile, world)
-    ir, rettype = emit_julia(cache, mi; const_argtypes)
-    sci, rettype, _ = emit_structured(ir, rettype)
-    if optimize
-        sci = copy(sci)
-        run_passes!(sci)
-    end
-    [sci => rettype]
-end
-
-"""
     process_const_argtypes(f, argtypes) -> (stripped, const_argtypes)
 
-Split `Constant{T,V}` types from argtypes for method lookup, and build a
-`const_argtypes` vector with `CC.Const(V)` entries for const-seeded inference.
+Split `Constant{T,V}` types from argtypes for method lookup, and build the
+`(Const(f), args...)` tuple with `CC.Const(V)` entries seeding const-prop
+inference (see `TileJob`).
 
 Returns `(stripped, nothing)` when no Constant types are present.
 """
@@ -91,78 +57,88 @@ function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
         T <: Constant ? constant_eltype(T) : T
     end
     stripped = Tuple{stripped_params...}
-    const_argtypes = if has_consts
-        cats = Any[CC.Const(f)]
-        for T in params
-            if T <: Constant
-                push!(cats, CC.Const(constant_value(T)))
-            elseif CC.isconstType(T)
-                push!(cats, CC.Const(T.parameters[1]))
-            else
-                push!(cats, T)
-            end
+    has_consts || return stripped, nothing
+    const_argtypes = map(params) do T
+        if T <: Constant
+            CC.Const(constant_value(T))
+        elseif CC.isconstType(T)
+            CC.Const(T.parameters[1])
+        else
+            T
         end
-        cats
-    else
-        nothing
     end
-    return stripped, const_argtypes
+    return stripped, (CC.Const(f), const_argtypes...)
 end
 
 constant_eltype(::Type{Constant{T,V}}) where {T,V} = T
 constant_value(::Type{Constant{T,V}}) where {T,V} = V
 
-"""
-    code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
-               num_worker_warps, remarks=false)
-
-Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
-Analogous to `code_llvm`/`code_native`. Calls the driver directly without
-caching in CuTileResults, so reflection never pollutes the compilation cache.
-
-Set `remarks=true` to also run `tileiras` and print its optimization remarks.
-This requires `tileiras` 13.4 or newer. When no GPU is available, pass `sm_arch`
-explicitly.
-"""
-function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
-                    sm_arch::Union{VersionNumber, Nothing}=nothing,
-                    opt_level::Union{Int, Nothing}=nothing,
-                    num_ctas::Union{Int, Nothing}=nothing,
-                    occupancy::Union{Int, Nothing}=nothing,
-                    num_worker_warps::Union{Int, Nothing}=nothing,
-                    bytecode_version::VersionNumber=cuTile.bytecode_version(),
-                    debuginfo::Bool=false,
-                    remarks::Bool=false,
-                    world::UInt=Base.get_world_counter())
+function tile_job(@nospecialize(f), @nospecialize(argtypes);
+                  world::UInt=Base.get_world_counter(), kwargs...)
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
     mi = lookup_method_instance(f, stripped; world)
+    tile_job(mi, world; const_argtypes, kwargs...)
+end
 
-    opts = CGOpts((sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
-                    num_worker_warps=num_worker_warps, bytecode_version=bytecode_version))
-    cache = CacheView{CuTileResults}(:cuTile, world)
-    ir, rettype = emit_julia(cache, mi; const_argtypes)
-    sci, rettype, kernel_meta = emit_structured(ir, rettype)
-    bytecode = emit_tile(sci, rettype, kernel_meta;
-                         name=sanitize_name(string(mi.def.name)),
-                         opts, cache, const_argtypes)
+
+#=============================================================================
+ Stages
+=============================================================================#
+
+"""
+    code_typed(job::TileJob) -> Vector{Pair{IRCode, DataType}}
+    code_typed(f, argtypes; kwargs...) -> Vector{Pair{IRCode, DataType}}
+
+Return typed code for a cuTile function. Analogous to `Base.code_typed`.
+Keyword arguments are those of [`tile_job`](@ref).
+"""
+function code_typed(job::TileJob)
+    ir, rettype = emit_julia(job)
+    [ir => rettype]
+end
+code_typed(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
+    code_typed(tile_job(f, argtypes; kwargs...))
+
+"""
+    code_structured(job::TileJob; optimize=true) -> Vector{Pair{StructuredIRCode, DataType}}
+    code_structured(f, argtypes; optimize=true, kwargs...)
+
+Return the structured IR for a cuTile function, after the optimization passes
+unless `optimize=false`. Keyword arguments are those of [`tile_job`](@ref).
+"""
+function code_structured(job::TileJob; optimize::Bool=true)
+    ir, rettype = emit_julia(job)
+    sci, rettype, _ = emit_structured(ir, rettype)
+    if optimize
+        sci = copy(sci)
+        run_passes!(sci)
+    end
+    [sci => rettype]
+end
+code_structured(@nospecialize(f), @nospecialize(argtypes); optimize::Bool=true, kwargs...) =
+    code_structured(tile_job(f, argtypes; kwargs...); optimize)
+
+"""
+    code_tiled([io::IO], job::TileJob; debuginfo=false, remarks=false)
+    code_tiled([io::IO], f, argtypes; debuginfo=false, remarks=false, kwargs...)
+
+Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
+Analogous to `code_llvm`. Keyword arguments are those of [`tile_job`](@ref):
+without a CUDA device, pass `sm_arch` explicitly to resolve
+architecture-dependent `@compiler_options` hints as a launch would.
+
+Set `remarks=true` to also run `tileiras` and print its optimization remarks.
+This requires `tileiras` 13.4 or newer, and a target architecture.
+"""
+function code_tiled(io::IO, job::TileJob; debuginfo::Bool=false, remarks::Bool=false)
+    (; bytecode, opt_level) = emit_tile(job)
+    bytecode_version = job.config.target.bytecode_version
     print(io, disassemble_tileir(bytecode, bytecode_version; debuginfo))
     if remarks
         tileiras_version() >= v"13.4" || throw(ArgumentError(
             "tileiras optimization remarks require tileiras 13.4 or newer"))
         validate_tileiras_target(bytecode_version)
-        target = if sm_arch === nothing
-            try
-                default_sm_arch()
-            catch
-                throw(ArgumentError(
-                    "sm_arch must be specified when requesting remarks without a CUDA device"))
-            end
-        else
-            sm_arch
-        end
-        resolved_opt_level = something(resolve_hint(opt_level, kernel_meta,
-                                                    :opt_level, target), 3)
-        _, text = run_tileiras(bytecode, target, resolved_opt_level; remarks=true)
+        _, text = run_tileiras(bytecode, target_arch(job), opt_level; remarks=true)
         if !isempty(text)
             println(io)
             println(io, "// tileiras optimization remarks")
@@ -172,92 +148,48 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
         end
     end
 end
+code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
+           debuginfo::Bool=false, remarks::Bool=false, kwargs...) =
+    code_tiled(io, tile_job(f, argtypes; kwargs...); debuginfo, remarks)
+code_tiled(job::TileJob; kwargs...) = code_tiled(stdout, job; kwargs...)
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_tiled(stdout, f, argtypes; kwargs...)
 
 """
-    compile_to_cubin(f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
-                     num_worker_warps, bytecode_version, world) -> Vector{UInt8}
-
-Compile a Julia function all the way to a CUBIN for reflection: emit Tile IR
-bytecode (like [`code_tiled`](@ref)) and assemble it with `tileiras`. Like the
-rest of the reflection entry points, this calls the driver directly without
-caching in CuTileResults or the disk cache.
-"""
-function compile_to_cubin(@nospecialize(f), @nospecialize(argtypes);
-                          sm_arch::Union{VersionNumber, Nothing}=nothing,
-                          opt_level::Union{Int, Nothing}=nothing,
-                          num_ctas::Union{Int, Nothing}=nothing,
-                          occupancy::Union{Int, Nothing}=nothing,
-                          num_worker_warps::Union{Int, Nothing}=nothing,
-                          bytecode_version::VersionNumber=cuTile.bytecode_version(),
-                          world::UInt=Base.get_world_counter())
-    target = if sm_arch === nothing
-        try
-            default_sm_arch()
-        catch
-            throw(ArgumentError(
-                "sm_arch must be specified when compiling without a CUDA device"))
-        end
-    else
-        sm_arch
-    end
-    validate_tileiras_target(bytecode_version)
-
-    stripped, const_argtypes = process_const_argtypes(f, argtypes)
-    mi = lookup_method_instance(f, stripped; world)
-    opts = CGOpts((sm_arch=target, opt_level=opt_level, num_ctas=num_ctas,
-                   occupancy=occupancy, num_worker_warps=num_worker_warps,
-                   bytecode_version=bytecode_version))
-    cache = CacheView{CuTileResults}(:cuTile, world)
-    ir, rettype = emit_julia(cache, mi; const_argtypes)
-    sci, rettype, kernel_meta = emit_structured(ir, rettype)
-    bytecode = emit_tile(sci, rettype, kernel_meta;
-                         name=sanitize_name(string(mi.def.name)),
-                         opts, cache, const_argtypes)
-    resolved_opt_level = something(resolve_hint(opt_level, kernel_meta,
-                                                :opt_level, target), 3)
-    cubin, _ = run_tileiras(bytecode, target, resolved_opt_level)
-    return cubin
-end
-
-"""
-    code_ptx([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
-             num_worker_warps)
+    code_ptx([io::IO], job::TileJob)
+    code_ptx([io::IO], f, argtypes; kwargs...)
 
 Print the PTX that `tileiras` generates for a Julia function. This shows the
 thread-level SIMT program the tile-level kernel is lowered to, with every
 compiler decision (thread mapping, CTA size, pipelining, synchronization)
-already made. When no GPU is available, pass `sm_arch` explicitly.
+already made. Keyword arguments are those of [`tile_job`](@ref); when no GPU is
+available, pass `sm_arch` explicitly.
 
 !!! warning "Unstable"
-    PTX is an implementation detail of `tileiras`, not an interface. It is read
-    from an undocumented debug section of the CUBIN and may stop being produced
-    or recorded at any time; `code_ptx` will be removed with it.
+    The PTX is recorded by `tileiras` in an undocumented CUBIN section and may
+    go away.
 """
-function code_ptx(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...)
-    cubin = compile_to_cubin(f, argtypes; kwargs...)
-    print(io, extract_ptx(cubin))
-end
+code_ptx(io::IO, job::TileJob) = print(io, extract_ptx(compile(job)))
+code_ptx(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...) =
+    code_ptx(io, tile_job(f, argtypes; kwargs...))
+code_ptx(job::TileJob) = code_ptx(stdout, job)
 code_ptx(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_ptx(stdout, f, argtypes; kwargs...)
 
 """
-    code_sass([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy,
-              num_worker_warps)
+    code_sass([io::IO], job::TileJob)
+    code_sass([io::IO], f, argtypes; kwargs...)
 
 Print the SASS machine code that a Julia function compiles to, by assembling
 the Tile IR with `tileiras` and disassembling the resulting CUBIN with
-`nvdisasm`. When no GPU is available, pass `sm_arch` explicitly.
-
-For the binary a launch actually loaded, use `CUDA.@device_code_sass`. Unlike
-that, this needs no CUPTI subscription, so it also works under Nsight or
-another active profiler.
+`nvdisasm`. Keyword arguments are those of [`tile_job`](@ref); when no GPU is
+available, pass `sm_arch` explicitly. For the binary a launch actually loaded,
+use `CUDA.@device_code_sass`.
 """
-function code_sass(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...)
-    cubin = compile_to_cubin(f, argtypes; kwargs...)
-    print(io, disassemble_cubin(cubin))
-end
+code_sass(io::IO, job::TileJob) = print(io, disassemble_cubin(compile(job)))
+code_sass(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...) =
+    code_sass(io, tile_job(f, argtypes; kwargs...))
+code_sass(job::TileJob) = code_sass(stdout, job)
 code_sass(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_sass(stdout, f, argtypes; kwargs...)
 
@@ -270,37 +202,45 @@ export @device_code_tiled
 public @device_code_typed, @device_code_structured
 public @device_code_ptx
 
-# Following GPUCompiler's pattern for @device_code_* macros
+# Install `inner_hook` as the compile hook for the duration of the expression,
+# called once per distinct job.
 function emit_hooked_compilation(inner_hook, ex...)
     user_code = ex[end]
     user_kwargs = ex[1:end-1]
     quote
-        seen = Set{Tuple{Any,Any}}()
-        function outer_hook(f, tt)
-            if !in((f, tt), seen)
-                old_hook = $compile_hook[]
-                try
-                    $compile_hook[] = nothing
-                    $inner_hook(f, tt; $(map(esc, user_kwargs)...))
-                finally
-                    $compile_hook[] = old_hook
+        # The job set is shared with any child task compiling under the hook.
+        jobs = Set{TileJob}()
+        jobs_lock = ReentrantLock()
+        function outer_hook(job::TileJob)
+            Base.@lock jobs_lock begin
+                job in jobs && return
+                push!(jobs, job)
+                # the user hook might invoke the compiler again, so disable the hook
+                $with($compile_hook => nothing) do
+                    $inner_hook(job; $(map(esc, user_kwargs)...))
                 end
-                push!(seen, (f, tt))
             end
         end
 
-        try
-            $compile_hook[] = outer_hook
+        $with($compile_hook => outer_hook) do
             $(esc(user_code))
-        finally
-            $compile_hook[] = nothing
         end
 
-        if isempty(seen)
+        if isempty(jobs)
             error("no kernels executed while evaluating the given expression")
         end
-
         nothing
+    end
+end
+
+# A hook printing a signature header around `inner(io, job; kwargs...)`.
+function tile_hook(inner)
+    function (job::TileJob; io::IO=stdout, kwargs...)
+        f, tt = job_signature(job)
+        println(io, "// $f($(join(tt.parameters, ", ")))")
+        println(io)
+        inner(io, job; kwargs...)
+        println(io)
     end
 end
 
@@ -316,12 +256,37 @@ With `remarks=true`, also print `tileiras` optimization remarks for each kernel.
 ```
 """
 macro device_code_tiled(ex...)
-    function hook(f, tt; io::IO=stdout, kwargs...)
-        println(io, "// $f($(join(tt.parameters, ", ")))")
-        println(io)
-        code_tiled(io, f, Tuple(tt.parameters); kwargs...)
-        println(io)
-    end
+    hook = tile_hook((io, job; kwargs...) -> code_tiled(io, job; kwargs...))
+    emit_hooked_compilation(hook, ex...)
+end
+
+"""
+    @device_code_structured [io=stdout] [optimize=true] expression
+
+Print the StructuredIRCode for all kernels compiled while evaluating the expression.
+
+# Example
+```julia
+@device_code_structured @cuda backend=cuTile blocks=grid vadd(a, b, c)
+```
+"""
+macro device_code_structured(ex...)
+    hook = tile_hook((io, job; kwargs...) -> println(io, first(only(code_structured(job; kwargs...)))))
+    emit_hooked_compilation(hook, ex...)
+end
+
+"""
+    @device_code_typed [io=stdout] expression
+
+Print the typed Julia IR for all kernels compiled while evaluating the expression.
+
+# Example
+```julia
+@device_code_typed @cuda backend=cuTile blocks=grid vadd(a, b, c)
+```
+"""
+macro device_code_typed(ex...)
+    hook = tile_hook((io, job) -> println(io, first(only(code_typed(job)))))
     emit_hooked_compilation(hook, ex...)
 end
 
@@ -337,51 +302,6 @@ evaluating the expression. Unstable, like [`code_ptx`](@ref).
 ```
 """
 macro device_code_ptx(ex...)
-    function hook(f, tt; io::IO=stdout, kwargs...)
-        println(io, "// $f($(join(tt.parameters, ", ")))")
-        println(io)
-        code_ptx(io, f, Tuple(tt.parameters); kwargs...)
-        println(io)
-    end
-    emit_hooked_compilation(hook, ex...)
-end
-
-"""
-    @device_code_structured [io=stdout] expression
-
-Print the StructuredIRCode for all kernels compiled while evaluating the expression.
-
-# Example
-```julia
-@device_code_structured @cuda backend=cuTile blocks=grid vadd(a, b, c)
-```
-"""
-macro device_code_structured(ex...)
-    function hook(f, tt; io::IO=stdout, kwargs...)
-        println(io, "// $f($(join(tt.parameters, ", ")))")
-        println(io)
-        sci, _ = only(code_structured(f, Tuple(tt.parameters); kwargs...))
-        println(io, sci)
-    end
-    emit_hooked_compilation(hook, ex...)
-end
-
-"""
-    @device_code_typed [io=stdout] expression
-
-Print the typed Julia IR for all kernels compiled while evaluating the expression.
-
-# Example
-```julia
-@device_code_typed @cuda backend=cuTile blocks=grid vadd(a, b, c)
-```
-"""
-macro device_code_typed(ex...)
-    function hook(f, tt; io::IO=stdout, kwargs...)
-        println(io, "// $f($(join(tt.parameters, ", ")))")
-        println(io)
-        ci, _ = only(code_typed(f, Tuple(tt.parameters); kwargs...))
-        println(io, ci)
-    end
+    hook = tile_hook((io, job) -> code_ptx(io, job))
     emit_hooked_compilation(hook, ex...)
 end

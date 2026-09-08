@@ -2714,7 +2714,7 @@ end
         end
         @test_throws "BFloat16 requires Tile IR bytecode ≥ 13.3" code_tiled(
                 Tuple{ct.TileArray{ct.BFloat16,1,Int32,spec_bf16}};
-                sm_arch=v"9.0",
+                sm_arch=v"10.0",
                 bytecode_version=v"13.2") do arr
             indices = ct.arange(16; dtype=Int)
             ct.atomic_add(arr, indices, ct.BFloat16(1))
