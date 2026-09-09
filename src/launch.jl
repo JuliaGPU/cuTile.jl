@@ -596,6 +596,14 @@ function assemble(bytecode::Vector{UInt8}, sm_arch::VersionNumber, opt_level::In
     # is encoded in the bytecode itself, so it's covered transitively. CUBIN is
     # address-free, so it is always persistable.
     disk_cache_enabled || return first(run_tileiras(bytecode, sm_arch, opt_level))
+    if temporary_compilation[]
+        # Candidates may reuse persistent binaries, but must not store new ones.
+        # `persistable=false` would disable reads as well as writes.
+        key = ObjCache.keyhash(CUBIN_CACHE_SCHEMA,
+                               cubin_cache_fields(bytecode, sm_arch, opt_level)...)
+        cubin = ObjCache.get(CUBIN_CACHE_NS, key)
+        return cubin === nothing ? first(run_tileiras(bytecode, sm_arch, opt_level)) : cubin
+    end
     return ObjCache.get!(CUBIN_CACHE_NS, cubin_cache_fields(bytecode, sm_arch, opt_level)...;
                          schema=CUBIN_CACHE_SCHEMA, persistable=true) do
         first(run_tileiras(bytecode, sm_arch, opt_level))
@@ -750,6 +758,14 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # native code, run the pipeline in the world captured at __init__.
     opts = (; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name)
     invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, opts)::TileKernel{Core.Typeof(f), tt}
+end
+
+# Keep the launch validation, frozen compiler world, and per-context kernel cache
+# identical to `cufunction`; only inference ownership and persistent writes differ.
+function temporary_cufunction(@nospecialize(f), tt::Type{<:Tuple}; kwargs...)
+    Base.ScopedValues.with(temporary_compilation => true) do
+        cufunction(f, tt; kwargs...)
+    end
 end
 
 # The job of a launch: the kernel's MethodInstance for the unwrapped argument
