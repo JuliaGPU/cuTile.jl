@@ -2210,7 +2210,7 @@ end
         # Older toolchains must reject the op cleanly.
         @test_throws "v13.2" code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
                                               ct.TileArray{Float32,1,Int32,spec1d}};
-                                        bytecode_version=v"13.1") do y, x
+                                        sm_arch=v"10.0", bytecode_version=v"13.1") do y, x
             pid = ct.bid(1)
             ty = ct.load(y, pid, (16,))
             tx = ct.load(x, pid, (16,))
@@ -2714,7 +2714,7 @@ end
         end
         @test_throws "BFloat16 requires Tile IR bytecode ≥ 13.3" code_tiled(
                 Tuple{ct.TileArray{ct.BFloat16,1,Int32,spec_bf16}};
-                sm_arch=v"9.0",
+                sm_arch=v"10.0",
                 bytecode_version=v"13.2") do arr
             indices = ct.arange(16; dtype=Int)
             ct.atomic_add(arr, indices, ct.BFloat16(1))
@@ -3325,7 +3325,7 @@ end
             @check_label "entry"
             @check_count 1 "make_token"
             code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}};
-                       bytecode_version=v"13.1") do a
+                       sm_arch=v"10.0", bytecode_version=v"13.1") do a
                 bid = ct.bid(1)
                 tile = ct.load(a, bid, (16,))
                 @check "print_tko"

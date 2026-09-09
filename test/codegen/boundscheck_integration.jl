@@ -57,19 +57,14 @@ function structured_if_count(@nospecialize(f), @nospecialize(argtypes))
                                    for block in IRStructurizer.eachblock(sci)))
 end
 
+# Bytecode of `f`, stripped of everything that differs between equivalent
+# kernels: the kernel name and the source locations.
 function test_bytecode(@nospecialize(f), @nospecialize(argtypes))
-    stripped, const_argtypes = ct.process_const_argtypes(f, argtypes)
-    world = Base.get_world_counter()
-    mi = ct.lookup_method_instance(f, stripped; world)
-    cache = ct.CacheView{ct.CuTileResults}(:cuTile, world)
-    ir, rettype = ct.emit_julia(cache, mi; const_argtypes)
+    job = ct.tile_job(f, argtypes; name="boundscheck_test")
+    ir, rettype = ct.emit_julia(job)
     sci, rettype, kernel_meta = ct.emit_structured(ir, rettype)
     empty!(sci.line_map)
-    opts = ct.CGOpts((sm_arch=nothing, opt_level=nothing, num_ctas=nothing,
-                      occupancy=nothing, num_worker_warps=nothing,
-                      bytecode_version=ct.bytecode_version()))
-    return ct.emit_tile(sci, rettype, kernel_meta;
-                        name="boundscheck_test", opts, cache, const_argtypes)
+    return ct.emit_tile(job, sci, rettype, kernel_meta).bytecode
 end
 
 if Base.JLOptions().check_bounds == 2

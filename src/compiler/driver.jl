@@ -1,23 +1,278 @@
-# Compilation hook for @device_code_* macros - intercepts compilations for reflection
-const compile_hook = Ref{Union{Nothing,Function}}(nothing)
+#=============================================================================
+ Compiler jobs
+
+ TileJob identifies the source and configuration used by compilation,
+ caching, and reflection.
+=============================================================================#
+
+public TileJob, tile_job
+
+struct TileCompilerTarget
+    sm_arch::VersionNumber
+    bytecode_version::VersionNumber
+end
+
+# Compilation hints; `nothing` defers to the kernel's `@compiler_options`.
+struct TileCompilerParams
+    opt_level::Union{Int, Nothing}
+    num_ctas::Union{Int, Nothing}
+    occupancy::Union{Int, Nothing}
+    num_worker_warps::Union{Int, Nothing}
+end
+
+# Compilation results are keyed by config within each inference result.
+struct TileConfig
+    target::TileCompilerTarget
+    params::TileCompilerParams
+    name::String
+end
+
+"""
+    TileJob
+
+A compilation request containing a `MethodInstance`, its world age and any
+constant arguments, plus the target architecture, bytecode version, compilation
+hints, and kernel name. Construct jobs with [`tile_job`](@ref) and pass them to
+the reflection functions to inspect that configuration.
+
+Jobs are immutable and compare structurally, so equal jobs are `===`.
+"""
+struct TileJob
+    source::MethodInstance
+    # `(Const(f), arg2, …)` seeding const-propagating inference, or `nothing`
+    # for the generic inferred source. A Tuple rather than CompilerCaching's
+    # Vector so that jobs compare structurally.
+    const_argtypes::Union{Tuple, Nothing}
+    world::UInt
+    config::TileConfig
+end
+
+"""
+    tile_job(f, argtypes; world=Base.get_world_counter(), kwargs...) -> TileJob
+    tile_job(mi::MethodInstance, world; const_argtypes=nothing, kwargs...) -> TileJob
+
+Create a [`TileJob`](@ref) for `f` and `argtypes` (which may contain
+`Constant{T,V}` types), or for a method instance with the given const-seeded
+argument types. Keyword arguments configure the compilation:
+
+- `bytecode_version`: the Tile IR bytecode version to emit; defaults to
+  [`bytecode_version`](@ref)`()`, i.e. the `bytecode_version` preference or
+  the newest version the selected `tileiras` accepts.
+- `sm_arch`: the target architecture; defaults to the current CUDA device's.
+  Combinations the bytecode does not support are rejected.
+- `opt_level`, `num_ctas`, `occupancy`, `num_worker_warps`: compilation hints
+  overriding the kernel's `@compiler_options`.
+- `name`: the kernel's name in the bytecode; defaults to the method's.
+"""
+function tile_job(mi::MethodInstance, world::UInt;
+                  const_argtypes::Union{Tuple, Nothing}=nothing,
+                  sm_arch::Union{VersionNumber, Nothing}=nothing,
+                  bytecode_version::Union{VersionNumber, Nothing}=nothing,
+                  opt_level::Union{Int, Nothing}=nothing,
+                  num_ctas::Union{Int, Nothing}=nothing,
+                  occupancy::Union{Int, Nothing}=nothing,
+                  num_worker_warps::Union{Int, Nothing}=nothing,
+                  name::Union{String, Nothing}=nothing)
+    if sm_arch === nothing
+        CUDACore.functional() || throw(ArgumentError(
+            "No CUDA device to target; pass `sm_arch`"))
+        sm_arch = device_sm_arch()
+    end
+    bytecode_version = @something bytecode_version cuTile.bytecode_version()
+    validate_tile_ir_target(sm_arch, bytecode_version)
+    target = TileCompilerTarget(sm_arch, bytecode_version)
+    params = TileCompilerParams(opt_level, num_ctas, occupancy, num_worker_warps)
+    config = TileConfig(target, params, @something name sanitize_name(string(mi.def.name)))
+    return TileJob(mi, const_argtypes, world, config)
+end
+
+# The job's const-seeded argument types in CompilerCaching's `Vector{Any}` form.
+const_argtypes_vector(job::TileJob) =
+    job.const_argtypes === nothing ? nothing : collect(Any, job.const_argtypes)
+
+# `(f, tt)` with `Constant` argument types restored.
+function job_signature(job::TileJob)
+    mi = job.source
+    ftype = mi.specTypes.parameters[1]
+    f = isdefined(ftype, :instance) ? ftype.instance : ftype
+    arg_types = collect(Any, mi.specTypes.parameters[2:end])
+    if job.const_argtypes !== nothing
+        # const_argtypes is (Const(f), arg2, ...); arg_types omits f.
+        for i in eachindex(arg_types)
+            cat = job.const_argtypes[i+1]
+            cat isa CC.Const && (arg_types[i] = typeof(Constant(cat.val)))
+        end
+    end
+    return f, Tuple{arg_types...}
+end
+
+function Base.show(io::IO, job::TileJob)
+    f, tt = job_signature(job)
+    (; target, params, name) = job.config
+    print(io, "TileJob(", f, "(", join(tt.parameters, ", "), ")")
+    print(io, "; sm_arch=", target.sm_arch,
+              ", bytecode_version=v\"", target.bytecode_version, "\"")
+    for field in fieldnames(TileCompilerParams)
+        hint = getfield(params, field)
+        hint === nothing || print(io, ", ", field, "=", hint)
+    end
+    name == sanitize_name(string(job.source.def.name)) || print(io, ", name=", repr(name))
+    print(io, ")")
+end
+
+
+#=============================================================================
+ Compilation hook
+
+ `@device_code_*` macros, cuTile's and GPUCompiler's alike, observe
+ compilations through `GPUCompiler.compile_hook`, called with the job of every
+ kernel that is compiled or launched while it is set.
+=============================================================================#
+
+# Launches run in the frozen world (`invoke_frozen`), but the hook closure
+# lives in the user's latest one, hence `invokelatest`.
+function run_compile_hook(job::TileJob)
+    hook = GPUCompiler.compile_hook[]
+    hook === nothing || Base.invokelatest(hook, job)
+    return
+end
+
+
+#=============================================================================
+ Inference
+
+ Inference is shared across targets and hints. Constant arguments select a
+ SpecializedResult on the generic CodeInstance. CompilerCaching attaches
+ JobResults to the corresponding inference result.
+=============================================================================#
+
+const TILE_CACHE_OWNER = :cuTile
+
+inference_cache(world::UInt) = CacheView{JobResults}(TILE_CACHE_OWNER, world)
+inference_cache(job::TileJob) = inference_cache(job.world)
+
+"""
+    infer(cache, mi) -> CodeInstance
+    infer(cache, mi, argtypes::Vector{Any}) -> SpecializedResult
+    infer(job::TileJob) -> Union{CodeInstance, SpecializedResult}
+
+The inference result of a method instance in `cache`, or of a job: its
+CodeInstance, or the const-seeded entry on it for `argtypes`. Runs inference on
+a miss.
+"""
+function infer(cache::CacheView, mi::MethodInstance)
+    ci = get(cache, mi, nothing)
+    ci === nothing || return ci
+    ci = typeinf!(cuTileInterpreter(cache), mi)
+    ci === nothing && error("Inference failed for $mi")
+    return ci
+end
+
+function infer(cache::CacheView, mi::MethodInstance, argtypes::Vector{Any})
+    ci = infer(cache, mi)
+    entry = specialization(cache, ci, argtypes)
+    entry === nothing || return entry
+    entry = typeinf!(cache, cuTileInterpreter(cache), mi, argtypes)
+    entry === nothing && error("Inference failed for $mi on $argtypes")
+    return entry
+end
+
+function infer(job::TileJob)
+    cache = inference_cache(job)
+    job.const_argtypes === nothing && return infer(cache, job.source)
+    return infer(cache, job.source, const_argtypes_vector(job))
+end
+
+inferred_rettype(ci::Core.CodeInstance) = CC.widenconst(ci.rettype)
+inferred_rettype(entry::SpecializedResult) = CC.widenconst(entry.rettype)
+
+
+#=============================================================================
+ Stages
+
+ emit_tile(job) runs inference, structurization, and bytecode generation.
+ compile(job) assembles the result with tileiras. Only inference is cached
+ within these stages; launch.jl caches the resulting CUBIN.
+=============================================================================#
+
+"""
+    emit_julia(job::TileJob) -> (IRCode, rettype)
+    emit_julia(cache, mi::MethodInstance) -> (IRCode, rettype)
+
+Julia phase: the inferred, optimized IR of a job, or of a callee (subprogram)
+method instance in `cache`.
+"""
+function emit_julia(mi::MethodInstance, inferred)
+    src = @something get_source(inferred) error("No inferred source for $mi")
+    return CC.inflate_ir(src, mi), inferred_rettype(inferred)
+end
+emit_julia(job::TileJob) = emit_julia(job.source, infer(job))
+emit_julia(cache::CacheView, mi::MethodInstance) = emit_julia(mi, infer(cache, mi))
+
+"""
+    emit_structured(ir::IRCode, rettype) -> (StructuredIRCode, rettype, kernel_meta)
+
+Structurize IRCode into StructuredIRCode.
+"""
+function emit_structured(ir::CC.IRCode, rettype)
+    process_meta!(ir)
+    kernel_meta = extract_meta(ir)
+    sci = StructuredIRCode(ir)
+    return (sci, rettype, kernel_meta)
+end
+
+"""
+    emit_tile(job::TileJob, sci, rettype, kernel_meta) -> (; bytecode, opt_level)
+    emit_tile(job::TileJob) -> (; bytecode, opt_level)
+
+Tile IR phase: generate bytecode from StructuredIRCode, resolving the job's
+hints against the kernel's `@compiler_options`. Also returns the resolved
+`tileiras` optimization level, which is a flag to the assembler rather than
+part of the bytecode. The one-argument form runs the preceding stages first.
+"""
+function emit_tile(job::TileJob, sci::StructuredIRCode, rettype, kernel_meta::Dict{Symbol,Any})
+    (; target, params, name) = job.config
+    hint(key, explicit) = resolve_hint(explicit, kernel_meta, key, target.sm_arch)
+    num_ctas = hint(:num_ctas, params.num_ctas)
+    occupancy = hint(:occupancy, params.occupancy)
+    num_worker_warps = hint(:num_worker_warps, params.num_worker_warps)
+    opt_level = something(hint(:opt_level, params.opt_level), 3)
+
+    bytecode = write_bytecode!(1; version=target.bytecode_version) do writer, func_buf
+        emit_kernel!(writer, func_buf, sci, rettype;
+                     name, sm_arch=target.sm_arch, num_ctas, occupancy, num_worker_warps,
+                     cache=inference_cache(job),
+                     const_argtypes=const_argtypes_vector(job))
+    end
+    return (; bytecode, opt_level)
+end
+
+function emit_tile(job::TileJob)
+    ir, rettype = emit_julia(job)
+    sci, rettype, kernel_meta = emit_structured(ir, rettype)
+    return emit_tile(job, sci, rettype, kernel_meta)
+end
+
+"""
+    compile(job::TileJob) -> Vector{UInt8}
+
+Compile a job to a CUBIN: Tile IR bytecode, assembled with `tileiras` (through
+the object cache). Reports the job to the `@device_code_*` hook. Uncached;
+`compile_or_lookup` caches for launches.
+"""
+function compile(job::TileJob)
+    (; sm_arch, bytecode_version) = job.config.target
+    validate_tileiras_target(bytecode_version)
+    run_compile_hook(job)
+    (; bytecode, opt_level) = emit_tile(job)
+    dump_bytecode(job.source, bytecode)
+    return assemble(bytecode, sm_arch, opt_level)
+end
 
 
 #=============================================================================
  Meta nodes and compilation hints
 =============================================================================#
-
-# Compilation options for cache sharding.
-# Hint fields (opt_level, num_ctas, occupancy, num_worker_warps) represent explicit
-# overrides only; `nothing` means "consult @compiler_options meta nodes in the IR
-# during compilation."
-const CGOpts = @NamedTuple{
-    sm_arch::Union{VersionNumber, Nothing},
-    opt_level::Union{Int, Nothing},
-    num_ctas::Union{Int, Nothing},
-    occupancy::Union{Int, Nothing},
-    num_worker_warps::Union{Int, Nothing},
-    bytecode_version::VersionNumber
-}
 
 """
     process_meta!(ir::CC.IRCode) -> ir
@@ -63,6 +318,7 @@ end
     resolve_hint(explicit, kernel_meta, key, sm_arch)
 
 Resolve a hint value with precedence: explicit kwarg > @compiler_options meta > nothing.
+Meta hints depend on the architecture, so they are skipped without one.
 """
 function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
                       sm_arch::Union{VersionNumber, Nothing})
@@ -77,249 +333,15 @@ function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
     return val
 end
 
+# Dump bytecode to `$JULIA_CUTILE_DUMP_BYTECODE/<file>.ln<line>[.n].cutile`, if set.
+const bytecode_dump_lock = ReentrantLock()
 
-#=============================================================================
- Compilation phases
-=============================================================================#
-
-"""
-    get_ci(cache, mi; const_argtypes=nothing) -> CodeInstance
-
-Ensure inference is done and return the CodeInstance. Runs `typeinf!` which is
-a no-op when already cached. When `const_argtypes` is provided, also ensures
-the const-specialized entry exists.
-"""
-function get_ci(cache::CacheView, mi::Core.MethodInstance;
-                const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Ensure CI exists
-    ci = get(cache, mi, nothing)
-    if ci === nothing
-        interp = cuTileInterpreter(cache)
-        ci = typeinf!(interp, mi)
-        ci === nothing && error("Inference failed for $mi")
-    end
-
-    # Run const-prop inference, if needed
-    if const_argtypes !== nothing
-        interp = cuTileInterpreter(cache)
-        typeinf!(cache, interp, mi, const_argtypes)
-    end
-
-    return ci
-end
-
-
-# Get the inferred source and return type from a CodeInstance.
-function get_inferred(cache::CacheView{K,V}, ci::Core.CodeInstance,
-                      mi::Core.MethodInstance; const_argtypes::Union{Vector{Any},
-                      Nothing}=nothing) where {K,V}
-    rettype = CC.widenconst(ci.rettype)
-    if const_argtypes === nothing
-        src = @something get_source(ci)
-    else
-        entry = @something specialization(cache, ci, const_argtypes)
-        src = @something get_source(entry)
-        rettype = CC.widenconst(entry.rettype)
-    end
-    ir = CC.inflate_ir(src, mi)
-    return ir, rettype
-end
-
-"""
-    emit_julia(cache, mi; const_argtypes=nothing) -> (IRCode, rettype)
-
-Julia phase: run inference and return IRCode.
-"""
-function emit_julia(cache::CacheView, mi::Core.MethodInstance;
-                    const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    ci = get_ci(cache, mi; const_argtypes)
-    get_inferred(cache, ci, mi; const_argtypes)
-end
-
-"""
-    emit_structured(ir::IRCode, rettype) -> (StructuredIRCode, rettype, kernel_meta)
-
-Structurize IRCode into StructuredIRCode. Pure transformation, no caching.
-"""
-function emit_structured(ir::CC.IRCode, rettype)
-    process_meta!(ir)
-    kernel_meta = extract_meta(ir)
-    sci = StructuredIRCode(ir)
-    return (sci, rettype, kernel_meta)
-end
-
-"""
-    emit_tile(sci, rettype, kernel_meta; name, opts, cache, const_argtypes) -> Vector{UInt8}
-
-Generate Tile IR bytecode from StructuredIRCode. Pure computation, no caching.
-`cache` is needed for subprogram compilation inside `emit_kernel!`.
-"""
-function emit_tile(sci::StructuredIRCode, rettype, kernel_meta::Dict{Symbol,Any};
-                   name::String,
-                   opts::CGOpts,
-                   cache::CacheView,
-                   const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Resolve hints: launch()/code_tiled() kwargs > @compiler_options meta > defaults
-    resolved_num_ctas = resolve_hint(opts.num_ctas, kernel_meta, :num_ctas, opts.sm_arch)
-    resolved_occupancy = resolve_hint(opts.occupancy, kernel_meta, :occupancy, opts.sm_arch)
-    resolved_num_worker_warps = resolve_hint(opts.num_worker_warps, kernel_meta,
-                                             :num_worker_warps, opts.sm_arch)
-
-    # Generate Tile IR bytecode
-    bytecode = write_bytecode!(1; version=opts.bytecode_version) do writer, func_buf
-        emit_kernel!(writer, func_buf, sci, rettype;
-            name,
-            sm_arch = opts.sm_arch,
-            num_ctas = resolved_num_ctas,
-            occupancy = resolved_occupancy,
-            num_worker_warps = resolved_num_worker_warps,
-            cache,
-            const_argtypes
-        )
-    end
-
-    return bytecode
-end
-
-
-#=============================================================================
- Cached compilation
-=============================================================================#
-
-# Results struct for caching compilation phases
-mutable struct CuTileResults
-    julia_ir::Any      # (StructuredIRCode, rettype)
-    tile_bc::Any       # Vector{UInt8} bytecode
-    cuda_bin::Any      # Vector{UInt8} cubin
-    cuda_func::Any     # CuFunction
-    tile_kernel::Any   # TileKernel{F, tt} wrapper around cuda_func
-    CuTileResults() = new(nothing, nothing, nothing, nothing, nothing)
-end
-
-"""
-    ensure_compiled(cache, mi, const_argtypes) -> (ci::CodeInstance, res::CuTileResults)
-
-Hot-path entry point: single-pass cache `lookup`, falling back to `typeinf!` on
-miss. Hoists the `(ci, res)` pair so the downstream emit_*! chain doesn't have
-to resolve them on every phase.
-"""
-@inline function ensure_compiled(cache::CacheView{K,CuTileResults},
-                                 mi::Core.MethodInstance,
-                                 const_argtypes::Union{Vector{Any}, Nothing}) where {K}
-    if const_argtypes === nothing
-        hit = lookup(cache, mi)
-        hit !== nothing && return hit
-
-        ci = get_ci(cache, mi; const_argtypes)
-        return (ci, results(cache, ci))
-    else
-        hit = lookup(cache, mi, const_argtypes)
-        hit !== nothing && return (hit[1], results(hit[2]))
-
-        ci = get_ci(cache, mi; const_argtypes)
-        entry = @something specialization(cache, ci, const_argtypes)
-        return (ci, results(entry))
-    end
-end
-
-# Cached wrappers around the driver's emit_* functions. These check/populate
-# CuTileResults and are used by the production pipeline (launch → CUDAExt).
-# Reflection APIs (code_tiled, code_structured, etc.) bypass this layer and
-# call the driver directly, so they never pollute the compilation cache.
-
-"""
-    emit_structured!(cache, mi, ci, res; const_argtypes=nothing) -> (StructuredIRCode, rettype, kernel_meta)
-
-Cached IR phase. Invokes the compile hook (for `@device_code_*` macros),
-checks `res.julia_ir`, and delegates to `emit_structured` on cache miss.
-
-`ci` and `res` must come from `ensure_compiled(cache, mi, const_argtypes)` —
-i.e. inference is already done. Reflection callers that want the lookup
-implicit can use the convenience `emit_structured!(cache, mi; const_argtypes)`
-overload.
-"""
-function emit_structured!(cache::CacheView, mi::Core.MethodInstance,
-                          ci::Core.CodeInstance, res::CuTileResults;
-                          const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Invoke compile hook if set (for @device_code_* reflection).
-    # Pass (f, tt) tuple to enable direct use with reflection utilities.
-    # Reconstruct Constant{T,V} types from const_argtypes so that code_tiled
-    # can recover const-seeded arguments (MI specTypes have them unwrapped).
-    if compile_hook[] !== nothing
-        ftype = mi.specTypes.parameters[1]
-        f = isdefined(ftype, :instance) ? ftype.instance : ftype
-        arg_types = collect(Any, mi.specTypes.parameters[2:end])
-        if const_argtypes !== nothing
-            # const_argtypes is [Const(f), arg2, ...]; arg_types omits f,
-            # so arg_types[i] corresponds to const_argtypes[i+1].
-            for i in eachindex(arg_types)
-                if const_argtypes[i+1] isa CC.Const
-                    val = const_argtypes[i+1].val
-                    arg_types[i] = typeof(Constant(val))
-                end
-            end
-        end
-        tt = Tuple{arg_types...}
-        # `cufunction` runs the codegen pipeline through `invoke_frozen` (so it
-        # can reuse precompiled native code), but the hook closure was defined
-        # at the user's latest world — invoke it via `invokelatest` so it
-        # dispatches there and not in the frozen world.
-        Base.invokelatest(compile_hook[], f, tt)
-    end
-
-    res.julia_ir !== nothing && return res.julia_ir
-
-    # Compute fresh via driver
-    ir, rettype = emit_julia(cache, mi; const_argtypes)
-    result = emit_structured(ir, rettype)
-    res.julia_ir = result
-    return result
-end
-
-# Convenience overload that resolves (ci, res) on the caller's behalf. Use
-# from non-hot paths (e.g. sub-program compilation in codegen/kernel.jl);
-# the production launch path goes through `ensure_compiled` once at the top
-# and feeds (ci, res) through the chain explicitly.
-function emit_structured!(cache::CacheView, mi::Core.MethodInstance;
-                          const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    ci, res = ensure_compiled(cache, mi, const_argtypes)
-    return emit_structured!(cache, mi, ci, res; const_argtypes)
-end
-
-"""
-    emit_tile!(cache, mi, ci, res; const_argtypes=nothing) -> Vector{UInt8}
-
-Cached code phase. Delegates to `emit_structured!` for the IR phase, checks
-`res.tile_bc`, and calls the driver's `emit_tile` on cache miss.
-"""
-function emit_tile!(cache::CacheView, mi::Core.MethodInstance,
-                    ci::Core.CodeInstance, res::CuTileResults;
-                    const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Delegate to cached IR phase — this also fires `compile_hook` for
-    # `@device_code_*` reflection, which must run on every launch.
-    ir_result = emit_structured!(cache, mi, ci, res; const_argtypes)
-
-    res.tile_bc !== nothing && return res.tile_bc
-
-    # Compute bytecode via driver
-    sci, rettype, kernel_meta = ir_result
-    key = cache.owner::TileCacheKey
-    opts = CGOpts((sm_arch=unpack_version(key.sm_arch),
-                   opt_level=unpack_hint(key.opt_level),
-                   num_ctas=unpack_hint(key.num_ctas),
-                   occupancy=unpack_hint(key.occupancy),
-                   num_worker_warps=unpack_hint(key.num_worker_warps),
-                   bytecode_version=unpack_version(key.bytecode_version)))
-    bytecode = emit_tile(sci, rettype, kernel_meta;
-                         name=sanitize_name(string(mi.def.name)),
-                         opts, cache, const_argtypes)
-
-    # Dump bytecode if JULIA_CUTILE_DUMP_BYTECODE is set
+function dump_bytecode(mi::MethodInstance, bytecode::Vector{UInt8})
     dump_dir = get(ENV, "JULIA_CUTILE_DUMP_BYTECODE", nothing)
-    if dump_dir !== nothing
+    dump_dir === nothing && return
+    Base.@lock bytecode_dump_lock begin
         mkpath(dump_dir)
-        base_filename = basename(string(mi.def.file))
-        base_filename = first(splitext(base_filename))
+        base_filename = first(splitext(basename(string(mi.def.file))))
         dump_path = joinpath(dump_dir, "$(base_filename).ln$(mi.def.line).cutile")
         counter = 1
         while isfile(dump_path)
@@ -329,7 +351,5 @@ function emit_tile!(cache::CacheView, mi::Core.MethodInstance,
         println(stderr, "Dumping TILEIR bytecode to file: $dump_path")
         write(dump_path, bytecode)
     end
-
-    res.tile_bc = bytecode
-    return bytecode
+    return
 end
