@@ -34,25 +34,17 @@ const Exp = ct.Experimental
         return nothing
     end
 
-    function normal_const_entry_count(f, args)
+    function normal_specialization(f, args)
         converted = map(ct.cuTileconvert, args)
         tt = Tuple{map(Core.Typeof, converted)...}
-        argtypes, _ = ct.unwrap_argtypes(f, tt)
+        argtypes, const_argtypes = ct.unwrap_argtypes(f, tt)
 
         world = Base.get_world_counter()
-        key = ct.TileCacheKey(ct.default_sm_arch(), ct.bytecode_version(),
-                              3, nothing, nothing)
-        cache = ct.CompilerCaching.CacheView{ct.CuTileResults}(key, world)
+        cache = ct.inference_cache(world)
         mi = ct.CompilerCaching.method_instance(f, argtypes; world)
         ci = get(cache, mi, nothing)
-        ci === nothing && return 0
-
-        cached = ct.CC.traverse_analysis_results(ci) do result
-            result isa ct.CompilerCaching.CachedResult{ct.CuTileResults} ?
-                result : nothing
-        end
-        cached === nothing && return 0
-        return length(cached.const_entries)
+        ci === nothing && return nothing
+        return ct.specialization(cache, ci, collect(Any, const_argtypes))
     end
 
     n = 512
@@ -397,7 +389,8 @@ const Exp = ct.Experimental
         probe_c = CUDA.zeros(Float32, n)
         probe_configs = [(; tile=16), (; tile=32), (; tile=64)]
         probe_args = cfg -> (a, b, probe_c, ct.Constant(cfg.tile))
-        @test normal_const_entry_count(cache_probe_kernel, probe_args(probe_configs[1])) == 0
+        @test all(cfg -> normal_specialization(cache_probe_kernel, probe_args(cfg)) === nothing,
+                  probe_configs)
 
         result = Exp.autotune_launch(
             cache_probe_kernel,
@@ -408,8 +401,36 @@ const Exp = ct.Experimental
             tuning=(preset=:fast, refine_topk=0))
 
         @test result.tuned_config in probe_configs
-        @test normal_const_entry_count(cache_probe_kernel, probe_args(probe_configs[1])) == 1
+        @test count(cfg -> normal_specialization(cache_probe_kernel, probe_args(cfg)) !== nothing,
+                    probe_configs) == 1
+        @test normal_specialization(cache_probe_kernel, probe_args(result.tuned_config)) !== nothing
         @test Array(probe_c) ≈ fill(3f0, n)
+    end
+
+    @testset "concurrent temporary and normal compilation" begin
+        function concurrent_kernel(a, tile)
+            ct.store(a, 1, fill(1f0, (tile,)))
+            return
+        end
+        converted = (ct.cuTileconvert(c), ct.Constant(16))
+        tt = Tuple{map(Core.Typeof, converted)...}
+        ctx = CUDA.context()
+        tasks = [Threads.@spawn CUDA.context!(ctx) do
+            compile = isodd(i) ? ct.temporary_cufunction : ct.cufunction
+            compile(concurrent_kernel, tt)
+        end for i in 1:8]
+        kernels = fetch.(tasks)
+        @test all(k -> k === kernels[1], kernels[1:2:end])
+        @test all(k -> k === kernels[2], kernels[2:2:end])
+        @test kernels[1] !== kernels[2]
+        @test ct.cufunction(concurrent_kernel, tt) === kernels[2]
+        @test ct.temporary_cufunction(concurrent_kernel, tt) === kernels[1]
+        @test !ct.temporary_compilation[]
+
+        other_arch = ct.device_sm_arch() == v"10.0" ? v"12.0" : v"10.0"
+        @test_throws "Cannot execute" ct.temporary_cufunction(concurrent_kernel, tt;
+                                                              sm_arch=other_arch)
+        @test !ct.temporary_compilation[]
     end
 
     @testset "@autotune macro: NT space" begin

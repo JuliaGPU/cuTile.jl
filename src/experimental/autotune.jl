@@ -344,14 +344,12 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace,
     reset = setup !== nothing ? setup() : nothing
 
     record, precompile_error, first_error =
-        with(_SCOPED_INF_CACHE => _fresh_inf_cache()) do
-            pipelined_tune(f, trials, grid_fn, args_fn;
-                sm_arch, opt_level,
-                warmup=tuning.warmup, reps=tuning.reps,
-                workers=tuning.precompile_workers,
-                static_num_ctas, static_occupancy, static_num_worker_warps,
-                verify=checker, reset)
-        end
+        pipelined_tune(f, trials, grid_fn, args_fn;
+            sm_arch, opt_level,
+            warmup=tuning.warmup, reps=tuning.reps,
+            workers=tuning.precompile_workers,
+            static_num_ctas, static_occupancy, static_num_worker_warps,
+            verify=checker, reset)
 
     isempty(record) && _no_valid_config_error(first_error, precompile_error)
 
@@ -388,7 +386,7 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          verify=nothing,
                          setup=nothing,
                          tuning::NamedTuple=NamedTuple(),
-                         sm_arch::VersionNumber=default_sm_arch(),
+                         sm_arch::VersionNumber=device_sm_arch(),
                          opt_level::Int=3,
                          num_ctas=nothing,
                          occupancy=nothing,
