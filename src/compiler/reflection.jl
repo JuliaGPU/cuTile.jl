@@ -132,11 +132,11 @@ code_structured(@nospecialize(f), @nospecialize(argtypes); optimize::Bool=true, 
 
 Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
 Analogous to `code_llvm`. Keyword arguments are those of [`tile_job`](@ref):
-without a CUDA device, pass `sm_arch` explicitly to resolve
-architecture-dependent `@compiler_options` hints as a launch would.
+by default the code targets the current CUDA device, as a launch would. To
+inspect the job of an actual launch, use [`@device_code_tiled`](@ref).
 
 Set `remarks=true` to also run `tileiras` and print its optimization remarks.
-This requires `tileiras` 13.4 or newer, and a target architecture.
+This requires `tileiras` 13.4 or newer.
 """
 function code_tiled(io::IO, job::TileJob; debuginfo::Bool=false, remarks::Bool=false)
     (; bytecode, opt_level) = emit_tile(job)
@@ -146,7 +146,7 @@ function code_tiled(io::IO, job::TileJob; debuginfo::Bool=false, remarks::Bool=f
         tileiras_version() >= v"13.4" || throw(ArgumentError(
             "tileiras optimization remarks require tileiras 13.4 or newer"))
         validate_tileiras_target(bytecode_version)
-        _, text = run_tileiras(bytecode, target_arch(job), opt_level; remarks=true)
+        _, text = run_tileiras(bytecode, job.config.target.sm_arch, opt_level; remarks=true)
         if !isempty(text)
             println(io)
             println(io, "// tileiras optimization remarks")
@@ -170,8 +170,8 @@ code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
 Print the PTX that `tileiras` generates for a Julia function. This shows the
 thread-level SIMT program the tile-level kernel is lowered to, with every
 compiler decision (thread mapping, CTA size, pipelining, synchronization)
-already made. Keyword arguments are those of [`tile_job`](@ref); when no GPU is
-available, pass `sm_arch` explicitly.
+already made. Keyword arguments are those of [`tile_job`](@ref); to inspect
+the job of an actual launch, use [`@device_code_ptx`](@ref).
 
 !!! warning "Unstable"
     The PTX is recorded by `tileiras` in an undocumented CUBIN section and may
@@ -191,9 +191,8 @@ code_ptx(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
 
 Print the SASS machine code that a Julia function compiles to, by assembling
 the Tile IR with `tileiras` and disassembling the resulting CUBIN with
-`nvdisasm`. Keyword arguments are those of [`tile_job`](@ref); when no GPU is
-available, pass `sm_arch` explicitly. For the binary a launch actually loaded,
-use `CUDA.@device_code_sass`.
+`nvdisasm`. Keyword arguments are those of [`tile_job`](@ref). For the binary
+a launch actually loaded, use `CUDA.@device_code_sass`.
 """
 code_sass(io::IO, job::TileJob) = print(io, disassemble_cubin(compile(job)))
 code_sass(io::IO, @nospecialize(f), @nospecialize(argtypes); kwargs...) =

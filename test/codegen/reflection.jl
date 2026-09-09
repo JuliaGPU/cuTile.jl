@@ -143,23 +143,31 @@ if ct.tileiras_available()
         @test occursin("Constant{Int64, 16}", sprint(show, const_job))
         @test ct.compile_or_lookup(const_job) === ct.compile_or_lookup(const_job)
 
-        # A job created without a target can run every stage before tileiras.
-        targetless = ct.TileJob(job.source, nothing, job.world,
-                                ct.TileConfig(ct.TileCompilerTarget(nothing, job.config.target.bytecode_version),
-                                              job.config.params, job.config.name))
-        @test occursin("addf", sprint(ct.code_tiled, targetless))
-        @test_throws ArgumentError ct.compile(targetless)
-        @test_throws ArgumentError ct.code_tiled(devnull, targetless; remarks=true)
+        # Without an architecture, jobs target the device.
+        if CUDA.functional()
+            device_arch = ct.device_sm_arch()
+            requirement = ct.tile_ir_requirement(device_arch)
+            if requirement !== nothing && ct.bytecode_version() >= requirement[2]
+                @test ct.tile_job(reflect_vadd, TT3).config.target.sm_arch == device_arch
+            else
+                @test_throws ArgumentError ct.tile_job(reflect_vadd, TT3)
+            end
+        else
+            @test_throws ArgumentError ct.tile_job(reflect_vadd, TT3)
+        end
+        old_job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", bytecode_version=v"13.1")
+        @test old_job.config.target == ct.TileCompilerTarget(v"10.0", v"13.1")
 
         # Incompatible targets are rejected when the job is built.
         @test_throws ArgumentError ct.tile_job(reflect_vadd, TT3; sm_arch=v"7.5")
+        @test_throws "v13.2" ct.tile_job(reflect_vadd, TT3; sm_arch=v"8.0", bytecode_version=v"13.1")
     end
 
     @testset "shared inference" begin
         # Inference is independent of target and hints, so every Tile job shares
         # one partition and one CodeInstance; codegen results are per job.
         job1 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
-        job2 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"8.9", opt_level=1)
+        job2 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"12.0", opt_level=1)
         res1, res2 = ct.compile_or_lookup(job1), ct.compile_or_lookup(job2)
         ci1, ci2 = ct.infer(job1), ct.infer(job2)
         @test ci1 === ci2
@@ -170,13 +178,6 @@ if ct.tileiras_available()
         job3 = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0")
         @test job3.world > job1.world && job3.config === job1.config
         @test ct.compile_or_lookup(job3) === res1
-
-        # The default target is the active device's, so reflection matches a launch.
-        if CUDA.functional() && !isempty(CUDA.devices())
-            job = ct.tile_job(reflect_vadd, TT3)
-            @test job.config.target.sm_arch == ct.default_sm_arch()
-            @test job === ct.tile_job(reflect_vadd, TT3; sm_arch=ct.default_sm_arch())
-        end
     end
 
     @testset "compile hook" begin

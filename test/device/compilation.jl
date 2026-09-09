@@ -18,6 +18,20 @@ using CUDA
     @test Array(a) == ones(Float32, 16)
 end
 
+@testset "launches target the device" begin
+    function device_kernel(a)
+        ct.store(a, 1, fill(1.0f0, (16,)))
+        return
+    end
+    a = CUDA.zeros(Float32, 16)
+    tt = Tuple{Core.Typeof(ct.cuTileconvert(a))}
+    device_arch = ct.device_sm_arch()
+    @test ct.cufunction(device_kernel, tt) === ct.cufunction(device_kernel, tt; sm_arch=device_arch)
+    # tileiras generates architecture-specific code, so other targets cannot run here.
+    other_arch = device_arch == v"10.0" ? v"12.0" : v"10.0"
+    @test_throws "Cannot execute" ct.cufunction(device_kernel, tt; sm_arch=other_arch)
+end
+
 @testset "linked kernels are cached per context" begin
     context_kernel() = nothing
     ctx = CUDA.context()

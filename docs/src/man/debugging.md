@@ -36,10 +36,13 @@ Spelling out those types is only worth it when you have no GPU, since
 `code_tiled` does not need CUDA.jl. Otherwise let the launch site derive them
 for you with `ct.@device_code_tiled`, described next.
 
-`code_tiled` compiles for the active CUDA device by default, so its output
-matches what a launch emits. Without a device, pass `sm_arch` explicitly; the
-Tile IR is otherwise still generated, but `ct.@compiler_options` hints are
-ignored. Explicit hint keywords still apply.
+By default `code_tiled` compiles for the active CUDA device with the
+toolchain's bytecode version, so its output matches what a launch emits,
+including architecture-dependent `ct.@compiler_options` hints. Pass `sm_arch`
+to target another architecture, or to inspect code without a CUDA device, and
+`bytecode_version` to emit an older version. Combinations the bytecode does
+not support are rejected, so an older `bytecode_version` may need an explicit
+`sm_arch` on older devices.
 
 To inspect several stages with the same compilation options, create a job:
 
@@ -58,9 +61,8 @@ ct.code_tiled(vadd, argtypes; remarks=true, sm_arch=v"10.0")
 ```
 
 The remarks report successful and failed optimizations, including tensor-core
-selection and memory alignment issues. `sm_arch` may be omitted when a CUDA
-device is available. Remarks are generated afresh for reflection and are not
-read from or written to the compilation cache.
+selection and memory alignment issues. Remarks are generated afresh for
+reflection and are not read from or written to the compilation cache.
 
 
 ## Inspecting PTX and SASS
@@ -77,8 +79,7 @@ ct.code_sass(vadd, argtypes; sm_arch=v"10.0")
 lowered to, with every compiler decision (thread mapping, CTA size,
 pipelining, synchronization) already made; `code_sass` shows the final machine
 code, disassembled with `nvdisasm`. Both compile the Tile IR with `tileiras`
-but do not need a GPU: `sm_arch` may be omitted when a CUDA device is
-available, and must be given explicitly otherwise.
+but do not need a GPU.
 
 !!! warning "PTX reflection is unstable"
     PTX is an implementation detail of `tileiras`, not an interface, and may
@@ -87,7 +88,8 @@ available, and must be given explicitly otherwise.
 
 Note that `tileiras` always generates architecture-specific code: targeting
 `sm_arch=v"10.0"` produces `sm_100a` PTX and SASS, which only runs on that
-exact architecture.
+exact architecture. Launches therefore always compile for the active device,
+and reject an explicit `sm_arch` that differs from it.
 
 
 ## Intercepting a launch

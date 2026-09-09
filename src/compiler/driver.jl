@@ -8,10 +8,7 @@
 public TileJob, tile_job
 
 struct TileCompilerTarget
-    # `nothing` for a job created without a CUDA device: the stages before
-    # `tileiras` still run, but architecture-dependent `@compiler_options`
-    # hints cannot be resolved and are ignored.
-    sm_arch::Union{VersionNumber, Nothing}
+    sm_arch::VersionNumber
     bytecode_version::VersionNumber
 end
 
@@ -58,10 +55,11 @@ Create a [`TileJob`](@ref) for `f` and `argtypes` (which may contain
 `Constant{T,V}` types), or for a method instance with the given const-seeded
 argument types. Keyword arguments configure the compilation:
 
-- `sm_arch`: the target architecture. Defaults to the active CUDA device's, or
-  `nothing` without one; then only the stages before `tileiras` are available
-  and architecture-dependent `@compiler_options` hints are ignored.
-- `bytecode_version`: the Tile IR bytecode version to emit.
+- `bytecode_version`: the Tile IR bytecode version to emit; defaults to
+  [`bytecode_version`](@ref)`()`, i.e. the `bytecode_version` preference or
+  the newest version the selected `tileiras` accepts.
+- `sm_arch`: the target architecture; defaults to the current CUDA device's.
+  Combinations the bytecode does not support are rejected.
 - `opt_level`, `num_ctas`, `occupancy`, `num_worker_warps`: compilation hints
   overriding the kernel's `@compiler_options`.
 - `name`: the kernel's name in the bytecode; defaults to the method's.
@@ -69,27 +67,23 @@ argument types. Keyword arguments configure the compilation:
 function tile_job(mi::MethodInstance, world::UInt;
                   const_argtypes::Union{Tuple, Nothing}=nothing,
                   sm_arch::Union{VersionNumber, Nothing}=nothing,
-                  bytecode_version::VersionNumber=cuTile.bytecode_version(),
+                  bytecode_version::Union{VersionNumber, Nothing}=nothing,
                   opt_level::Union{Int, Nothing}=nothing,
                   num_ctas::Union{Int, Nothing}=nothing,
                   occupancy::Union{Int, Nothing}=nothing,
                   num_worker_warps::Union{Int, Nothing}=nothing,
                   name::Union{String, Nothing}=nothing)
-    sm_arch = @something sm_arch device_sm_arch() Some(nothing)
-    sm_arch === nothing || validate_tile_ir_target(sm_arch, bytecode_version)
+    if sm_arch === nothing
+        CUDACore.functional() || throw(ArgumentError(
+            "No CUDA device to target; pass `sm_arch`"))
+        sm_arch = device_sm_arch()
+    end
+    bytecode_version = @something bytecode_version cuTile.bytecode_version()
+    validate_tile_ir_target(sm_arch, bytecode_version)
     target = TileCompilerTarget(sm_arch, bytecode_version)
     params = TileCompilerParams(opt_level, num_ctas, occupancy, num_worker_warps)
     config = TileConfig(target, params, @something name sanitize_name(string(mi.def.name)))
     return TileJob(mi, const_argtypes, world, config)
-end
-
-# The architecture `tileiras` assembles a job for.
-function target_arch(job::TileJob)
-    sm_arch = job.config.target.sm_arch
-    sm_arch === nothing && throw(ArgumentError(
-        "the job has no target architecture (it was created without a CUDA device); " *
-        "pass `sm_arch` explicitly"))
-    return sm_arch
 end
 
 # The job's const-seeded argument types in CompilerCaching's `Vector{Any}` form.
@@ -116,7 +110,7 @@ function Base.show(io::IO, job::TileJob)
     f, tt = job_signature(job)
     (; target, params, name) = job.config
     print(io, "TileJob(", f, "(", join(tt.parameters, ", "), ")")
-    print(io, "; sm_arch=", something(target.sm_arch, "nothing"),
+    print(io, "; sm_arch=", target.sm_arch,
               ", bytecode_version=v\"", target.bytecode_version, "\"")
     for field in fieldnames(TileCompilerParams)
         hint = getfield(params, field)
@@ -267,8 +261,8 @@ the object cache). Reports the job to the `@device_code_*` hook. Uncached;
 `compile_or_lookup` caches for launches.
 """
 function compile(job::TileJob)
-    sm_arch = target_arch(job)
-    validate_tileiras_target(job.config.target.bytecode_version)
+    (; sm_arch, bytecode_version) = job.config.target
+    validate_tileiras_target(bytecode_version)
     run_compile_hook(job)
     (; bytecode, opt_level) = emit_tile(job)
     dump_bytecode(job.source, bytecode)

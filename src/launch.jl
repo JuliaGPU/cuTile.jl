@@ -729,7 +729,17 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                     occupancy::Union{Int, Nothing}=nothing,
                     num_worker_warps::Union{Int, Nothing}=nothing,
                     name::Union{String, Nothing}=nothing)
-    sm_arch = @something sm_arch default_sm_arch()
+    # `tileiras` generates architecture-specific code (`sm_100a`), so a kernel
+    # only runs on the exact architecture it was compiled for. Reflection may
+    # target other architectures; execution cannot.
+    device_arch = device_sm_arch()
+    if sm_arch === nothing
+        sm_arch = device_arch
+    elseif sm_arch != device_arch
+        throw(ArgumentError(
+            "Cannot execute code compiled for $(format_sm_arch(sm_arch)) on $(device()) " *
+            "(compute capability $device_arch); omit `sm_arch` or pass the device's"))
+    end
 
     # Unwrap Constant arguments for method lookup and seed their values into inference.
     argtypes, const_argtypes = unwrap_argtypes(f, tt)
@@ -913,18 +923,11 @@ function launch(@nospecialize(f), grid, args...;
 end
 
 """
-    default_sm_arch() -> VersionNumber
+    device_sm_arch() -> VersionNumber
 
-Get the compute capability of the current CUDA device as a VersionNumber.
-Returns e.g. `v"12.0"` for compute capability 12.0.
+The compute capability of the current CUDA device, e.g. `v"12.0"`.
 """
-default_sm_arch() = capability(device())
-
-# The compute capability of the current CUDA device, or `nothing` without one.
-function device_sm_arch()
-    CUDACore.functional() && CUDACore.ndevices() > 0 || return nothing
-    return default_sm_arch()
-end
+device_sm_arch() = capability(device())
 
 
 #=============================================================================
