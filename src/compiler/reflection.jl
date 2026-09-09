@@ -80,6 +80,17 @@ function tile_job(@nospecialize(f), @nospecialize(argtypes);
     tile_job(mi, world; const_argtypes, kwargs...)
 end
 
+# The Julia-level stages need only inference: without target keywords, they
+# skip the job (and the toolchain probe behind its default bytecode version).
+function emit_julia(@nospecialize(f), @nospecialize(argtypes); world::UInt)
+    stripped, const_argtypes = process_const_argtypes(f, argtypes)
+    mi = lookup_method_instance(f, stripped; world)
+    cache = inference_cache(world)
+    inferred = const_argtypes === nothing ? infer(cache, mi) :
+                                            infer(cache, mi, collect(Any, const_argtypes))
+    return emit_julia(mi, inferred)
+end
+
 
 #=============================================================================
  Stages
@@ -90,14 +101,19 @@ end
     code_typed(f, argtypes; kwargs...) -> Vector{Pair{IRCode, DataType}}
 
 Return typed code for a cuTile function. Analogous to `Base.code_typed`.
-Keyword arguments are those of [`tile_job`](@ref).
+Keyword arguments are those of [`tile_job`](@ref); without any, no toolchain
+or device is needed.
 """
 function code_typed(job::TileJob)
     ir, rettype = emit_julia(job)
     [ir => rettype]
 end
-code_typed(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
-    code_typed(tile_job(f, argtypes; kwargs...))
+function code_typed(@nospecialize(f), @nospecialize(argtypes);
+                    world::UInt=Base.get_world_counter(), kwargs...)
+    isempty(kwargs) || return code_typed(tile_job(f, argtypes; world, kwargs...))
+    ir, rettype = emit_julia(f, argtypes; world)
+    [ir => rettype]
+end
 
 GPUCompiler.code_typed(job::TileJob) = code_typed(job)
 function GPUCompiler.code_warntype(io::IO, job::TileJob; debuginfo::Symbol=:default)
@@ -112,10 +128,20 @@ end
     code_structured(f, argtypes; optimize=true, kwargs...)
 
 Return the structured IR for a cuTile function, after the optimization passes
-unless `optimize=false`. Keyword arguments are those of [`tile_job`](@ref).
+unless `optimize=false`. Keyword arguments are those of [`tile_job`](@ref);
+without any, no toolchain or device is needed.
 """
 function code_structured(job::TileJob; optimize::Bool=true)
     ir, rettype = emit_julia(job)
+    code_structured(ir, rettype; optimize)
+end
+function code_structured(@nospecialize(f), @nospecialize(argtypes);
+                         world::UInt=Base.get_world_counter(), optimize::Bool=true, kwargs...)
+    isempty(kwargs) || return code_structured(tile_job(f, argtypes; world, kwargs...); optimize)
+    ir, rettype = emit_julia(f, argtypes; world)
+    code_structured(ir, rettype; optimize)
+end
+function code_structured(ir::CC.IRCode, rettype; optimize::Bool=true)
     sci, rettype, _ = emit_structured(ir, rettype)
     if optimize
         sci = copy(sci)
@@ -123,8 +149,6 @@ function code_structured(job::TileJob; optimize::Bool=true)
     end
     [sci => rettype]
 end
-code_structured(@nospecialize(f), @nospecialize(argtypes); optimize::Bool=true, kwargs...) =
-    code_structured(tile_job(f, argtypes; kwargs...); optimize)
 
 """
     code_tiled([io::IO], job::TileJob; debuginfo=false, remarks=false)
