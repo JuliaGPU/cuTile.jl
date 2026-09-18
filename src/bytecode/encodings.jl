@@ -106,9 +106,8 @@ module Opcode
     const InsertOp = 118     # since 13.4
     const GdcLaunchDependentsTkoOp = 119 # since 13.4
     const GdcWaitTkoOp = 120 # since 13.4
-    # 121, 128-129 (Gdc*, Multimem*) not implemented
-    const FPowIOp = 130      # since 13.4
-    # 131 (MemoryFenceAliasTkoOp) not implemented
+    const FPowIOp = 121      # since 13.4 (130 in development toolchains)
+    # 122 (MemoryFenceAliasTkoOp) not implemented
 end
 
 # Enums for operation attributes
@@ -944,7 +943,7 @@ end
     encode_FPowIOp!(cb, result_type, base, exponent) -> Value
 
 Floating-point power with an integer exponent (base^exponent).
-Opcode: 130
+Opcode: 121
 """
 function encode_FPowIOp!(cb::CodeBuilder, result_type::TypeId, base::Value, exponent::Value)
     bytecode_version(cb) >= v"13.4" ||
