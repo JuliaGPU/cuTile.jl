@@ -578,8 +578,8 @@ The first argument is a compile-time constant `TileArray` type. Its
 divisibility / bounds dataflow analyses feed `op_predicates`
 (analysis/assume.jl) at codegen time to derive an `AssumePredicate`
 chain per operand; `wrap_for` consults the per-`Value` cache so each
-source `Value` is wrapped at most once across all consumers, then the
-wrapped operands are fed to `encode_MakeTensorViewOp!`. `sizes` and
+source `Value` is wrapped at most once per region, then the wrapped
+operands are fed to `encode_MakeTensorViewOp!`. `sizes` and
 `strides` are tuples in Julia (column-major) order; they are reversed
 for Tile IR's row-major layout.
 """
@@ -627,8 +627,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     # on demand from the divby/bounds dataflow plus this MTV's spec.
     # `wrap_for` consults `ctx.assume_wrapped` so a `Value` shared
     # with another consumer (e.g. a gather over the same kernel-arg
-    # ptr) — or with this kernel's entry-time slot wrap — is wrapped
-    # exactly once. For tuple-typed sizes/strides we walk back via
+    # ptr) — or with this kernel's entry-time slot wrap — is not
+    # wrapped again within the same region. For tuple-typed
+    # sizes/strides we walk back via
     # `tuple_element_source` to the per-axis source SSA so the
     # dataflow query has the right anchor; when the source is opaque
     # (wholesale `getfield(arg, :sizes)`) `nothing` falls through to
@@ -687,12 +688,15 @@ end
 """
     wrap_for(ctx, value, type_id, preds) -> Value
 
-Apply an `AssumePredicate` chain to a `Value` at most once across all
-consumers. `ctx.assume_wrapped` records the first wrap so subsequent
-consumers of the same source `Value` reuse it instead of emitting a
-parallel `AssumeOp` chain. Empty chain returns the input unchanged.
-Mirrors the role of cuTile Python's `var_map` in
-`_passes/propagate_divby.py::_add_assume_divby`.
+Apply an `AssumePredicate` chain to a `Value`, reusing an earlier wrap
+of the same source `Value` when it is in scope. `ctx.assume_wrapped`
+records each wrap together with the block that emitted it; a consumer
+in that block or one of its descendants reuses it instead of emitting a
+parallel `AssumeOp` chain. A consumer elsewhere (e.g. in a sibling loop)
+cannot see that wrap, so it emits its own. Empty chain returns the
+input unchanged. Mirrors the role of cuTile Python's `var_map` in
+`_passes/propagate_divby.py::_add_assume_divby`, which avoids the
+scoping question by inserting the assume at the value's definition.
 
 Cache invariant: the cache keys on `Value` only, *not* on the chain
 contents. This is sound only when every consumer-derived chain on a
@@ -721,13 +725,31 @@ cache key.
                           preds::Vector{AssumePredicate})
     isempty(preds) && return value
     cached = get(ctx.assume_wrapped, value, nothing)
-    cached !== nothing && return cached
+    if cached !== nothing
+        wrapped, scope = cached
+        encloses(scope, ctx.current_block::Block) && return wrapped
+    end
     wrapped = value
     for p in preds
         wrapped = encode_AssumeOp!(ctx.cb, type_id, wrapped, p)
     end
-    ctx.assume_wrapped[value] = wrapped
+    ctx.assume_wrapped[value] = (wrapped, ctx.current_block::Block)
     return wrapped
+end
+
+"""
+    encloses(scope::Block, block::Block) -> Bool
+
+Whether a value emitted while `scope` was the current block is visible from
+`block`, i.e. `scope` is `block` or one of its ancestors.
+"""
+function encloses(scope::Block, block::Block)
+    p = block
+    while p isa Block
+        p === scope && return true
+        p = p.parent
+    end
+    return false
 end
 
 """

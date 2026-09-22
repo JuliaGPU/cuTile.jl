@@ -221,13 +221,15 @@ Wrap each `TileArray`-derived flat kernel-arg `Value` in `arg_values`
 with the `AssumeOp` chain its `ArraySpec` implies. Mutates `arg_values`
 in place. The slot path (`[1]` is `ptr`, `[2, i]` is `sizes[i]`,
 `[3, i]` is `strides[i]`) maps to a chain via `arg_chain` (analysis/
-assume.jl).
+assume.jl). Slots of a `TileArray` nested in a tuple or struct argument
+are wrapped too, using the path relative to that array.
 
 After wrapping, the `wrapped` `Value` is recorded as a fixed point in
 `ctx.assume_wrapped`: a consumer-side `wrap_for(ctx, wrapped, ...)`
 hits the cache and returns `wrapped` unchanged, so a kernel-arg ptr
 consumed by both an MTV and a gather is wrapped *exactly once* across
-the kernel.
+the kernel. The entry block is recorded as the wrap's scope, which
+encloses every region.
 """
 function apply_arg_assume_predicates!(ctx::CGCtx, arg_values::Vector{Value},
                                        param_mapping::Vector{Tuple{Int, Vector{Int}}},
@@ -237,9 +239,17 @@ function apply_arg_assume_predicates!(ctx::CGCtx, arg_values::Vector{Value},
         arg_idx, path = param_mapping[param_idx]
         # Trailing `KernelState` arg has no Julia argtype entry.
         arg_idx > length(sci.argtypes) && continue
+        # Descend through tuple and struct fields to the TileArray that owns
+        # this slot, so arrays passed inside a tuple are wrapped at entry
+        # like top-level ones.
         argT = CC.widenconst(sci.argtypes[arg_idx])
+        depth = 0
+        while !(argT <: TileArray) && depth < length(path)
+            depth += 1
+            argT = fieldtype(argT, path[depth])
+        end
         argT <: TileArray || continue
-        chain = arg_chain(argT, path)
+        chain = arg_chain(argT, path[depth+1:end])
         isempty(chain) && continue
         original = arg_values[param_idx]
         wrapped = original
@@ -249,7 +259,7 @@ function apply_arg_assume_predicates!(ctx::CGCtx, arg_values::Vector{Value},
         arg_values[param_idx] = wrapped
         # Mark the wrapped `Value` as a fixed point so subsequent
         # consumer wraps don't re-emit the same predicates.
-        ctx.assume_wrapped[wrapped] = wrapped
+        ctx.assume_wrapped[wrapped] = (wrapped, sci.entry)
     end
 end
 

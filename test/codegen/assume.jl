@@ -212,6 +212,58 @@ end
     end
 end
 
+@testset "assume — TileArray inside a tuple argument is wrapped at entry" begin
+    # A tuple argument is destructured into flat slots; the TileArray fields
+    # inside it get the same entry wrap as a top-level TileArray, before any
+    # region that consumes them.
+    spec1d = ct.ArraySpec{1}(128, true)
+    TA = ct.TileArray{Float32,1,Int32,spec1d}
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{Tuple{TA, TA}, Int32}) do arrays, n
+            for i in Int32(1):n
+                ct.store(arrays[1], i, ct.load(arrays[2], i, (16,)))
+            end
+            return
+        end
+        # Both wraps precede the first region (the loop guard).
+        @check "assume div_by<128>"
+        @check "assume div_by<128>"
+        @check "make_token"
+        @check_not "assume div_by<128>"
+    end
+end
+
+@testset "assume — a wrap is not reused outside its region" begin
+    # The first consumer of a Value may sit inside a nested region. A consumer
+    # in a sibling region must not reference that region's wrap, which is out
+    # of scope there; it re-wraps instead.
+    spec1d = ct.ArraySpec{1}(128, true)
+    TA = ct.TileArray{Float32,1,Int32,spec1d}
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{TA, TA, Int32}) do a, b, n
+            sub = @view a[Int32(17):Int32(1040)]
+            total = zeros(Float32, (16,))
+            for i in Int32(1):n
+                total = total .+ ct.load(sub, i, (16,))
+            end
+            for i in Int32(1):n
+                ct.store(b, i, ct.load(sub, i, (16,)) .+ total)
+            end
+            return
+        end
+        # Each loop sits in its own guarded region; the second must emit its
+        # own wrap of the offset pointer rather than reuse the first one's.
+        @check "assume div_by<64>"
+        @check "make_tensor_view"
+        @check "for"
+        @check "assume div_by<64>"
+        @check "make_tensor_view"
+        @check "for"
+    end
+end
+
 @testset "assume — user assume_divisible_by" begin
     spec1d = ct.ArraySpec{1}(16, true)
     @test @filecheck begin
