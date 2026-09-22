@@ -15,7 +15,7 @@
 # bytecode emission time and the per-`Value` cache on `CGCtx`
 # (`assume_wrapped`) plays the role of `var_map`, ensuring a `Value`
 # reused across consumers — e.g. a kernel-arg pointer threaded through
-# both an MTV and a gather — is wrapped exactly once.
+# both an MTV and a gather — is wrapped once per region.
 #
 # Pure analysis: does not mutate the SCI.
 

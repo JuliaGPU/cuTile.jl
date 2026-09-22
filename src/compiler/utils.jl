@@ -340,12 +340,13 @@ mutable struct CGCtx
     divby_info::Any
     bounds_info::Any
 
-    # Per-`Value` `AssumeOp` wrap cache. The first consumer that wraps a
-    # given `Value` records the result here; subsequent consumers reuse
-    # it instead of emitting a parallel `AssumeOp` chain. Mirrors cuTile
-    # Python's `var_map` dedup in `_passes/propagate_divby.py`. Reset
-    # per kernel by `CGCtx`'s constructor.
-    assume_wrapped::Dict{Value, Value}
+    # Per-`Value` `AssumeOp` wrap cache. A consumer that wraps a given
+    # `Value` records the result here, with the block it was emitted in;
+    # later consumers in that block or its descendants reuse it instead
+    # of emitting a parallel `AssumeOp` chain. Mirrors cuTile Python's
+    # `var_map` dedup in `_passes/propagate_divby.py`. Reset per kernel
+    # by `CGCtx`'s constructor.
+    assume_wrapped::Dict{Value, Tuple{Value, Block}}
 
     # Block currently being emitted. Set by `emit_block!` per region so
     # `tuple_element_source` and other parent-walking queries can start
@@ -400,7 +401,7 @@ function CGCtx(; cb::CodeBuilder, sci::StructuredIRCode,
         linkage_name,
         nothing,                         # divby_info  — set by run_passes!
         nothing,                         # bounds_info — set by run_passes!
-        Dict{Value, Value}(),            # assume_wrapped
+        Dict{Value, Tuple{Value, Block}}(),  # assume_wrapped
         nothing,                         # current_block — set by emit_block!
         false,                           # recorded_coverage — set by record_coverage!
         CodegenError[],                  # errors, accumulated by record_error!

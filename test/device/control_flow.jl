@@ -218,3 +218,51 @@ end
 
     @test all(Array(out) .≈ 2.0f0)
 end
+
+@testset "tuple argument consumed by two loops" begin
+    # Two sweeps over the same array passed inside a tuple; the second loop
+    # used to reference an AssumeOp emitted inside the first loop's body.
+    function center_columns(arrays, blocks::Int32)
+        column = ct.bid(1)
+        total = zeros(Float32, (16, 1))
+        for block in Int32(1):blocks
+            total = total .+ ct.load(arrays[2], (block, column), (16, 1))
+        end
+        mean = sum(total) / Float32(16 * blocks)
+        for block in Int32(1):blocks
+            values = ct.load(arrays[2], (block, column), (16, 1))
+            ct.store(arrays[1], (block, column), values .- mean)
+        end
+        return
+    end
+
+    input = CUDA.rand(Float32, 64, 8)
+    output = CUDA.zeros(Float32, 64, 8)
+    @cuda backend=cuTile blocks=8 center_columns((output, input), Int32(4))
+    host = Array(input)
+    @test Array(output) ≈ host .- sum(host; dims = 1) ./ 64
+end
+
+@testset "view consumed by two loops" begin
+    # The view's offset pointer is not a kernel argument, so it is wrapped by
+    # its first consumer, inside the first loop's region. The second loop must
+    # emit its own wrap rather than reference that one.
+    function shift_add(a, b, n::Int32)
+        sub = @view a[Int32(17):Int32(1040)]
+        total = zeros(Float32, (16,))
+        for i in Int32(1):n
+            total = total .+ ct.load(sub, i, (16,))
+        end
+        for i in Int32(1):n
+            ct.store(b, i, ct.load(sub, i, (16,)) .+ total)
+        end
+        return
+    end
+
+    a = CUDA.rand(Float32, 2048)
+    b = CUDA.zeros(Float32, 64)
+    @cuda backend=cuTile blocks=1 shift_add(a, b, Int32(4))
+    host = Array(a)
+    sums = vec(sum(reshape(host[17:80], 16, 4); dims = 2))
+    @test Array(b) ≈ host[17:80] .+ repeat(sums, 4)
+end
