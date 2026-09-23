@@ -1113,6 +1113,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     (cond_tv === nothing || x_tv === nothing || y_tv === nothing) &&
         throw(IRError("Cannot resolve operands for select()"))
 
+    # Broadcast mismatched shapes (e.g., `ifelse(v > 0, v, 0f0)` inside a
+    # broadcast function, where the literal is 0-D)
+    cond_tv, x_tv, y_tv = broadcast_match_shapes!(cb, ctx.tt, cond_tv, x_tv, y_tv)
+
     result = encode_SelectOp!(cb, x_tv.type_id, cond_tv.v, x_tv.v, y_tv.v)
 
     CGVal(result, x_tv.type_id, x_tv.jltype, x_tv.shape)

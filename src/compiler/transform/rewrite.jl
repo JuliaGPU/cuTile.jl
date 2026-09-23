@@ -372,15 +372,21 @@ function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, roo
     # argument) — correct for element-wise ops (addi, subi, negf, etc.) whose
     # result type matches their operands. Kernel arguments still have their
     # source-level scalar type, so promote them to the canonical 0-D tile type.
-    # Literal operands are skipped: their scalar type is not necessarily the
-    # tile result type. Falls back to root_typ when no value operand is available.
-    typ = root_typ
+    # Literal operands are skipped: they are 0-D, while the other operands may
+    # be shaped. Only when all operands are literals (e.g. `negf(1.0f0)` from
+    # FMA fusion with a constant addend) is the result a 0-D tile of the
+    # literal's type. Falls back to root_typ when no operand determines the type.
+    typ = nothing
     for o in operands
         is_trackable_value(o) || continue
         t = value_type(block, o)
         t === nothing && continue
         typ = boundary_jltype(CC.widenconst(t))
         break
+    end
+    if typ === nothing
+        i = findfirst(o -> o isa Number, operands)
+        typ = i === nothing ? root_typ : boundary_jltype(typeof(operands[i]))
     end
     inst = insert_before!(driver.rewriter, block, ref, Expr(:call, op.func, operands...), typ;
                           flag=inferred_flags(op.func))

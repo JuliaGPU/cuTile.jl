@@ -118,6 +118,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
 
     (a === nothing || b === nothing || c === nothing) && throw(IRError("Cannot resolve operands for fma"))
 
+    # Broadcast mismatched shapes (e.g., FMA fusion of `1 + 3v * v` inside a
+    # broadcast function, where the literal addend is 0-D)
+    a, b, c = broadcast_match_shapes!(cb, ctx.tt, a, b, c)
+
     result_v = encode_FmaOp!(cb, a.type_id, a.v, b.v, c.v; fpmode_kwargs(ctx)...)
 
     CGVal(result_v, a.type_id, a.jltype, a.shape)
