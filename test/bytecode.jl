@@ -75,6 +75,16 @@ end
         make_builder(v"13.3"), cuTile.TypeId(1))
     @test_throws "requires Tile IR v13.4+" cuTile.encode_GdcWaitTkoOp!(
         make_builder(v"13.3"), cuTile.TypeId(1))
+
+    # Released 13.4 uses opcode 121; the development encoding used 130.
+    cb = make_builder(v"13.4")
+    @test cuTile.encode_FPowIOp!(cb, cuTile.TypeId(1), cuTile.Value(2),
+                               cuTile.Value(3)) == cuTile.Value(0)
+    @test cb.buf == UInt8[121, 1, 2, 3]
+    for version in (v"13.1", v"13.2", v"13.3")
+        @test_throws "requires Tile IR v13.4+" cuTile.encode_FPowIOp!(
+            make_builder(version), cuTile.TypeId(1), cuTile.Value(2), cuTile.Value(3))
+    end
 end
 
 @testset "Tile IR v13.3 StridedView encodings" begin
