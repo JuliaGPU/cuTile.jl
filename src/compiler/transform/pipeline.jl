@@ -259,16 +259,17 @@ const NORMALIZATION_RULES = RewriteRule[
 =============================================================================#
 
 """
-    run_passes!(sci::StructuredIRCode) -> (DivByInfo, BoundsInfo)
+    run_passes!(sci::StructuredIRCode; alias_groups=()) -> (DivByInfo, BoundsInfo)
 
 Run the full pass pipeline on a StructuredIRCode. Called for both
-kernel and subprogram compilation. Returns the divisibility / bounds
+kernel and subprogram compilation. `alias_groups` lists the kernel arrays the
+launch found overlapping; see `AliasGroups`. Returns the divisibility / bounds
 dataflow results; the caller stores them on the `CGCtx` so consumer-op
 codegen (`make_tensor_view`, `load_ptr_tko`, `store_ptr_tko`) can
 derive per-operand `AssumePredicate` chains on demand via
 `op_predicates` (analysis/assume.jl).
 """
-function run_passes!(sci::StructuredIRCode)
+function run_passes!(sci::StructuredIRCode; alias_groups::AliasGroups=())
     lower_throws!(sci)
     resolve_boundscheck!(sci)
     canonicalize!(sci)
@@ -292,7 +293,7 @@ function run_passes!(sci::StructuredIRCode)
     # benefit from most.
     cse_pass!(sci)
 
-    alias_info = analyze_aliases(sci)
+    alias_info = analyze_aliases(sci; alias_groups)
 
     token_order_pass!(sci, alias_info)
 

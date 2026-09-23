@@ -21,10 +21,17 @@ struct TileCompilerParams
 end
 
 # Compilation results are keyed by config within each inference result.
+# Kernel arrays that may share memory, found by the launch-time overlap check.
+# Each group lists `(argument index, field path)` leaves, with argument index 2
+# the first kernel argument (index 1 is the function), as `Argument(i)` numbers
+# them. The empty tuple, the common case, lets every array get its own class.
+const AliasGroups = Tuple{Vararg{Tuple{Vararg{Tuple{Int, Tuple{Vararg{Int}}}}}}}
+
 struct TileConfig
     target::TileCompilerTarget
     params::TileCompilerParams
     name::String
+    alias_groups::AliasGroups
 end
 
 """
@@ -63,6 +70,9 @@ argument types. Keyword arguments configure the compilation:
 - `opt_level`, `num_ctas`, `occupancy`, `num_worker_warps`: compilation hints
   overriding the kernel's `@compiler_options`.
 - `name`: the kernel's name in the bytecode; defaults to the method's.
+- `alias_groups`: groups of kernel arrays that may overlap in memory, as
+  `(argument index, field path)` leaves; see `alias_groups`. Launches
+  compute this; arrays outside every group are assumed not to overlap.
 """
 function tile_job(mi::MethodInstance, world::UInt;
                   const_argtypes::Union{Tuple, Nothing}=nothing,
@@ -72,7 +82,8 @@ function tile_job(mi::MethodInstance, world::UInt;
                   num_ctas::Union{Int, Nothing}=nothing,
                   occupancy::Union{Int, Nothing}=nothing,
                   num_worker_warps::Union{Int, Nothing}=nothing,
-                  name::Union{String, Nothing}=nothing)
+                  name::Union{String, Nothing}=nothing,
+                  alias_groups::AliasGroups=())
     if sm_arch === nothing
         CUDACore.functional() || throw(ArgumentError(
             "No CUDA device to target; pass `sm_arch`"))
@@ -82,7 +93,8 @@ function tile_job(mi::MethodInstance, world::UInt;
     validate_tile_ir_target(sm_arch, bytecode_version)
     target = TileCompilerTarget(sm_arch, bytecode_version)
     params = TileCompilerParams(opt_level, num_ctas, occupancy, num_worker_warps)
-    config = TileConfig(target, params, @something name sanitize_name(string(mi.def.name)))
+    config = TileConfig(target, params, @something(name, sanitize_name(string(mi.def.name))),
+                        alias_groups)
     return TileJob(mi, const_argtypes, world, config)
 end
 
@@ -117,6 +129,7 @@ function Base.show(io::IO, job::TileJob)
         hint === nothing || print(io, ", ", field, "=", hint)
     end
     name == sanitize_name(string(job.source.def.name)) || print(io, ", name=", repr(name))
+    isempty(job.config.alias_groups) || print(io, ", alias_groups=", job.config.alias_groups)
     print(io, ")")
 end
 
@@ -242,7 +255,8 @@ function emit_tile(job::TileJob, sci::StructuredIRCode, rettype, kernel_meta::Di
         emit_kernel!(writer, func_buf, sci, rettype;
                      name, sm_arch=target.sm_arch, num_ctas, occupancy, num_worker_warps,
                      cache=inference_cache(job),
-                     const_argtypes=const_argtypes_vector(job))
+                     const_argtypes=const_argtypes_vector(job),
+                     alias_groups=job.config.alias_groups)
     end
     return (; bytecode, opt_level)
 end

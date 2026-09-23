@@ -19,7 +19,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       occupancy::Union{Int, Nothing} = nothing,
                       num_worker_warps::Union{Int, Nothing} = nothing,
                       cache::CacheView,
-                      const_argtypes::Union{Vector{Any}, Nothing} = nothing)
+                      const_argtypes::Union{Vector{Any}, Nothing} = nothing,
+                      alias_groups::AliasGroups = ())
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
 
@@ -117,7 +118,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
 
     # Run the pass pipeline (normalize, optimize, token ordering, DCE).
     # Returns the dataflow results consumed at consumer codegen sites.
-    ctx.divby_info, ctx.bounds_info = run_passes!(sci)
+    ctx.divby_info, ctx.bounds_info = run_passes!(sci; alias_groups)
 
     # Wrap each TileArray-derived flat kernel-arg `Value` with the
     # `AssumeOp` chain its `ArraySpec` justifies, *before* any consumer

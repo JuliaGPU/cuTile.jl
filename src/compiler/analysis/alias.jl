@@ -1,10 +1,12 @@
 # Alias Analysis Pass
 #
 # Forward dataflow over StructuredIRCode that determines which SSA values may
-# point into the same allocation. Each pointer-carrying kernel argument starts
-# in its own alias set; the analysis propagates those sets through getfield
-# (for TileArray.ptr access), pointer arithmetic, view constructors, and
-# pointer passthroughs.
+# point into the same allocation. Each array argument starts in its own alias
+# set; the analysis propagates those sets through getfield (for TileArray.ptr
+# access), pointer arithmetic, view constructors, and pointer passthroughs.
+# This is only sound for arrays that do not overlap, so the launch checks them
+# (`overlap_labels`) and arrays that overlap share one set (`AliasGroup`). Raw
+# pointer arguments cannot be checked and start in the universe set.
 #
 # Unknown operations conservatively produce ALIAS_UNIVERSE (may alias anything).
 #
@@ -32,13 +34,40 @@ const AliasElement = Union{Nothing, AliasSet}
     AliasAnalysis
 
 Forward sparse dataflow analysis whose lattice element is `AliasElement`.
-Concrete `Set{Any}`s carry root alias tags (`Argument(i)`); `ALIAS_UNIVERSE`
-is the top. Join is set union; `ALIAS_UNIVERSE ∪ x = ALIAS_UNIVERSE`.
+Concrete `Set{Any}`s carry root alias tags (`Argument(i)` or `AliasGroup`);
+`ALIAS_UNIVERSE` is the top. Join is set union; `ALIAS_UNIVERSE ∪ x = ALIAS_UNIVERSE`.
 
 The framework handles block walking, fixpoint iteration, and structured-
 control-flow merges — this file only supplies the per-op transfer rules.
 """
-struct AliasAnalysis <: ForwardAnalysis{AliasElement} end
+struct AliasAnalysis <: ForwardAnalysis{AliasElement}
+    # The group tag of each `(argument index, field path)` array that the
+    # launch found overlapping another.
+    groups::Dict{Tuple{Int, Tuple{Vararg{Int}}}, Any}
+end
+
+"""
+    AliasGroup(id)
+
+Root alias tag shared by the kernel arrays in launch-time overlap group `id`
+(see `AliasGroups`), so accesses through any of them stay ordered.
+"""
+struct AliasGroup
+    id::Int
+end
+
+function AliasAnalysis(alias_groups::AliasGroups=())
+    groups = Dict{Tuple{Int, Tuple{Vararg{Int}}}, Any}()
+    for (id, group) in enumerate(alias_groups), leaf in group
+        groups[leaf] = AliasGroup(id)
+    end
+    return AliasAnalysis(groups)
+end
+
+# The tag of the value at `path` in argument `n`: its overlap group's, if any.
+# Only whole arguments (the empty path) have tags of their own; values inside
+# tuple and struct arguments are in the universe set.
+root_tag(a::AliasAnalysis, n::Int, path::Tuple{Vararg{Int}}) = get(a.groups, (n, path), Argument(n))
 
 bottom(::AliasAnalysis) = nothing
 top(::AliasAnalysis) = ALIAS_UNIVERSE
@@ -48,11 +77,13 @@ tmerge(::AliasAnalysis, ::Nothing, b::AliasSet) = b
 tmerge(::AliasAnalysis, a::AliasSet, ::Nothing) = a
 tmerge(::AliasAnalysis, a::AliasSet, b::AliasSet) = union(a, b)
 
-function init_arg(::AliasAnalysis, i::Int, @nospecialize(argtype))
+function init_arg(a::AliasAnalysis, i::Int, @nospecialize(argtype))
     T = CC.widenconst(argtype)
-    contains_pointers(T) || return nothing
-    arg = Argument(i)
-    Set{Any}([arg])
+    # Only arrays get alias sets of their own, since only arrays are checked
+    # for overlap at launch; a raw pointer may point anywhere.
+    T <: TileArray && return Set{Any}([root_tag(a, i, ())])
+    contains_pointers(T) && return ALIAS_UNIVERSE
+    return nothing
 end
 
 function transfer(a::AliasAnalysis, r::DataflowResult, @nospecialize(func),
@@ -127,11 +158,13 @@ implementation detail.
 const AliasInfo = DataflowResult{AliasAnalysis, AliasElement}
 
 """
-    analyze_aliases(sci::StructuredIRCode) -> AliasInfo
+    analyze_aliases(sci::StructuredIRCode; alias_groups=()) -> AliasInfo
 
-Run forward alias analysis on `sci`.
+Run forward alias analysis on `sci`. Arrays listed together in `alias_groups`
+share an alias set.
 """
-analyze_aliases(sci::StructuredIRCode) = analyze(AliasAnalysis(), sci)::AliasInfo
+analyze_aliases(sci::StructuredIRCode; alias_groups::AliasGroups=()) =
+    analyze(AliasAnalysis(alias_groups), sci)::AliasInfo
 
 """
     alias_class(info::AliasInfo, op) -> AliasSet

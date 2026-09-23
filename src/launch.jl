@@ -706,12 +706,20 @@ target of `(::TileKernel)(args...; blocks, …)` calls. Concrete subtype of
 struct TileKernel{F, TT} <: AbstractKernel{F, TT}
     f::F
     fun::CuFunction
+    # The `cufunction` options `fun` was compiled with, and the overlap labels
+    # (see `overlap_labels`) of the alias groups among them.
+    opts::NamedTuple
+    labels::Vector{Int}
 end
+
+TileKernel{F, TT}(f, fun::CuFunction, opts::NamedTuple) where {F, TT} =
+    TileKernel{F, TT}(f, fun, opts,
+                      groups_to_labels(opts.alias_groups, array_leaves(TT.parameters)))
 
 """
     cuTile.cufunction(f, tt=Tuple{}; sm_arch=nothing, opt_level=nothing,
                       num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing,
-                      name=nothing) -> TileKernel
+                      name=nothing, alias_groups=()) -> TileKernel
 
 Compile `f` for the cuTile backend. `tt` is the tuple of *converted*
 argument types (i.e. after `cuTileconvert`/`Adapt.adapt(KernelAdaptor(), …)`).
@@ -728,7 +736,8 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
                     num_worker_warps::Union{Int, Nothing}=nothing,
-                    name::Union{String, Nothing}=nothing)
+                    name::Union{String, Nothing}=nothing,
+                    alias_groups::AliasGroups=())
     # `tileiras` generates architecture-specific code (`sm_100a`), so a kernel
     # only runs on the exact architecture it was compiled for. Reflection may
     # target other architectures; execution cannot.
@@ -748,7 +757,7 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # invalidated by any package that defines methods on Base.Compiler hooks
     # like `OptimizationParams(::AbstractInterpreter)`. To reuse precompiled
     # native code, run the pipeline in the world captured at __init__.
-    opts = (; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name)
+    opts = (; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name, alias_groups)
     invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, opts)::TileKernel{Core.Typeof(f), tt}
 end
 
@@ -780,7 +789,7 @@ function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(a
     ctx = context()
     cached_kernel = Base.@lock job_results_lock find_kernel(res, ctx)
     cached_kernel === nothing || return cached_kernel::TileKernel{Core.Typeof(f), tt}
-    kernel = TileKernel{Core.Typeof(f), tt}(f, link(job, res))
+    kernel = TileKernel{Core.Typeof(f), tt}(f, link(job, res), opts)
     # don't cache session-local handles while generating output: the results struct
     # is serialized into the package image along with its inference result.
     if ccall(:jl_generating_output, Cint, ()) != 1
@@ -850,7 +859,12 @@ end
     push!(arg_exprs, :(state.seed))
     push!(type_exprs, UInt32)
 
+    leaves = Tuple(array_leaves(args))
     quote
+        # The kernel assumes the overlap pattern it was compiled for; another
+        # one (from a `launch=false` kernel or a rebound call) needs a variant.
+        labels = overlap_labels(args...)
+        fun = same_labels(k.labels, labels) ? k.fun : variant_function(k, labels, $leaves)
         state = KernelState()
         grid_dims = blocks isa Integer ? (blocks,) : blocks
         for (i, dim) in enumerate(grid_dims)
@@ -861,11 +875,175 @@ end
         end
         # Note: threads=1 lets the driver use the cubin's EIATTR_REQNTID metadata
         # which specifies the actual thread count (typically 128 for Tile kernels).
-        cudacall(k.fun, Tuple{$(type_exprs...)}, $(arg_exprs...);
+        cudacall(fun, Tuple{$(type_exprs...)}, $(arg_exprs...);
                  blocks=grid_dims, threads, kwargs...)
         return nothing
     end
 end
+
+
+#=============================================================================
+ Launch-time overlap detection
+
+ Alias analysis gives every kernel array its own alias class, which lets
+ accesses to different arrays reorder. That is only sound when the arrays do
+ not overlap in memory, so each launch checks the arrays it passes. Arrays that
+ overlap are listed in `alias_groups`, a compile setting: a kernel is compiled
+ per overlap pattern, and the common pattern, none, costs a few comparisons.
+=============================================================================#
+
+# `(argument index, field path)` of each TileArray in arguments of types `TT`,
+# in flattening order. Argument index 2 is the first argument (1 is the kernel
+# function), matching `Argument(i)` in the kernel's IR.
+function array_leaves(TT)
+    leaves = Tuple{Int, Tuple{Vararg{Int}}}[]
+    for (i, T) in enumerate(TT)
+        collect_array_leaves!(leaves, T, i + 1, ())
+    end
+    return leaves
+end
+
+function collect_array_leaves!(leaves, @nospecialize(T), n::Int, path::Tuple{Vararg{Int}})
+    if T <: TileArray
+        push!(leaves, (n, path))
+    elseif !is_ghost_type(T) && !isprimitivetype(T) && isstructtype(T)
+        for i in 1:fieldcount(T)
+            collect_array_leaves!(leaves, fieldtype(T, i), n, (path..., i))
+        end
+    end
+    return leaves
+end
+
+# Byte range `[lo, hi)` an array can access; empty (`lo >= hi`) for an empty array.
+@inline function memory_range(arr::TileArray{T, N}) where {T, N}
+    lo = hi = reinterpret(Int, arr.ptr)
+    for d in 1:N
+        n = Int(arr.sizes[d])
+        n == 0 && return (0, 0)
+        extent = (n - 1) * Int(arr.strides[d]) * sizeof(T)
+        extent < 0 ? (lo += extent) : (hi += extent)
+    end
+    return (lo, hi + sizeof(T))
+end
+
+@inline overlaps(a::Tuple{Int, Int}, b::Tuple{Int, Int}) =
+    a[1] < a[2] && b[1] < b[2] && a[1] < b[2] && b[1] < a[2]
+
+@inline function any_overlap(ranges::NTuple{N, Tuple{Int, Int}}) where {N}
+    for i in 1:N, j in i+1:N
+        overlaps(ranges[i], ranges[j]) && return true
+    end
+    return false
+end
+
+# Label each range with the smallest index in its overlap component, or 0 when
+# it overlaps no other range. Tuples only, so a launch allocates nothing.
+@inline function component_labels(ranges::NTuple{L, Tuple{Int, Int}}) where {L}
+    labels = ntuple(identity, Val(L))
+    changed = true
+    while changed
+        changed = false
+        for i in 1:L, j in i+1:L
+            if labels[i] != labels[j] && overlaps(ranges[i], ranges[j])
+                m = min(labels[i], labels[j])
+                labels = Base.setindex(Base.setindex(labels, m, i), m, j)
+                changed = true
+            end
+        end
+    end
+    return drop_singletons(labels)
+end
+
+# Zero the labels no other range shares.
+@inline drop_singletons(labels::NTuple{L, Int}) where {L} =
+    ntuple(i -> shares_label(labels, i) ? labels[i] : 0, Val(L))
+
+@inline function shares_label(labels::NTuple{L, Int}, i::Int) where {L}
+    for j in 1:L
+        j != i && labels[j] == labels[i] && return true
+    end
+    return false
+end
+
+"""
+    overlap_labels(args...) -> NTuple{L, Int}
+
+For each of the `L` TileArrays in converted kernel arguments `args` (see
+`array_leaves`), 0 when its memory overlaps no other array's, and otherwise the
+index of the first array in its overlap group. Computed on every launch, so it
+allocates nothing. Ranges are conservative: arrays that interleave without
+sharing an element still count as overlapping.
+"""
+@generated function overlap_labels(args::Vararg{Any, N}) where {N}
+    leaves = array_leaves(args)
+    none = ntuple(_ -> 0, length(leaves))
+    length(leaves) < 2 && return :($none)
+    ranges = map(leaves) do (n, path)
+        ex = :(args[$(n - 1)])
+        for i in path
+            ex = :(getfield($ex, $i))
+        end
+        :(memory_range($ex))
+    end
+    quote
+        ranges = ($(ranges...),)
+        any_overlap(ranges) || return $none
+        return component_labels(ranges)
+    end
+end
+
+# The groups that `labels` describe for arrays at `leaves`: each group lists the
+# leaves sharing a nonzero label, in leaf order, and groups are ordered by
+# their first leaf. A canonical form, so equal patterns share a compiled kernel.
+function labels_to_groups(labels::Tuple{Vararg{Int}}, leaves)
+    all(iszero, labels) && return ()
+    groups = Tuple{Vararg{Tuple{Int, Tuple{Vararg{Int}}}}}[]
+    for g in sort!(unique!(filter(!iszero, collect(labels))))
+        push!(groups, Tuple(leaves[i] for i in eachindex(labels) if labels[i] == g))
+    end
+    return Tuple(groups)::AliasGroups
+end
+
+function groups_to_labels(groups::AliasGroups, leaves)
+    labels = zeros(Int, length(leaves))
+    for group in groups
+        members = [findfirst(==(leaf), leaves) for leaf in group]
+        any(isnothing, members) && throw(ArgumentError("alias group $group names no array argument"))
+        labels[members] .= minimum(members)
+    end
+    return labels
+end
+
+"""
+    alias_groups(args...) -> AliasGroups
+
+Groups of the TileArrays in converted kernel arguments `args` whose memory
+ranges overlap, as `(argument index, field path)` leaves; `()` when none do.
+"""
+@generated function alias_groups(args::Vararg{Any, N}) where {N}
+    leaves = Tuple(array_leaves(args))
+    :(labels_to_groups(overlap_labels(args...), $leaves))
+end
+
+@inline function same_labels(a::Vector{Int}, b::Tuple{Vararg{Int}})
+    length(a) == length(b) || return false
+    for i in eachindex(a)
+        @inbounds a[i] == b[i] || return false
+    end
+    return true
+end
+
+# The function of `k` compiled for launch arguments whose arrays, at `leaves`,
+# carry overlap `labels`. Compilation is cached, so this costs a cache lookup.
+@noinline variant_function(k::TileKernel{F, TT}, labels::Tuple{Vararg{Int}},
+                           leaves) where {F, TT} =
+    cufunction(k.f, TT; k.opts..., alias_groups=labels_to_groups(labels, leaves)).fun
+
+# `@cuda` compiles from the converted arguments' types, so compile for their
+# overlap pattern here rather than for disjoint arrays and then a variant.
+CUDACore.kernel_compile(call::CUDACore.KernelCall{TileBackend}; kwargs...) =
+    kernel_compile(call.backend, call.f, Tuple{map(Core.Typeof, call.arguments)...};
+                   kwargs..., alias_groups=alias_groups(call.arguments...))
 
 
 #=============================================================================
@@ -917,7 +1095,8 @@ function launch(@nospecialize(f), grid, args...;
                 name::Union{String, Nothing}=nothing)
     converted = map(cuTileconvert, args)
     tt = Tuple{map(Core.Typeof, converted)...}
-    kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name)
+    kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name,
+                        alias_groups=alias_groups(converted...))
     kernel(converted...; blocks=grid, dependent, stream)
     return nothing
 end
