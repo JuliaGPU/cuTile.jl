@@ -153,6 +153,86 @@ end
     end
 end
 
+struct ArrayPair{A,B}
+    src::A
+    dst::B
+end
+
+@testset "token_order — arrays in a tuple argument get their own alias sets" begin
+    # Loads through a tuple argument must not order the store to another
+    # argument: no token is carried through the loop or joined for the store.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[TOK:%.+]] = make_token"
+        @check_not "join_tokens"
+        @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{Tuple{AT, AT}, AT, Int32}) do xs, out, n
+            acc = zeros(Float32, (16,))
+            for i in 1:n
+                acc = acc .+ ct.load(xs[1], i, (16,)) .+ ct.load(xs[2], i, (16,))
+            end
+            ct.store(out, 1, acc)
+            return
+        end
+    end
+end
+
+mutable struct MutableArrayPair{A,B}
+    src::A
+    dst::B
+end
+
+@testset "token_order — arrays in a mutable struct argument get their own alias sets" begin
+    # The launch checks arrays inside any struct, mutable or not.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[TOK:%.+]] = make_token"
+        @check_not "join_tokens"
+        @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{MutableArrayPair{AT, AT}, AT, Int32}) do p, out, n
+            acc = zeros(Float32, (16,))
+            for i in 1:n
+                acc = acc .+ ct.load(p.src, i, (16,)) .+ ct.load(p.dst, i, (16,))
+            end
+            ct.store(out, 1, acc)
+            return
+        end
+    end
+end
+
+@testset "token_order — nested struct field store is loop-parallel" begin
+    # The stored array sits at a nested field path; its spec still proves it
+    # cannot alias internally, so the store consumes the pre-loop token.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[TOK:%.+]] = make_token"
+        @check_not "iter_values"
+        @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{ArrayPair{AT, Tuple{AT}}, Int32}) do p, n
+            for i in 1:n
+                t = ct.load(p.src, i, (16,))
+                ct.store(p.dst[1], i, t + t)
+            end
+            return
+        end
+    end
+end
+
+@testset "token_order — accesses to one struct field stay ordered" begin
+    # A load from the field a preceding store wrote must wait for that store.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[ST:%.+]] = store_view_tko"
+        @check "[[JOIN:%.+]] = join_tokens [[ST]]"
+        @check "load_view_tko{{.*}}token = [[JOIN]] :"
+        code_tiled(Tuple{ArrayPair{AT, AT}}) do p
+            ct.store(p.src, 1, ct.load(p.dst, 1, (16,)))
+            ct.store(p.dst, 2, ct.load(p.src, 1, (16,)))
+            return
+        end
+    end
+end
+
 @testset "token_order — overlapping arrays share an alias set" begin
     # With `a` and `b` in one launch-time overlap group, the load and store
     # are two operations on one alias set: the store waits for the load and
@@ -184,6 +264,30 @@ end
         @check "[[JOIN:%[0-9]+]] = join_tokens [[ST]]"
         @check "load_view_tko{{.*}}token = [[JOIN]] :"
         code_tiled(rawptr_store_then_load, Tuple{Ptr{Float32}, Ptr{Float32}, AT})
+    end
+end
+
+struct PointersAndArray{A}
+    dst::Ptr{Float32}
+    src::Ptr{Float32}
+    out::A
+end
+
+@testset "token_order — raw pointer fields stay ordered" begin
+    # Unlike array fields, pointer fields are not checked for overlap at
+    # launch, so they do not get alias sets of their own, even inside a
+    # struct whose array field does.
+    function rawptr_fields_store_then_load(p::PointersAndArray{A}) where {A}
+        ct.store(A(p.dst, (Int32(16),), (Int32(1),)), 1, ct.load(p.out, 1, (16,)) .+ 1f0)
+        ct.store(p.out, 1, ct.load(A(p.src, (Int32(16),), (Int32(1),)), 1, (16,)))
+        return
+    end
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[ST:%[0-9]+]] = store_view_tko"
+        @check "[[JOIN:%[0-9]+]] = join_tokens [[ST]]"
+        @check "load_view_tko{{.*}}token = [[JOIN]] :"
+        code_tiled(rawptr_fields_store_then_load, Tuple{PointersAndArray{AT}})
     end
 end
 
