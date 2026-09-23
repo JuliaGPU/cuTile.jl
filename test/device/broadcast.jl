@@ -523,6 +523,27 @@ end
     @test Array(b) ≈ expected rtol=1e-5
 end
 
+@testset "ifelse with scalar literals inside a broadcast function" begin
+    # Literals inside a broadcast function stay 0-D, so the select has
+    # mixed-shape operands that must be broadcast to a common shape.
+    function ifelse_literal_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        v = ct.load(x, pid, (16,))
+        ct.store(out, (pid, 1), reshape((v -> ifelse(v > 0.5f0, v, 0f0)).(v), (16, 1)))
+        ct.store(out, (pid, 2), reshape((v -> ifelse(v > 0.5f0, 1f0, 0f0)).(v), (16, 1)))
+        return
+    end
+
+    n = 1024
+    x = CUDA.rand(Float32, n)
+    out = CUDA.zeros(Float32, n, 2)
+
+    @cuda backend=cuTile blocks=cld(n, 16) ifelse_literal_kernel(out, x)
+
+    X = Array(x)
+    @test Array(out) == [ifelse.(X .> 0.5f0, X, 0f0) ifelse.(X .> 0.5f0, 1f0, 0f0)]
+end
+
 end # where / ifelse broadcasting
 
 @testset "max / min broadcasting" begin
@@ -735,6 +756,31 @@ end
     @cuda backend=cuTile fma_broadcast_kernel(a, b, bias, c)
 
     @test Array(c) ≈ fma.(Array(a), Array(b), Array(bias)) rtol=1e-5
+end
+
+@testset "fma fusion with scalar operands" begin
+    # Scalar literals and arguments inside a broadcast function stay 0-D, so
+    # fusing `x * y ± z` yields an fma (and possibly a negf) with mixed-shape
+    # operands, which must be broadcast to the product's shape.
+    function fma_scalar_operands_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,1},
+                                        s::Float32)
+        pid = ct.bid(1)
+        v = ct.load(x, pid, (16,))
+        ct.store(out, (pid, 1), reshape((v -> 1 + 3v * v).(v), (16, 1)))
+        ct.store(out, (pid, 2), reshape((v -> 3v * v - 1).(v), (16, 1)))
+        ct.store(out, (pid, 3), reshape((v -> 2 - 3v).(v), (16, 1)))
+        ct.store(out, (pid, 4), reshape((v -> s * 2f0 + v).(v), (16, 1)))
+        return
+    end
+
+    n = 1024
+    x = CUDA.rand(Float32, n)
+    out = CUDA.zeros(Float32, n, 4)
+
+    @cuda backend=cuTile blocks=cld(n, 16) fma_scalar_operands_kernel(out, x, 2f0)
+
+    X = Array(x)
+    @test Array(out) ≈ [(1 .+ 3 .* X .* X) (3 .* X .* X .- 1) (2 .- 3 .* X) (4 .+ X)] rtol=1e-5
 end
 
 end # fma broadcasting

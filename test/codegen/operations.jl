@@ -2080,6 +2080,23 @@ end
                 return
             end
         end
+
+        # Literals inside the broadcast function stay 0-D: `2 - 3v` fuses into
+        # fma(negf(3), v, 2), whose scalar operands are broadcast to the
+        # product's shape.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "constant <f32: -3.000000e+00> : tile<f32>"
+            @check "constant <f32: 2.000000e+00> : tile<f32>"
+            @check "broadcast {{.*}} -> tile<16xf32>"
+            @check "broadcast {{.*}} -> tile<16xf32>"
+            @check "fma {{.*}} : tile<16xf32>"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, (v -> 2 - 3v).(tile))
+                return
+            end
+        end
     end
 
     @testset "scalar literal promotion" begin

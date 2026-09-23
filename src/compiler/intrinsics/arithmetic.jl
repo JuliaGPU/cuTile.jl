@@ -25,6 +25,12 @@ function broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
     end
     return (lhs, rhs)
 end
+function broadcast_match_shapes!(cb, tt, a::CGVal, b::CGVal, c::CGVal)
+    a, b = broadcast_match_shapes!(cb, tt, a, b)
+    a, c = broadcast_match_shapes!(cb, tt, a, c)
+    b, c = broadcast_match_shapes!(cb, tt, b, c)
+    return (a, b, c)
+end
 
 # Build rounding_mode/flush_to_zero kwargs from the active @fpmode scope.
 function fpmode_kwargs(ctx::CGCtx)
