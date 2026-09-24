@@ -860,11 +860,19 @@ end
     push!(type_exprs, UInt32)
 
     leaves = Tuple(array_leaves(args))
+    # The kernel assumes the argument types and the overlap pattern it was
+    # compiled for. Another one (from a `launch=false` kernel or a rebound
+    # call) needs a variant: an array of another type can differ in the layout
+    # facts its `ArraySpec` records, such as alignment.
+    tt = Tuple{args...}
+    select = if tt == k.parameters[2]
+        :(same_labels(k.labels, labels) ? k.fun : variant_function(k, $tt, labels, $leaves))
+    else
+        :(variant_function(k, $tt, labels, $leaves))
+    end
     quote
-        # The kernel assumes the overlap pattern it was compiled for; another
-        # one (from a `launch=false` kernel or a rebound call) needs a variant.
         labels = overlap_labels(args...)
-        fun = same_labels(k.labels, labels) ? k.fun : variant_function(k, labels, $leaves)
+        fun = $select
         state = KernelState()
         grid_dims = blocks isa Integer ? (blocks,) : blocks
         for (i, dim) in enumerate(grid_dims)
@@ -1033,11 +1041,12 @@ end
     return true
 end
 
-# The function of `k` compiled for launch arguments whose arrays, at `leaves`,
-# carry overlap `labels`. Compilation is cached, so this costs a cache lookup.
-@noinline variant_function(k::TileKernel{F, TT}, labels::Tuple{Vararg{Int}},
-                           leaves) where {F, TT} =
-    cufunction(k.f, TT; k.opts..., alias_groups=labels_to_groups(labels, leaves)).fun
+# The function of `k` compiled for launch arguments of types `tt` whose arrays,
+# at `leaves`, carry overlap `labels`. Compilation is cached, so this costs a
+# cache lookup.
+@noinline variant_function(k::TileKernel, @nospecialize(tt), labels::Tuple{Vararg{Int}},
+                           leaves) =
+    cufunction(k.f, tt; k.opts..., alias_groups=labels_to_groups(labels, leaves)).fun
 
 # `@cuda` compiles from the converted arguments' types, so compile for their
 # overlap pattern here rather than for disjoint arrays and then a variant.
