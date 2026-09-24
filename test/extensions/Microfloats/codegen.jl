@@ -254,4 +254,77 @@ end
     end
 end
 
+# Microfloats are restricted floats: storage / tensor-core operand formats
+# without general arithmetic. Microfloats' scalar fallbacks would otherwise let
+# the broadcast path compile into a silent ftof/op/ftof round-trip, and the
+# direct tile operators into an `addf` the tileiras verifier rejects.
+@testset "restricted arithmetic" begin
+    AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
+
+    # broadcast (upstream's Float32 round-trip fallback)
+    @test_throws "restricted float" code_tiled(devnull,
+        (a, b, c) -> begin
+            pid = ct.bid(1)
+            ct.store(c, pid, ct.load(a, pid, (16,)) .+ ct.load(b, pid, (16,)))
+            return
+        end, Tuple{AT, AT, AT})
+
+    # direct tile operator (previously an MLIR verifier failure)
+    @test_throws "restricted float" code_tiled(devnull,
+        (a, b, c) -> begin
+            pid = ct.bid(1)
+            ct.store(c, pid, ct.load(a, pid, (16,)) + ct.load(b, pid, (16,)))
+            return
+        end, Tuple{AT, AT, AT})
+
+    # unary math via broadcast
+    @test_throws "restricted float" code_tiled(devnull,
+        (a, b) -> begin
+            pid = ct.bid(1)
+            ct.store(b, pid, sqrt.(ct.load(a, pid, (16,))))
+            return
+        end, Tuple{AT, AT})
+
+    # tile × scalar (the mixed-arithmetic guard)
+    @test_throws "restricted float" code_tiled(devnull,
+        (a, b) -> begin
+            pid = ct.bid(1)
+            ct.store(b, pid, ct.load(a, pid, (16,)) * 2.0f0)
+            return
+        end, Tuple{AT, AT})
+
+    # The gate is trait-based (`is_restricted_float`, registered for the whole
+    # `Microfloat` supertype), so every variant is covered with no per-type
+    # code — not just the two FP8 types DLFP8Types also provides.
+    F4 = ct.TileArray{Float4_E2M1FN,1,spec1d}
+    @test_throws "restricted float" code_tiled(devnull,
+        (a, b, c) -> begin
+            pid = ct.bid(1)
+            ct.store(c, pid, ct.load(a, pid, (16,)) .* ct.load(b, pid, (16,)))
+            return
+        end, Tuple{F4, F4, F4}; bytecode_version=v"13.3")
+
+    # Comparisons stay allowed: the gate upcasts the operands to Float32, which
+    # is lossless without a result to round, so they lower to `ftof` + `cmpf`.
+    # cuTile Python's frontend accepts them too, but has no such upcast and dies
+    # in tileiras — Tile IR cannot compare fp8 natively.
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}) do a, b, c
+            ta = ct.load(a, ct.bid(1), (16,))
+            tb = ct.load(b, ct.bid(1), (16,))
+            @check "ftof"
+            @check "ftof"
+            @check "cmpf"
+            ct.store(c, ct.bid(1), ifelse.(ta .< tb, Int32(1), Int32(0)))
+            return
+        end
+    end
+
+    # The gate only applies inside kernels, so host arithmetic is untouched.
+    @test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
+    @test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
+    @test sqrt(Float8_E4M3FN(4.0f0)) == Float8_E4M3FN(2.0f0)
+end
+
 end

@@ -1451,6 +1451,10 @@ The function `f` must be a zero-size callable (singleton or capture-free lambda)
 All tiles must have the same shape `S` — use broadcasting (`.+` etc.) or explicit
 `broadcast_to` for shape-mismatched operands.
 
+Tiles with a restricted float element type only accept the same `f` as
+broadcasting does (conversion, `ifelse`, comparisons); anything else, including
+a lambda that merely casts, is rejected.
+
 # Examples
 ```julia
 result = map(abs, tile)           # Element-wise absolute value
@@ -1458,9 +1462,8 @@ result = map(x -> x * x, tile)   # Element-wise square
 result = map(+, a, b)            # Element-wise addition (same shape required)
 ```
 """
-@inline function Base.map(f, a::Tile{<:Any,S}, rest::Tile{<:Any,S}...) where {S}
-    Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), S)
-end
+@inline Base.map(f, a::Tile{<:Any,S}, rest::Tile{<:Any,S}...) where {S} =
+    _apply_broadcast(f, a, rest...)
 
 reduction_dims(dim::Integer, ::Tuple) = Int(dim)
 function reduction_dims(dims, shape::Tuple)
