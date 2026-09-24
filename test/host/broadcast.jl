@@ -232,4 +232,30 @@ using CUDA
         @test ret === C
         @test Array(C) ≈ Array(A) .+ Array(B)
     end
+
+    @testset "sources overlapping the destination" begin
+        # Blocks run in any order, so a source that overlaps the destination
+        # without being it must be copied first, as Base broadcast does.
+        # (large enough for later blocks to read what earlier ones stored)
+        n = 2^24
+        h = Float32.(1:n)
+        x = CuArray(h)
+        dest, src = view(x, 2:n), view(x, 1:n-1)
+        ct.@. dest = src
+        @test Array(x) == [h[1]; h[1:n-1]]
+
+        # which leaves get copied: ranges decide, so a strided view of the
+        # destination's buffer counts even though `Base.mightalias` misses it
+        copies(dest, args...) = let copies = Any[]
+            bc = Base.Broadcast.broadcasted(+, args...)
+            ct.preprocess(bc, ct.cuTileconvert(dest), copies, Val(ndims(dest)))
+            length(copies)
+        end
+        x, y = CUDA.zeros(Float32, 64), CUDA.zeros(Float32, 64)
+        @test copies(view(x, 2:33), view(x, 1:2:64), 0f0) == 1
+        @test copies(view(x, 1:32), view(x, 33:64), 0f0) == 0
+        @test copies(x, y, 0f0) == 0
+        # the destination itself is read and written tile by tile
+        @test copies(x, x, y) == 0
+    end
 end

@@ -59,18 +59,31 @@ end
 Extruded{K}(x::A) where {K, A} = Extruded{K, A}(x)
 
 # Counterpart of `Base.Broadcast.preprocess`: convert the array leaves of a
-# Broadcasted tree into Extruded TileArrays, given the destination rank.
-preprocess(t::Tiled, rank::Val) = preprocess(parent(t), rank)
-preprocess(arr::AbstractArray{<:Any, 0}, rank::Val) = preprocess(reshape(arr, 1), rank)
-function preprocess(arr::AbstractArray, ::Val{N}) where N
+# Broadcasted tree into Extruded TileArrays, given the converted destination
+# and its rank. Leaves copied to unalias them from the destination are pushed
+# to `copies`, which the caller keeps alive until the launch.
+preprocess(t::Tiled, dest, copies, rank::Val) = preprocess(parent(t), dest, copies, rank)
+preprocess(arr::AbstractArray{<:Any, 0}, dest, copies, rank::Val) =
+    preprocess(reshape(arr, 1), dest, copies, rank)
+function preprocess(arr::AbstractArray, dest, copies, ::Val{N}) where N
     keeps = ntuple(d -> size(arr, d) != 1, Val(N))
     # The typeassert rejects leaves without device storage, like ranges,
     # which `cuTileconvert` passes through unchanged.
-    Extruded{keeps}(cuTileconvert(arr)::AbstractTileArray)
+    leaf = cuTileconvert(arr)::AbstractTileArray
+    # Like `Base.Broadcast.broadcast_unalias`: blocks run in any order, so a
+    # leaf sharing memory with the destination, other than the destination
+    # itself, could be read after another block stored to it. Copy it first.
+    # Overlap is judged by address range, as at launch (`overlap_labels`).
+    if leaf != dest && !all(iszero, overlap_labels(dest, leaf))
+        arr = copy(arr)
+        push!(copies, arr)
+        leaf = cuTileconvert(arr)::AbstractTileArray
+    end
+    Extruded{keeps}(leaf)
 end
-preprocess(bc::Broadcasted, rank::Val) =
-    Broadcasted{Nothing}(bc.f, map(arg -> preprocess(arg, rank), bc.args), nothing)
-preprocess(x, rank::Val) = x
+preprocess(bc::Broadcasted, dest, copies, rank::Val) =
+    Broadcasted{Nothing}(bc.f, map(arg -> preprocess(arg, dest, copies, rank), bc.args), nothing)
+preprocess(x, dest, copies, rank::Val) = x
 
 function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
     # Match Base semantics: size-1 dimensions expand, other mismatches throw.
@@ -78,14 +91,15 @@ function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, 
     isempty(dest) && return
 
     dest_ta = cuTileconvert(dest)
-    tiled_bc = preprocess(bc, Val(N))
+    copies = Any[]
+    tiled_bc = preprocess(bc, dest_ta, copies, Val(N))
 
     ts = _compute_tile_sizes(size(dest))
     grid = ntuple(i -> cld(size(dest, i), ts[i]), N)
     launch_grid, overflow = _flatten_grid(grid)
 
-    launch(broadcast_kernel, launch_grid, dest_ta, tiled_bc,
-           Constant(ts), Constant(overflow))
+    GC.@preserve copies launch(broadcast_kernel, launch_grid, dest_ta, tiled_bc,
+                                Constant(ts), Constant(overflow))
 end
 
 # The kernel operates on tiles of rank >= 1, so run 0-dim broadcasts (both

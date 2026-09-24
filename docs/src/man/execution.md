@@ -149,7 +149,7 @@ produces a distinct kernel.
 
 cuTile compiles one kernel per combination of *converted* argument types,
 exactly as Julia compiles one method instance per combination of argument types.
-Three things therefore trigger a recompile:
+These things therefore trigger a recompile:
 
 **The element type and rank of each array**, as you would expect.
 
@@ -186,6 +186,15 @@ The strided view is not contiguous, so it compiles to a second, more
 conservative specialization. That is a correctness feature, but it is also a
 common reason a kernel is unexpectedly slow; see
 [Performance](performance.md#Array-specialization).
+
+**Which arrays overlap in memory.** cuTile lets accesses to different arrays
+proceed out of order, which is only correct when the arrays do not share memory.
+Each launch therefore compares the address ranges of the arrays it passes,
+including arrays inside tuple and struct arguments. A launch that passes
+overlapping arrays, such as `kernel(x, x)` or two views of one buffer, compiles a
+separate kernel that keeps the accesses through those arrays in order. The check
+is conservative: arrays that interleave without sharing an element, such as the
+even and odd columns of one matrix, also count as overlapping.
 
 
 ## Caching

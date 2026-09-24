@@ -226,17 +226,15 @@ Whether the array behind `alias_set` may map two distinct in-bounds indices
 to the same memory location (e.g. a zero stride). Mirrors the
 `may_alias_internally` predicate Python's `_filter_by_store_index` consults
 (token_order.py:522-538); here the fact lives in the `ArraySpec` type
-parameter of the `TileArray` argument the alias set roots at. Anything that
-isn't a single `TileArray` argument with a spec answers `true` — conservative
-callers must then keep iteration-ordering tokens.
+parameter of the `TileArray` the alias set roots at, which may be a kernel
+argument or a field of one. Anything that isn't a single `TileArray` root with
+a spec answers `true` — conservative callers must then keep iteration-ordering
+tokens.
 """
 function stored_array_may_alias_internally(alias_set::AliasSet, argtypes::Vector{Any})
     alias_set isa AliasUniverse && return true
     length(alias_set) == 1 || return true
-    root = only(alias_set)
-    root isa Argument || return true
-    checkbounds(Bool, argtypes, root.n) || return true
-    T = CC.widenconst(argtypes[root.n])
+    T = root_type(only(alias_set), argtypes)
     T isa DataType && T <: TileArray || return true
     spec = array_spec(T)
     spec === nothing && return true

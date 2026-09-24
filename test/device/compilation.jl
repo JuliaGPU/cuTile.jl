@@ -125,3 +125,21 @@ end
     @test GPUCompiler.compile_hook[] === nothing
     CUDA.synchronize()
 end
+
+@testset "kernels called with other argument types launch a variant" begin
+    # An offset view converts to a TileArray type with a smaller alignment;
+    # the kernel compiled for the aligned array must not be launched with it.
+    function copy_tiles(dst, src)
+        i = ct.bid(1)
+        ct.store(dst, i, ct.load(src, i, (256,)))
+        return
+    end
+    n = 4096
+    src = CuArray(Float32.(1:n+1))
+    dst = CUDA.zeros(Float32, n)
+    kernel = @cuda backend=cuTile launch=false copy_tiles(dst, view(src, 1:n))
+    conv = ct.cuTileconvert
+    @test typeof(conv(view(src, 2:n+1))) != typeof(conv(view(src, 1:n)))
+    kernel(conv(dst), conv(view(src, 2:n+1)); blocks=n÷256)
+    @test Array(dst) == Float32.(2:n+1)
+end

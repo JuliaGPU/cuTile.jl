@@ -133,7 +133,7 @@ without any, no toolchain or device is needed.
 """
 function code_structured(job::TileJob; optimize::Bool=true)
     ir, rettype = emit_julia(job)
-    code_structured(ir, rettype; optimize)
+    code_structured(ir, rettype; optimize, job.config.alias_groups)
 end
 function code_structured(@nospecialize(f), @nospecialize(argtypes);
                          world::UInt=Base.get_world_counter(), optimize::Bool=true, kwargs...)
@@ -141,11 +141,12 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
     ir, rettype = emit_julia(f, argtypes; world)
     code_structured(ir, rettype; optimize)
 end
-function code_structured(ir::CC.IRCode, rettype; optimize::Bool=true)
+function code_structured(ir::CC.IRCode, rettype; optimize::Bool=true,
+                         alias_groups::AliasGroups=())
     sci, rettype, _ = emit_structured(ir, rettype)
     if optimize
         sci = copy(sci)
-        run_passes!(sci)
+        run_passes!(sci; alias_groups)
     end
     [sci => rettype]
 end

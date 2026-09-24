@@ -153,6 +153,173 @@ end
     end
 end
 
+struct ArrayPair{A,B}
+    src::A
+    dst::B
+end
+
+@testset "token_order — arrays in a tuple argument get their own alias sets" begin
+    # Loads through a tuple argument must not order the store to another
+    # argument: no token is carried through the loop or joined for the store.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[TOK:%.+]] = make_token"
+        @check_not "join_tokens"
+        @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{Tuple{AT, AT}, AT, Int32}) do xs, out, n
+            acc = zeros(Float32, (16,))
+            for i in 1:n
+                acc = acc .+ ct.load(xs[1], i, (16,)) .+ ct.load(xs[2], i, (16,))
+            end
+            ct.store(out, 1, acc)
+            return
+        end
+    end
+end
+
+mutable struct MutableArrayPair{A,B}
+    src::A
+    dst::B
+end
+
+@testset "token_order — arrays in a mutable struct argument get their own alias sets" begin
+    # The launch checks arrays inside any struct, mutable or not.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[TOK:%.+]] = make_token"
+        @check_not "join_tokens"
+        @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{MutableArrayPair{AT, AT}, AT, Int32}) do p, out, n
+            acc = zeros(Float32, (16,))
+            for i in 1:n
+                acc = acc .+ ct.load(p.src, i, (16,)) .+ ct.load(p.dst, i, (16,))
+            end
+            ct.store(out, 1, acc)
+            return
+        end
+    end
+end
+
+@testset "token_order — nested struct field store is loop-parallel" begin
+    # The stored array sits at a nested field path; its spec still proves it
+    # cannot alias internally, so the store consumes the pre-loop token.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[TOK:%.+]] = make_token"
+        @check_not "iter_values"
+        @check "store_view_tko{{.*}}token = [[TOK]] :"
+        code_tiled(Tuple{ArrayPair{AT, Tuple{AT}}, Int32}) do p, n
+            for i in 1:n
+                t = ct.load(p.src, i, (16,))
+                ct.store(p.dst[1], i, t + t)
+            end
+            return
+        end
+    end
+end
+
+@testset "token_order — accesses to one struct field stay ordered" begin
+    # A load from the field a preceding store wrote must wait for that store.
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[ST:%.+]] = store_view_tko"
+        @check "[[JOIN:%.+]] = join_tokens [[ST]]"
+        @check "load_view_tko{{.*}}token = [[JOIN]] :"
+        code_tiled(Tuple{ArrayPair{AT, AT}}) do p
+            ct.store(p.src, 1, ct.load(p.dst, 1, (16,)))
+            ct.store(p.dst, 2, ct.load(p.src, 1, (16,)))
+            return
+        end
+    end
+end
+
+@testset "token_order — overlapping arrays share an alias set" begin
+    # With `a` and `b` in one launch-time overlap group, the load and store
+    # are two operations on one alias set: the store waits for the load and
+    # is not loop-parallel.
+    k(a, b, n) = (for i in 1:n; ct.store(b, i, ct.load(a, i, (16,))); end; nothing)
+    @test @filecheck begin
+        @check_label "entry"
+        @check "iter_values"
+        @check "[[LOAD:%[a-z_0-9]+]] = load_view_tko"
+        @check "[[JOIN:%[0-9]+]] = join_tokens {{.*}}[[LOAD]]"
+        @check "store_view_tko{{.*}}token = %{{[1-9][0-9]*}} :"
+        @check "continue"
+        code_tiled(k, Tuple{AT, AT, Int32}; alias_groups=(((2, ()), (3, ())),))
+    end
+end
+
+@testset "token_order — raw pointer arguments stay ordered" begin
+    # The launch cannot check raw pointers for overlap, so an array built from
+    # one must stay ordered against accesses through any other: the load
+    # through `q` waits for the store through `p`.
+    function rawptr_store_then_load(p, q, out::A) where {A}
+        ct.store(A(p, (Int32(16),), (Int32(1),)), 1, ct.load(out, 1, (16,)) .+ 1f0)
+        ct.store(out, 1, ct.load(A(q, (Int32(16),), (Int32(1),)), 1, (16,)))
+        return
+    end
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[ST:%[0-9]+]] = store_view_tko"
+        @check "[[JOIN:%[0-9]+]] = join_tokens [[ST]]"
+        @check "load_view_tko{{.*}}token = [[JOIN]] :"
+        code_tiled(rawptr_store_then_load, Tuple{Ptr{Float32}, Ptr{Float32}, AT})
+    end
+end
+
+struct PointersAndArray{A}
+    dst::Ptr{Float32}
+    src::Ptr{Float32}
+    out::A
+end
+
+@testset "token_order — raw pointer fields stay ordered" begin
+    # Unlike array fields, pointer fields are not checked for overlap at
+    # launch, so they do not get alias sets of their own, even inside a
+    # struct whose array field does.
+    function rawptr_fields_store_then_load(p::PointersAndArray{A}) where {A}
+        ct.store(A(p.dst, (Int32(16),), (Int32(1),)), 1, ct.load(p.out, 1, (16,)) .+ 1f0)
+        ct.store(p.out, 1, ct.load(A(p.src, (Int32(16),), (Int32(1),)), 1, (16,)))
+        return
+    end
+    @test @filecheck begin
+        @check_label "entry"
+        @check "[[ST:%[0-9]+]] = store_view_tko"
+        @check "[[JOIN:%[0-9]+]] = join_tokens [[ST]]"
+        @check "load_view_tko{{.*}}token = [[JOIN]] :"
+        code_tiled(rawptr_fields_store_then_load, Tuple{PointersAndArray{AT}})
+    end
+end
+
+@testset "alias_groups" begin
+    ptr(addr) = reinterpret(Ptr{Float32}, UInt(addr))
+    arr(addr, n, stride=1) = AT(ptr(addr), (Int32(n),), (Int32(stride),))
+    @test ct.alias_groups(arr(4096, 16), arr(8192, 16)) == ()
+    @test ct.alias_groups(arr(4096, 16), arr(4096, 16)) == (((2, ()), (3, ())),)
+    # adjacent ranges do not overlap; one shared element does
+    @test ct.alias_groups(arr(4096, 16), arr(4096 + 64, 16)) == ()
+    @test ct.alias_groups(arr(4096, 16), arr(4096 + 60, 16)) == (((2, ()), (3, ())),)
+    # empty arrays overlap nothing
+    @test ct.alias_groups(arr(4096, 0), arr(4096, 16)) == ()
+    # leaves inside tuples and structs, and transitively overlapping groups
+    @test ct.alias_groups((arr(4096, 16), arr(8192, 16)), arr(4096 + 32, 16)) ==
+          (((2, (1,)), (3, ())),)
+    @test ct.alias_groups(arr(4096, 16), arr(4096 + 60, 16), arr(4096 + 120, 16),
+                          arr(65536, 16)) == (((2, ()), (3, ()), (4, ())),)
+    # interleaved strided views count as overlapping: ranges are conservative
+    @test ct.alias_groups(arr(4096, 8, 2), arr(4100, 8, 2)) == (((2, ()), (3, ())),)
+
+    # the per-launch labels allocate nothing, with or without overlap
+    @test ct.overlap_labels(arr(4096, 16), arr(8192, 16), arr(4096 + 32, 16)) == (1, 0, 1)
+    @test ct.overlap_labels((arr(4096, 16), arr(4096, 16)), arr(8192, 16)) == (1, 1, 0)
+    # (positional arguments: on Julia 1.11, a varargs `measure` boxes its tuple)
+    measure(a, b) = @allocated ct.overlap_labels(a, b)
+    for (a, b) in ((arr(4096, 16), arr(8192, 16)), (arr(4096, 16), arr(4096 + 32, 16)))
+        measure(a, b)
+        @test measure(a, b) == 0
+    end
+end
+
 if ct.bytecode_version() >= v"13.3"
 @testset "token_order — StridedView stores keep token carry" begin
     # Tile indices are injective, but overlapping windows are not disjoint in
