@@ -1346,6 +1346,12 @@ end
     end
 end
 
+@testset "argument field without a Tile IR type" begin
+    # the launch passes the field, so the kernel can't leave out its parameter
+    @test_throws "Unsupported Julia type for Tile IR: Char" code_tiled(
+        devnull, x -> nothing, Tuple{Tuple{Char, Int32}})
+end
+
 @testset "zero-volume tile boundaries" begin
     @test_throws "kernel return has no Tile IR representation" code_tiled(
         devnull, () -> Float32[], Tuple{})

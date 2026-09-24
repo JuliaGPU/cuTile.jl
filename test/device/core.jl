@@ -559,6 +559,33 @@ end
     @cuda backend=cuTile identity(nothing)
 end
 
+@testset "closures" begin
+    # The values a closure captures are fields of the kernel function, and so
+    # kernel parameters that the launch passes along with the arguments.
+    scale(x, s) = dst -> (ct.store(dst, 1, ct.load(x, 1, (256,)) .* s); nothing)
+    x1 = CUDA.rand(Float32, 256)
+    x2 = CUDA.rand(Float32, 256)
+    y = CUDA.zeros(Float32, 256)
+
+    @cuda backend=cuTile scale(x1, 2f0)(y)
+    @test Array(y) ≈ 2 .* Array(x1)
+    ct.launch(scale(x1, 3f0), 1, y)
+    @test Array(y) ≈ 3 .* Array(x1)
+
+    # a closure of the same type shares the kernel, but not the captured values
+    @cuda backend=cuTile scale(x2, 4f0)(y)
+    @test Array(y) ≈ 4 .* Array(x2)
+    ct.launch(scale(x2, 5f0), 1, y)
+    @test Array(y) ≈ 5 .* Array(x2)
+
+    # constant arguments don't make the captured values constants
+    scale_n(x, s) = (dst, n) -> (ct.store(dst, 1, ct.load(x, 1, (n,)) .* s); nothing)
+    ct.launch(scale_n(x1, 6f0), 1, y, ct.Constant(256))
+    @test Array(y) ≈ 6 .* Array(x1)
+    ct.launch(scale_n(x2, 7f0), 1, y, ct.Constant(256))
+    @test Array(y) ≈ 7 .* Array(x2)
+end
+
 @testset "struct destructuring" begin
     @testset "TileArray + scalar field" begin
         struct ArrayWithScale{T, N, S}

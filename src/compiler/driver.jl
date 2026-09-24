@@ -46,9 +46,9 @@ Jobs are immutable and compare structurally, so equal jobs are `===`.
 """
 struct TileJob
     source::MethodInstance
-    # `(Const(f), arg2, …)` seeding const-propagating inference, or `nothing`
-    # for the generic inferred source. A Tuple rather than CompilerCaching's
-    # Vector so that jobs compare structurally.
+    # `(f, arg2, …)` seeding const-propagating inference (see `function_argtype`
+    # for `f`), or `nothing` for the generic inferred source. A Tuple rather than
+    # CompilerCaching's Vector so that jobs compare structurally.
     const_argtypes::Union{Tuple, Nothing}
     world::UInt
     config::TileConfig
@@ -109,7 +109,7 @@ function job_signature(job::TileJob)
     f = isdefined(ftype, :instance) ? ftype.instance : ftype
     arg_types = collect(Any, mi.specTypes.parameters[2:end])
     if job.const_argtypes !== nothing
-        # const_argtypes is (Const(f), arg2, ...); arg_types omits f.
+        # const_argtypes is (f, arg2, ...); arg_types omits f.
         for i in eachindex(arg_types)
             cat = job.const_argtypes[i+1]
             cat isa CC.Const && (arg_types[i] = typeof(Constant(cat.val)))

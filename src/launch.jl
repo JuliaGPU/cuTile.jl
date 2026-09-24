@@ -554,13 +554,13 @@ end
 Compile-time-specialized derivation of:
 - `argtypes::Type{<:Tuple}` — concrete dispatch tuple for `method_instance(f, argtypes)`,
   with `Constant{T,V}` slots unwrapped to `T`.
-- `const_argtypes` — `(CC.Const(f), args...)` with `Constant{T,V}` slots replaced by
+- `const_argtypes` — `(f, args...)` with `Constant{T,V}` slots replaced by
   `CC.Const(V)`, seeding const-prop inference (see `TileJob`). `nothing` when no
   `Constant` arguments are present (skips the const-seeding pipeline entirely).
 
 `@generated` so the unwrapped `Tuple` type and the `Constant`-vs-not branching
-fold to constants at the call site. Only the `CC.Const(f)` box for the runtime
-function value survives to runtime.
+fold to constants at the call site. Only the entry for the function value
+(`function_argtype`) is built at runtime.
 """
 @generated function unwrap_argtypes(@nospecialize(f), ::Type{TT}) where TT <: Tuple
     unwrapped = map(t -> t <: Constant ? constant_eltype(t) : t, TT.parameters)
@@ -568,7 +568,7 @@ function value survives to runtime.
     has_consts = any(t -> t <: Constant, TT.parameters)
     has_consts || return :(($argtypes_T, nothing))
 
-    cats_exprs = Any[:(CC.Const(f))]
+    cats_exprs = Any[:(function_argtype(f))]
     for t in TT.parameters
         if t <: Constant
             push!(cats_exprs, :(CC.Const($(t.parameters[2]))))
@@ -788,29 +788,33 @@ function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(a
     # persisted; the scan is almost always over a single entry.
     ctx = context()
     cached_kernel = Base.@lock job_results_lock find_kernel(res, ctx)
-    cached_kernel === nothing || return cached_kernel::TileKernel{Core.Typeof(f), tt}
+    cached_kernel === nothing || return with_function(cached_kernel, f)
     kernel = TileKernel{Core.Typeof(f), tt}(f, link(job, res), opts)
     # don't cache session-local handles while generating output: the results struct
     # is serialized into the package image along with its inference result.
     if ccall(:jl_generating_output, Cint, ()) != 1
         Base.@lock job_results_lock begin
             cached_kernel = find_kernel(res, ctx)
-            cached_kernel === nothing || return cached_kernel::TileKernel{Core.Typeof(f), tt}
+            cached_kernel === nothing || return with_function(cached_kernel, f)
             push!(res.kernels, (ctx, kernel))
         end
     end
     return kernel
 end
 
-# Tile IR has a 24-bit grid limit per dimension.
-const _MAX_GRID_DIM = (1 << 24) - 1
+# `k` launching `f` instead of `k.f`. Closures of one type share a compiled
+# kernel, but pass their own captured values.
+with_function(k::TileKernel{F, TT}, f::F) where {F, TT} =
+    k.f === f ? k : TileKernel{F, TT}(f, k.fun, k.opts, k.labels)
 
-# Recursively expand `val_expr::T` into a flat list of (expr, type) pairs that
-# match the kernel's flat scalar parameter signature: TileArray expands to
-# (ptr, sizes..., strides...), ghost types contribute nothing, primitives pass
-# through, structs recurse field-by-field. Used by the `@generated` launch path
-# to fold the flatten step into compile-time call construction.
-function _flatten_static!(arg_exprs, type_exprs, @nospecialize(T), val_expr)
+# Tile IR has a 24-bit grid limit per dimension.
+const MAX_GRID_DIM = (1 << 24) - 1
+
+# Append the kernel parameters that `val_expr`, a value of type `T`, flattens to
+# (expressions and their types), in the order of codegen's
+# `flatten_struct_params!`: an array's pointer, sizes and strides, nothing for a
+# ghost, a primitive as is, and any other struct field by field.
+function flatten_params!(arg_exprs, type_exprs, @nospecialize(T), val_expr)
     if T <: TileArray
         push!(arg_exprs, :($val_expr.ptr))
         push!(type_exprs, fieldtype(T, :ptr))
@@ -831,31 +835,31 @@ function _flatten_static!(arg_exprs, type_exprs, @nospecialize(T), val_expr)
         push!(type_exprs, T)
     else
         for i in 1:fieldcount(T)
-            field_T = fieldtype(T, i)
-            _flatten_static!(arg_exprs, type_exprs, field_T,
-                             :(getfield($val_expr, $i)))
+            flatten_params!(arg_exprs, type_exprs, fieldtype(T, i),
+                            :(getfield($val_expr, $i)))
         end
     end
     return
 end
 
 # `convert=Val(...)` is the AbstractKernel callable convention from CUDACore;
-# `@cuda` passes `convert=Val(false)` because args were already converted at
-# expansion time. We always treat args as already-converted — direct
-# `kernel(args...)` calls without the macro should pass converted args.
+# `@cuda` passes `convert=Val(false)` because it converted the arguments
+# already. Arguments are always taken as converted, so direct `kernel(args...)`
+# calls must convert them first.
 #
-# `@generated` so the flatten/typeof work folds to a direct cudacall expression
-# at compile time. Mirrors the LLVM `HostKernel` generated callable in CUDACore;
-# without it, runtime `Iterators.flatten` + `map(typeof, ...)` + tuple splatting
-# costs ~400 ns per launch even for trivial kernels.
-@generated function (k::TileKernel)(args::Vararg{Any, N}; blocks=1, threads=1,
-                                    convert=Val(false), kwargs...) where {N}
+# `@generated` so that flattening the arguments folds to a direct `cudacall`, as
+# in CUDACore's `HostKernel`; flattening at runtime costs ~400 ns per launch,
+# even for trivial kernels.
+@generated function (k::TileKernel{F})(args::Vararg{Any, N}; blocks=1, threads=1,
+                                       convert=Val(false), kwargs...) where {F, N}
     arg_exprs = Any[]
     type_exprs = Any[]
+    # The kernel function comes first: the values it captures are parameters too.
+    flatten_params!(arg_exprs, type_exprs, F, :(k.f))
     for i in 1:N
-        _flatten_static!(arg_exprs, type_exprs, args[i], :(args[$i]))
+        flatten_params!(arg_exprs, type_exprs, args[i], :(args[$i]))
     end
-    # Trailing implicit KernelState slot — matches the bytecode kernel signature.
+    # The implicit KernelState comes last, as in codegen.
     push!(arg_exprs, :(state.seed))
     push!(type_exprs, UInt32)
 
@@ -876,8 +880,8 @@ end
         state = KernelState()
         grid_dims = blocks isa Integer ? (blocks,) : blocks
         for (i, dim) in enumerate(grid_dims)
-            if dim > _MAX_GRID_DIM
-                error("Grid[$i] exceeds 24-bit limit: max=$_MAX_GRID_DIM, got=$dim. " *
+            if dim > MAX_GRID_DIM
+                error("Grid[$i] exceeds 24-bit limit: max=$MAX_GRID_DIM, got=$dim. " *
                       "Use multiple kernel launches for larger workloads.")
             end
         end
@@ -1065,7 +1069,7 @@ CUDACore.kernel_compile(call::CUDACore.KernelCall{TileBackend}; kwargs...) =
            num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing,
            dependent=false, stream=CUDACore.stream(), name=nothing)
 
-Compile and launch a Tile IR kernel. `args` are converted via
+Compile and launch a Tile IR kernel. `f` and `args` are converted via
 `cuTileconvert` (CuArray → TileArray, Type → Constant). Equivalent to
 `@cuda backend=cuTile blocks=grid f(args...)` modulo
 slight kwarg naming.
@@ -1102,6 +1106,7 @@ function launch(@nospecialize(f), grid, args...;
                 dependent::Bool=false,
                 stream=CUDACore.stream(),
                 name::Union{String, Nothing}=nothing)
+    f = cuTileconvert(f)
     converted = map(cuTileconvert, args)
     tt = Tuple{map(Core.Typeof, converted)...}
     kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, num_worker_warps, name,

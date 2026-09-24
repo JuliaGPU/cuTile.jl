@@ -30,7 +30,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     ctx = CGCtx(; cb, sci, sm_arch, cache, debug_emitter, linkage_name=name)
 
     # Determine which argument positions are const-seeded
-    # const_argtypes is 1-indexed: [Const(f), arg2, arg3, ...]
+    # const_argtypes is 1-indexed: [f, arg2, arg3, ...]
     # sci.argtypes is also 1-indexed: [f_type, arg2_type, arg3_type, ...]
     is_const_arg(i) = const_argtypes !== nothing && i <= length(const_argtypes) &&
                       const_argtypes[i] isa CC.Const
@@ -276,9 +276,8 @@ function flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, @nospe
         if is_ghost_type(ftype)
             continue
         elseif isprimitivetype(ftype)
-            type_id = tile_type_for_julia!(ctx, ftype; throw_error=false)
-            type_id === nothing && continue
-            push!(param_types, type_id)
+            # the launch passes every field, so none can be left out
+            push!(param_types, tile_type_for_julia!(ctx, ftype))
             push!(param_mapping, (arg_idx, field_path))
         else
             flatten_struct_params!(ctx, param_types, param_mapping, arg_idx, ftype, field_path)
