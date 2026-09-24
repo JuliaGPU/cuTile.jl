@@ -148,7 +148,12 @@ end
 
 const TILE_CACHE_OWNER = :cuTile
 
-inference_cache(world::UInt) = CacheView{JobResults}(TILE_CACHE_OWNER, world)
+# Candidate compilations reuse the normal pipeline under a separate, stable owner.
+# Only the final launch enters the normal cache and writes to the object cache.
+const temporary_compilation = Base.ScopedValues.ScopedValue(false)
+
+inference_cache(world::UInt) = CacheView{JobResults}(
+    temporary_compilation[] ? :cuTileAutotune : TILE_CACHE_OWNER, world)
 inference_cache(job::TileJob) = inference_cache(job.world)
 
 """
