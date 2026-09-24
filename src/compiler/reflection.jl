@@ -44,8 +44,8 @@ end
     process_const_argtypes(f, argtypes) -> (stripped, const_argtypes)
 
 Split `Constant{T,V}` types from argtypes for method lookup, and build the
-`(Const(f), args...)` tuple with `CC.Const(V)` entries seeding const-prop
-inference (see `TileJob`).
+`(f, args...)` tuple with `CC.Const(V)` entries seeding const-prop inference
+(see `TileJob`).
 
 Returns `(stripped, nothing)` when no Constant types are present.
 """
@@ -67,8 +67,13 @@ function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
             T
         end
     end
-    return stripped, (CC.Const(f), const_argtypes...)
+    return stripped, (function_argtype(f), const_argtypes...)
 end
+
+# The entry of the kernel function `f` in `const_argtypes`. Only a singleton is
+# seeded as a constant: the values a closure captures are kernel parameters.
+function_argtype(@nospecialize(f)) =
+    Base.issingletontype(Core.Typeof(f)) ? CC.Const(f) : Core.Typeof(f)
 
 constant_eltype(::Type{Constant{T,V}}) where {T,V} = T
 constant_value(::Type{Constant{T,V}}) where {T,V} = V
