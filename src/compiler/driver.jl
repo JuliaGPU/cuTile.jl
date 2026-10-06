@@ -135,23 +135,6 @@ end
 
 
 #=============================================================================
- Compilation hook
-
- `@device_code_*` macros, cuTile's and GPUCompiler's alike, observe
- compilations through `GPUCompiler.compile_hook`, called with the job of every
- kernel that is compiled or launched while it is set.
-=============================================================================#
-
-# Launches run in the frozen world (`invoke_frozen`), but the hook closure
-# lives in the user's latest one, hence `invokelatest`.
-function run_compile_hook(job::TileJob)
-    hook = GPUCompiler.compile_hook[]
-    hook === nothing || Base.invokelatest(hook, job)
-    return
-end
-
-
-#=============================================================================
  Inference
 
  Inference is shared across targets and hints. Constant arguments select a
@@ -277,7 +260,7 @@ the object cache). Reports the job to the `@device_code_*` hook. Uncached;
 function compile(job::TileJob)
     (; sm_arch, bytecode_version) = job.config.target
     validate_tileiras_target(bytecode_version)
-    run_compile_hook(job)
+    GPUCompiler.run_compile_hook(job)
     (; bytecode, opt_level) = emit_tile(job)
     dump_bytecode(job.source, bytecode)
     return assemble(bytecode, sm_arch, opt_level)

@@ -122,7 +122,6 @@ end
     @test occursin("tile_kernel", tiled)
     @test !occursin("cuda_kernel", tiled)
     @test_throws "no kernels executed" ct.@device_code_tiled @cuda cuda_kernel(a)
-    @test GPUCompiler.compile_hook[] === nothing
     CUDA.synchronize()
 end
 

@@ -185,12 +185,11 @@ if ct.tileiras_available()
         ct.compile_or_lookup(job)
         # GPUCompiler's hook observes hits as well as misses, once per distinct job
         seen = ct.TileJob[]
-        with(GPUCompiler.compile_hook => (job -> push!(seen, job))) do
+        GPUCompiler.with_compile_hook(job -> push!(seen, job)) do
             ct.compile_or_lookup(job)
             ct.compile_or_lookup(job)
         end
         @test seen == [job, job]
-        @test GPUCompiler.compile_hook[] === nothing
 
         # GPUCompiler's macros accept Tile jobs through the shared protocol; cuTile
         # re-exports the Julia-level ones rather than defining its own
@@ -226,16 +225,14 @@ if ct.tileiras_available()
             end
         end
         @test String(take!(outer)) == String(take!(inner)) != ""
-        @test GPUCompiler.compile_hook[] === nothing
         @test_throws ErrorException ct.@device_code_structured error("reflection failed")
-        @test GPUCompiler.compile_hook[] === nothing
     end
 
     @testset "concurrent cache misses" begin
         job = ct.tile_job(reflect_vadd, TT3; sm_arch=v"10.0", name="concurrent_vadd")
         ct.cached_results(job)
         entered, resume = Channel{Nothing}(1), Channel{Nothing}(1)
-        late = @async with(GPUCompiler.compile_hook => (_ -> (put!(entered, nothing); take!(resume)))) do
+        late = @async GPUCompiler.with_compile_hook(_ -> (put!(entered, nothing); take!(resume))) do
             ct.compile_or_lookup(job)
         end
         take!(entered)
