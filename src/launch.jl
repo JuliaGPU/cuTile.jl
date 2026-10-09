@@ -664,7 +664,7 @@ function compile_or_lookup(job::TileJob)
             res.cubin === nothing && (res.cubin = cubin)
         end
     else
-        run_compile_hook(job)
+        GPUCompiler.run_compile_hook(job)
     end
     return res
 end

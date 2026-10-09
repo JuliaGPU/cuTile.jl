@@ -228,7 +228,7 @@ end # invalidations
 
     # @device_code_sass has source location annotations
     @test @filecheck begin
-        @check "; Location"
+        @check "{{^}}; {{.*}}core.jl:{{[0-9]+}}"
         CUDA.@device_code_sass @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
     end
 

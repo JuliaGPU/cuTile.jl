@@ -1,4 +1,7 @@
 # device print tests
+#
+# synchronizing the context flushes kernel output. synchronizing a stream doesn't when it
+# has already finished, as that doesn't involve the driver.
 
 using CUDA
 
@@ -15,7 +18,7 @@ using CUDA
     @test @filecheck begin
         @check "hello world"
         @cuda backend=cuTile print_const_kernel(a)
-        CUDA.synchronize()
+        CUDA.synchronize(CUDA.context())
     end
 end
 
@@ -33,7 +36,7 @@ end
         @check "tile=["
         @check "1.000000"
         @cuda backend=cuTile print_tile_kernel(a)
-        CUDA.synchronize()
+        CUDA.synchronize(CUDA.context())
     end
 end
 
@@ -50,7 +53,7 @@ end
     @test @filecheck begin
         @check "bid=1"
         @cuda backend=cuTile print_bid_kernel(a)
-        CUDA.synchronize()
+        CUDA.synchronize(CUDA.context())
     end
 end
 
@@ -67,7 +70,7 @@ end
     @test @filecheck begin
         @check "bid=1"
         @cuda backend=cuTile interp_kernel(a)
-        CUDA.synchronize()
+        CUDA.synchronize(CUDA.context())
     end
 end
 
@@ -86,6 +89,6 @@ end
         @check "first"
         @check "second"
         @cuda backend=cuTile multi_print_kernel(a)
-        CUDA.synchronize()
+        CUDA.synchronize(CUDA.context())
     end
 end
