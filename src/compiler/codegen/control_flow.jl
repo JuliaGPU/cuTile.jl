@@ -94,6 +94,10 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
+    isempty(cond_tv.shape) || throw(IRError(
+        "Cannot branch on a per-element condition (a Bool tile of size " *
+        "$(Tuple(ColMajorShape(cond_tv.shape).dims))); a branch in a function lifted over " *
+        "a tile must be free of loops and side effects in both arms, or throw in one"))
 
     # Determine result types from parent_result_type (token_order_pass! already
     # updated the type to include any token carries via inst[:type] = …).
@@ -295,6 +299,10 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
 
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && throw(IRError("Cannot resolve WhileOp condition"))
+        isempty(cond_tv.shape) || throw(IRError(
+            "Cannot loop on a per-element condition (a Bool tile of size " *
+            "$(Tuple(ColMajorShape(cond_tv.shape).dims))); a loop in a function lifted over " *
+            "a tile cannot depend on the element's value"))
 
         # Emit conditional break: if (cond) { yield } else { break }
         # This keeps nested loops in "after" at LoopOp body level

@@ -955,3 +955,27 @@ end
     @test O[:, 5:8] == 1f0 .- X
     @test O[:, 9:12] == Float32.(X .> 0f0)
 end
+
+@testset "scalar functions with branches" begin
+    # A branch on a per-element condition is flattened: both arms run and the
+    # results are selected per element.
+    hyp(x, y) = isinf(x) | isinf(y) ? Inf32 : sqrt(muladd(x, x, y * y))
+    piecewise(x) = x < -1f0 ? -1f0 : x > 1f0 ? x * x : x
+
+    function branch_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2})
+        t = ct.load(x, (1, 1), (64, 4))
+        ct.store(out, (1, 1), hyp.(t, t))
+        ct.store(out, (1, 2), piecewise.(t))
+        return
+    end
+
+    x = CUDA.randn(Float32, 64, 4)
+    CUDA.@allowscalar x[1, 1] = Inf32
+    out = CUDA.zeros(Float32, 64, 8)
+    @cuda backend=cuTile branch_kernel(out, x)
+
+    X = Array(x)
+    O = Array(out)
+    @test O[:, 1:4] ≈ hyp.(X, X)
+    @test O[:, 5:8] == piecewise.(X)
+end
