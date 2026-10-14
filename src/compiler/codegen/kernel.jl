@@ -300,9 +300,11 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
 
     obj_tv = emit_value!(ctx, obj_arg)
 
-    # Tuple indexing: extract component by integer index
-    if obj_tv !== nothing && obj_tv.tuple !== nothing && field isa Integer
-        return emit_value!(ctx, obj_tv.tuple[field])
+    # Aggregates (tuples, and immutable structs built in the kernel or captured
+    # by a combiner): extract a component by index or by field name
+    if obj_tv !== nothing && obj_tv.tuple !== nothing
+        index = field isa Symbol ? Base.fieldindex(CC.widenconst(obj_tv.jltype), field, false) : field
+        index isa Integer && index > 0 && return emit_value!(ctx, obj_tv.tuple[index])
     end
 
     # Immutable compile-time aggregates such as literal UnitRanges are ghost
@@ -366,6 +368,44 @@ end
 =============================================================================#
 
 """
+    import_value!(sub_ctx, ctx, tv, next_idx) -> CGVal
+
+Make `tv`, a value of `ctx`, available to the subprogram compiled in `sub_ctx`.
+Subprograms compile inline as nested regions, so Tile IR values stay in scope.
+The components of an aggregate, such as a closure's captured values, are bound
+to fresh arguments of `sub_ctx` (numbered from `next_idx`), and fields of a
+destructured kernel argument are resolved in `ctx` first.
+"""
+function import_value!(sub_ctx::CGCtx, ctx::CGCtx, tv::CGVal, next_idx::Ref{Int})
+    if tv.tuple === nothing && tv.arg_ref === nothing
+        # The subprogram operates on single elements.
+        CC.widenconst(tv.jltype) <: Tile && !isempty(tv.shape) &&
+            throw(IRError("A combiner cannot capture a tile of size $(size(CC.widenconst(tv.jltype))); " *
+                          "only scalars and 0-D tiles can be captured"))
+        return tv
+    end
+    T = CC.widenconst(tv.jltype)
+    components = if tv.tuple !== nothing
+        CGVal[@something(emit_value!(ctx, ref),
+                         throw(IRError("Cannot resolve a value captured by $T")))
+              for ref in tv.tuple]
+    else
+        arg_idx, chain = tv.arg_ref
+        CGVal[is_ghost_type(fieldtype(T, i)) ? ghost_value(fieldtype(T, i)) :
+              resolve_arg_ref(ctx, arg_idx, chain, i, fieldtype(T, i))
+              for i in 1:fieldcount(T)]
+    end
+    refs = Any[]
+    for c in components
+        arg = Argument(next_idx[])
+        next_idx[] += 1
+        sub_ctx[arg] = import_value!(sub_ctx, ctx, c, next_idx)
+        push!(refs, arg)
+    end
+    CGVal(nothing, TypeId(-1), tv.jltype, RowMajorShape(()), nothing, tv.constant, refs)
+end
+
+"""
     emit_subprogram!(ctx, func, arg_types, block_args, block_type_ids) -> Vector{Value}
 
 Compile a Julia function into the current region body. Resolves `func` via the cuTile
@@ -373,29 +413,25 @@ pipeline (method_instance → code_ircode → StructuredIRCode), creates a sub-c
 maps `block_args` to the function's positional arguments, emits the body, and returns
 the yielded result values.
 
-- `func`: the Julia function to compile (e.g., `+`, `max`, a lambda)
+- `func`: the function to compile (e.g., `+`, `max`, a lambda), as a value of the
+  enclosing context. A closure's captured values may be runtime values.
 - `arg_types`: Julia types for each block arg (e.g., `[Tile{Float32, Tuple{}}]` repeated)
 - `block_args`: IR `Value`s from the enclosing region (e.g., `[acc, elem]`)
 - `block_type_ids`: `TypeId`s corresponding to each block arg
 
 A `YieldOp` is emitted with the return value(s).
 """
-function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
+function emit_subprogram!(ctx::CGCtx, func::CGVal, arg_types::Vector,
                           block_args::Vector{Value}, block_type_ids::Vector{TypeId})
-    F = typeof(func)
-    if !is_ghost_type(F)
-        throw(IRError("emit_subprogram!: function argument $(F) (sizeof=$(sizeof(F))) is not " *
-                      "a zero-size type. All non-tile arguments must be zero-size."))
-    end
+    F = CC.widenconst(func.jltype)
 
     # 1. Resolve method instance
-    argtuple = Tuple{arg_types...}
     world = ctx.cache.world
-    mi = lookup_method_instance(func, argtuple; world)
+    mi = lookup_method_instance(Tuple{F, arg_types...}; world)
 
     # 2. Compile through cuTile pipeline (cached)
     if !haskey(ctx.cache, mi)
-        error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
+        error("Expected $F($(join(arg_types, ", "))) to be cached already by inference.")
     end
     sci, _, _ = emit_structured(emit_julia(ctx.cache, mi)...)
 
@@ -426,9 +462,13 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     end
 
     # 4. Map arguments dynamically: ghost args get ghost_value, non-ghost args
-    #    consume block_args sequentially.
+    #    consume block_args sequentially. The function itself carries the
+    #    values it captures.
     n_argtypes = length(sci.argtypes)
     block_idx = 1  # cursor into block_args
+    # Past the varargs components below.
+    capture_idx = Ref(n_argtypes + 2 * length(block_args) + 1)
+    sub_ctx[Argument(1)] = import_value!(sub_ctx, ctx, func, capture_idx)
 
     # Helper to promote scalar arg types to 0D tile at the boundary.
     # sci.argtypes retains the Julia signature; the IR body is tile-typed.
@@ -438,7 +478,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
         # Varargs: fixed argtypes are 1:n_argtypes-1, last is the varargs tuple.
         # Map fixed args (ghost or non-ghost), then pack remaining block_args
         # into a tuple CGVal for the varargs argument.
-        for i in 1:(n_argtypes - 1)
+        for i in 2:(n_argtypes - 1)
             argtype = sci.argtypes[i]
             if is_ghost_type(CC.widenconst(argtype))
                 sub_ctx[Argument(i)] = ghost_value(argtype)
@@ -457,7 +497,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
         constants = Vector{Any}(fill(nothing, length(tuple_components)))
         sub_ctx[Argument(n_argtypes)] = tuple_value(sci.argtypes[end], tuple_components, constants)
     else
-        for i in 1:n_argtypes
+        for i in 2:n_argtypes
             argtype = sci.argtypes[i]
             if is_ghost_type(CC.widenconst(argtype))
                 sub_ctx[Argument(i)] = ghost_value(argtype)

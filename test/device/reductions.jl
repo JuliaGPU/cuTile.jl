@@ -133,6 +133,85 @@ end
     end
 end
 
+@testset "reduce with capturing combiners" begin
+    # Holds the scale, so combiners reach it through nested fields.
+    struct Scale
+        s::Float32
+    end
+    # Combines (running maximum, sum of exp((x - maximum) / scale)) pairs.
+    struct ScaledExpSum{P}
+        p::P
+    end
+    function (c::ScaledExpSum)(a, b)
+        m = max(a[1], b[1])
+        (m, a[2] * exp((a[1] - m) / c.p.s) + b[2] * exp((b[1] - m) / c.p.s))
+    end
+    # Smooth maximum of two values; approaches `max` as the scale shrinks.
+    struct SmoothMax
+        s::Float32
+    end
+    (c::SmoothMax)(a, b) = c.s * log(exp(a / c.s) + exp(b / c.s))
+
+    # Each column reduces to s * log(sum(exp(x / s))).
+    function exp_sum_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2}, p)
+        t = ct.load(x, (1, ct.bid(1)), (64, 4))
+        r = mapreduce(identity, ScaledExpSum(p), t, ct.broadcast_to(ct.Tile(1f0), (64, 4));
+                      dims=1, init=(-Inf32, 0f0))
+        ct.store(out, (1, ct.bid(1)), r[1] .+ p.s .* log.(r[2]))
+        return
+    end
+    # The scale is a field of a struct built from a runtime argument.
+    function exp_sum_runtime_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2},
+                                    s::Float32)
+        t = ct.load(x, (1, ct.bid(1)), (64, 4))
+        r = mapreduce(identity, ScaledExpSum(Scale(s)), t,
+                      ct.broadcast_to(ct.Tile(1f0), (64, 4)); dims=1, init=(-Inf32, 0f0))
+        ct.store(out, (1, ct.bid(1)), r[1] .+ s .* log.(r[2]))
+        return
+    end
+
+    x = CUDA.randn(Float32, 64, 8)
+    expected = 2f0 .* log.(sum(exp.(Array(x) ./ 2f0); dims=1))
+
+    out = CUDA.zeros(Float32, 1, 8)
+    @cuda backend=cuTile blocks=2 exp_sum_kernel(out, x, ct.Constant(Scale(2f0)))
+    @test Array(out) ≈ expected
+
+    # The same kernel with the struct passed as a runtime argument.
+    out = CUDA.zeros(Float32, 1, 8)
+    @cuda backend=cuTile blocks=2 exp_sum_kernel(out, x, Scale(2f0))
+    @test Array(out) ≈ expected
+
+    out = CUDA.zeros(Float32, 1, 8)
+    @cuda backend=cuTile blocks=2 exp_sum_runtime_kernel(out, x, 2f0)
+    @test Array(out) ≈ expected
+
+    # A closure and a struct capturing a runtime argument.
+    function clamped_kernel(out::ct.TileArray{Float32,2}, scan::ct.TileArray{Float32,2},
+                            x::ct.TileArray{Float32,2}, hi::Float32)
+        t = ct.load(x, (1, 1), (64, 8))
+        ct.store(out, (1, 1), reduce((a, b) -> min(max(a, b), hi), t; dims=1, init=-Inf32))
+        ct.store(scan, (1, 1), accumulate(SmoothMax(hi), t; dims=1, init=-Inf32))
+        return
+    end
+    out = CUDA.zeros(Float32, 1, 8)
+    scan = CUDA.zeros(Float32, 64, 8)
+    @cuda backend=cuTile clamped_kernel(out, scan, x, 0.5f0)
+    @test Array(out) == min.(maximum(Array(x); dims=1), 0.5f0)
+    @test Array(scan) ≈ 0.5f0 .* log.(cumsum(exp.(Array(x) ./ 0.5f0); dims=1))
+
+    # A closure capturing a 0-D tile computed in the kernel.
+    function half_max_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2})
+        t = ct.load(x, (1, 1), (64, 8))
+        hi = maximum(t) * 0.5f0
+        ct.store(out, (1, 1), reduce((a, b) -> min(max(a, b), hi), t; dims=1, init=-Inf32))
+        return
+    end
+    out = CUDA.zeros(Float32, 1, 8)
+    @cuda backend=cuTile half_max_kernel(out, x)
+    @test Array(out) == min.(maximum(Array(x); dims=1), maximum(Array(x)) * 0.5f0)
+end
+
 @testset "reduction dimensions" begin
     function sum_dims_empty_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2})
         tile = ct.load(a, (1, 1), (8, 16))

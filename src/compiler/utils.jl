@@ -849,3 +849,12 @@ function lookup_method_instance(@nospecialize(f), @nospecialize(argtypes);
                match_method_instance(f, argtypes; world),
                throw(MethodError(f, argtypes)))
 end
+
+function lookup_method_instance(@nospecialize(sig::Type{<:Tuple});
+                                world::UInt=Base.get_world_counter())
+    Base.isdispatchtuple(sig) ||
+        throw(ArgumentError("requires a dispatch tuple, got non-concrete signature"))
+    @something(match_method_instance(sig; world, method_table=cuTileMethodTable),
+               match_method_instance(sig; world),
+               throw(ArgumentError("no method matching $sig")))
+end

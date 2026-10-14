@@ -1123,6 +1123,15 @@ spec4d = ct.ArraySpec{4}(16, true)
             return
         end
 
+        # The combiner operates on elements, so it cannot capture a shaped tile.
+        @test_throws "cannot capture a tile of size (1, 16)" code_tiled(
+            Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
+            tile = ct.load(a, (1, 1), (4, 16))
+            hi = ct.load(a, (1, 1), (1, 16))
+            Base.donotdelete(reduce((x, y) -> min(max(x, y), hi), tile; dims=1, init=-Inf32))
+            return
+        end
+
         # any
         @test @filecheck begin
             @check_label "entry"

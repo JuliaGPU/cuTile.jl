@@ -41,7 +41,8 @@ end
 Emit bytecode for a `:new` expression (struct construction).
 
 In Tile IR codegen, ghost types and zero-volume tiles have no runtime
-representation. Other struct construction is unsupported.
+representation. Other immutable structs, such as closures passed to `reduce`,
+become aggregates of their field values, like tuples.
 """
 function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     T = CC.widenconst(result_type)
@@ -52,6 +53,10 @@ function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     if T === MethodError
         # expr.args: (MethodError, func, args_tuple, world)
         _throw_method_error(ctx, expr.args[2:end-1])
+    end
+    if isstructtype(T) && !ismutabletype(T) && length(expr.args) - 1 == fieldcount(T)
+        fields = Any[expr.args[2:end]...]
+        return CGVal(nothing, TypeId(-1), T, RowMajorShape(()), nothing, nothing, fields)
     end
     throw(IRError("Struct construction not supported in Tile IR: $T"))
 end
