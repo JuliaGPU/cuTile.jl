@@ -49,6 +49,9 @@ const INTRINSIC_RULES = RewriteRule[
     @rewrite Core.Intrinsics.mul_float(~x, ~y) => Intrinsics.mulf(~x, ~y)
     @rewrite Core.Intrinsics.div_float(~x, ~y) => Intrinsics.divf(~x, ~y)
     @rewrite Core.Intrinsics.neg_float(~x)     => Intrinsics.negf(~x)
+    # `muladd` may be computed fused (rounded once) or as a multiply and an add;
+    # Tile IR has a native `fma`, so always fuse.
+    @rewrite Core.Intrinsics.muladd_float(~x, ~y, ~z) => Intrinsics.fma(~x, ~y, ~z)
 
     # Float comparison
     @rewrite Core.Intrinsics.lt_float(~x, ~y) =>

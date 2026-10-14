@@ -581,6 +581,20 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "float identity comparison" begin
+        # `===` on floats compares bits.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "bitcast {{.*}} -> tile<16xi32>"
+            @check "cmpi equal"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, (x -> ifelse(x === -0f0, 1f0, x)).(tile))
+                return
+            end
+        end
+    end
+
     @testset "mixed-type integer comparison" begin
         @test @filecheck begin
             @check_label "entry"

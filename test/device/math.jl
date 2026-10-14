@@ -249,3 +249,25 @@ if cuTile.bytecode_version() >= v"13.4"
     @test Array(out) ≈ Array(a) .^ Array(e) rtol=1f-3
 end
 end
+
+@testset "Base math functions over tiles" begin
+    for (name, f, gen) in [
+        ("atan",     atan,              () -> 4 .* randn(Float32, 256)),
+        ("copysign", x -> copysign(2f0, x), () -> randn(Float32, 256)),
+        ("muladd",   x -> muladd(x, x, 1f0), () -> randn(Float32, 256)),
+        ("Float64 muladd", x -> Float32(muladd(Float64(x), 2.0, 1.0)), () -> randn(Float32, 256)),
+        ("isinf",    x -> Float32(isinf(x)),
+                     () -> [randn(Float32, 252); Inf32; -Inf32; NaN32; floatmax(Float32)]),
+    ]
+        @testset "$name" begin
+            function base_math_kernel(out::ct.TileArray{Float32,1}, x::ct.TileArray{Float32,1}, f)
+                ct.store(out, 1, f.(ct.load(x, 1, (256,))))
+                return
+            end
+            x = gen()
+            out = CUDA.zeros(Float32, 256)
+            @cuda backend=cuTile base_math_kernel(out, CuArray(x), f)
+            @test Array(out) ≈ f.(x) rtol=1f-5
+        end
+    end
+end

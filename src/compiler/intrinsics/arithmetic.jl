@@ -176,6 +176,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cldi), args)
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingMode.PositiveInf)
 end
 
+# Unsigned integer type of the same width as the float type `T`.
+function bits_type(@nospecialize(T::Type))
+    w = lookup_bitwidth(T)
+    w == 8  ? UInt8  : w == 16 ? UInt16 : w == 32 ? UInt32 : w == 64 ? UInt64 :
+        throw(IRError("cannot compare $T values bitwise"))
+end
+
 """
     Intrinsics.cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) -> Tile{Bool}  where {T<:Integer}
 
@@ -212,7 +219,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     bool_dtype = I1(tt)
     result_type_id = tile_type!(tt, bool_dtype, result_shape)
 
-    result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v; predicate, signedness)
+    # `===` on floats (e.g. `abs(x) === Inf` in `Base.isinf`) compares bits.
+    # Tile IR's `cmpi` only takes integer tiles, so bitcast the operands first.
+    lhs_v, rhs_v = lhs.v, rhs.v
+    elem_type = eltype(CC.widenconst(lhs.jltype))
+    if elem_type <: AbstractFloat
+        int_type = tile_type!(tt, lookup_dtype!(tt, bits_type(elem_type)), result_shape)
+        lhs_v = encode_BitcastOp!(cb, int_type, lhs_v)
+        rhs_v = encode_BitcastOp!(cb, int_type, rhs_v)
+    end
+
+    result_v = encode_CmpIOp!(cb, result_type_id, lhs_v, rhs_v; predicate, signedness)
     lhs_type = CC.widenconst(lhs.jltype)
     result_jltype = similar_type(lhs_type, Bool)
     CGVal(result_v, result_type_id, result_jltype, result_shape)
