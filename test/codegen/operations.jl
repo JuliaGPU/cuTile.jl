@@ -2105,6 +2105,20 @@ end
         end
     end
 
+    @testset "scalar operands in broadcast functions" begin
+        # The scalar is broadcast to the tile's shape, and the result keeps the
+        # tile's dimension order.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "mulf {{.*}} : tile<4x64xf32>"
+            code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
+                tile = ct.load(a, (1, 1), (64, 4))
+                ct.store(a, (1, 1), (x -> 2x).(tile))
+                return
+            end
+        end
+    end
+
     @testset "scalar literal promotion" begin
         @test @filecheck begin
             @check_label "entry"
