@@ -186,16 +186,17 @@ function bits_type(@nospecialize(T::Type))
 end
 
 """
-    Intrinsics.cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) -> Tile{Bool}  where {T<:Integer}
+    Intrinsics.cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) -> Tile{Bool}  where {T<:Union{Integer, AbstractFloat}}
 
-Element-wise integer comparison; lowers to `cuda_tile.cmpi`.
+Element-wise integer comparison; lowers to `cuda_tile.cmpi`. Float operands
+are compared by their bit patterns, as `===` does.
 
 Also invocable with scalars, promoted to 0-D tiles before codegen. `pred`
 and `s` are compile-time `ComparisonPredicate.T` and `Signedness.T` flags.
 Mismatched-shape operands are broadcast to a common shape.
 """
-@intrinsic cmpi(x::T, y::T, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Integer}
-@intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Integer}
+@intrinsic cmpi(x::T, y::T, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Union{Integer, AbstractFloat}}
+@intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate.T, s::Signedness.T) where {T<:Union{Integer, AbstractFloat}}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpi), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(s))
     t = CC.widenconst(x)
     if t isa DataType && t <: Tile
