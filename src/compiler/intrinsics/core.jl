@@ -836,7 +836,7 @@ function emit_reduce!(ctx::CGCtx, args)
     N = length(tile_tvs)
 
     julia_axis = @something get_constant(ctx, args[2]) throw(IRError("reduce() axis must be a compile-time constant"))
-    func = @something get_constant(ctx, args[3]) throw(IRError("reduce() combiner function must be a compile-time constant"))
+    func = @something emit_value!(ctx, args[3]) throw(IRError("reduce() combiner function cannot be resolved"))
 
     identity_vals = resolve_constant_tuple(ctx, args[4], "reduce identities")
 
@@ -1012,7 +1012,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     N = length(tile_tvs)
 
     julia_axis = @something get_constant(ctx, args[2]) throw(IRError("scan() axis must be a compile-time constant"))
-    func = @something get_constant(ctx, args[3]) throw(IRError("scan() combiner function must be a compile-time constant"))
+    func = @something emit_value!(ctx, args[3]) throw(IRError("scan() combiner function cannot be resolved"))
 
     identity_vals = resolve_constant_tuple(ctx, args[4], "scan identities")
 

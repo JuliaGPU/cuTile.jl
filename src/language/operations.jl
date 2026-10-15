@@ -1447,9 +1447,9 @@ end
     map(f, a::Tile{<:Any,S}, rest::Tile{<:Any,S}...) -> Tile
 
 Apply function `f` element-wise across one or more same-shaped tiles.
-The function `f` must be a zero-size callable (singleton or capture-free lambda).
-All tiles must have the same shape `S` — use broadcasting (`.+` etc.) or explicit
-`broadcast_to` for shape-mismatched operands.
+`f` may be any scalar function, including a closure. All tiles must have the
+same shape `S` — use broadcasting (`.+` etc.) or explicit `broadcast_to` for
+shape-mismatched operands.
 
 # Examples
 ```julia
@@ -1514,7 +1514,7 @@ The single-tile form reduces a single tile along `dims` with identity element
 `init`. The multi-tile form reduces several same-shaped tiles simultaneously:
 `f` receives two tuples `(accumulators...)` and `(elements...)` and must return
 a tuple of updated accumulators. Each tile requires a corresponding entry in the
-`init` tuple.
+`init` tuple. Like in [`reduce`](@ref), `f` may be any associative function.
 
 When a non-identity map function is provided, it is applied element-wise via
 `map` before reduction. The map function must be type-preserving.
@@ -1559,7 +1559,9 @@ end
 Reduce a tile along the specified dimensions using binary function `f` with
 identity element `init`. See [`mapreduce`](@ref) for supported `dims` values.
 
-Supported functions: `+`, `*`, `max`, `min`.
+`f` may be any associative function, including a closure or a callable struct;
+the elements are combined in an unspecified order. Values that `f` captures may
+be compile-time constants or runtime values.
 
 # Example
 ```julia
@@ -1793,7 +1795,8 @@ end
 Scan (prefix sum) along the specified dimension using binary function `f`.
 The `dims` axis is 1-indexed.
 
-Supported functions: `+`, `*`, `max`, `min`.
+`f` may be any associative function, including a closure or a callable struct;
+see [`reduce`](@ref).
 """
 @inline function Base.accumulate(f, tile::Tile{T,S}; dims::Integer,
                                  init, rev::Bool=false) where {T<:Number, S}

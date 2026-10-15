@@ -166,10 +166,13 @@ end
 # endpoints without attempting to encode a range aggregate.
 emit_value!(ctx::CGCtx, val::AbstractUnitRange) = ghost_value(typeof(val), val)
 
-# Fallback for other types (constants embedded in IR)
+# Fallback for other types (constants embedded in IR). An immutable struct,
+# such as a reduction combiner built from `Constant` arguments, is a
+# compile-time aggregate whose fields `getfield` materializes.
 function emit_value!(ctx::CGCtx, @nospecialize(val))
     T = typeof(val)
     is_ghost_type(T) && return ghost_value(T, val)
+    isstructtype(T) && !ismutabletype(T) && return ghost_value(T, val)
     throw(IRError("Unsupported value type in Tile IR codegen: $T"))
 end
 
