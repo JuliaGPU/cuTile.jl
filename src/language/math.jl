@@ -33,6 +33,14 @@ end
 # Julia's `atan(y, x)` = `atan(y/x)`; Tile IR's `atan2(a, b)` = `atan(a/b)`.
 # Arguments map first-to-first.
 @overlay Base.atan(y::T, x::T) where {T <: ScalarFloat} = Intrinsics.atan2(y, x)
+@overlay Base.atan(x::T) where {T <: ScalarFloat} = Intrinsics.atan2(x, one(T))
+
+# Tile IR has no copysign; combine the magnitude bits of `x` with the sign bit of `y`.
+@overlay function Base.copysign(x::T, y::T) where {T <: Base.IEEEFloat}
+    U = Base.uinttype(T)
+    mask = Base.sign_mask(T)
+    reinterpret(T, (reinterpret(U, x) & ~mask) | (reinterpret(U, y) & mask))
+end
 
 # max/min
 @overlay Base.max(x::T, y::T) where {T <: Signed} = Intrinsics.maxi(x, y, Signedness.Signed)
