@@ -933,3 +933,25 @@ end
     @test Array(a) == fill(Float16(3.5), 16)
     @test Array(b) == fill(Int32(2), 16)
 end
+
+@testset "scalar operands in functions broadcast over 2-D tiles" begin
+    # Each scalar is the first operand (`x > 0f0` is `0f0 < x`), so the result
+    # takes the type of the broadcast scalar.
+    function scalar_operand_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2})
+        t = ct.load(x, (1, 1), (64, 4))
+        ct.store(out, (1, 1), (x -> 2x).(t))
+        ct.store(out, (1, 2), map(x -> 1f0 - x, t))
+        ct.store(out, (1, 3), (x -> Float32(x > 0f0)).(t))
+        return
+    end
+
+    x = CUDA.randn(Float32, 64, 4)
+    out = CUDA.zeros(Float32, 64, 12)
+    @cuda backend=cuTile scalar_operand_kernel(out, x)
+
+    X = Array(x)
+    O = Array(out)
+    @test O[:, 1:4] == 2 .* X
+    @test O[:, 5:8] == 1f0 .- X
+    @test O[:, 9:12] == Float32.(X .> 0f0)
+end

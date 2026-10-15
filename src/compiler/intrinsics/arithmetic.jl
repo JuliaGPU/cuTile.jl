@@ -7,7 +7,9 @@ function broadcast_to_shape!(cb, tt, tv::CGVal, target_shape)
     elem_type = eltype(CC.widenconst(tv.jltype))
     dtype = lookup_dtype!(tt, elem_type)
     bv = broadcast_tile_to_shape!(cb, tt, tv, target_shape, dtype)
-    jltype = similar_type(CC.widenconst(tv.jltype), elem_type, Tuple(target_shape))
+    # `target_shape` is row-major; the Julia type carries the column-major shape.
+    # `tv` may be a scalar literal.
+    jltype = Tile{elem_type, Tuple{ColMajorShape(target_shape).dims...}}
     CGVal(bv, tile_type!(tt, dtype, target_shape), jltype, target_shape,
           nothing, tv.constant, nothing)
 end
