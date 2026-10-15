@@ -249,3 +249,63 @@ if cuTile.bytecode_version() >= v"13.4"
     @test Array(out) ≈ Array(a) .^ Array(e) rtol=1f-3
 end
 end
+
+@testset "Base math functions over tiles" begin
+    for (name, f, gen) in [
+        # These branch per element. Inputs stay within each domain, outside of
+        # which Base throws.
+        ("log1p",    log1p,             () -> 4 .* rand(Float32, 256) .- 0.999f0),
+        ("expm1",    expm1,             () -> 4 .* randn(Float32, 256)),
+        ("asin",     asin,              () -> 2 .* rand(Float32, 256) .- 1),
+        ("acos",     acos,              () -> 2 .* rand(Float32, 256) .- 1),
+        ("hypot",    x -> hypot(x, 2x), () -> randn(Float32, 256)),
+        ("atan",     atan,              () -> 4 .* randn(Float32, 256)),
+        ("copysign", x -> copysign(2f0, x), () -> randn(Float32, 256)),
+        ("muladd",   x -> muladd(x, x, 1f0), () -> randn(Float32, 256)),
+        ("Float64 muladd", x -> Float32(muladd(Float64(x), 2.0, 1.0)), () -> randn(Float32, 256)),
+        ("isinf",    x -> Float32(isinf(x)),
+                     () -> [randn(Float32, 252); Inf32; -Inf32; NaN32; floatmax(Float32)]),
+    ]
+        @testset "$name" begin
+            function base_math_kernel(out::ct.TileArray{Float32,1}, x::ct.TileArray{Float32,1}, f)
+                ct.store(out, 1, f.(ct.load(x, 1, (256,))))
+                return
+            end
+            x = gen()
+            out = CUDA.zeros(Float32, 256)
+            @cuda backend=cuTile base_math_kernel(out, CuArray(x), f)
+            @test Array(out) ≈ f.(x) rtol=1f-5
+        end
+    end
+
+    # Edge cases: tiny arguments, the boundaries of the argument reduction, -1,
+    # overflow, and special values. Results are within 1 ulp of the correctly
+    # rounded value.
+    function edge_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2})
+        ct.store(out, (1, 1), log1p.(ct.load(x, (1, 1), (32, 1))))
+        ct.store(out, (1, 2), expm1.(ct.load(x, (1, 2), (32, 1))))
+        return
+    end
+    small = Float32[0, -0f0, 1f-30, -1f-30, 1f-10, -1f-10, 1f-7, -1f-7, 3f-8, -3f-8, 1f-4, -1f-4]
+    log1p_x = vcat(small, Float32[0.4142, 0.4143, -0.2929, -0.293, -0.5, -0.9999, -1, 0.5,
+                                  1, 10, 1f6, 1f30, floatmax(Float32), Inf, -2, NaN, 0.3, 3, 2, 0.7])
+    expm1_x = vcat(small, Float32[0.34, 0.35, -0.35, 1.03, 1.04, -1.04, 18, 19, -18, -19,
+                                  88.72, 88.7228, 88.723, 100, -100, Inf, -Inf, NaN, 5, -5])
+    out = CUDA.zeros(Float32, 32, 2)
+    @cuda backend=cuTile edge_kernel(out, CuArray([log1p_x expm1_x]))
+    O = Array(out)
+    rounded(f, x) = f === log1p && x < -1 ? NaN32 : Float32(f(Float64(x)))
+    @test all(isapprox.(O[:, 1], rounded.(log1p, log1p_x); rtol=eps(Float32), nans=true))
+    @test all(isapprox.(O[:, 2], rounded.(expm1, expm1_x); rtol=eps(Float32), nans=true))
+
+    # Float16 rounds the Float32 result.
+    function half_kernel(out::ct.TileArray{Float16,2}, x::ct.TileArray{Float16,2})
+        ct.store(out, (1, 1), log1p.(ct.load(x, (1, 1), (256, 1))))
+        ct.store(out, (1, 2), expm1.(ct.load(x, (1, 2), (256, 1))))
+        return
+    end
+    xh = Float16.([rand(Float32, 256) .* 4 .- 0.99f0 randn(Float32, 256) .* 4])
+    outh = CUDA.zeros(Float16, 256, 2)
+    @cuda backend=cuTile half_kernel(outh, CuArray(xh))
+    @test Array(outh) ≈ [log1p.(xh[:, 1]) expm1.(xh[:, 2])] rtol=eps(Float16)
+end

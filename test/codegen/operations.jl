@@ -581,6 +581,20 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "float identity comparison" begin
+        # `===` on floats compares bits.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "bitcast {{.*}} -> tile<16xi32>"
+            @check "cmpi equal"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, (x -> ifelse(x === -0f0, 1f0, x)).(tile))
+                return
+            end
+        end
+    end
+
     @testset "mixed-type integer comparison" begin
         @test @filecheck begin
             @check_label "entry"
@@ -2114,6 +2128,35 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
                 tile = ct.load(a, (1, 1), (64, 4))
                 ct.store(a, (1, 1), (x -> 2x).(tile))
+                return
+            end
+        end
+    end
+
+    @testset "branches in broadcast functions" begin
+        # A branch on a per-element condition executes both arms and selects.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "sqrt"
+            @check "select"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                f(x) = isinf(x) ? Inf32 : sqrt(x * x + 1f0)
+                ct.store(a, 1, f.(tile))
+                return
+            end
+        end
+
+        # A throw in such a branch asserts that no element takes it.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "assert {{.*}}, \"DomainError"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                g(x) = x < 0f0 ? throw(DomainError(x)) : sqrt(x)
+                ct.store(a, 1, g.(tile))
                 return
             end
         end
