@@ -14,32 +14,6 @@ end
 
 # Lowers Julia Core intrinsics and builtins to cuTile Intrinsics.
 
-# `===` compares bit patterns, but Tile IR's `cmpi` only takes integers. Float
-# operands (as in `Base.isinf`'s `abs(x) === oftype(x, Inf)`) are reinterpreted
-# as unsigned integers of the same width.
-function lower_float_egal(sci, block, inst, match, driver)
-    ops = (match.bindings[:x], match.bindings[:y])
-    elem_type(op) = op isa Number ? typeof(op) :
-        (T = value_type(block, op); T === nothing ? nothing :
-                                    eltype(boundary_jltype(CC.widenconst(T))))
-    T = something(elem_type(ops[1]), elem_type(ops[2]), Nothing)
-    T <: AbstractFloat && hasmethod(Base.uinttype, Tuple{Type{T}}) || return false
-    U = Base.uinttype(T)
-
-    val = SSAValue(inst)
-    bits = map(ops) do op
-        op isa Number && return reinterpret(U, op)
-        shape = size(boundary_jltype(CC.widenconst(value_type(block, op))))
-        SSAValue(insert_before!(driver.rewriter, block, val,
-                                Expr(:call, Intrinsics.bitcast, op, U), Tile{U, Tuple{shape...}};
-                                flag=inferred_flags(Intrinsics.bitcast)))
-    end
-    replace_stmt!(driver.rewriter, block, val,
-                  Expr(:call, Intrinsics.cmpi, bits..., ComparisonPredicate.Equal, Signedness.Unsigned);
-                  flag=inferred_flags(Intrinsics.cmpi))
-    return true
-end
-
 const INTRINSIC_RULES = RewriteRule[
     # Integer arithmetic
     @rewrite Core.Intrinsics.add_int(~x, ~y) => Intrinsics.addi(~x, ~y)
@@ -93,9 +67,7 @@ const INTRINSIC_RULES = RewriteRule[
     @rewrite Core.Intrinsics.bitcast(~T, ~x) => Intrinsics.bitcast(~x, ~T)
 
     # Builtins
-    @rewriter (===)(~x, ~y) => lower_float_egal
-    @rewrite (===)(~x, ~y) =>
-            Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.Equal), $(Signedness.Signed))
+    @rewrite (===)(~x, ~y) => Intrinsics.egal(~x, ~y)
     @rewrite Core.ifelse(~c, ~x, ~y) => Intrinsics.select(~c, ~x, ~y)
 ]
 

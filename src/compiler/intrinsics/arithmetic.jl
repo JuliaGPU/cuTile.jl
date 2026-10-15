@@ -205,6 +205,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     rhs = @something emit_value!(ctx, args[2]) throw(IRError("cmpi: cannot resolve rhs"))
     predicate = @something get_constant(ctx, args[3]) throw(IRError("cmpi: requires compile-time predicate"))
     signedness = @something get_constant(ctx, args[4]) throw(IRError("cmpi: requires compile-time signedness"))
+    emit_cmpi!(ctx, lhs, rhs, predicate, signedness)
+end
+function emit_cmpi!(ctx::CGCtx, lhs::CGVal, rhs::CGVal, predicate, signedness)
+    cb = ctx.cb
+    tt = ctx.tt
 
     # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
     lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
@@ -218,6 +223,41 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     lhs_type = CC.widenconst(lhs.jltype)
     result_jltype = similar_type(lhs_type, Bool)
     CGVal(result_v, result_type_id, result_jltype, result_shape)
+end
+
+"""
+    Intrinsics.egal(a::Tile{T}, b::Tile{T}) -> Tile{Bool}
+
+Element-wise `===`, which compares bit patterns; lowers to `cuda_tile.cmpi`.
+Float operands are first bitcast to unsigned integers of the same width.
+
+Also invocable with scalars, promoted to 0-D tiles before codegen.
+Mismatched-shape operands are broadcast to a common shape.
+"""
+@intrinsic egal(x::T, y::T) where {T}
+@intrinsic egal(a::Tile{T}, b::Tile{T}) where {T}
+tfunc(𝕃, ::typeof(Intrinsics.egal), @nospecialize(x), @nospecialize(y)) =
+    tfunc(𝕃, Intrinsics.cmpi, x, y, nothing, nothing)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.egal), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    lhs = @something emit_value!(ctx, args[1]) throw(IRError("egal: cannot resolve lhs"))
+    rhs = @something emit_value!(ctx, args[2]) throw(IRError("egal: cannot resolve rhs"))
+
+    T = eltype(CC.widenconst(lhs.jltype))
+    if T <: AbstractFloat
+        hasmethod(Base.uinttype, Tuple{Type{T}}) ||
+            throw(IRError("=== is not supported for $T values"))
+        U = Base.uinttype(T)
+        lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
+        type_id = tile_type!(tt, lookup_dtype!(tt, U), lhs.shape)
+        jltype = Tile{U, Tuple{ColMajorShape(lhs.shape).dims...}}
+        lhs, rhs = map((lhs, rhs)) do tv
+            CGVal(encode_BitcastOp!(cb, type_id, tv.v), type_id, jltype, tv.shape)
+        end
+    end
+    emit_cmpi!(ctx, lhs, rhs, ComparisonPredicate.Equal, Signedness.Unsigned)
 end
 
 """
