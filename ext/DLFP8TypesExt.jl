@@ -1,6 +1,7 @@
 module DLFP8TypesExt
 
 import cuTile as ct
+import DLFP8Types
 
 using DLFP8Types: Float8_E4M3FN, Float8_E5M2
 
@@ -45,5 +46,14 @@ for F8 in FP8Types
     end
     @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $F8(x::$F8, ::Base.Rounding.RoundingMode) = x
 end
+
+# FP8 is a storage / tensor-core operand format, not an arithmetic type: the
+# Tile IR elementwise float ops only accept f16/bf16/f32/f64. Registered for
+# every `FP8` subtype, not just the two with a Tile IR dtype, so that the
+# broadcast/map gate and the tile-level guards recognize them all. The gate
+# rejects the operations up front, so DLFP8Types' own scalar implementations —
+# the Float32 round-trip arithmetic and the bit-level comparisons — are never
+# consulted in a kernel; host-side FP8 stays untouched.
+ct.is_restricted_float(::Type{<:DLFP8Types.FP8}) = true
 
 end

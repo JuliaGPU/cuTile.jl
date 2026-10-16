@@ -77,13 +77,43 @@ conventions: the remainder takes the sign of the divisor.
 @inline divmod(x::Tile{T,S}, y::Tile{T,S}) where {T<:Integer, S} =
     (div.(x, y, RoundDown), mod.(x, y))
 
+"""
+    check_arithmetic(T)
+
+Reject arithmetic on a restricted float element type `T` (`TFloat32`, and the
+FP8/FP4 types registered by the package extensions): the elementwise float
+intrinsics only accept f16/bf16/f32/f64, so an unguarded operation produces an
+opaque tileiras verifier failure. Fail early with an actionable error instead;
+the collected diagnostic's stacktrace names the offending operator. The check
+folds away for arithmetic floats.
+
+This guards the direct tile operators below; the broadcast and `map` paths are
+gated in `_apply_broadcast` (language/broadcast.jl), which shares the message.
+"""
+function check_arithmetic(::Type{T}) where {T}
+    if is_restricted_float(T)
+        throw(ArgumentError(RESTRICTED_ARITHMETIC_MESSAGE))
+    end
+    return nothing
+end
+
+# The message must stay a compile-time constant (see `throw_constant` in
+# transform/throws.jl): one assembled at run time from `T` degrades to
+# "ArgumentError was thrown". The stacktrace names the offending operation.
+const RESTRICTED_ARITHMETIC_MESSAGE =
+    "operations on a restricted float element type are not supported; " *
+    "perform an explicit cast instead, e.g. convert(Tile{Float32}, x)"
+
 # direct operators (same shape required)
-@inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.addf(a, b)
+@inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} =
+    (check_arithmetic(T); Intrinsics.addf(a, b))
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.addi(a, b)
-@inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.subf(a, b)
+@inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} =
+    (check_arithmetic(T); Intrinsics.subf(a, b))
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
 
-@inline Base.:(-)(a::Tile{T}) where {T <: AbstractFloat} = Intrinsics.negf(a)
+@inline Base.:(-)(a::Tile{T}) where {T <: AbstractFloat} =
+    (check_arithmetic(T); Intrinsics.negf(a))
 @inline Base.:(-)(a::Tile{T}) where {T <: Integer} = Intrinsics.negi(a)
 
 # All other tile arithmetic (*, -, /, ^, comparisons, ifelse, etc.) is handled
@@ -104,6 +134,9 @@ end
 ## mixed arithmetic
 
 # direct operators (tile * scalar, tile / scalar)
-@inline Base.:(*)(a::Tile{T}, b::Number) where {T <: AbstractFloat} = Intrinsics.mulf(a, broadcast_to(Tile(T(b)), size(a)))
-@inline Base.:(*)(a::Number, b::Tile{T}) where {T <: AbstractFloat} = Intrinsics.mulf(broadcast_to(Tile(T(a)), size(b)), b)
-@inline Base.:(/)(a::Tile{T}, b::Number) where {T <: AbstractFloat} = Intrinsics.divf(a, broadcast_to(Tile(T(b)), size(a)))
+@inline Base.:(*)(a::Tile{T}, b::Number) where {T <: AbstractFloat} =
+    (check_arithmetic(T); Intrinsics.mulf(a, broadcast_to(Tile(T(b)), size(a))))
+@inline Base.:(*)(a::Number, b::Tile{T}) where {T <: AbstractFloat} =
+    (check_arithmetic(T); Intrinsics.mulf(broadcast_to(Tile(T(a)), size(b)), b))
+@inline Base.:(/)(a::Tile{T}, b::Number) where {T <: AbstractFloat} =
+    (check_arithmetic(T); Intrinsics.divf(a, broadcast_to(Tile(T(b)), size(a))))

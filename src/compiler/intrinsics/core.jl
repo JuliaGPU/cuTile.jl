@@ -865,10 +865,12 @@ function emit_reduce!(ctx::CGCtx, args)
 
     for (k, tv) in enumerate(tile_tvs)
         etype = eltype(CC.widenconst(tv.jltype))
-        # Restricted floats (TFloat32, future FP8/FP4) lack the arithmetic
-        # support that reduce body subprograms typically require, so reject
-        # them at the SCI boundary with a clear error.
-        is_restricted_float(etype) &&
+        # Restricted floats (TFloat32, FP8/FP4 from the extensions) lack the
+        # arithmetic support that reduce body subprograms typically require, so
+        # reject them at the SCI boundary with a clear error. Resolved in the
+        # latest world for the same reason as `lookup_dtype!`: extensions
+        # register their types after the pipeline's world was frozen.
+        Base.invokelatest(is_restricted_float, etype)::Bool &&
             throw(IRError("reduce: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
         dtype = lookup_dtype!(tt, etype)
@@ -1043,7 +1045,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
 
     for (k, tv) in enumerate(tile_tvs)
         etype = eltype(CC.widenconst(tv.jltype))
-        is_restricted_float(etype) &&
+        # latest-world lookup, see `emit_reduce!`
+        Base.invokelatest(is_restricted_float, etype)::Bool &&
             throw(IRError("scan: element type $etype is a restricted float and unsupported"))
         push!(elem_types, etype)
         dtype = lookup_dtype!(tt, etype)

@@ -60,4 +60,13 @@ for MF in MicrofloatTypes
     @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable $MF(x::$MF, ::Base.Rounding.RoundingMode) = x
 end
 
+# Microfloats are storage / tensor-core operand formats, not arithmetic types:
+# the Tile IR elementwise float ops only accept f16/bf16/f32/f64. Registered for
+# every `Microfloat`, not just the four with a Tile IR dtype, so that the
+# broadcast/map gate and the tile-level guards recognize them all. The gate
+# rejects the operations up front, so Microfloats' own scalar implementations —
+# arithmetic as a Float32 round-trip (src/ops.jl) — are never consulted in a
+# kernel; host-side microfloat arithmetic stays untouched.
+ct.is_restricted_float(::Type{<:Microfloats.Microfloat}) = true
+
 end

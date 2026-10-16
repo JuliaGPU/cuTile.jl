@@ -76,6 +76,167 @@ end
 
 end
 
+# FP8 is a restricted float: a storage / tensor-core operand format without
+# general arithmetic. DLFP8Types' scalar fallbacks would otherwise let the
+# broadcast path compile into a silent ftof/op/ftof round-trip, and the direct
+# tile operators into an `addf` the tileiras verifier rejects.
+@testset "restricted arithmetic" begin
+
+AT = ct.TileArray{Float8_E4M3FN,1,spec1d}
+
+# broadcast (upstream's Float32 round-trip fallback)
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b, c) -> begin
+        pid = ct.bid(1)
+        ct.store(c, pid, ct.load(a, pid, (16,)) .+ ct.load(b, pid, (16,)))
+        return
+    end, Tuple{AT, AT, AT})
+
+# direct tile operator (previously an MLIR verifier failure)
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b, c) -> begin
+        pid = ct.bid(1)
+        ct.store(c, pid, ct.load(a, pid, (16,)) + ct.load(b, pid, (16,)))
+        return
+    end, Tuple{AT, AT, AT})
+
+# unary math via broadcast
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, sqrt.(ct.load(a, pid, (16,))))
+        return
+    end, Tuple{AT, AT})
+
+# tile × scalar (the mixed-arithmetic guard)
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, ct.load(a, pid, (16,)) * 2.0f0)
+        return
+    end, Tuple{AT, AT})
+
+# broadcast `muladd` expands to the scalar `x * y + z`
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b, c, d) -> begin
+        pid = ct.bid(1)
+        ct.store(d, pid, muladd.(ct.load(a, pid, (16,)), ct.load(b, pid, (16,)),
+                                 ct.load(c, pid, (16,))))
+        return
+    end, Tuple{AT, AT, AT, AT})
+
+# reduce and scan check `is_restricted_float` at codegen time, which must
+# resolve in the latest world to see the extension's method (`invokelatest`
+# in `emit_reduce!`/`emit_intrinsic!`; a frozen-world call would miss it and
+# fall through to an opaque failure in the reduce body).
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        s = mapreduce(identity, max, ta; dims=1, init=Float8_E4M3FN(0.0f0))
+        ct.store(b, pid, ct.broadcast_to(s, (16,)))
+        return
+    end, Tuple{AT, AT})
+
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, cumsum(ct.load(a, pid, (16,)); dims=1))
+        return
+    end, Tuple{AT, AT})
+
+# Comparisons stay allowed (cuTile Python allows them too). DLFP8Types
+# implements them at the bit level, which does not compile in kernels; the
+# broadcast gate never consults that, upcasting the operands to Float32
+# instead, so they lower to `ftof` + `cmpf`.
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}) do a, b, c
+        ta = ct.load(a, ct.bid(1), (16,))
+        tb = ct.load(b, ct.bid(1), (16,))
+        @check "ftof"
+        @check "ftof"
+        @check "cmpf"
+        ct.store(c, ct.bid(1), ifelse.(ta .< tb, Int32(1), Int32(0)))
+        return
+    end
+end
+
+# The remaining comparisons, compile-only. The function barrier keeps the
+# kernel closure's captured `f` a concrete singleton.
+function compiles_cmp(f)
+    isnothing(code_tiled(devnull,
+        (a, b, c) -> begin
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            ct.store(c, pid, ifelse.(f.(ta, tb), Int32(1), Int32(0)))
+            return
+        end, Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}}))
+end
+@test compiles_cmp(<=)
+@test compiles_cmp(==)
+# `isless` forwards to `isless(::Float32, ::Float32)`, whose Base definition
+# does not compile under broadcast for any float tile yet (its `isnan` guard
+# trips a scalar-vs-tile shape mismatch in cmpf). The gate's upcast is what
+# gets FP8 to exactly that point; this flips when the underlying issue is fixed.
+@test_broken compiles_cmp(isless)
+
+# Explicit conversion is the sanctioned escape hatch, in both directions: it
+# passes through the gate to the constructor overlays and lowers to one `ftof`.
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{AT, ct.TileArray{Float32,1,spec1d}}) do a, b
+        pid = ct.bid(1)
+        @check "ftof"
+        @check_not "ftof"
+        ct.store(b, pid, Float32.(ct.load(a, pid, (16,))))
+        return
+    end
+end
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, AT}) do a, b
+        pid = ct.bid(1)
+        @check "ftof"
+        @check_not "ftof"
+        ct.store(b, pid, Float8_E4M3FN.(ct.load(a, pid, (16,))))
+        return
+    end
+end
+
+# `ifelse` selects between unmodified values, so it stays available too and
+# lowers to a plain `select` — no conversion in sight.
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{AT, AT, ct.TileArray{Int32,1,spec1d}, AT}) do a, b, m, c
+        pid = ct.bid(1)
+        mask = ct.load(m, pid, (16,)) .> Int32(0)
+        @check "select"
+        @check_not "ftof"
+        ct.store(c, pid, ifelse.(mask, ct.load(a, pid, (16,)), ct.load(b, pid, (16,))))
+        return
+    end
+end
+
+# Element-wise application of anything else is rejected, even a lambda whose
+# body is only a cast: cuTile Python has no per-element operations on restricted
+# types either. `convert(Tile{Float32}, tile)` is the supported spelling.
+@test_throws "restricted float" code_tiled(devnull,
+    (a, b) -> begin
+        pid = ct.bid(1)
+        ct.store(b, pid, map(x -> Float32(x), ct.load(a, pid, (16,))))
+        return
+    end, Tuple{AT, ct.TileArray{Float32,1,spec1d}})
+
+# The gate only applies inside kernels, so host arithmetic is untouched.
+@test Float8_E4M3FN(1.0f0) + Float8_E4M3FN(1.0f0) == Float8_E4M3FN(2.0f0)
+@test -Float8_E4M3FN(1.0f0) == Float8_E4M3FN(-1.0f0)
+@test sqrt(Float8_E4M3FN(4.0f0)) == Float8_E4M3FN(2.0f0)
+@test Float8_E4M3FN(1.0f0) < Float8_E4M3FN(2.0f0)
+
+end
+
 # Execution kernels are plain top-level functions, each defined next to the
 # test that exercises it. Kernels parametric on accumulator dtype must stay at
 # top level — defining them inside a testset scope boxes them into closures.
@@ -92,17 +253,6 @@ function rt_e5m2(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
     pid = ct.bid(1)
     tile = ct.load(a, pid, (16,))
     ct.store(b, pid, convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E5M2}, tile)))
-    return
-end
-# FMA in FP8: load Float32, convert to FP8, multiply-add in FP8, convert back.
-# Inputs whose products and sums also stay representable, so the result is exact.
-function fma_e4m3(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                  c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
-    pid = ct.bid(1)
-    ta = convert(ct.Tile{Float8_E4M3FN}, ct.load(a, pid, (16,)))
-    tb = convert(ct.Tile{Float8_E4M3FN}, ct.load(b, pid, (16,)))
-    tc = convert(ct.Tile{Float8_E4M3FN}, ct.load(c, pid, (16,)))
-    ct.store(d, pid, convert(ct.Tile{Float32}, muladd.(ta, tb, tc)))
     return
 end
 # Non-scaled FP8 matmul with both allowed accumulator dtypes (f16 and f32).
@@ -130,15 +280,6 @@ let a = CuArray(representable), b = CUDA.zeros(Float32, length(representable))
     @test Array(b) == representable
     @cuda backend=cuTile blocks=1 rt_e5m2(a, b)
     @test Array(b) == representable
-end
-
-let av = Float32[1.0, 2.0, 0.5, 4.0, 1.5, 2.0, -1.0, -0.5, 3.0, 0.5, 1.0, 2.0, -2.0, 1.0, 0.5, 4.0],
-    bv = Float32[2.0, 1.0, 4.0, 0.5, 2.0, 3.0,  2.0,  4.0, 1.0, 2.0, 1.0, 0.5,  2.0, 1.0, 2.0, 1.0],
-    cv = Float32[0.0, 1.0, 0.0, 0.0, 1.0, 1.0,  0.0,  0.0, 1.0, 0.0, 0.0, 1.0,  0.0, 0.0, 1.0, 0.0]
-    a, b, c = CuArray(av), CuArray(bv), CuArray(cv)
-    d = CUDA.zeros(Float32, length(av))
-    @cuda backend=cuTile blocks=1 fma_e4m3(a, b, c, d)
-    @test Array(d) == av .* bv .+ cv
 end
 
 @testset "mma → $Tacc acc" for Tacc in (Float32, Float16)
