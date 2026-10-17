@@ -283,7 +283,7 @@ cat_tree(tiles, dim) = cat_tree(tiles, Val(dim))
     tree(1, length(widths))
 end
 
-function cat_tiles(tiles, dim)
+function cat_tiles(tiles::Tuple{Vararg{Tile}}, dim)
     dim > 0 || throw(ArgumentError("concatenation dimension must be positive"))
     rank = max(dim, maximum(ndims, tiles))
     cat_tree(map(tile -> pad_tile(tile, rank), tiles), dim)
