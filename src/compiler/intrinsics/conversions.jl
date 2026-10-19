@@ -241,7 +241,7 @@ const FLOAT_DTYPE_NAMES = Dict(
     SimpleType.F32 => "Float32", SimpleType.TF32 => "TFloat32",
     SimpleType.F64 => "Float64", SimpleType.F8E4M3FN => "Float8_E4M3FN",
     SimpleType.F8E5M2 => "Float8_E5M2", SimpleType.F8E8M0FNU => "Float8_E8M0FNU",
-    SimpleType.F4E2M1FN => "Float4_E2M1FN",
+    SimpleType.F4E2M1FN => "Float4_E2M1FN", SimpleType.F8E5M3FNU => "Float8_E5M3FNU",
 )
 float_dtype_name(tag::UInt8) = get(FLOAT_DTYPE_NAMES, tag, string(tag))
 

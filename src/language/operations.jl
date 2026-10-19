@@ -1931,9 +1931,10 @@ dimension of its operand, so `a_scale`/`b_scale` match `a`/`b` in every
 dimension except K, where they have `K_s ≤ K` entries.
 
 `a`/`b` are low-precision floats (`f8e4m3fn`, `f8e5m2`, or `f4e2m1fn`),
-`a_scale`/`b_scale` are `f8e8m0fnu` or `f8e4m3fn`, and `acc` is `f32`. Shapes
-follow [`muladd`](@ref): 2-D `(M, K)` × `(K, N)`, mat-vec, and trailing batch
-dims; vec-mat is unsupported (it would collapse K, leaving nothing to scale).
+`a_scale`/`b_scale` are `f8e8m0fnu`, `f8e4m3fn`, or `f8e5m3fnu` (v13.4+,
+Rubin), and `acc` is `f32`. Shapes follow [`muladd`](@ref): 2-D `(M, K)` ×
+`(K, N)`, mat-vec, and trailing batch dims; vec-mat is unsupported (it would
+collapse K, leaving nothing to scale).
 """
 function muladd_scaled(a::Tile{Ta, SA}, a_scale::Tile, b::Tile{Tb, SB}, b_scale::Tile,
                                acc::Tile) where {Ta, Tb, SA, SB}

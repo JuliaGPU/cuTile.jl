@@ -1,5 +1,5 @@
 using CUDA
-using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN
+using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN, Float8_E5M3FNU
 
 # Kernels are plain top-level functions (not closures), each defined next to the
 # testset that exercises it. Kernels parametric on operand dtype must stay at
@@ -30,6 +30,22 @@ function rt_f4(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
     ct.store(b, pid, convert(ct.Tile{Float32}, convert(ct.Tile{Float4_E2M1FN}, tile)))
     return
 end
+function rt_e5m3fnu(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+    pid = ct.bid(1)
+    tile = ct.load(a, pid, (16,))
+    ct.store(b, pid, convert(ct.Tile{Float32}, convert(ct.Tile{Float8_E5M3FNU}, tile)))
+    return
+end
+function fill_e5m3fnu(b::ct.TileArray{Float32,1})
+    tile = convert(ct.Tile{Float8_E5M3FNU}, fill(1.5f0, (16,)))
+    ct.store(b, ct.bid(1), convert(ct.Tile{Float32}, tile))
+    return
+end
+function cvt(a::ct.TileArray{S,1}, b::ct.TileArray{T,1}) where {S,T}
+    pid = ct.bid(1)
+    ct.store(b, pid, convert(ct.Tile{T}, ct.load(a, pid, (16,))))
+    return
+end
 function fma_e4m3(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                   c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
     pid = ct.bid(1)
@@ -43,7 +59,8 @@ end
 # Standalone f32 → microfloat → f32 conversion round-trips exactly for every
 # microfloat type on representable inputs. FP8 (e4m3/e5m2) needs Hopper (sm_90+);
 # E8M0FNU and Float4_E2M1FN need Blackwell (sm_100+). E8M0 is exponent-only, so
-# its representable values are exact powers of two.
+# its representable values are exact powers of two. Float8_E5M3FNU needs exactly
+# Rubin (sm_107) and bytecode v13.4.
 @testset "ftof" begin
 if capability(device()) >= v"9"
     # Round-trip Float32 → microfloat → Float32 on exactly-representable values.
@@ -82,6 +99,44 @@ if capability(device()) >= v"10" && cuTile.bytecode_version() >= v"13.3"
     let a = CuArray(representable4), b = CUDA.zeros(Float32, length(representable4))
         @cuda backend=cuTile blocks=1 rt_f4(a, b)
         @test Array(b) == representable4
+    end
+end
+if capability(device()) == v"10.7" && cuTile.bytecode_version() >= v"13.4"
+    # E5M3FNU round-trip: unsigned, from the smallest subnormal (2^-17) to the
+    # largest finite value (114688).
+    representable_e5m3 = Float32[0, 2f0^-17, 2f0^-14, 0.125, 0.5, 0.75, 1, 1.125,
+                                 1.5, 1.875, 3, 15, 240, 1024, 61440, 114688]
+    let a = CuArray(representable_e5m3), b = CUDA.zeros(Float32, length(representable_e5m3))
+        @cuda backend=cuTile blocks=1 rt_e5m3fnu(a, b)
+        @test Array(b) == representable_e5m3
+    end
+
+    # Conversion to E5M3FNU rounds to nearest, ties to even (1.0625 → 1, 1.1875 → 1.25).
+    inexact_e5m3 = Float32[1.0625, 1.1875, 1.03, 1.2, 2.1, 2.2, 3.3, 5.5,
+                           7.7, 9.9, 0.3, 0.07, 100, 1000, 3.0e4, 1.0e5]
+    let a = CuArray(inexact_e5m3), b = CUDA.zeros(Float32, length(inexact_e5m3))
+        @cuda backend=cuTile blocks=1 rt_e5m3fnu(a, b)
+        @test Array(b) == Float32.(Float8_E5M3FNU.(inexact_e5m3))
+    end
+
+    # A constant tile converted to E5M3FNU.
+    let b = CUDA.zeros(Float32, 16)
+        @cuda backend=cuTile blocks=1 fill_e5m3fnu(b)
+        @test all(==(1.5f0), Array(b))
+    end
+
+    # E5M3FNU to and from the other float types, on values all of them represent.
+    common = Float32[0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48]
+    @testset "Float8_E5M3FNU ↔ $T" for T in (Float64, Float32, Float16, ct.BFloat16,
+                                             Float8_E4M3FN, Float8_E5M2)
+        src = CuArray(Float8_E5M3FNU.(common))
+        dst = CuArray(zeros(T, length(common)))
+        @cuda backend=cuTile blocks=1 cvt(src, dst)
+        @test Array(dst) == T.(common)
+
+        back = CuArray(zeros(Float8_E5M3FNU, length(common)))
+        @cuda backend=cuTile blocks=1 cvt(dst, back)
+        @test Array(back) == Float8_E5M3FNU.(common)
     end
 end
 end
@@ -277,6 +332,18 @@ function mma_scaled_nvfp4(X::ct.TileArray{UInt8,2}, XS::ct.TileArray{Float8_E4M3
     return
 end
 
+# FP4 operands with an f8e5m3fnu scale (Rubin), at B = 32 (ks = 2) or B = 16 (ks = 4).
+function mma_scaled_fp4_e5m3fnu(X::ct.TileArray{UInt8,2}, XS::ct.TileArray{Float8_E5M3FNU,2},
+                                Y::ct.TileArray{UInt8,2}, YS::ct.TileArray{Float8_E5M3FNU,2},
+                                Z::ct.TileArray{Float32,2}, ks::Int)
+    x  = permutedims(reinterpret(Float4_E2M1FN, ct.load(X, (1, 1), (32, 16))), (2, 1))  # (M,K)
+    y  = permutedims(reinterpret(Float4_E2M1FN, ct.load(Y, (1, 1), (8, 64))), (2, 1))   # (K,N)
+    xs = ct.load(XS, (1, 1), (16, ks))
+    ys = ct.load(YS, (1, 1), (ks, 16))
+    ct.store(Z, (1, 1), ct.muladd_scaled(x, xs, y, ys, zeros(Float32, (16, 16))))
+    return
+end
+
 # Expand a block-scale tile to per-element scales along the K dimension: each
 # scale entry covers B contiguous K positions (matches Tile IR's broadcast).
 expand_k(scale, B, ::Val{:cols}) = repeat(Float32.(scale), inner=(1, B))   # (M, K_s) → (M, K)
@@ -367,6 +434,25 @@ if capability(device()) >= v"10" && cuTile.bytecode_version() >= v"13.3"
         @cuda backend=cuTile blocks=1 mma_scaled_nvfp4(CuArray(pack_f4_bytes(xh)), CuArray(xs),
                                                        CuArray(pack_f4_bytes(yh)), CuArray(ys), Z)
         @test Array(Z) == ref
+    end
+end
+# f8e5m3fnu scales are Rubin-only (sm_107) and need bytecode v13.4.
+if capability(device()) == v"10.7" && cuTile.bytecode_version() >= v"13.4"
+    # FP4 with f8e5m3fnu scales, which unlike f8e8m0fnu carry mantissa bits.
+    @testset "FP4 × Float8_E5M3FNU (B = $Bn)" for Bn in (32, 16)
+        m, n, k = 16, 16, 64
+        ksn = k ÷ Bn
+        scales = Float32[0.5, 0.75, 1, 1.25, 1.5, 2]
+        xh = [rand(F4_VALUES) for _ in 1:m, _ in 1:k]   # (M, K)
+        yh = [rand(F4_VALUES) for _ in 1:k, _ in 1:n]   # (K, N)
+        xs = Float8_E5M3FNU.(rand(scales, m, ksn))
+        ys = Float8_E5M3FNU.(rand(scales, ksn, n))
+        ref = mma_scaled_ref(xh, xs, yh, ys, Bn)
+        Z = CUDA.zeros(Float32, m, n)
+        @cuda backend=cuTile blocks=1 mma_scaled_fp4_e5m3fnu(CuArray(pack_f4_bytes(xh)), CuArray(xs),
+                                                             CuArray(pack_f4_bytes(yh)), CuArray(ys), Z,
+                                                             ct.Constant(ksn))
+        @test Array(Z) ≈ ref
     end
 end
 end
