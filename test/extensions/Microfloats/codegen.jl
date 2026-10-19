@@ -1,4 +1,4 @@
-using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN
+using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN, Float8_E5M3FNU
 
 spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
@@ -251,6 +251,107 @@ end
             Tuple{ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E8M0FNU,2,Int32,spec2d},
                   ct.TileArray{Float8_E4M3FN,2,Int32,spec2d}, ct.TileArray{Float8_E8M0FNU,2,Int32,spec2d},
                   ct.TileArray{Float32,2,Int32,spec2d}}; bytecode_version=v"13.2")
+    end
+end
+
+# Float8_E5M3FNU is a Rubin (sm_107) block-scale type that needs bytecode 13.4.
+@testset "Float8_E5M3FNU" begin
+    f32_to_f32 = Tuple{ct.TileArray{Float32,1,Int32,spec1d}, ct.TileArray{Float32,1,Int32,spec1d}}
+    roundtrip = (a, b) -> begin
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        converted = convert(ct.Tile{Float8_E5M3FNU}, tile)
+        ct.store(b, pid, convert(ct.Tile{Float32}, converted))
+        return
+    end
+
+    # Rejected below 13.4 with a clear error.
+    @test_throws "v13.4+" code_tiled(devnull, roundtrip, f32_to_f32;
+                                     sm_arch=v"10.7", bytecode_version=v"13.3")
+
+    # Its type tag (130) is the first that needs two varint bytes.
+    let job = ct.tile_job(roundtrip, f32_to_f32; sm_arch=v"10.7", bytecode_version=v"13.4")
+        @test findfirst(UInt8[0x82, 0x01], cuTile.emit_tile(job).bytecode) !== nothing
+    end
+
+    # Conversions to it only round to nearest-even.
+    for mode in (RoundToZero, RoundDown, RoundUp, RoundNearestTiesAway)
+        kernel = (a, b) -> begin
+            pid = ct.bid(1)
+            converted = Float8_E5M3FNU.(ct.load(a, pid, (16,)), mode)
+            ct.store(b, pid, Float32.(converted))
+            return
+        end
+        @test_throws "is not supported for conversion from Float32 to Float8_E5M3FNU" code_tiled(
+            devnull, kernel, f32_to_f32; sm_arch=v"10.7", bytecode_version=v"13.4")
+    end
+
+    # Conversions from it to Float16 take no directed rounding except toward zero.
+    let tt = Tuple{ct.TileArray{Float8_E5M3FNU,1,Int32,spec1d}, ct.TileArray{Float16,1,Int32,spec1d}}
+        for mode in (RoundDown, RoundUp, RoundNearestTiesAway)
+            kernel = (a, b) -> begin
+                pid = ct.bid(1)
+                ct.store(b, pid, Float16.(ct.load(a, pid, (16,)), mode))
+                return
+            end
+            @test_throws "is not supported for conversion from Float8_E5M3FNU to Float16" code_tiled(
+                devnull, kernel, tt; sm_arch=v"10.7", bytecode_version=v"13.4")
+        end
+    end
+
+    if ct.tileir_disassembler_version() >= v"13.4"
+        @test @filecheck begin
+            @check_label "entry"
+            @check "ftof {{.*}}xf32> -> tile<16x{{.*}}E5M3FNU>"
+            @check "ftof {{.*}}E5M3FNU> -> tile<16xf32>"
+            code_tiled(roundtrip, f32_to_f32; sm_arch=v"10.7", bytecode_version=v"13.4")
+        end
+
+        # Directed rounding from it to Float32 and Float16 (toward zero).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float8_E5M3FNU,1,Int32,spec1d},
+                             ct.TileArray{Float32,1,Int32,spec1d},
+                             ct.TileArray{Float16,1,Int32,spec1d}};
+                       sm_arch=v"10.7", bytecode_version=v"13.4") do a, b, c
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "rounding<negative_inf>"
+                ct.store(b, pid, Float32.(tile, RoundDown))
+                @check "rounding<zero>"
+                ct.store(c, pid, Float16.(tile, RoundToZero))
+                return
+            end
+        end
+
+        # FP4 operands with f8e5m3fnu scales, at B = 32 (K_s = 2) and B = 16 (K_s = 4).
+        fp4_scaled = Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float8_E5M3FNU,2,Int32,spec2d},
+                           ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float8_E5M3FNU,2,Int32,spec2d},
+                           ct.TileArray{Float32,2,Int32,spec2d}}
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(fp4_scaled; sm_arch=v"10.7", bytecode_version=v"13.4") do x, x_scale, y, y_scale, z
+                xt  = convert(ct.Tile{Float4_E2M1FN}, ct.load(x, (1, 1), (16, 64)))
+                xst = ct.load(x_scale, (1, 1), (16, 2))
+                yt  = convert(ct.Tile{Float4_E2M1FN}, ct.load(y, (1, 1), (64, 16)))
+                yst = ct.load(y_scale, (1, 1), (2, 16))
+                @check "mmaf_scaled {{.*}}tile<16x2x{{.*}}E5M3FNU>, tile<2x16x{{.*}}E5M3FNU>"
+                ct.store(z, (1, 1), ct.muladd_scaled(xt, xst, yt, yst, zeros(Float32, (16, 16))))
+                return
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(fp4_scaled; sm_arch=v"10.7", bytecode_version=v"13.4") do x, x_scale, y, y_scale, z
+                xt  = convert(ct.Tile{Float4_E2M1FN}, ct.load(x, (1, 1), (16, 64)))
+                xst = ct.load(x_scale, (1, 1), (16, 4))
+                yt  = convert(ct.Tile{Float4_E2M1FN}, ct.load(y, (1, 1), (64, 16)))
+                yst = ct.load(y_scale, (1, 1), (4, 16))
+                @check "mmaf_scaled {{.*}}tile<16x4x{{.*}}E5M3FNU>, tile<4x16x{{.*}}E5M3FNU>"
+                ct.store(z, (1, 1), ct.muladd_scaled(xt, xst, yt, yst, zeros(Float32, (16, 16))))
+                return
+            end
+        end
     end
 end
 

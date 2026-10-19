@@ -79,6 +79,7 @@ Everything not listed here works at v13.1.
 | `ct.insert` | Replace a non-overlapping sub-tile |
 | `check_bounds=false` | On `ct.load` and `ct.store` only; on `ct.gather`/`ct.scatter` it merely skips the bounds mask |
 | `ct.Intrinsics.powi` | Integer exponents through `cuda_tile.fpowi` |
+| `Float8_E5M3FNU` | Element type, used as an FP4 block scale; also requires Rubin (sm_107) |
 | Directed float conversion rounding | `RoundToZero`, `RoundDown`, `RoundUp`, or `RoundNearestTiesAway`; supported pairs vary |
 | Programmatic dependent launch | Also requires Hopper (sm_90) or newer |
 
@@ -88,6 +89,7 @@ Everything not listed here works at v13.1.
 | Feature | Requirement | Behaviour otherwise |
 |---------|-------------|---------------------|
 | `ct.muladd_scaled` | Blackwell (≥ sm_100) | Error |
+| `Float8_E5M3FNU` | Rubin (sm_107) | Error |
 | Atomic add on `BFloat16` | Hopper (≥ sm_90) | Error |
 | `fast_acc=true` | Hopper (sm_90) | Silently ignored |
 | Programmatic dependent launch | Hopper (≥ sm_90) | Error |
