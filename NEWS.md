@@ -11,7 +11,8 @@ releases](https://github.com/JuliaGPU/cuTile.jl/releases).
 *New features*:
 
 - Added support for `Float8_E5M3FNU` from Microfloats.jl, an unsigned 8-bit
-  float used as the block scale of FP4 `ct.muladd_scaled` on Rubin (sm_107).
+  float used as the block scale of FP4 `ct.muladd_scaled` on Rubin (sm_107)
+  ([#334](https://github.com/JuliaGPU/cuTile.jl/pull/334)).
 
 
 ## v1.0 (August 2026)
