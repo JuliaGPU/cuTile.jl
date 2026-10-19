@@ -86,6 +86,7 @@ Requires Blackwell. The supported operand/scale/accumulator dtypes and block siz
 | `Float8_E4M3FN`, `Float8_E5M2` | `Float8_E8M0FNU` | `Float32` | 32 |
 | `Float4_E2M1FN` | `Float8_E8M0FNU` | `Float32` | 16, 32 |
 | `Float4_E2M1FN` | `Float8_E4M3FN` | `Float32` | 16 |
+| `Float4_E2M1FN` | `Float8_E5M3FNU` | `Float32` | 16, 32 |
 
 
 ## Reductions and scans
