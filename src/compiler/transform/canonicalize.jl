@@ -196,7 +196,8 @@ end
 or `nothing` if no promotion needed. Also promotes Tuple element types."""
 function promote_scalar_type(@nospecialize(T))
     T <: Number && return Tile{T, Tuple{}}
-    if T <: Tuple
+    # a Union or UnionAll of tuples passes `<: Tuple` but has no `parameters`
+    if T isa DataType && T <: Tuple
         params = T.parameters
         any(Base.isvarargtype, params) && return nothing
         any_promoted = false

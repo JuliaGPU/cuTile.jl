@@ -30,6 +30,16 @@ Base.getindex(::TestDeviceArray, ::Vararg{Int}) = error("not implemented")
     @test cuTile.Constant{UInt8, 255}()[] == 255
 end
 
+@testset "promote_scalar_type" begin
+    @test cuTile.promote_scalar_type(Float32) === ct.Tile{Float32, Tuple{}}
+    @test cuTile.promote_scalar_type(Tuple{Int32, ct.Tile{Float32, Tuple{4}}}) ===
+          Tuple{ct.Tile{Int32, Tuple{}}, ct.Tile{Float32, Tuple{4}}}
+    @test cuTile.promote_scalar_type(Tuple{ct.Tile{Float32, Tuple{4}}}) === nothing
+    # unions and unionalls of tuples are left alone instead of throwing
+    @test cuTile.promote_scalar_type(Union{Tuple{Int32}, Tuple{Float32}}) === nothing
+    @test cuTile.promote_scalar_type(Tuple{Vararg{Int32, N}} where N) === nothing
+end
+
 @testset "Tile" begin
     @test eltype(ct.Tile{Float32, Tuple{16}}) == Float32
     @test eltype(ct.Tile{Float64, Tuple{32, 32}}) == Float64
