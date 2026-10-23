@@ -132,7 +132,7 @@ function get_input_token_ir!(block::Block, ref::SSAValue,
     tokens = collect_join_tokens_ir(token_key, token_map, memory_order)
     length(tokens) == 1 && return tokens[1]
     join_inst = insert_before!(block, ref, JoinTokensNode(tokens), TOKEN_TYPE)
-    return SSAValue(join_inst)
+    return ssavalue(join_inst)
 end
 
 function has_release_order(memory_order)
@@ -396,7 +396,7 @@ function token_order_pass!(sci::StructuredIRCode, alias_info::AliasInfo)
 
     # Insert root MakeTokenNode at entry
     root_inst = pushfirst!(sci.entry, MakeTokenNode(), TOKEN_TYPE)
-    root_token = SSAValue(root_inst)
+    root_token = ssavalue(root_inst)
 
     # Initialize: all alias sets start at root token. Always include
     # ALIAS_UNIVERSE — unrecognised/unknown operands resolve to it and
@@ -462,20 +462,20 @@ function transform_statement!(block::Block, inst::Instruction,
     memory_order = extract_memory_order(resolved_func, operands)
 
     if mem_effect == MEM_LOAD
-        input_token = get_input_token_ir!(block, SSAValue(inst),
+        input_token = get_input_token_ir!(block, ssavalue(inst),
                                            last_store_key(alias_set), token_map,
                                            memory_order)
         push!(s.args, input_token)
 
-        result_inst = insert_after!(block, SSAValue(inst), TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
-        result_token = SSAValue(result_inst)
+        result_inst = insert_after!(block, ssavalue(inst), TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
+        result_token = ssavalue(result_inst)
 
         # Eagerly join with last_op token (Python line 176-179)
         lop_key = last_op_key(alias_set)
         last_op_tok = token_map[lop_key]
-        join_inst = insert_after!(block, SSAValue(result_inst),
+        join_inst = insert_after!(block, ssavalue(result_inst),
                        JoinTokensNode([last_op_tok, result_token]), TOKEN_TYPE)
-        token_map[lop_key] = SSAValue(join_inst)
+        token_map[lop_key] = ssavalue(join_inst)
 
         if has_acquire_order(memory_order) || resolved_func === Intrinsics.gdc_wait_tko
             token_map[ACQUIRE_TOKEN_KEY] = result_token
@@ -492,36 +492,36 @@ function transform_statement!(block::Block, inst::Instruction,
             # Handle ACQUIRE_TOKEN_KEY if needed
             input_token = if haskey(token_map, ACQUIRE_TOKEN_KEY) &&
                              parent_tok !== token_map[ACQUIRE_TOKEN_KEY]
-                join_inst = insert_before!(block, SSAValue(inst),
+                join_inst = insert_before!(block, ssavalue(inst),
                                 JoinTokensNode([parent_tok, token_map[ACQUIRE_TOKEN_KEY]]),
                                 TOKEN_TYPE)
-                SSAValue(join_inst)
+                ssavalue(join_inst)
             else
                 parent_tok
             end
             push!(s.args, input_token)
 
-            result_inst = insert_after!(block, SSAValue(inst),
+            result_inst = insert_after!(block, ssavalue(inst),
                              TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
-            result_token = SSAValue(result_inst)
+            result_token = ssavalue(result_inst)
 
             # Eagerly join with loop's LAST_OP (maintains token_map invariant)
             loop_last_op = token_map[lop_key]
-            join_inst = insert_after!(block, SSAValue(result_inst),
+            join_inst = insert_after!(block, ssavalue(result_inst),
                            JoinTokensNode([loop_last_op, result_token]), TOKEN_TYPE)
-            token_map[lop_key] = SSAValue(join_inst)
-            token_map[lst_key] = SSAValue(join_inst)
+            token_map[lop_key] = ssavalue(join_inst)
+            token_map[lst_key] = ssavalue(join_inst)
             return
         end
 
         # Release ordering joins with all prior memory operations.
-        input_token = get_input_token_ir!(block, SSAValue(inst),
+        input_token = get_input_token_ir!(block, ssavalue(inst),
                                            last_op_key(alias_set), token_map,
                                            memory_order)
         push!(s.args, input_token)
 
-        result_inst = insert_after!(block, SSAValue(inst), TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
-        result_token = SSAValue(result_inst)
+        result_inst = insert_after!(block, ssavalue(inst), TokenResultNode(inst.ssa_idx), TOKEN_TYPE)
+        result_token = ssavalue(result_inst)
 
         token_map[last_op_key(alias_set)] = result_token
         token_map[last_store_key(alias_set)] = result_token
@@ -640,13 +640,13 @@ function extract_token_getfields!(parent_block::Block, inst::Instruction, start_
                                   effects::MemoryEffects, token_map::Dict{TokenKey, Any})
     keys = token_keys_for(effects)
     isempty(keys) && return
-    last_ref = SSAValue(inst)
+    last_ref = ssavalue(inst)
     for (i, key) in enumerate(keys)
         idx = start_idx + i
         gf_inst = insert_after!(parent_block, last_ref,
-            Expr(:call, GlobalRef(Core, :getfield), SSAValue(inst), idx), TOKEN_TYPE)
-        token_map[key] = SSAValue(gf_inst)
-        last_ref = SSAValue(gf_inst)
+            Expr(:call, GlobalRef(Core, :getfield), ssavalue(inst), idx), TOKEN_TYPE)
+        token_map[key] = ssavalue(gf_inst)
+        last_ref = ssavalue(gf_inst)
     end
 end
 

@@ -78,7 +78,7 @@ function commute_arith_transparent(sci, block, inst, match, driver)
     xT = CC.widenconst(x_type)
     xT <: Tile || return false
 
-    val = SSAValue(inst)
+    val = ssavalue(inst)
     root_func = driver.defs[val].func  # Intrinsics.subi or Intrinsics.addi
 
     # Determine transparent op (reshape or broadcast) from first operand
@@ -101,18 +101,18 @@ function commute_arith_transparent(sci, block, inst, match, driver)
     # Side-inject the freshly synthesized constant into the dataflow result so
     # downstream pattern matches see it. Bypasses tmerge (this is a brand-new
     # SSA value, not a merge).
-    driver.constants[SSAValue(bc)] = convert(eltype(xT), scalar)
+    driver.constants[ssavalue(bc)] = convert(eltype(xT), scalar)
 
     # Insert op(x, broadcast) with x's type
     op = insert_before!(driver.rewriter, block, val,
-                        Expr(:call, root_func, x, SSAValue(bc)), xT;
+                        Expr(:call, root_func, x, ssavalue(bc)), xT;
                         flag=inferred_flags(root_func))
 
     # Replace root with transparent_op(op_result, s). Func changes
     # (subi/addi → reshape/broadcast), so recompute the flag from the new
     # func's declared effects — the inferred bits describe the OLD op.
     replace_stmt!(driver.rewriter, block, val,
-                  Expr(:call, transparent_func, SSAValue(op), match.bindings[:s]);
+                  Expr(:call, transparent_func, ssavalue(op), match.bindings[:s]);
                   flag=inferred_flags(transparent_func))
     push!(driver.worklist, val)
     add_users_to_worklist!(driver, val)

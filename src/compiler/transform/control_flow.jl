@@ -58,12 +58,12 @@ function extract_carry_results!(parent_block::Block, inst::Instruction,
     inst[:type] = merged
     n_user = length(user_types)
     result = SSAValue[]
-    last_ref = SSAValue(inst)
+    last_ref = ssavalue(inst)
     for (i, ty) in enumerate(types)
         gf_inst = insert_after!(parent_block, last_ref,
-            Expr(:call, GlobalRef(Core, :getfield), SSAValue(inst), n_user + i), ty)
-        push!(result, SSAValue(gf_inst))
-        last_ref = SSAValue(gf_inst)
+            Expr(:call, GlobalRef(Core, :getfield), ssavalue(inst), n_user + i), ty)
+        push!(result, ssavalue(gf_inst))
+        last_ref = ssavalue(gf_inst)
     end
     return result
 end
