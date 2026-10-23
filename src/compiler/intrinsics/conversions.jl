@@ -205,7 +205,7 @@ const F16_DIRECTED_SOURCES = (
     SimpleType.F8E4M3FN, SimpleType.F4E2M1FN,
 )
 
-function ftof_rounding_min_version(from::UInt8, to::UInt8, mode::RoundingMode.T)
+function ftof_rounding_min_version(from::Integer, to::Integer, mode::RoundingMode.T)
     if mode == RoundingMode.NearestEven
         return to == SimpleType.F8E8M0FNU ? nothing : v"13.0"
     elseif mode == RoundingMode.Zero
@@ -236,16 +236,16 @@ bytecode_rounding_mode(::Base.Rounding.RoundingMode{:NearestTiesAway}) = Roundin
 bytecode_rounding_mode(mode::Base.Rounding.RoundingMode) =
     throw(IRError("rounding mode $mode is not supported for float conversion"))
 
-const FLOAT_DTYPE_NAMES = Dict(
+const FLOAT_DTYPE_NAMES = Dict{Int,String}(
     SimpleType.F16 => "Float16", SimpleType.BF16 => "BFloat16",
     SimpleType.F32 => "Float32", SimpleType.TF32 => "TFloat32",
     SimpleType.F64 => "Float64", SimpleType.F8E4M3FN => "Float8_E4M3FN",
     SimpleType.F8E5M2 => "Float8_E5M2", SimpleType.F8E8M0FNU => "Float8_E8M0FNU",
-    SimpleType.F4E2M1FN => "Float4_E2M1FN",
+    SimpleType.F4E2M1FN => "Float4_E2M1FN", SimpleType.F8E5M3FNU => "Float8_E5M3FNU",
 )
-float_dtype_name(tag::UInt8) = get(FLOAT_DTYPE_NAMES, tag, string(tag))
+float_dtype_name(tag::Integer) = get(FLOAT_DTYPE_NAMES, tag, string(tag))
 
-function validate_ftof_rounding(from_tag::UInt8, to_tag::UInt8, mode::RoundingMode.T,
+function validate_ftof_rounding(from_tag::Integer, to_tag::Integer, mode::RoundingMode.T,
                                 version::VersionNumber)
     from = float_dtype_name(from_tag)
     to = float_dtype_name(to_tag)
