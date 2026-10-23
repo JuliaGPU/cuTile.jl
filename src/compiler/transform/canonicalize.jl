@@ -116,7 +116,7 @@ function scalar_elim_block!(block::Block)
         call === nothing && continue
         func, ops = call
         func === Intrinsics.to_scalar || continue
-        replace_uses!(block, SSAValue(inst), ops[1])
+        replace_uses!(block, ssavalue(inst), ops[1])
         push!(to_delete, inst)
     end
 
@@ -158,7 +158,7 @@ function scalar_elim_block!(block::Block)
         call === nothing && continue
         func, ops = call
         func === Intrinsics.from_scalar || continue
-        replace_uses!(block, SSAValue(inst), ops[1])
+        replace_uses!(block, ssavalue(inst), ops[1])
         push!(to_delete, inst)
     end
 

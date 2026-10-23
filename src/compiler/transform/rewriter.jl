@@ -83,7 +83,7 @@ operands and fires `notify_inserted!`. Returns the new `Instruction`.
 function insert_before!(r::Rewriter, block::Block, ref, @nospecialize(stmt),
                         @nospecialize(type); flag::UInt32=UInt32(0))
     inst = IRStructurizer.insert_before!(block, ref, stmt, type; flag=flag)
-    register_stmt_uses!(r, SSAValue(inst), stmt)
+    register_stmt_uses!(r, ssavalue(inst), stmt)
     notify_inserted!(r.listener, block, inst)
     return inst
 end

@@ -208,13 +208,13 @@ copystate_for(map::RngStateMap) = RngStateMap(k => RngState(v.counter, v.seed) f
 
 function process_rng_counter!(block::Block, inst::Instruction, map::RngStateMap)
     hkey = stream_key(stream_operand(inst[:stmt]), block)
-    replace_uses!(block, SSAValue(inst), current_counter(map, hkey))
+    replace_uses!(block, ssavalue(inst), current_counter(map, hkey))
     delete!(block, inst)
 end
 
 function process_rng_seed!(block::Block, inst::Instruction, map::RngStateMap)
     hkey = stream_key(stream_operand(inst[:stmt]), block)
-    replace_uses!(block, SSAValue(inst), current_seed(map, hkey))
+    replace_uses!(block, ssavalue(inst), current_seed(map, hkey))
     delete!(block, inst)
 end
 
@@ -391,10 +391,10 @@ function assign_rng_streams!(sci::StructuredIRCode)
             elseif is_rng_stream_call(s)
                 id = next_id[]
                 next_id[] += 1
-                replace_uses!(block, SSAValue(inst), id)
+                replace_uses!(block, ssavalue(inst), id)
                 delete!(block, inst)
             elseif is_rng_default_call(s)
-                replace_uses!(block, SSAValue(inst), 0)
+                replace_uses!(block, ssavalue(inst), 0)
                 delete!(block, inst)
             end
         end

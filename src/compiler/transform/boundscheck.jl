@@ -14,7 +14,7 @@ function resolve_boundscheck!(sci::StructuredIRCode)
         for inst in collect(instructions(block))
             stmt = inst[:stmt]
             stmt isa Expr && stmt.head === :boundscheck || continue
-            val = SSAValue(inst)
+            val = ssavalue(inst)
             replace_uses!(r, val, boundscheck_value(stmt))
             erase!(r, block, val)
         end
