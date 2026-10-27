@@ -130,41 +130,38 @@ function block_modifies_slot(block::Block, pred, hkey::Int)
     return false
 end
 
-function sci_uses_rng(sci::StructuredIRCode)
-    function walk(block::Block)
-        for inst in instructions(block)
-            s = inst[:stmt]
-            is_rng_call(s) && return true
-            if s isa ControlFlowOp
-                for b in blocks(s)
-                    walk(b) && return true
-                end
+sci_uses_rng(sci::StructuredIRCode) = block_uses_rng(sci.entry)
+
+function block_uses_rng(block::Block)
+    for inst in instructions(block)
+        s = inst[:stmt]
+        is_rng_call(s) && return true
+        if s isa ControlFlowOp
+            for b in blocks(s)
+                block_uses_rng(b) && return true
             end
         end
-        return false
     end
-    return walk(sci.entry)
+    return false
 end
 
 # Collect every distinct stream ID that appears in the IR. Call once at
 # pass entry so CFG handling can iterate over all `(stream, slot)` pairs.
 # Only read/write intrinsics carry stream operands — stream-creating intrinsics
 # are the *producers* and are skipped here.
-function collect_streams(sci::StructuredIRCode)
-    keys = Set{Int}()
-    function walk(block::Block)
-        for inst in instructions(block)
-            s = inst[:stmt]
-            if is_rng_read(s) || is_rng_write(s)
-                push!(keys, stream_key(stream_operand(s), block))
-            elseif s isa ControlFlowOp
-                for b in blocks(s)
-                    walk(b)
-                end
+collect_streams(sci::StructuredIRCode) = collect_streams!(Set{Int}(), sci.entry)
+
+function collect_streams!(keys::Set{Int}, block::Block)
+    for inst in instructions(block)
+        s = inst[:stmt]
+        if is_rng_read(s) || is_rng_write(s)
+            push!(keys, stream_key(stream_operand(s), block))
+        elseif s isa ControlFlowOp
+            for b in blocks(s)
+                collect_streams!(keys, b)
             end
         end
     end
-    walk(sci.entry)
     return keys
 end
 
@@ -379,28 +376,28 @@ Runs before `lower_rng_state!`. No-op when no RNG intrinsics appear.
 """
 function assign_rng_streams!(sci::StructuredIRCode)
     sci_uses_rng(sci) || return nothing
-    next_id = Ref(1)
-    function walk(block::Block)
-        snapshot = collect(instructions(block))
-        for inst in snapshot
-            s = inst[:stmt]
-            if s isa ControlFlowOp
-                for b in blocks(s)
-                    walk(b)
-                end
-            elseif is_rng_stream_call(s)
-                id = next_id[]
-                next_id[] += 1
-                replace_uses!(block, SSAValue(inst), id)
-                delete!(block, inst)
-            elseif is_rng_default_call(s)
-                replace_uses!(block, SSAValue(inst), 0)
-                delete!(block, inst)
+    assign_rng_streams!(sci.entry, Ref(1))
+    return nothing
+end
+
+function assign_rng_streams!(block::Block, next_id::Ref{Int})
+    snapshot = collect(instructions(block))
+    for inst in snapshot
+        s = inst[:stmt]
+        if s isa ControlFlowOp
+            for b in blocks(s)
+                assign_rng_streams!(b, next_id)
             end
+        elseif is_rng_stream_call(s)
+            id = next_id[]
+            next_id[] += 1
+            replace_uses!(block, SSAValue(inst), id)
+            delete!(block, inst)
+        elseif is_rng_default_call(s)
+            replace_uses!(block, SSAValue(inst), 0)
+            delete!(block, inst)
         end
     end
-    walk(sci.entry)
-    return nothing
 end
 
 """

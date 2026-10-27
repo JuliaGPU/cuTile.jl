@@ -295,75 +295,6 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo, argtypes::Vector{
         push!(ops, (inst.ssa_idx, resolved_func, operands))
     end
 
-    # A value is invariant across iterations of this loop when it is a
-    # compile-time constant or defined before the loop body. Loop-carried
-    # block arguments and values computed inside the body are rejected —
-    # conservative, since anything invariant-but-in-body merely keeps the
-    # token carry.
-    function is_loop_invariant(val)
-        val isa SSAValue && return !haskey(body.body, val.id)
-        val isa BlockArgument && return false
-        val isa Argument && return true
-        val isa QuoteNode && return val.value isa Integer
-        return val isa Integer
-    end
-
-    # `muli` returns the low half of the product, so its arithmetic is modulo
-    # 2^n. Multiplication is injective in that ring exactly when the constant
-    # is odd; merely being nonzero is insufficient (e.g. 2x collides for
-    # inputs separated by 2^(n-1)).
-    is_injective_multiplier(val) =
-        (val isa Integer && isodd(val)) ||
-        (val isa QuoteNode && val.value isa Integer && isodd(val.value))
-
-    # Check if a value is a provably injective affine function of the loop's
-    # induction variable: the IV itself, `x ± invariant`, `invariant - x`,
-    # `x * c` with `c` an odd constant, or an integer extension of such a
-    # value (Julia's 1-based `store` always lowers the index through
-    # `iv - 1`, so the bare-identity check Python uses would never fire
-    # here). Non-injective derivations (`iv ÷ 2`, `iv % k`, `min(iv, c)`, …)
-    # must NOT qualify: two iterations would hit the same tile and the
-    # parallel store would drop the WAW ordering between them.
-    function is_injective_iv_affine(val, iv::BlockArgument, depth::Int=0)
-        depth > 10 && return false
-        val === iv && return true
-        val isa SSAValue || return false
-        entry = get(body.body, val.id, nothing)
-        entry === nothing && return false
-        call = resolve_call(body, entry.stmt)
-        call === nothing && return false
-        func, args = call
-        if func === Intrinsics.addi || func === Intrinsics.subi
-            length(args) >= 2 || return false
-            a, b = args[1], args[2]
-            return (is_injective_iv_affine(a, iv, depth + 1) && is_loop_invariant(b)) ||
-                   (is_loop_invariant(a) && is_injective_iv_affine(b, iv, depth + 1))
-        elseif func === Intrinsics.muli
-            length(args) >= 2 || return false
-            a, b = args[1], args[2]
-            return (is_injective_iv_affine(a, iv, depth + 1) && is_injective_multiplier(b)) ||
-                   (is_injective_multiplier(a) && is_injective_iv_affine(b, iv, depth + 1))
-        elseif func === Intrinsics.exti
-            length(args) >= 1 || return false
-            return is_injective_iv_affine(args[1], iv, depth + 1)
-        end
-        return false
-    end
-
-    # The indices tuple qualifies when at least one element is an injective
-    # affine function of the IV: iterations then differ in that coordinate,
-    # and — given the array cannot alias internally — write disjoint memory.
-    function is_injective_iv_index(indices_tuple, iv::BlockArgument)
-        indices_tuple isa SSAValue || return false
-        entry = get(body.body, indices_tuple.id, nothing)
-        entry === nothing && return false
-        call = resolve_call(body, entry.stmt)
-        call === nothing && return false
-        func, args = call
-        func === Core.tuple || return false
-        return any(a -> is_injective_iv_affine(a, iv), args)
-    end
-
     parallel = Set{Int}()
     iv = op.iv_arg
     for (alias_set, ops) in alias_set_to_ops
@@ -380,10 +311,79 @@ function get_parallel_stores(op::ForOp, alias_info::AliasInfo, argtypes::Vector{
         # function of the induction variable
         # store_partition_view(pv, tile, latency, allow_tma, indices_tuple)
         indices_tuple = length(operands) >= 5 ? operands[5] : nothing
-        indices_tuple !== nothing && is_injective_iv_index(indices_tuple, iv) || continue
+        indices_tuple !== nothing && is_injective_iv_index(body, indices_tuple, iv) || continue
         push!(parallel, ssa_idx)
     end
     return parallel
+end
+
+# A value is invariant across iterations of the loop `body` when it is a
+# compile-time constant or defined before the loop body. Loop-carried
+# block arguments and values computed inside the body are rejected —
+# conservative, since anything invariant-but-in-body merely keeps the
+# token carry.
+function is_loop_invariant(body::Block, val)
+    val isa SSAValue && return !haskey(body.body, val.id)
+    val isa BlockArgument && return false
+    val isa Argument && return true
+    val isa QuoteNode && return val.value isa Integer
+    return val isa Integer
+end
+
+# `muli` returns the low half of the product, so its arithmetic is modulo
+# 2^n. Multiplication is injective in that ring exactly when the constant
+# is odd; merely being nonzero is insufficient (e.g. 2x collides for
+# inputs separated by 2^(n-1)).
+is_injective_multiplier(val) =
+    (val isa Integer && isodd(val)) ||
+    (val isa QuoteNode && val.value isa Integer && isodd(val.value))
+
+# Check if a value is a provably injective affine function of the loop's
+# induction variable: the IV itself, `x ± invariant`, `invariant - x`,
+# `x * c` with `c` an odd constant, or an integer extension of such a
+# value (Julia's 1-based `store` always lowers the index through
+# `iv - 1`, so the bare-identity check Python uses would never fire
+# here). Non-injective derivations (`iv ÷ 2`, `iv % k`, `min(iv, c)`, …)
+# must NOT qualify: two iterations would hit the same tile and the
+# parallel store would drop the WAW ordering between them.
+function is_injective_iv_affine(body::Block, val, iv::BlockArgument, depth::Int=0)
+    depth > 10 && return false
+    val === iv && return true
+    val isa SSAValue || return false
+    entry = get(body.body, val.id, nothing)
+    entry === nothing && return false
+    call = resolve_call(body, entry.stmt)
+    call === nothing && return false
+    func, args = call
+    if func === Intrinsics.addi || func === Intrinsics.subi
+        length(args) >= 2 || return false
+        a, b = args[1], args[2]
+        return (is_injective_iv_affine(body, a, iv, depth + 1) && is_loop_invariant(body, b)) ||
+               (is_loop_invariant(body, a) && is_injective_iv_affine(body, b, iv, depth + 1))
+    elseif func === Intrinsics.muli
+        length(args) >= 2 || return false
+        a, b = args[1], args[2]
+        return (is_injective_iv_affine(body, a, iv, depth + 1) && is_injective_multiplier(b)) ||
+               (is_injective_multiplier(a) && is_injective_iv_affine(body, b, iv, depth + 1))
+    elseif func === Intrinsics.exti
+        length(args) >= 1 || return false
+        return is_injective_iv_affine(body, args[1], iv, depth + 1)
+    end
+    return false
+end
+
+# The indices tuple qualifies when at least one element is an injective
+# affine function of the IV: iterations then differ in that coordinate,
+# and — given the array cannot alias internally — write disjoint memory.
+function is_injective_iv_index(body::Block, indices_tuple, iv::BlockArgument)
+    indices_tuple isa SSAValue || return false
+    entry = get(body.body, indices_tuple.id, nothing)
+    entry === nothing && return false
+    call = resolve_call(body, entry.stmt)
+    call === nothing && return false
+    func, args = call
+    func === Core.tuple || return false
+    return any(a -> is_injective_iv_affine(body, a, iv), args)
 end
 
 #=============================================================================
