@@ -217,7 +217,7 @@ function notify_inserted!(d::RewriteDriver, block::Block, inst::Instruction)
     call = resolve_call(block, stmt)
     call === nothing && return
     func, _ = call
-    val = SSAValue(inst)
+    val = ssavalue(inst)
     d.defs[val] = DefEntry(block, val, func)
     push!(d.worklist, val)
 end
@@ -390,7 +390,7 @@ function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, roo
     end
     inst = insert_before!(driver.rewriter, block, ref, Expr(:call, op.func, operands...), typ;
                           flag=inferred_flags(op.func))
-    SSAValue(inst)
+    ssavalue(inst)
 end
 
 function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match)
@@ -474,7 +474,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
             call = resolve_call(block, inst)
             call === nothing && continue
             func, _ = call
-            val = SSAValue(inst)
+            val = ssavalue(inst)
             defs[val] = DefEntry(block, val, func)
         end
     end
@@ -483,7 +483,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
     wl = Worklist()
     for block in eachblock(sci)
         for inst in instructions(block)
-            val = SSAValue(inst)
+            val = ssavalue(inst)
             haskey(defs, val) && push!(wl, val)
         end
     end

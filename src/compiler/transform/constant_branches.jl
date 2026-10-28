@@ -14,7 +14,7 @@ function constant_if_candidates(sci::StructuredIRCode, constants::ConstantInfo)
             plain_yield(op.then_region) && plain_yield(op.else_region) || continue
             condition = const_value(constants, op.condition)
             condition isa Bool || continue
-            push!(candidates, (block, SSAValue(inst), condition))
+            push!(candidates, (block, ssavalue(inst), condition))
         end
     end
     return candidates
@@ -33,7 +33,7 @@ function tuple_result_extracts(sci::StructuredIRCode, r::Rewriter,
             is_getfield_of(inst[:stmt], if_ssa) || continue
             field = inst[:stmt].args[3]
             1 <= field <= nresults || return nothing
-            push!(extracts, (block, SSAValue(inst), field))
+            push!(extracts, (block, ssavalue(inst), field))
         end
     end
     # Tuple-valued control flow is represented by getfield extractions. Avoid
