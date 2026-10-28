@@ -189,6 +189,10 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Base.vect() =
 
 ## tile and scalar concatenation
 
+# The concatenation overlays are not `@consistent_overlay`: native Base treats a tile
+# as a scalar element, so the native call can throw where the overlay succeeds, and
+# concrete evaluation (which runs the native method) would infer `Union{}`.
+
 const TileElem = Union{Tile, Number}
 
 @generated function promote_tile_elements(xs::Tuple)
@@ -428,28 +432,28 @@ end
 
 rows_to_dimshape(rows) = all(==(rows[1]), rows) ? (length(rows), rows[1]) : (rows, (sum(rows),))
 
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.vcat(x::TileElem, xs::TileElem...) =
+Base.Experimental.@overlay cuTileMethodTable Base.vcat(x::TileElem, xs::TileElem...) =
     cat_tiles(promote_tile_elements((x, xs...)), 1)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.hcat(x::TileElem, xs::TileElem...) =
+Base.Experimental.@overlay cuTileMethodTable Base.hcat(x::TileElem, xs::TileElem...) =
     cat_tiles(promote_tile_elements((x, xs...)), 2)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
+Base.Experimental.@overlay cuTileMethodTable Base.hvcat(rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) =
     cat_layout(promote_tile_elements((x, xs...)), rows_to_dimshape(rows), true)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
+Base.Experimental.@overlay cuTileMethodTable Base.hvncat(dim::Int, x::TileElem, xs::TileElem...) =
     hvncat_tiles(promote_tile_elements((x, xs...)), dim)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.hvncat(layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) =
+Base.Experimental.@overlay cuTileMethodTable Base.hvncat(layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) =
     cat_layout(promote_tile_elements((x, xs...)), layout, row_first)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.cat(x::TileElem, xs::TileElem...; dims) =
+Base.Experimental.@overlay cuTileMethodTable Base.cat(x::TileElem, xs::TileElem...; dims) =
     cat_dimensions(promote_tile_elements((x, xs...)), cat_dims_value(dims))
 
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_vcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
+Base.Experimental.@overlay cuTileMethodTable Base.typed_vcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
     cat_tiles(typed_tile_elements(T, (x, xs...)), 1)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
+Base.Experimental.@overlay cuTileMethodTable Base.typed_hcat(::Type{T}, x::TileElem, xs::TileElem...) where {T<:Number} =
     cat_tiles(typed_tile_elements(T, (x, xs...)), 2)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) where {T<:Number} =
+Base.Experimental.@overlay cuTileMethodTable Base.typed_hvcat(::Type{T}, rows::Tuple{Vararg{Int}}, x::TileElem, xs::TileElem...) where {T<:Number} =
     cat_layout(typed_tile_elements(T, (x, xs...)), rows_to_dimshape(rows), true)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, dim::Int, x::TileElem, xs::TileElem...) where {T<:Number} =
+Base.Experimental.@overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, dim::Int, x::TileElem, xs::TileElem...) where {T<:Number} =
     hvncat_tiles(typed_tile_elements(T, (x, xs...)), dim)
-Base.Experimental.@consistent_overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) where {T<:Number} =
+Base.Experimental.@overlay cuTileMethodTable Base.typed_hvncat(::Type{T}, layout::Tuple, row_first::Bool, x::TileElem, xs::TileElem...) where {T<:Number} =
     cat_layout(typed_tile_elements(T, (x, xs...)), layout, row_first)
 
 Base.Experimental.@consistent_overlay cuTileMethodTable Base.vect(x::Number, xs::Number...) =
