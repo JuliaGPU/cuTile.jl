@@ -201,14 +201,14 @@ function promote_scalar_type(@nospecialize(T))
         params = T.parameters
         any(Base.isvarargtype, params) && return nothing
         any_promoted = false
-        new_params = map(params) do P
+        new_params = Any[]
+        for P in params
             P = CC.widenconst(P)
             if P <: Number && !(P <: Tile)
                 any_promoted = true
-                Tile{P, Tuple{}}
-            else
-                P
+                P = Tile{P, Tuple{}}
             end
+            push!(new_params, P)
         end
         any_promoted || return nothing
         return Tuple{new_params...}

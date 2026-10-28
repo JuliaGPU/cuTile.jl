@@ -75,9 +75,8 @@ function preprocess(arr::AbstractArray, dest, copies, ::Val{N}) where N
     # itself, could be read after another block stored to it. Copy it first.
     # Overlap is judged by address range, as at launch (`overlap_labels`).
     if leaf != dest && !all(iszero, overlap_labels(dest, leaf))
-        arr = copy(arr)
-        push!(copies, arr)
-        leaf = cuTileconvert(arr)::AbstractTileArray
+        push!(copies, copy(arr))
+        leaf = cuTileconvert(copies[end])::AbstractTileArray
     end
     Extruded{keeps}(leaf)
 end
