@@ -1,4 +1,5 @@
 using Documenter
+using DocumenterCodeBlocks: CodeBlocks
 using cuTile
 
 # CUDA.jl provides the `@cuda backend=cuTile` launch path, while DLFP8Types and Microfloats
@@ -11,6 +12,9 @@ function main()
     makedocs(
         sitename = "cuTile.jl",
         authors = "Tim Besard",
+        plugins = [
+            CodeBlocks(; line_counter = :named),
+        ],
         format = Documenter.HTML(
             # Use clean URLs on CI
             prettyurls = ci
