@@ -3,10 +3,11 @@ module MicrofloatsExt
 import cuTile as ct
 import Microfloats
 
-using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN
+using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN, Float8_E5M3FNU
 
 # Microfloats spells the Tile-IR-mapped types as: Float8_E4M3FN (NanOnlyAllOnes),
-# Float8_E5M2 (IEEE), Float8_E8M0FNU (since v13.2), Float4_E2M1FN (since v13.3).
+# Float8_E5M2 (IEEE), Float8_E8M0FNU (since v13.2), Float4_E2M1FN (since v13.3),
+# Float8_E5M3FNU (since v13.4).
 # Other Microfloats variants (Float8_E4M3 IEEE, Float8_E3M4, Float6_*) have no
 # Tile IR equivalent and intentionally fall through to the unsupported-type error.
 
@@ -14,6 +15,7 @@ ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E4M3FN}) = ct.F8E4M3F
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E5M2})   = ct.F8E5M2(table)
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E8M0FNU}) = ct.F8E8M0FNU(table)
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float4_E2M1FN})  = ct.F4E2M1FN(table)
+ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E5M3FNU}) = ct.F8E5M3FNU(table)
 
 # Microfloats are byte-storage primitives, so cuTile's default
 # `bitwidth` (8 * sizeof) over-counts the sub-byte formats.
@@ -37,7 +39,7 @@ ct.mma_supports_fast_acc(::Type{Float8_E5M2})   = true
 # Mirrors DLFP8TypesExt: route to `Intrinsics.ftof` so kernel-side conversions
 # lower to the FToFOp Tile IR intrinsic instead of Microfloats' Float32-fallback
 # software path.
-const MicrofloatTypes = (Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN)
+const MicrofloatTypes = (Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN, Float8_E5M3FNU)
 const StandardFloats = (Float16, ct.BFloat16, Float32, ct.TFloat32, Float64)
 
 for MF in MicrofloatTypes

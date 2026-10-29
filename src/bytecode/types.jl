@@ -29,7 +29,7 @@ end
 const I1_TYPE_ID = TypeId(0)
 const I32_TYPE_ID = TypeId(1)
 
-# Simple type tags (from Python's SimpleType enum)
+# Simple type tags (from Python's SimpleType enum), varint-encoded
 module SimpleType
     const I1    = UInt8(0x00)
     const I8    = UInt8(0x01)
@@ -46,6 +46,7 @@ module SimpleType
     const Token    = UInt8(0x11)
     const F8E8M0FNU = UInt8(0x12)  # since 13.2
     const F4E2M1FN  = UInt8(0x13)  # since 13.3
+    const F8E5M3FNU = 130          # since 13.4; encoded as 0x82 0x01
 end
 
 # Composite type tags
@@ -150,29 +151,23 @@ end
 
 function simple_type_tag(table::TypeTable, id::TypeId)
     encoding = type_encoding(table, id)
-    length(encoding) == 1 || throw(ArgumentError("type id $(id.id) is not a simple type"))
-    return only(encoding)
+    # A simple type is a lone tag; composite types follow theirs with a payload.
+    tag, next = decode_varint(encoding)
+    next == length(encoding) + 1 || throw(ArgumentError("type id $(id.id) is not a simple type"))
+    return tag
 end
 
 function tile_eltype_id(table::TypeTable, id::TypeId)
     encoding = type_encoding(table, id)
     first(encoding) == CompositeType.Tile ||
         throw(ArgumentError("type id $(id.id) is not a tile type"))
-
-    value = 0
-    shift = 0
-    for byte in @view encoding[2:end]
-        value |= Int(byte & 0x7f) << shift
-        byte & 0x80 == 0 && return TypeId(value)
-        shift += 7
-    end
-    throw(ArgumentError("invalid tile element type id"))
+    return TypeId(first(decode_varint(encoding, 2)))
 end
 
 # Type constructors
 
-function simple_type!(table::TypeTable, tag::UInt8)
-    _get_or_create!(table, [tag])
+function simple_type!(table::TypeTable, tag::Integer)
+    _get_or_create!(table, encode_varint!(UInt8[], tag))
 end
 
 # Convenience accessors
@@ -197,6 +192,11 @@ function F4E2M1FN(table::TypeTable)
     bytecode_version(table) >= v"13.3" ||
         throw(IRError("Float4_E2M1FN requires Tile IR bytecode v13.3+, got v$(bytecode_version(table))"))
     simple_type!(table, SimpleType.F4E2M1FN)
+end
+function F8E5M3FNU(table::TypeTable)
+    bytecode_version(table) >= v"13.4" ||
+        throw(IRError("Float8_E5M3FNU requires Tile IR bytecode v13.4+, got v$(bytecode_version(table))"))
+    simple_type!(table, SimpleType.F8E5M3FNU)
 end
 Token(table::TypeTable) = simple_type!(table, SimpleType.Token)
 

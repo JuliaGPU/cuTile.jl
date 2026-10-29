@@ -87,6 +87,19 @@ end
     end
 end
 
+@testset "Multi-byte simple type tags" begin
+    # F8E5M3FNU's tag (130) is varint-encoded over two bytes.
+    tt = cuTile.TypeTable(; version=v"13.4")
+    f8 = cuTile.F8E5M3FNU(tt)
+    @test last(cuTile.items(tt)).first == UInt8[0x82, 0x01]
+    @test cuTile.simple_type_tag(tt, f8) == cuTile.SimpleType.F8E5M3FNU
+    @test cuTile.simple_type_tag(tt, cuTile.F32(tt)) == cuTile.SimpleType.F32
+    tile = cuTile.tile_type!(tt, f8, cuTile.RowMajorShape([16]))
+    @test cuTile.tile_eltype_id(tt, tile) == f8
+    @test_throws "not a simple type" cuTile.simple_type_tag(tt, tile)
+    @test_throws "v13.4+" cuTile.F8E5M3FNU(cuTile.TypeTable(; version=v"13.3"))
+end
+
 @testset "Tile IR v13.3 StridedView encodings" begin
     tt = cuTile.TypeTable(; version=v"13.3")
     tensor_view = cuTile.TypeId(7)
