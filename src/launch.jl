@@ -258,9 +258,18 @@ function discover_tileir_disassembler()
                               Base.pkgversion(CUDA_Tile_jll))
 end
 
+# The compiler runs in a process group of its own, which is killed whole: `tileiras`
+# runs `ptxas`, which outlives a `tileiras` killed alone and holds the output pipe
+# open, so the reader would wait for it. On Windows only the compiler is killed.
+function kill_group(proc)
+    Sys.iswindows() && return kill(proc, Base.SIGKILL)
+    ccall(:kill, Cint, (Cint, Cint), -getpid(proc), Base.SIGKILL)
+    return
+end
+
 function run_and_collect(cmd; timeout=compiler_timeout)
     stdout = Pipe()
-    proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
+    proc = run(pipeline(detach(ignorestatus(cmd)); stdout, stderr=stdout), wait=false)
     close(stdout.in)
     reader = Threads.@spawn String(read(stdout))
     timed_out = Ref(false)
@@ -270,7 +279,7 @@ function run_and_collect(cmd; timeout=compiler_timeout)
         Timer(timeout) do _
             if process_running(proc)
                 timed_out[] = true
-                kill(proc, Base.SIGKILL)
+                kill_group(proc)
             end
         end
     end
@@ -278,6 +287,8 @@ function run_and_collect(cmd; timeout=compiler_timeout)
         Base.wait(proc)
     finally
         timer === nothing || close(timer)
+        # An interrupted wait leaves no compiler behind.
+        process_running(proc) && kill_group(proc)
     end
     log = strip(fetch(reader))
     timed_out[] && throw(TileCompilerTimeoutError(timeout))
