@@ -258,9 +258,28 @@ function discover_tileir_disassembler()
                               Base.pkgversion(CUDA_Tile_jll))
 end
 
+# `tileiras` runs `ptxas`, which a `tileiras` killed alone leaves running. Outside of
+# Windows the compiler therefore runs in a session of its own, whose process group
+# is killed whole. On Windows, `detach` would instead take the compiler out of the
+# job object that kills it when Julia exits, so only the compiler is killed there.
+function kill_group(proc)
+    Sys.iswindows() && return kill(proc, Base.SIGKILL)
+    # Like `kill(::Process)`, hold the lock so that the process isn't reaped (and
+    # its pid reused) between the check and the signal.
+    Base.iolock_begin()
+    try
+        process_running(proc) &&
+            ccall(:kill, Cint, (Cint, Cint), -getpid(proc), Base.SIGKILL)
+    finally
+        Base.iolock_end()
+    end
+    return
+end
+
 function run_and_collect(cmd; timeout=compiler_timeout)
     stdout = Pipe()
-    proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
+    cmd = Sys.iswindows() ? ignorestatus(cmd) : detach(ignorestatus(cmd))
+    proc = run(pipeline(cmd; stdout, stderr=stdout), wait=false)
     close(stdout.in)
     reader = Threads.@spawn String(read(stdout))
     timed_out = Ref(false)
@@ -270,7 +289,7 @@ function run_and_collect(cmd; timeout=compiler_timeout)
         Timer(timeout) do _
             if process_running(proc)
                 timed_out[] = true
-                kill(proc, Base.SIGKILL)
+                kill_group(proc)
             end
         end
     end
@@ -278,6 +297,9 @@ function run_and_collect(cmd; timeout=compiler_timeout)
         Base.wait(proc)
     finally
         timer === nothing || close(timer)
+        # In its own session, the compiler doesn't see a Ctrl-C, so an interrupted
+        # wait must not leave it behind.
+        kill_group(proc)
     end
     log = strip(fetch(reader))
     timed_out[] && throw(TileCompilerTimeoutError(timeout))

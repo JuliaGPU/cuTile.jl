@@ -15,6 +15,8 @@ disk_cache = true
 
 The timeout covers each `tileiras` invocation. On expiry, cuTile terminates the
 compiler and reports a [`TileCompilerTimeoutError`](@ref cuTile.TileCompilerTimeoutError).
+Except on Windows, the processes the compiler started, such as `ptxas`, are terminated
+with it.
 
 ```@docs
 cuTile.TileCompilerTimeoutError
