@@ -26,4 +26,17 @@ end
     end
     @test err isa cuTile.TileCompilerTimeoutError
     @test occursin("reducing the tile size", sprint(showerror, err))
+
+    # The compiler's own children, as `ptxas` is `tileiras`'s, are killed with
+    # it: one left behind would hold the output open until it exits.
+    if !Sys.iswindows()
+        elapsed = @elapsed err = try
+            cuTile.run_and_collect(`sh -c 'sleep 60 & wait'`; timeout=0.5)
+            nothing
+        catch err
+            err
+        end
+        @test err isa cuTile.TileCompilerTimeoutError
+        @test elapsed < 30
+    end
 end
