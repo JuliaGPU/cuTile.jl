@@ -2133,6 +2133,68 @@ end
         end
     end
 
+    @testset "branches in broadcast functions" begin
+        # A branch on a per-element condition executes both arms and selects.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "sqrt"
+            @check "select"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                f(x) = isinf(x) ? Inf32 : sqrt(x * x + 1f0)
+                ct.store(a, 1, f.(tile))
+                return
+            end
+        end
+
+        # A throw in such a branch asserts that no element takes it.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "assert {{.*}}, \"DomainError"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                g(x) = x < 0f0 ? throw(DomainError(x)) : sqrt(x)
+                ct.store(a, 1, g.(tile))
+                return
+            end
+        end
+
+        # A branch that cannot be flattened is reported, not passed to tileiras.
+        @test_throws "Cannot branch on a per-element condition" code_tiled(
+                Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+            tile = ct.load(a, 1, (16,))
+            h(x) = (for i in 1:4; x > Float32(i) || return Float32(i); end; 0f0)
+            ct.store(a, 1, h.(tile))
+            return
+        end
+    end
+
+    @testset "log1p and expm1 divide approximately" begin
+        # Their quotients only correct larger terms; IEEE division would check
+        # its range and call a slow path for every element.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "divf {{.*}} rounding<approx>"
+            @check "divf {{.*}} rounding<approx>"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, log1p.(tile))
+                return
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            @check "divf {{.*}} rounding<approx>"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, expm1.(tile))
+                return
+            end
+        end
+    end
+
     @testset "scalar literal promotion" begin
         @test @filecheck begin
             @check_label "entry"
