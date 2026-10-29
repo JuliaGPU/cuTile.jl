@@ -25,6 +25,9 @@ end
 # Each group lists `(argument index, field path)` leaves, with argument index 2
 # the first kernel argument (index 1 is the function), as `Argument(i)` numbers
 # them. The empty tuple, the common case, lets every array get its own class.
+# Its concrete type differs with every grouping, so the functions it passes
+# through don't specialize on it (`@nospecialize` with `@nospecializeinfer`):
+# each grouping would otherwise compile the code generator again.
 const AliasGroups = Tuple{Vararg{Tuple{Vararg{Tuple{Int, Tuple{Vararg{Int}}}}}}}
 
 struct TileConfig
@@ -74,16 +77,16 @@ argument types. Keyword arguments configure the compilation:
   `(argument index, field path)` leaves; see `alias_groups`. Launches
   compute this; arrays outside every group are assumed not to overlap.
 """
-function tile_job(mi::MethodInstance, world::UInt;
-                  const_argtypes::Union{Tuple, Nothing}=nothing,
-                  sm_arch::Union{VersionNumber, Nothing}=nothing,
-                  bytecode_version::Union{VersionNumber, Nothing}=nothing,
-                  opt_level::Union{Int, Nothing}=nothing,
-                  num_ctas::Union{Int, Nothing}=nothing,
-                  occupancy::Union{Int, Nothing}=nothing,
-                  num_worker_warps::Union{Int, Nothing}=nothing,
-                  name::Union{String, Nothing}=nothing,
-                  alias_groups::AliasGroups=())
+Base.@nospecializeinfer function tile_job(mi::MethodInstance, world::UInt;
+                                          const_argtypes::Union{Tuple, Nothing}=nothing,
+                                          sm_arch::Union{VersionNumber, Nothing}=nothing,
+                                          bytecode_version::Union{VersionNumber, Nothing}=nothing,
+                                          opt_level::Union{Int, Nothing}=nothing,
+                                          num_ctas::Union{Int, Nothing}=nothing,
+                                          occupancy::Union{Int, Nothing}=nothing,
+                                          num_worker_warps::Union{Int, Nothing}=nothing,
+                                          name::Union{String, Nothing}=nothing,
+                                          @nospecialize(alias_groups::AliasGroups=()))
     if sm_arch === nothing
         CUDACore.functional() || throw(ArgumentError(
             "No CUDA device to target; pass `sm_arch`"))

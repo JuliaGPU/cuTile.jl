@@ -10,17 +10,17 @@ as compile-time constants: no kernel parameter is generated and a ConstantOp is
 emitted instead. The `const_argtypes` vector is 1-indexed matching `sci.argtypes`
 (index 1 = function itself, user args from index 2).
 """
-function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
-                      sci::StructuredIRCode, rettype::Type;
-                      name::String,
-                      sm_arch::Union{VersionNumber, Nothing} = nothing,
-                      is_entry::Bool = true,
-                      num_ctas::Union{Int, Nothing} = nothing,
-                      occupancy::Union{Int, Nothing} = nothing,
-                      num_worker_warps::Union{Int, Nothing} = nothing,
-                      cache::CacheView,
-                      const_argtypes::Union{Vector{Any}, Nothing} = nothing,
-                      alias_groups::AliasGroups = ())
+Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
+                                              sci::StructuredIRCode, rettype::Type;
+                                              name::String,
+                                              sm_arch::Union{VersionNumber, Nothing} = nothing,
+                                              is_entry::Bool = true,
+                                              num_ctas::Union{Int, Nothing} = nothing,
+                                              occupancy::Union{Int, Nothing} = nothing,
+                                              num_worker_warps::Union{Int, Nothing} = nothing,
+                                              cache::CacheView,
+                                              const_argtypes::Union{Vector{Any}, Nothing} = nothing,
+                                              @nospecialize(alias_groups::AliasGroups = ()))
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
 

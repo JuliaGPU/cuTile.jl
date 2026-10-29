@@ -170,6 +170,34 @@ function _infer_subprogram(interp::cuTileInterpreter, @nospecialize(f),
     end
 end
 
+# The task that finishes a known call once its result (and subprogram) is
+# ready. A struct rather than a closure: a closure's type follows the types of
+# what it captures, and the tfunc's return type is a different `Tile` type for
+# every element type and shape, so each new one would compile it again.
+@static if isdefined(CC, :Future)
+    struct KnownCallTask
+        f::Any
+        result::CC.Future{CC.CallMeta}
+        subprog::Any
+        rt_override::Any
+        is_intr::Bool
+        wrapped::CC.Future{CC.CallMeta}
+    end
+    function (t::KnownCallTask)(interp′, sv′)
+        isready(t.result) || return false
+        t.subprog !== nothing && !isready(t.subprog) && return false
+        cm = t.result[]
+        sp = t.subprog !== nothing ? t.subprog[] : nothing
+        rt = t.rt_override !== nothing ? t.rt_override : cm.rt
+        efunc_override = t.is_intr ? efunc(t.f, cm.effects) : nothing
+        effects = efunc_override !== nothing ? efunc_override : cm.effects
+        info = t.is_intr ? CC.NoCallInfo() : cm.info
+        info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
+        t.wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
+        return true
+    end
+end
+
 # Override abstract_call_known for custom return-type inference (tfuncs) and
 # subprogram inference for reduce/scan.
 #
@@ -191,19 +219,7 @@ end
         subprog = _infer_subprogram(interp, f, arginfo, si, vtypes, sv)
         !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
-        push!(sv.tasks, function (interp′, sv′)
-            isready(result) || return false
-            subprog !== nothing && !isready(subprog) && return false
-            cm = result[]
-            sp = subprog !== nothing ? subprog[] : nothing
-            rt = rt_override !== nothing ? rt_override : cm.rt
-            efunc_override = is_intr ? efunc(f, cm.effects) : nothing
-            effects = efunc_override !== nothing ? efunc_override : cm.effects
-            info = is_intr ? CC.NoCallInfo() : cm.info
-            info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
-            wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
-            return true
-        end)
+        push!(sv.tasks, KnownCallTask(f, result, subprog, rt_override, is_intr, wrapped))
         return wrapped
     end
 elseif isdefined(CC, :Future)   # 1.12–1.13
@@ -219,19 +235,7 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
         subprog = _infer_subprogram(interp, f, arginfo, si, nothing, sv)
         !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
-        push!(sv.tasks, function (interp′, sv′)
-            isready(result) || return false
-            subprog !== nothing && !isready(subprog) && return false
-            cm = result[]
-            sp = subprog !== nothing ? subprog[] : nothing
-            rt = rt_override !== nothing ? rt_override : cm.rt
-            efunc_override = is_intr ? efunc(f, cm.effects) : nothing
-            effects = efunc_override !== nothing ? efunc_override : cm.effects
-            info = is_intr ? CC.NoCallInfo() : cm.info
-            info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
-            wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
-            return true
-        end)
+        push!(sv.tasks, KnownCallTask(f, result, subprog, rt_override, is_intr, wrapped))
         return wrapped
     end
 else   # 1.11: synchronous, edges auto-tracked via stmt_edges
