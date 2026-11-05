@@ -222,6 +222,14 @@ function cat_split(widths, target, i=1, total=0)
     total == target ? i : cat_split(widths, target, i + 1, total)
 end
 
+# a balanced tree of pairwise concatenations of the tiles `keep[first:last]`
+function cat_tree_expr(keep, widths, dim, first, last)
+    first == last && return :(tiles[$(keep[first])])
+    split = first - 1 + cat_split(widths[first:last], sum(widths[first:last]) ÷ 2)
+    :(Intrinsics.cat(($(cat_tree_expr(keep, widths, dim, first, split)),
+                      $(cat_tree_expr(keep, widths, dim, split + 1, last))), $(dim - 1)))
+end
+
 cat_tree(tiles, dim) = cat_tree(tiles, Val(dim))
 
 @generated function cat_tree(tiles::Tuple, ::Val{dim}) where {dim}
@@ -278,13 +286,7 @@ cat_tree(tiles, dim) = cat_tree(tiles, Val(dim))
         push!(widths, shapes[i][dim])
     end
 
-    function tree(first, last)
-        first == last && return :(tiles[$(keep[first])])
-        split = first - 1 + cat_split(widths[first:last], sum(widths[first:last]) ÷ 2)
-        :(Intrinsics.cat(($(tree(first, split)), $(tree(split + 1, last))), $(dim - 1)))
-    end
-
-    tree(1, length(widths))
+    cat_tree_expr(keep, widths, dim, 1, length(widths))
 end
 
 function cat_tiles(tiles::Tuple{Vararg{Tile}}, dim)
@@ -383,7 +385,7 @@ cat_dimensions(tiles, dims::Tuple{Vararg{Integer}}) =
     types = tiles.parameters
     shapes = map(size, types)
     rank = max(maximum(canonical), maximum(length, shapes))
-    shapes = map(shape -> (shape..., ntuple(_ -> 1, rank - length(shape))...), shapes)
+    padded = map(shape -> (shape..., ntuple(_ -> 1, rank - length(shape))...), shapes)
     T = mapreduce(eltype, promote_type, types)
 
     coords = Any[()]
@@ -399,7 +401,7 @@ cat_dimensions(tiles, dims::Tuple{Vararg{Integer}}) =
     for coord in coords
         shape = ntuple(rank) do dim
             position = findfirst(==(dim), canonical)
-            position === nothing ? shapes[1][dim] : shapes[coord[position]][dim]
+            position === nothing ? padded[1][dim] : padded[coord[position]][dim]
         end
         if all(==(first(coord)), coord)
             push!(cells, :(pad_tile(tiles[$(first(coord))], $rank)))
