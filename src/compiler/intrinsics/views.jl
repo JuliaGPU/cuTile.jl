@@ -526,7 +526,8 @@ does not contribute to any in-bounds address.
 For contiguous column-major arrays (matching Julia's memory layout),
 stride[1] = 1 is statically known. Higher dimensions are typically dynamic.
 """
-function compute_tensor_view_shape(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
+function compute_tensor_view_shape(@nospecialize(array_spec::Union{ArraySpec, Nothing}),
+                                   ndim::Int)
     shape = fill(DYNAMIC_SHAPE, ndim)
     if array_spec !== nothing
         for i in 1:ndim
@@ -536,7 +537,8 @@ function compute_tensor_view_shape(array_spec::Union{ArraySpec, Nothing}, ndim::
     return RowMajorShape(shape)
 end
 
-function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int,
+function compute_tensor_view_strides(@nospecialize(array_spec::Union{ArraySpec, Nothing}),
+                                     ndim::Int,
                                      elem_type::Type)
     strides = fill(DYNAMIC_SHAPE, ndim)
 
@@ -639,9 +641,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     # Spec-derived divisor hints (1 = "no info") combine with the
     # dataflow via `lcm` inside `op_predicates`, so a missing spec
     # collapses cleanly to dataflow-only facts.
-    align_hint = spec === nothing ? 1 : Int(spec.alignment)
-    shape_hint(i) = spec === nothing ? 1 : Int(spec.shape_div_by[i])
-    stride_hint(i) = spec === nothing ? 1 : Int(spec.stride_div_by[i])
+    # These are plain vectors rather than closures over `spec`: a closure's
+    # type follows the spec's, and would be compiled again for every one.
+    align_hint = spec === nothing ? 1 : spec.alignment
+    shape_hints = spec === nothing ? ones(Int, ndim) : collect(Int, spec.shape_div_by)
+    stride_hints = spec === nothing ? ones(Int, ndim) : collect(Int, spec.stride_div_by)
+    static_strides = falses(ndim)
+    if spec !== nothing
+        for i in 1:ndim
+            static_strides[i] = (spec.contiguous && i == 1) || spec.singleton[i]
+        end
+    end
 
     base_ptr = wrap_for(ctx, base_ptr, ptr_tv.type_id::TypeId,
                         op_predicates(ctx.divby_info, ctx.bounds_info,
@@ -651,17 +661,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
         let elem_op = tuple_element_source(block, sizes_arg, i)
             wrap_for(ctx, tv.v::Value, tv.type_id::TypeId,
                      op_predicates(ctx.divby_info, ctx.bounds_info,
-                                   elem_op, :size, shape_hint(i)))
+                                   elem_op, :size, shape_hints[i]))
         end
         for (i, tv) in enumerate(size_tvs)
     ]
     stride_vals = Value[
         let elem_op = tuple_element_source(block, strides_arg, i),
             # Static TensorView strides never enter the bytecode operands.
-            chain = (spec !== nothing &&
-                     ((spec.contiguous && i == 1) || spec.singleton[i])) ? EMPTY_PREDS :
+            chain = static_strides[i] ? EMPTY_PREDS :
                     op_predicates(ctx.divby_info, ctx.bounds_info,
-                                  elem_op, :stride, stride_hint(i))
+                                  elem_op, :stride, stride_hints[i])
             wrap_for(ctx, tv.v::Value, tv.type_id::TypeId, chain)
         end
         for (i, tv) in enumerate(stride_tvs)

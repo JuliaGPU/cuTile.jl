@@ -106,17 +106,17 @@ function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
     ArraySpec{N}(alignment, contiguous, ntuple(_ -> 0, N), ntuple(_ -> 0, N))
 end
 
-# Property access — preserves existing dot-syntax (spec.alignment, etc.)
-function Base.getproperty(spec::ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy,
-                                         MayAliasInternally, Singleton},
-                          s::Symbol) where {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy,
-                                           MayAliasInternally, Singleton}
-    s === :alignment            && return Alignment
-    s === :contiguous           && return Contiguous
-    s === :stride_div_by        && return StrideDivBy
-    s === :shape_div_by         && return ShapeDivBy
-    s === :may_alias_internally && return MayAliasInternally
-    s === :singleton            && return Singleton
+# Property access — preserves existing dot-syntax (spec.alignment, etc.). The
+# compiler reads specs whose type it doesn't know statically, so this isn't
+# specialized on each spec.
+function Base.getproperty(@nospecialize(spec::ArraySpec), s::Symbol)
+    P = typeof(spec).parameters
+    s === :alignment            && return P[2]::Int
+    s === :contiguous           && return P[3]::Bool
+    s === :stride_div_by        && return P[4]::Tuple{Vararg{Int}}
+    s === :shape_div_by         && return P[5]::Tuple{Vararg{Int}}
+    s === :may_alias_internally && return P[6]::Bool
+    s === :singleton            && return P[7]::Tuple{Vararg{Bool}}
     getfield(spec, s)
 end
 
