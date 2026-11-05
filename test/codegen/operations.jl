@@ -2213,6 +2213,30 @@ end
         end
     end
 
+    @testset "log1p and expm1 divide approximately" begin
+        # Their quotients only correct larger terms; IEEE division would check
+        # its range and call a slow path for every element.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "divf {{.*}} rounding<approx>"
+            @check "divf {{.*}} rounding<approx>"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, log1p.(tile))
+                return
+            end
+        end
+        @test @filecheck begin
+            @check_label "entry"
+            @check "divf {{.*}} rounding<approx>"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                ct.store(a, 1, expm1.(tile))
+                return
+            end
+        end
+    end
+
     @testset "scalar literal promotion" begin
         @test @filecheck begin
             @check_label "entry"

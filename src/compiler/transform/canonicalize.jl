@@ -28,6 +28,8 @@ const INTRINSIC_RULES = RewriteRule[
             Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.LessThanOrEqual), $(Signedness.Signed))
     @rewrite Core.Intrinsics.ult_int(~x, ~y) =>
             Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.LessThan), $(Signedness.Unsigned))
+    @rewrite Core.Intrinsics.ule_int(~x, ~y) =>
+            Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.LessThanOrEqual), $(Signedness.Unsigned))
 
     # Bitwise
     @rewrite Core.Intrinsics.and_int(~x, ~y) => Intrinsics.andi(~x, ~y)
