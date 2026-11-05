@@ -78,7 +78,7 @@ argument types. Keyword arguments configure the compilation:
   compute this; arrays outside every group are assumed not to overlap.
 """
 Base.@nospecializeinfer function tile_job(mi::MethodInstance, world::UInt;
-                                          const_argtypes::Union{Tuple, Nothing}=nothing,
+                                          @nospecialize(const_argtypes::Union{Tuple, Nothing}=nothing),
                                           sm_arch::Union{VersionNumber, Nothing}=nothing,
                                           bytecode_version::Union{VersionNumber, Nothing}=nothing,
                                           opt_level::Union{Int, Nothing}=nothing,

@@ -712,10 +712,6 @@ struct TileKernel{F, TT} <: AbstractKernel{F, TT}
     labels::Vector{Int}
 end
 
-TileKernel{F, TT}(f, fun::CuFunction, opts::NamedTuple) where {F, TT} =
-    TileKernel{F, TT}(f, fun, opts,
-                      groups_to_labels(opts.alias_groups, array_leaves(TT.parameters)))
-
 """
     cuTile.cufunction(f, tt=Tuple{}; sm_arch=nothing, opt_level=nothing,
                       num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing,
@@ -763,8 +759,9 @@ end
 
 # The job of a launch: the kernel's MethodInstance for the unwrapped argument
 # types, in the current world, with the launch's options.
-function launch_job(@nospecialize(f), @nospecialize(argtypes),
-                    const_argtypes::Union{Tuple, Nothing}; kwargs...)
+Base.@nospecializeinfer function launch_job(@nospecialize(f), @nospecialize(argtypes),
+                                            @nospecialize(const_argtypes::Union{Tuple, Nothing}),
+                                            @nospecialize(opts::NamedTuple))
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
@@ -772,15 +769,19 @@ function launch_job(@nospecialize(f), @nospecialize(argtypes),
         sig = Base.signature_type(f, argtypes)
         mi = CC.specialize_method(mi.def, sig, mi.sparam_vals)::Core.MethodInstance
     end
-    return tile_job(mi, world; const_argtypes, kwargs...)
+    return tile_job(mi, world; const_argtypes, opts...)
 end
 
 # Inner compilation routine; called via `invoke_frozen` so its method dispatches
 # happen in the world captured at __init__, reusing precompiled native code
-# even when later-loaded packages would otherwise have invalidated it.
-function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
-                             const_argtypes::Union{Tuple, Nothing}, opts::NamedTuple)
-    job = launch_job(f, argtypes, const_argtypes; opts...)
+# even when later-loaded packages would otherwise have invalidated it. It isn't
+# specialized on the constant arguments or the options, whose types differ
+# with the constants given, which options are set, and the alias grouping.
+Base.@nospecializeinfer function cufunction_compile(@nospecialize(f), @nospecialize(tt),
+                                                    @nospecialize(argtypes),
+                                                    @nospecialize(const_argtypes::Union{Tuple, Nothing}),
+                                                    @nospecialize(opts::NamedTuple))
+    job = launch_job(f, argtypes, const_argtypes, opts)
     res = compile_or_lookup(job)
 
     # Resolve the kernel for the active context. `CuFunction`s are session-local
@@ -789,7 +790,8 @@ function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(a
     ctx = context()
     cached_kernel = Base.@lock job_results_lock find_kernel(res, ctx)
     cached_kernel === nothing || return with_function(cached_kernel, f)
-    kernel = TileKernel{Core.Typeof(f), tt}(f, link(job, res), opts)
+    labels = groups_to_labels(opts.alias_groups, array_leaves(tt.parameters))
+    kernel = TileKernel{Core.Typeof(f), tt}(f, link(job, res), opts, labels)
     # don't cache session-local handles while generating output: the results struct
     # is serialized into the package image along with its inference result.
     if ccall(:jl_generating_output, Cint, ()) != 1
@@ -1016,11 +1018,16 @@ function labels_to_groups(labels::Tuple{Vararg{Int}}, leaves)
     return Tuple(groups)::AliasGroups
 end
 
-function groups_to_labels(groups::AliasGroups, leaves)
+function groups_to_labels(@nospecialize(groups::AliasGroups), leaves)
     labels = zeros(Int, length(leaves))
     for group in groups
-        members = [findfirst(==(leaf), leaves) for leaf in group]
-        any(isnothing, members) && throw(ArgumentError("alias group $group names no array argument"))
+        # A loop rather than a comprehension, whose type would follow the group's.
+        members = Int[]
+        for leaf in group
+            i = findfirst(==(leaf), leaves)
+            i === nothing && throw(ArgumentError("alias group $group names no array argument"))
+            push!(members, i)
+        end
         labels[members] .= minimum(members)
     end
     return labels

@@ -85,4 +85,9 @@ import REPL
             precompile_kernel(vadd_gather, tt)
         end
     end
+
+    # Launching needs a GPU, which precompilation can't assume, but the launch
+    # path's compilation entry point is the same for every kernel.
+    precompile(cufunction_compile, (Any, Any, Any, Union{Tuple, Nothing}, NamedTuple))
+    precompile(array_leaves, (Core.SimpleVector,))
 end
