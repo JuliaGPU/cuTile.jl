@@ -232,14 +232,17 @@ part of the bytecode. The one-argument form runs the preceding stages first.
 function emit_tile(job::TileJob, sci::StructuredIRCode, rettype, kernel_meta::Dict{Symbol,Any})
     (; target, params, name) = job.config
     hint(key, explicit) = resolve_hint(explicit, kernel_meta, key, target.sm_arch)
-    num_ctas = hint(:num_ctas, params.num_ctas)
-    occupancy = hint(:occupancy, params.occupancy)
-    num_worker_warps = hint(:num_worker_warps, params.num_worker_warps)
+    # One struct rather than three hints that are each `nothing` or an `Int`:
+    # the closure below captures them, so its type, and the code it calls,
+    # would otherwise differ with every combination.
+    hints = EntryHints(hint(:num_ctas, params.num_ctas),
+                       hint(:occupancy, params.occupancy),
+                       hint(:num_worker_warps, params.num_worker_warps))
     opt_level = something(hint(:opt_level, params.opt_level), 3)
 
     bytecode = write_bytecode!(1; version=target.bytecode_version) do writer, func_buf
         emit_kernel!(writer, func_buf, sci, rettype;
-                     name, sm_arch=target.sm_arch, num_ctas, occupancy, num_worker_warps,
+                     name, sm_arch=target.sm_arch, hints,
                      cache=inference_cache(job),
                      const_argtypes=const_argtypes_vector(job),
                      alias_groups=job.config.alias_groups)

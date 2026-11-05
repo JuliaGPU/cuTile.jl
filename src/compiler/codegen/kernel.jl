@@ -1,7 +1,7 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing, const_argtypes=nothing)
+    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, hints=EntryHints(), const_argtypes=nothing)
 
 Compile a StructuredIRCode to Tile IR bytecode.
 
@@ -15,11 +15,9 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
                                               name::String,
                                               sm_arch::Union{VersionNumber, Nothing} = nothing,
                                               is_entry::Bool = true,
-                                              num_ctas::Union{Int, Nothing} = nothing,
-                                              occupancy::Union{Int, Nothing} = nothing,
-                                              num_worker_warps::Union{Int, Nothing} = nothing,
+                                              hints::EntryHints = EntryHints(),
                                               cache::CacheView,
-                                              const_argtypes::Union{Vector{Any}, Nothing} = nothing,
+                                              @nospecialize(const_argtypes::Union{Vector{Any}, Nothing} = nothing),
                                               @nospecialize(alias_groups::AliasGroups = ()))
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
@@ -95,7 +93,7 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
     end
 
     # Create entry hints if provided
-    entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy, num_worker_warps))
+    entry_hints = encode_entry_hints(writer, sm_arch, hints)
 
     # Create function-level debug attribute
     func_debug_attr = make_func_debug_attr(debug_emitter, sci; linkage_name=name)
