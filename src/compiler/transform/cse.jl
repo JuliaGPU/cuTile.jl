@@ -41,14 +41,14 @@ redundancies. Does not iterate; assumes a single forward walk is
 enough (cf. LLVM's `EarlyCSE`).
 """
 function cse_pass!(sci::StructuredIRCode)
-    cse_block!(sci.entry, Dict{Tuple, SSAValue}())
+    cse_block!(sci.entry, Dict{Vector{Any}, SSAValue}())
     return nothing
 end
 
 # Recursive walk. `parent_table` is the value-numbering table visible
 # from the enclosing scope; this block extends it locally so additions
 # don't leak to sibling branches.
-function cse_block!(block::Block, parent_table::Dict{Tuple, SSAValue})
+function cse_block!(block::Block, parent_table::Dict{Vector{Any}, SSAValue})
     table = copy(parent_table)
     snapshot = collect(instructions(block))
     for inst in snapshot
@@ -75,14 +75,17 @@ end
 # with `broadcast(1, (16,))::Tile{Int64}`. Mirrors LLVM `EarlyCSE`'s
 # `isIdenticalToWhenDefined` which compares both operands and result
 # type implicitly through the value-level structural identity check.
-function cse_one!(block::Block, inst::Instruction, table::Dict{Tuple, SSAValue})
+function cse_one!(block::Block, inst::Instruction, table::Dict{Vector{Any}, SSAValue})
     s = inst[:stmt]
     s isa Expr || return
     call = resolve_call(block, inst)
     call === nothing && return
     func, ops = call
     is_pure_for_cse(inst, func) || return
-    sig = (func, inst[:type], ops...)
+    # A vector rather than a tuple: a tuple's type changes with every
+    # intrinsic and operand type, and each new one compiles the table's
+    # lookup again.
+    sig = Any[func, inst[:type], ops...]
     canonical = get(table, sig, nothing)
     if canonical === nothing
         table[sig] = ssavalue(inst)

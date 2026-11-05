@@ -269,7 +269,8 @@ codegen (`make_tensor_view`, `load_ptr_tko`, `store_ptr_tko`) can
 derive per-operand `AssumePredicate` chains on demand via
 `op_predicates` (analysis/assume.jl).
 """
-function run_passes!(sci::StructuredIRCode; alias_groups::AliasGroups=())
+Base.@nospecializeinfer function run_passes!(sci::StructuredIRCode;
+                                             @nospecialize(alias_groups::AliasGroups=()))
     lower_throws!(sci)
     resolve_boundscheck!(sci)
     canonicalize!(sci)

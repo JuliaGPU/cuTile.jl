@@ -101,7 +101,7 @@ STG.E.128 / LDG.E.128 lowering requires.
 Returns `EMPTY_PREDS` when no useful fact exists (no spec on `T`,
 unrecognised path, or contiguous-axis stride which is a static `1`).
 """
-function arg_chain(::Type{T}, path::Vector{Int}) where {T <: TileArray}
+function arg_chain(@nospecialize(T::Type{<:TileArray}), path::Vector{Int})
     spec = array_spec(T)
     spec === nothing && return EMPTY_PREDS
 

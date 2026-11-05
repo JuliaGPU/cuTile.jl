@@ -58,7 +58,7 @@ struct AliasGroup
     id::Int
 end
 
-function AliasAnalysis(alias_groups::AliasGroups=())
+Base.@nospecializeinfer function AliasAnalysis(@nospecialize(alias_groups::AliasGroups=()))
     groups = Dict{Tuple{Int, Tuple{Vararg{Int}}}, Any}()
     for (id, group) in enumerate(alias_groups), leaf in group
         groups[leaf] = AliasGroup(id)
@@ -236,7 +236,8 @@ const AliasInfo = DataflowResult{AliasAnalysis, AliasElement}
 Run forward alias analysis on `sci`. Arrays listed together in `alias_groups`
 share an alias set.
 """
-analyze_aliases(sci::StructuredIRCode; alias_groups::AliasGroups=()) =
+Base.@nospecializeinfer analyze_aliases(sci::StructuredIRCode;
+                                        @nospecialize(alias_groups::AliasGroups=())) =
     analyze(AliasAnalysis(alias_groups), sci)::AliasInfo
 
 """

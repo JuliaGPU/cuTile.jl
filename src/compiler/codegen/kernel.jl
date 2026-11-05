@@ -1,7 +1,7 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing, const_argtypes=nothing)
+    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, hints=EntryHints(), const_argtypes=nothing)
 
 Compile a StructuredIRCode to Tile IR bytecode.
 
@@ -10,17 +10,15 @@ as compile-time constants: no kernel parameter is generated and a ConstantOp is
 emitted instead. The `const_argtypes` vector is 1-indexed matching `sci.argtypes`
 (index 1 = function itself, user args from index 2).
 """
-function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
-                      sci::StructuredIRCode, rettype::Type;
-                      name::String,
-                      sm_arch::Union{VersionNumber, Nothing} = nothing,
-                      is_entry::Bool = true,
-                      num_ctas::Union{Int, Nothing} = nothing,
-                      occupancy::Union{Int, Nothing} = nothing,
-                      num_worker_warps::Union{Int, Nothing} = nothing,
-                      cache::CacheView,
-                      const_argtypes::Union{Vector{Any}, Nothing} = nothing,
-                      alias_groups::AliasGroups = ())
+Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
+                                              sci::StructuredIRCode, rettype::Type;
+                                              name::String,
+                                              sm_arch::Union{VersionNumber, Nothing} = nothing,
+                                              is_entry::Bool = true,
+                                              hints::EntryHints = EntryHints(),
+                                              cache::CacheView,
+                                              @nospecialize(const_argtypes::Union{Vector{Any}, Nothing} = nothing),
+                                              @nospecialize(alias_groups::AliasGroups = ()))
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
 
@@ -95,7 +93,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # Create entry hints if provided
-    entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy, num_worker_warps))
+    entry_hints = encode_entry_hints(writer, sm_arch, hints)
 
     # Create function-level debug attribute
     func_debug_attr = make_func_debug_attr(debug_emitter, sci; linkage_name=name)
