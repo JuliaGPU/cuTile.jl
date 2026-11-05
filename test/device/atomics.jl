@@ -611,6 +611,22 @@ end
     @test all(r[17:20] .== 1)
 end
 
+if cuTile.bytecode_version() >= v"13.5"
+@testset "atomic_store_add without bounds checks" begin
+    function k(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1})
+        bid = ct.bid(1)
+        ct.atomic_store_add(a, bid, ct.broadcast_to(ct.Tile(1.0f0), (16,)); check_bounds=false)
+        ct.atomic_store_xor(b, bid, Int32(3); check_bounds=false)
+        return
+    end
+    a = CUDA.zeros(Float32, 64)
+    b = CUDA.zeros(Int32, 4)
+    @cuda backend=cuTile blocks=4 k(a, b)
+    @test all(Array(a) .== 1)
+    @test all(Array(b) .== 3)
+end
+end
+
 @testset "atomic_store_add stepped (overlapping) windows" begin
     function k(a::ct.TileArray{Float32,1})
         bid = ct.bid(1)

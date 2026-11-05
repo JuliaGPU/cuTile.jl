@@ -1268,6 +1268,23 @@ end
         end
     end
 
+    @testset "num_worker_warps" begin
+        @test_throws "num_worker_warps=2 requires Tile IR bytecode v13.5+" begin
+            code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, Int32, spec1d}}; sm_arch=v"10.0", bytecode_version=v"13.4", num_worker_warps=2)
+        end
+
+        if ct.bytecode_version() >= v"13.5" && ct.tileir_disassembler_version() >= v"13.5"
+            @test @filecheck begin
+                @check "num_worker_warps_per_cta = 1"
+                ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, Int32, spec1d}}; sm_arch=v"10.0", bytecode_version=v"13.5", num_worker_warps=1)
+            end
+            @test @filecheck begin
+                @check "num_worker_warps_per_cta = 32"
+                ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, Int32, spec1d}}; sm_arch=v"10.0", bytecode_version=v"13.5", num_worker_warps=32)
+            end
+        end
+    end
+
     @testset "ct.@compiler_options" begin
         # Single kernel with multiple ByTarget hints to exercise all resolution paths
         function _kernel_hints(a::ct.TileArray{Float32,1})

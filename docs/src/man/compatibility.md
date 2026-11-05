@@ -23,7 +23,7 @@ artifacts, including `tileiras`.
 
 ## Bytecode versions
 
-cuTile.jl can emit bytecode versions **v13.1 through v13.4**. By default it
+cuTile.jl can emit bytecode versions **v13.1 through v13.5**. By default it
 probes the `tileiras` binary in use and emits the newest version that binary
 accepts; the `bytecode_version` preference selects a version accepted by
 that binary. cuTile rejects preferences unsupported by either the package or
@@ -82,6 +82,13 @@ Everything not listed here works at v13.1.
 | Directed float conversion rounding | `RoundToZero`, `RoundDown`, `RoundUp`, or `RoundNearestTiesAway`; supported pairs vary |
 | Programmatic dependent launch | Also requires Hopper (sm_90) or newer |
 
+### Requires v13.5
+
+| Feature | Notes |
+|---------|-------|
+| `num_worker_warps` other than 4 or 8 | Any power of 2 from 1 to 32 |
+| `check_bounds=false` on `ct.atomic_store_*` | |
+
 
 ## Features by architecture
 
@@ -91,6 +98,7 @@ Everything not listed here works at v13.1.
 | Atomic add on `BFloat16` | Hopper (≥ sm_90) | Error |
 | `fast_acc=true` | Hopper (sm_90) | Silently ignored |
 | Programmatic dependent launch | Hopper (≥ sm_90) | Error |
+| `Float8_E4M3FN` and `Float8_E5M2` | Hopper (≥ sm_90), or Ada (sm_89) with a CUDA 13.5 or newer `tileiras` | Error |
 
 `fast_acc` is the exception to the pattern: it is a throughput hint rather than
 a capability, so on architectures where it does nothing, it is accepted and

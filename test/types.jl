@@ -302,6 +302,14 @@ end
     @test_throws ArgumentError cuTile.validate_hint(:occupancy, 0)
     @test_throws ArgumentError cuTile.validate_hint(:occupancy, 33)
 
+    # num_worker_warps: powers of 2 in [1, 32]
+    for v in (1, 2, 4, 8, 16, 32)
+        cuTile.validate_hint(:num_worker_warps, v)
+    end
+    @test_throws ArgumentError cuTile.validate_hint(:num_worker_warps, 0)
+    @test_throws ArgumentError cuTile.validate_hint(:num_worker_warps, 3)
+    @test_throws ArgumentError cuTile.validate_hint(:num_worker_warps, 64)
+
     # opt_level: [0, 3]
     for v in 0:3
         cuTile.validate_hint(:opt_level, v)

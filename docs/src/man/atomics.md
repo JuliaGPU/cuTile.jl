@@ -39,7 +39,10 @@ returns `expected` for those elements; the returned values of the other
 The `atomic_store_*` functions use Tile IR's view-based atomic reductions and
 require Tile IR bytecode v13.3 or newer. The destination may be a `TileArray` or
 a `TiledView` returned by [`eachtile`](memory.md#Tile-windows); tile updates are
-broadcast to the selected window.
+broadcast to the selected window. Elements of the window outside the array are
+skipped, like a bounds-checked `ct.store`; `check_bounds=false` is the same
+unsafe promise that the whole window is inside the array, and requires bytecode
+v13.5 or newer.
 
 They cover fewer element types than the read-modify-write family, and `BFloat16`
 addition additionally requires Hopper (`sm_90`) or newer; see

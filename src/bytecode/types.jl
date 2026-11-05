@@ -1,6 +1,6 @@
 # Type system for Tile IR bytecode
 
-const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2", v"13.3", v"13.4")
+const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2", v"13.3", v"13.4", v"13.5")
 
 function validate_bytecode_version(version::VersionNumber)
     version in SUPPORTED_BYTECODE_VERSIONS || throw(ArgumentError(

@@ -27,7 +27,7 @@ end
 
 @testset "Tile IR v13.4 encodings" begin
     @test v"13.4" in cuTile.SUPPORTED_BYTECODE_VERSIONS
-    @test_throws ArgumentError cuTile.TypeTable(; version=v"13.5")
+    @test_throws ArgumentError cuTile.TypeTable(; version=v"13.6")
 
     tt33 = cuTile.TypeTable(; version=v"13.3")
     tt34 = cuTile.TypeTable(; version=v"13.4")
@@ -84,6 +84,41 @@ end
     for version in (v"13.1", v"13.2", v"13.3")
         @test_throws "requires Tile IR v13.4+" cuTile.encode_FPowIOp!(
             make_builder(version), cuTile.TypeId(1), cuTile.Value(2), cuTile.Value(3))
+    end
+end
+
+@testset "Tile IR v13.5 encodings" begin
+    @test v"13.5" in cuTile.SUPPORTED_BYTECODE_VERSIONS
+
+    args = (cuTile.TypeId(1), cuTile.Value(2), [cuTile.Value(3)], cuTile.Value(4))
+    cb34 = make_builder(v"13.4")
+    cb35 = make_builder(v"13.5")
+    cuTile.encode_AtomicRedViewTkoOp!(cb34, args...)
+    cuTile.encode_AtomicRedViewTkoOp!(cb35, args...; inbounds=[true])
+    @test cb34.buf == UInt8[117, 1, 1, 0, 1, 1, 3, 2, 1, 3, 4]
+    @test cb35.buf == UInt8[117, 1, 1, 0, 1, 1, 3, 1, 1, 2, 1, 3, 4]
+    @test_throws "check_bounds=false requires Tile IR v13.5+" cuTile.encode_AtomicRedViewTkoOp!(
+        make_builder(v"13.4"), args...; inbounds=[true])
+
+    # Entry points: no hints flag bit (0x04 now marks an extern impl), hints always
+    # present. Every function ends its header with an empty arg_attrs array.
+    function function_bytes(version; is_entry)
+        writer = cuTile.BytecodeWriter(; version)
+        buf = UInt8[]
+        cuTile.add_function!(writer, buf, "k", cuTile.TypeId[], cuTile.TypeId[]; is_entry)
+        buf
+    end
+    @test function_bytes(v"13.4"; is_entry=true)[3:end] == UInt8[0x02, 1]
+    @test function_bytes(v"13.5"; is_entry=true)[3:end] == UInt8[0x02, 1, 0x0b, 0, 0x06, 0]
+    @test function_bytes(v"13.4"; is_entry=false)[3:end] == UInt8[0x00, 1]
+    @test function_bytes(v"13.5"; is_entry=false)[3:end] == UInt8[0x00, 1, 0x06, 0]
+
+    # DISubprogram gained a trailing flags varint.
+    for (version, len) in ((v"13.4", 7), (v"13.5", 8))
+        table = cuTile.DebugAttrTable(cuTile.StringTable(); version)
+        file = cuTile.file!(table, "f.jl", ".")
+        cuTile.subprogram!(table, file, 1, "f", "f", cuTile.compile_unit!(table, file), 1)
+        @test length(last(cuTile.items(table)).first) == len
     end
 end
 

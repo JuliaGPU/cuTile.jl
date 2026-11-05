@@ -263,11 +263,15 @@ end
 # View-based atomic reductions
 
 """
-    atomic_store_add(dst, index, update) -> Nothing
+    atomic_store_add(dst, index, update; check_bounds=true) -> Nothing
 
 Reduce `update` into a tile of `dst` without returning its previous value.
 `dst` may be a `TileArray` or a `TiledView` from [`eachtile`](@ref). Updates
 broadcast to the tile shape. The operation uses relaxed, device-wide ordering.
+
+Elements of the tile that fall outside `dst` are skipped. Set
+`check_bounds=false` to promise that the whole tile is inside the array, as with
+[`store`](@ref); this requires Tile IR bytecode ≥ 13.5.
 
 Addition supports `Int32`, `Int64`, `UInt32`, `UInt64`, `Float16`, `BFloat16`,
 `Float32` and `Float64`.
@@ -309,47 +313,49 @@ for op in (:add, :max, :min, :or, :and, :xor)
     intrinsic = Symbol(:atomic_red_view_, op)
     bitwise = op in (:or, :and, :xor)
 
-    @eval @inline function $fname(arr::TileArray{T}, index, tile::Tile) where {T}
+    @eval @inline function $fname(arr::TileArray{T}, index, tile::Tile;
+                                  check_bounds::Bool=true) where {T}
         update = atomic_red_update(T, tile, $bitwise)
         reshaped = _reshape_to_rank(update, Val(ndims(arr)))
         tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
         pv = Intrinsics.make_partition_view(tv, size(reshaped), PaddingMode.Undetermined, nothing)
-        Intrinsics.$intrinsic(pv, reshaped, zero_based_indices(arr, index))
+        Intrinsics.$intrinsic(pv, reshaped, zero_based_indices(arr, index), check_bounds)
         return nothing
     end
-    @eval @inline $fname(arr::TileArray{T}, index::Integer, tile::Tile) where {T} =
-        $fname(arr, (index,), tile)
+    @eval @inline $fname(arr::TileArray{T}, index::Integer, tile::Tile; kwargs...) where {T} =
+        $fname(arr, (index,), tile; kwargs...)
     if bitwise
-        @eval @inline function $fname(arr::TileArray{T}, index, val::Number) where {T}
+        @eval @inline function $fname(arr::TileArray{T}, index, val::Number; kwargs...) where {T}
             val isa T || throw(ArgumentError($("$fname requires the update value to exactly " *
                 "match the destination element type; bitwise reductions do not convert implicitly")))
             shape = ntuple(_ -> 1, Val(ndims(arr)))
-            $fname(arr, index, reshape(Intrinsics.from_scalar(val, Tuple{}), shape))
+            $fname(arr, index, reshape(Intrinsics.from_scalar(val, Tuple{}), shape); kwargs...)
         end
     else
-        @eval @inline function $fname(arr::TileArray{T}, index, val::Number) where {T}
+        @eval @inline function $fname(arr::TileArray{T}, index, val::Number; kwargs...) where {T}
             shape = ntuple(_ -> 1, Val(ndims(arr)))
-            $fname(arr, index, reshape(Intrinsics.from_scalar(convert(T, val), Tuple{}), shape))
+            $fname(arr, index, reshape(Intrinsics.from_scalar(convert(T, val), Tuple{}), shape);
+                   kwargs...)
         end
     end
 
     @eval @inline function $fname(tiles::TiledView{A}, index::NTuple{N, <:Integer},
-                                  tile::Tile) where {A, N}
+                                  tile::Tile; check_bounds::Bool=true) where {A, N}
         N == ndims(tiles) || throw(ArgumentError("eachtile: expected $(ndims(tiles)) tile indices, got $N"))
         update = atomic_red_update(eltype(A), tile, $bitwise)
         view = make_atomic_tile_view(tiles)
         Intrinsics.$intrinsic(view, broadcast_to(update, tiled_view_shape(tiles)),
-                              zero_based_indices(tiles.parent, index))
+                              zero_based_indices(tiles.parent, index), check_bounds)
         return nothing
     end
-    @eval @inline $fname(tiles::TiledView, index::Integer, tile::Tile) =
-        $fname(tiles, (index,), tile)
+    @eval @inline $fname(tiles::TiledView, index::Integer, tile::Tile; kwargs...) =
+        $fname(tiles, (index,), tile; kwargs...)
 
     # `atomic_store_add` carries the family's documentation; give the other
     # reductions a docstring of their own so each public binding has one.
     if op !== :add
         @eval @doc """
-                  $($(string(fname)))(dst, index, update) -> Nothing
+                  $($(string(fname)))(dst, index, update; check_bounds=true) -> Nothing
 
               Reduce `update` into a tile of `dst` with `$($(string(op)))`, without
               returning the previous value. See [`atomic_store_add`](@ref) for the

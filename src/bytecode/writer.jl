@@ -28,12 +28,14 @@ mutable struct DebugAttrTable
     attrs::Dict{Vector{UInt8}, DebugAttrId}
     string_table::StringTable
     next_id::Int
+    version::VersionNumber
 end
 
-DebugAttrTable(string_table::StringTable) = DebugAttrTable(
+DebugAttrTable(string_table::StringTable; version::VersionNumber) = DebugAttrTable(
     Dict{Vector{UInt8}, DebugAttrId}(),
     string_table,
-    1  # Start at 1, 0 is reserved for "no debug info"
+    1,  # Start at 1, 0 is reserved for "no debug info"
+    version
 )
 
 function Base.getindex(table::DebugAttrTable, encoded::Vector{UInt8})
@@ -85,6 +87,7 @@ function subprogram!(table::DebugAttrTable, file::DebugAttrId, line::Int,
     encode_varint!(buf, table.string_table[linkage_name].id)
     encode_varint!(buf, compile_unit.id)
     encode_varint!(buf, scope_line)
+    table.version >= v"13.5" && encode_varint!(buf, 0) # no DISubprogram flags
     return table[buf]
 end
 
@@ -452,7 +455,7 @@ function BytecodeWriter(; version::VersionNumber)
         string_table,
         ConstantTable(),
         TypeTable(; version),
-        DebugAttrTable(string_table),
+        DebugAttrTable(string_table; version),
         Vector{Vector{DebugAttrId}}[],
         0
     )
@@ -624,11 +627,14 @@ function add_function!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     sig_type = function_type!(writer.type_table, param_types, result_types)
     encode_typeid!(func_buf, sig_type)
 
-    # Entry flags
+    # Entry flags. From v13.5 on, entry points always carry optimization hints,
+    # and the bit that used to announce them marks an extern implementation.
+    # Every function also carries an array of argument attributes.
+    version = bytecode_version(writer)
     flags = 0x00
     if is_entry
         flags |= 0x02
-        if entry_hints !== nothing
+        if entry_hints !== nothing && version < v"13.5"
             flags |= 0x04
         end
     end
@@ -639,9 +645,18 @@ function add_function!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     push!(writer.debug_info, [func_debug_attr])
     encode_varint!(func_buf, length(writer.debug_info))
 
-    # Entry hints if present
-    if is_entry && entry_hints !== nothing
-        append!(func_buf, entry_hints)
+    if is_entry
+        if entry_hints !== nothing
+            append!(func_buf, entry_hints)
+        elseif version >= v"13.5"
+            push!(func_buf, AttributeTag.OptimizationHints)
+            encode_varint!(func_buf, 0)
+        end
+    end
+    if version >= v"13.5"
+        # argument attributes, none of which we use
+        push!(func_buf, AttributeTag.Array)
+        encode_varint!(func_buf, 0)
     end
 
     # Create code builder for function body
@@ -756,7 +771,7 @@ Encoded as a dictionary attribute in bytecode.
 @kwdef struct EntryHints
     num_ctas::Union{Int, Nothing} = nothing           # 1, 2, 4, 8, 16
     occupancy::Union{Int, Nothing} = nothing          # 1-32
-    num_worker_warps::Union{Int, Nothing} = nothing   # 4 or 8
+    num_worker_warps::Union{Int, Nothing} = nothing   # 1, 2, 4, 8, 16, 32
 end
 
 function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber, Nothing}, hints::EntryHints)
@@ -778,6 +793,12 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     if hints.num_worker_warps !== nothing && version < v"13.3"
         throw(ArgumentError(
             "num_worker_warps requires Tile IR bytecode v13.3+, got v$version"))
+    end
+    # Older tileiras silently clamps other values to 4 or 8 warps.
+    if hints.num_worker_warps !== nothing && hints.num_worker_warps ∉ (4, 8) && version < v"13.5"
+        throw(ArgumentError(
+            "num_worker_warps=$(hints.num_worker_warps) requires Tile IR bytecode v13.5+ " *
+            "(only 4 and 8 are supported before), got v$version"))
     end
 
     # Build items list (only non-nothing values)

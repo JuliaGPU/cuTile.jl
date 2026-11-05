@@ -267,12 +267,17 @@ function emit_atomic_red_view!(ctx::CGCtx, args::AbstractVector,
     index_vals = pad_indices(ctx, index_vals, ndim, index_type, index_jl_type)
     reverse!(index_vals)
 
+    check_bounds = @something get_constant(ctx, args[4]) throw(IRError("$name: check_bounds must be a compile-time constant"))
+    # A 0-D view has no inbounds entries for the encoder to reject.
+    check_bounds || bytecode_version(cb) >= v"13.5" ||
+        throw(IRError("atomic_store: check_bounds=false requires Tile IR v13.5+, got v$(bytecode_version(cb))"))
+
     token_type = Token(tt)
     result_token = encode_AtomicRedViewTkoOp!(cb, token_type, view_arg.v, index_vals, value_tv.v;
                                               token=input_token,
                                               memory_ordering=MemoryOrderingSemantics.Relaxed,
                                               memory_scope=MemoryScope.Device,
-                                              mode=mode)
+                                              mode=mode, inbounds=fill(!check_bounds, ndim))
     ctx.result_tokens[ctx.current_ssa_idx] = result_token
     return nothing
 end
@@ -281,13 +286,14 @@ for (op, mode) in ((:add, AtomicRMWMode.ADD), (:max, AtomicRMWMode.MAX), (:min, 
                    (:or, AtomicRMWMode.OR), (:and, AtomicRMWMode.AND), (:xor, AtomicRMWMode.XOR))
     name = Symbol(:atomic_red_view_, op)
     docstring = """
-        Intrinsics.$name(view, value::Tile, indices::NTuple) -> Nothing
+        Intrinsics.$name(view, value::Tile, indices::NTuple, check_bounds::Bool) -> Nothing
 
     Apply an atomic $op reduction to a tile of `view`. Uses relaxed,
-    device-wide ordering and returns `nothing`.
+    device-wide ordering and returns `nothing`. `check_bounds=false` promises
+    the whole tile is inside the view.
     """
     @eval begin
-        @doc $docstring @intrinsic $name(view, value, indices)
+        @doc $docstring @intrinsic $name(view, value, indices, check_bounds)
         tfunc(𝕃, ::typeof(Intrinsics.$name), @nospecialize args...) = Nothing
         efunc(::typeof(Intrinsics.$name), effects::CC.Effects) =
             CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
