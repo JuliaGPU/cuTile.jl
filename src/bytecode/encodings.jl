@@ -2183,7 +2183,7 @@ end
 
 """
     encode_AtomicRedViewTkoOp!(cb, token_type, view, index, value;
-                               token, memory_ordering, memory_scope, mode) -> Value
+                               token, memory_ordering, memory_scope, mode, inbounds) -> Value
 
 Atomic read-modify-write of `value` into the tile selected by `index` within
 `view`. Returns an ordering token.
@@ -2197,7 +2197,8 @@ function encode_AtomicRedViewTkoOp!(cb::CodeBuilder,
                                     token::Union{Value, Nothing}=nothing,
                                     memory_ordering::MemoryOrderingSemantics.T=MemoryOrderingSemantics.Relaxed,
                                     memory_scope::MemoryScope.T=MemoryScope.Device,
-                                    mode::AtomicRMWMode.T=AtomicRMWMode.ADD)
+                                    mode::AtomicRMWMode.T=AtomicRMWMode.ADD,
+                                    inbounds=fill(false, length(index)))
     bytecode_version(cb) >= v"13.3" ||
         throw(IRError("AtomicRedViewTkoOp requires Tile IR v13.3+, got v$(bytecode_version(cb))"))
     encode_varint!(cb.buf, Opcode.AtomicRedViewTkoOp)
@@ -2207,6 +2208,11 @@ function encode_AtomicRedViewTkoOp!(cb::CodeBuilder,
     encode_enum!(cb.buf, memory_ordering)
     encode_enum!(cb.buf, memory_scope)
     encode_enum!(cb.buf, mode)
+    if bytecode_version(cb) >= v"13.5"
+        encode_dense_bool_array!(cb, inbounds)
+    elseif any(inbounds)
+        throw(IRError("atomic_store: check_bounds=false requires Tile IR v13.5+, got v$(bytecode_version(cb))"))
+    end
     encode_operand!(cb.buf, view)
     encode_sized_operands!(cb.buf, index)
     encode_operand!(cb.buf, value)

@@ -9,7 +9,7 @@ using Serialization
     @test cuTile.select_bytecode_version(v"13.4", v"13.2") == v"13.2"
     @test_throws ArgumentError cuTile.select_bytecode_version(v"13.3", v"13.4")
     @test_throws ArgumentError cuTile.select_bytecode_version(v"13.4", v"13.5")
-    @test_throws ArgumentError cuTile.select_bytecode_version(v"13.5", nothing)
+    @test_throws ArgumentError cuTile.select_bytecode_version(v"13.6", nothing)
 end
 
 const CUBIN_CACHE_PRELUDE = quote
