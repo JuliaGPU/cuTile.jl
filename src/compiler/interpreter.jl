@@ -26,7 +26,14 @@ function cuTileInterpreter(cache::CacheView; always_inline::Bool=true)
     else
         inf_cache = Vector{CC.InferenceResult}()
     end
-    inf_params = CC.InferenceParams()
+    # Before 1.12, calls in a block that ends in `throw` are left uninferred and
+    # uninlined by default. Kernels need them inferred: an exception
+    # constructor typed `Any` cannot be removed, and its message is lost.
+    inf_params = @static if VERSION >= v"1.12.0-DEV.1017"
+        CC.InferenceParams()
+    else
+        CC.InferenceParams(; unoptimize_throw_blocks=false)
+    end
     opt_params = if always_inline
         CC.OptimizationParams(; inline_cost_threshold=typemax(Int))
     else

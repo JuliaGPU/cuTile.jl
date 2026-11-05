@@ -794,6 +794,20 @@ end
             end
         end
 
+        @testset "throw guarded by a bounds check" begin
+            @test @filecheck begin
+                @check "assert {{.*}}ArgumentError: out of range"
+                code_tiled(Tuple{Int32}) do x
+                    @inline function checked(y)
+                        @boundscheck y > Int32(100) && throw(ArgumentError("out of range"))
+                        return
+                    end
+                    checked(x)
+                    return
+                end
+            end
+        end
+
         @testset "runtime-dependent message falls back to the exception type" begin
             @test @filecheck begin
                 @check "assert {{.*}}ArgumentError was thrown"
