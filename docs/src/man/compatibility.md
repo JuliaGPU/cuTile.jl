@@ -82,6 +82,12 @@ Everything not listed here works at v13.1.
 | Directed float conversion rounding | `RoundToZero`, `RoundDown`, `RoundUp`, or `RoundNearestTiesAway`; supported pairs vary |
 | Programmatic dependent launch | Also requires Hopper (sm_90) or newer |
 
+### Requires v13.5
+
+| Feature | Notes |
+|---------|-------|
+| `num_worker_warps` other than 4 or 8 | Any power of 2 from 1 to 32 |
+
 
 ## Features by architecture
 

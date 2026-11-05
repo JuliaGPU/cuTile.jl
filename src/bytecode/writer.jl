@@ -771,7 +771,7 @@ Encoded as a dictionary attribute in bytecode.
 @kwdef struct EntryHints
     num_ctas::Union{Int, Nothing} = nothing           # 1, 2, 4, 8, 16
     occupancy::Union{Int, Nothing} = nothing          # 1-32
-    num_worker_warps::Union{Int, Nothing} = nothing   # 4 or 8
+    num_worker_warps::Union{Int, Nothing} = nothing   # 1, 2, 4, 8, 16, 32
 end
 
 function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber, Nothing}, hints::EntryHints)
@@ -793,6 +793,12 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     if hints.num_worker_warps !== nothing && version < v"13.3"
         throw(ArgumentError(
             "num_worker_warps requires Tile IR bytecode v13.3+, got v$version"))
+    end
+    # Older tileiras silently clamps other values to 4 or 8 warps.
+    if hints.num_worker_warps !== nothing && hints.num_worker_warps ∉ (4, 8) && version < v"13.5"
+        throw(ArgumentError(
+            "num_worker_warps=$(hints.num_worker_warps) requires Tile IR bytecode v13.5+ " *
+            "(only 4 and 8 are supported before), got v$version"))
     end
 
     # Build items list (only non-nothing values)

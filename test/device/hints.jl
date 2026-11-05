@@ -94,8 +94,16 @@ end
         @test_throws "num_worker_warps requires" @cuda backend=cuTile blocks=64 num_worker_warps=8 vadd_kernel_worker_warps(a, b, c)
     end
 
+    fill!(c, 0)
+    if cuTile.bytecode_version() >= v"13.5"
+        @cuda backend=cuTile blocks=64 num_worker_warps=2 vadd_kernel_worker_warps(a, b, c)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    elseif cuTile.bytecode_version() >= v"13.3"
+        @test_throws "num_worker_warps=2 requires Tile IR bytecode v13.5+" @cuda backend=cuTile blocks=64 num_worker_warps=2 vadd_kernel_worker_warps(a, b, c)
+    end
+
     # Invalid value rejected before compilation.
-    @test_throws "num_worker_warps must be either 4 or 8" @cuda backend=cuTile blocks=64 num_worker_warps=3 vadd_kernel_worker_warps(a, b, c)
+    @test_throws "num_worker_warps must be a power of 2" @cuda backend=cuTile blocks=64 num_worker_warps=3 vadd_kernel_worker_warps(a, b, c)
 end
 
 end
