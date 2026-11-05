@@ -1,9 +1,14 @@
+# Pull requests test the oldest and newest supported Julia release, and the oldest and newest
+# CUDA compiler; the versions in between are tested on branch builds, or when selected with
+# `[only julia]` or `[only cuda]`. Draft pull requests only test the newest Julia release.
 steps:
   # first, test supported Julia versions
   - group: ":julia: Julia"
     key: "julia"
     steps:
-      - label: "Julia {{matrix.julia}}"
+      # the newest release, also tested on draft pull requests
+      - &julia
+        label: "Julia {{matrix.julia}}"
         plugins:
           - JuliaCI/julia#v1:
               version: "{{matrix.julia}}"
@@ -16,13 +21,37 @@ steps:
         matrix:
           setup:
             julia:
-              - "1.11"
-              - "1.12"
-              - "1.13-nightly"
+              - "1.13"
         if: |
           build.message =~ /\[only tests\]/ ||
           build.message =~ /\[only julia\]/ ||
           build.message !~ /\[only/ &&
+            build.message !~ /\[skip tests\]/ &&
+            build.message !~ /\[skip julia\]/
+
+      # the oldest release
+      - <<: *julia
+        matrix:
+          setup:
+            julia:
+              - "1.11"
+        if: |
+          build.message =~ /\[only tests\]/ ||
+          build.message =~ /\[only julia\]/ ||
+          build.message !~ /\[only/ && !build.pull_request.draft &&
+            build.message !~ /\[skip tests\]/ &&
+            build.message !~ /\[skip julia\]/
+
+      # intermediate releases, not tested on pull requests
+      - <<: *julia
+        matrix:
+          setup:
+            julia:
+              - "1.12"
+        if: |
+          build.message =~ /\[only tests\]/ ||
+          build.message =~ /\[only julia\]/ ||
+          build.message !~ /\[only/ && build.pull_request.id == null &&
             build.message !~ /\[skip tests\]/ &&
             build.message !~ /\[skip julia\]/
 
@@ -31,10 +60,11 @@ steps:
     key: "cuda"
     depends_on: "julia"
     steps:
-      - label: "CUDA {{matrix.cuda}}"
+      - &cuda
+        label: "CUDA {{matrix.cuda}}"
         plugins:
           - JuliaCI/julia#v1:
-              version: "1.12"
+              version: "1.13"
           - JuliaCI/julia-test#v1:
               coverage: false
         agents:
@@ -51,10 +81,22 @@ steps:
           setup:
             cuda:
               - "13.4"
-              - "13.3"
               - "13.2"
         commands: |
           echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
+
+      # intermediate compilers, not tested on pull requests
+      - <<: *cuda
+        if: |
+          build.message =~ /\[only tests\]/ ||
+          build.message =~ /\[only cuda\]/ ||
+          build.message !~ /\[only/ && build.pull_request.id == null &&
+            build.message !~ /\[skip tests\]/ &&
+            build.message !~ /\[skip cuda\]/
+        matrix:
+          setup:
+            cuda:
+              - "13.3"
 
   - wait: ~
     continue_on_failure: true
@@ -62,7 +104,7 @@ steps:
   - label: ":books: Documentation"
     plugins:
       - JuliaCI/julia#v1:
-          version: "1.12"
+          version: "1.13"
     commands: |
       julia --project -e '
         println("--- :julia: Instantiating project")
