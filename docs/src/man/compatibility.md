@@ -87,6 +87,7 @@ Everything not listed here works at v13.1.
 | Feature | Notes |
 |---------|-------|
 | `num_worker_warps` other than 4 or 8 | Any power of 2 from 1 to 32 |
+| `check_bounds=false` on `ct.atomic_store_*` | |
 
 
 ## Features by architecture

@@ -2949,6 +2949,39 @@ end
             ct.atomic_store_add(tiles, (1, 1, 1), val)  # 3 indices for a 2D view
             return
         end
+
+        @test_throws "check_bounds=false requires Tile IR v13.5+" code_tiled(
+            Tuple{ct.TileArray{Float32,1,Int32,spec1d}}; bytecode_version=v"13.4") do a
+            val = ct.broadcast_to(ct.Tile(1.0f0), (16,))
+            ct.atomic_store_add(a, ct.bid(1), val; check_bounds=false)
+            return
+        end
+
+        if ct.bytecode_version() >= v"13.5" && ct.tileir_disassembler_version() >= v"13.5"
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
+                    tiles = ct.eachtile(a, (16, 16))
+                    val = ct.broadcast_to(ct.Tile(1.0f0), (16, 16))
+                    @check "atomic_red_view_tko"
+                    ct.atomic_store_add(tiles, (1, 1), val)
+                    @check_not "inbounds"
+                    @check "atomic_red_view_tko{{.*}}inbounds = [true, true]"
+                    ct.atomic_store_add(tiles, (1, 1), val; check_bounds=false)
+                    return
+                end
+            end
+
+            # The scalar-update and integer-index overloads forward the keyword.
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
+                    @check "atomic_red_view_tko{{.*}}inbounds = [true]"
+                    ct.atomic_store_xor(a, ct.bid(1), Int32(3); check_bounds=false)
+                    return
+                end
+            end
+        end
     end
     end
 
