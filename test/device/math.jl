@@ -252,7 +252,10 @@ end
 
 @testset "Base math functions over tiles" begin
     for (name, f, gen) in [
-        # This branches per element.
+        # These branch per element. Inputs stay within each domain, outside of
+        # which Base throws.
+        ("asin",     asin,              () -> 2 .* rand(Float32, 256) .- 1),
+        ("acos",     acos,              () -> 2 .* rand(Float32, 256) .- 1),
         ("hypot",    x -> hypot(x, 2x), () -> randn(Float32, 256)),
         ("atan",     atan,              () -> 4 .* randn(Float32, 256)),
         ("copysign", x -> copysign(2f0, x), () -> randn(Float32, 256)),

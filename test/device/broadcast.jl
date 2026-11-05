@@ -1014,3 +1014,18 @@ end
     @cuda backend=cuTile div_kernel(out, CuArray(x), Int32(7))
     @test Array(out)[:, 6] == [x > 0 ? 100 ÷ Int32(7) : Int32(0) for x in vec(x)]
 end
+
+@testset "assertions in flattened branches" begin
+    # The domain check of `asin` is only asserted for elements that call it.
+    clamped_asin(x) = abs(x) > 1f0 ? 0f0 : asin(x)
+
+    function asin_kernel(out::ct.TileArray{Float32,1}, x::ct.TileArray{Float32,1})
+        ct.store(out, 1, clamped_asin.(ct.load(x, 1, (64,))))
+        return
+    end
+
+    x = 4 .* rand(Float32, 64) .- 2
+    out = CUDA.zeros(Float32, 64)
+    @cuda backend=cuTile asin_kernel(out, CuArray(x))
+    @test Array(out) ≈ clamped_asin.(x)
+end
