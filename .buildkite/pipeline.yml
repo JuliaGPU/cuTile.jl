@@ -80,7 +80,7 @@ steps:
         matrix:
           setup:
             cuda:
-              - "13.4"
+              - "13.5"
               - "13.2"
         commands: |
           echo -e "[CUDA_Compiler_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
@@ -96,6 +96,7 @@ steps:
         matrix:
           setup:
             cuda:
+              - "13.4"
               - "13.3"
 
   - wait: ~
