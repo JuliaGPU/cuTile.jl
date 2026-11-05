@@ -252,6 +252,8 @@ end
 
 @testset "Base math functions over tiles" begin
     for (name, f, gen) in [
+        # This branches per element.
+        ("hypot",    x -> hypot(x, 2x), () -> randn(Float32, 256)),
         ("atan",     atan,              () -> 4 .* randn(Float32, 256)),
         ("copysign", x -> copysign(2f0, x), () -> randn(Float32, 256)),
         ("muladd",   x -> muladd(x, x, 1f0), () -> randn(Float32, 256)),

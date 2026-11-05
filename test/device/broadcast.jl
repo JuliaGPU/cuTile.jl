@@ -955,3 +955,62 @@ end
     @test O[:, 5:8] == 1f0 .- X
     @test O[:, 9:12] == Float32.(X .> 0f0)
 end
+
+@testset "scalar functions with branches" begin
+    # A branch on a per-element condition is flattened: both arms run and the
+    # results are selected per element.
+    hyp(x, y) = isinf(x) | isinf(y) ? Inf32 : sqrt(muladd(x, x, y * y))
+    piecewise(x) = x < -1f0 ? -1f0 : x > 1f0 ? x * x : x
+
+    function branch_kernel(out::ct.TileArray{Float32,2}, x::ct.TileArray{Float32,2})
+        t = ct.load(x, (1, 1), (64, 4))
+        ct.store(out, (1, 1), hyp.(t, t))
+        ct.store(out, (1, 2), piecewise.(t))
+        return
+    end
+
+    x = CUDA.randn(Float32, 64, 4)
+    CUDA.@allowscalar x[1, 1] = Inf32
+    out = CUDA.zeros(Float32, 64, 8)
+    @cuda backend=cuTile branch_kernel(out, x)
+
+    X = Array(x)
+    O = Array(out)
+    @test O[:, 1:4] ≈ hyp.(X, X)
+    @test O[:, 5:8] == piecewise.(X)
+end
+
+@testset "guarded integer division" begin
+    # Both arms run, so the divisions must not see the zero divisors (or
+    # typemin / -1) their branches exclude.
+    fs = (x -> x != Int32(0) ? Int32(100) ÷ x : Int32(0),
+          x -> x == Int32(0) ? Int32(-1) : rem(Int32(7), x),
+          x -> x != Int32(0) ? fld(Int32(100), x) : Int32(0),
+          x -> x != Int32(0) ? cld(Int32(100), x) : Int32(0),
+          x -> x != Int32(0) && x != Int32(-1) ? typemin(Int32) ÷ x : Int32(0))
+    function div_kernel(out::ct.TileArray{Int32,2}, x::ct.TileArray{Int32,2}, y::Int32)
+        t = ct.load(x, (1, 1), (64, 1))
+        ct.store(out, (1, 1), fs[1].(t))
+        ct.store(out, (1, 2), fs[2].(t))
+        ct.store(out, (1, 3), fs[3].(t))
+        ct.store(out, (1, 4), fs[4].(t))
+        ct.store(out, (1, 5), fs[5].(t))
+        # A divisor that is the same for all elements.
+        ct.store(out, (1, 6), (x -> x > Int32(0) ? Int32(100) ÷ y : Int32(0)).(t))
+        return
+    end
+
+    x = Int32.(rand(-3:3, 64, 1))
+    x[1:2] .= (0, -1)
+    out = CUDA.zeros(Int32, 64, 6)
+    @cuda backend=cuTile div_kernel(out, CuArray(x), Int32(0))
+
+    O = Array(out)
+    for (i, f) in enumerate(fs)
+        @test O[:, i] == f.(vec(x))
+    end
+    @test all(iszero, O[vec(x) .<= 0, 6])
+
+    @cuda backend=cuTile div_kernel(out, CuArray(x), Int32(7))
+    @test Array(out)[:, 6] == [x > 0 ? 100 ÷ Int32(7) : Int32(0) for x in vec(x)]
+end

@@ -276,6 +276,9 @@ function run_passes!(sci::StructuredIRCode; alias_groups::AliasGroups=())
     # No current rewrite rule makes a branch condition newly constant, so the
     # fold only needs to run here, before normalization and token threading.
     fold_constant_branches!(sci)
+    # After the fold, so that arms holding a constant branch (`@boundscheck`)
+    # can be flattened.
+    if_convert!(sci)
 
     rewrite_patterns!(sci, PRINT_FUSION_RULES)
 

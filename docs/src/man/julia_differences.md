@@ -12,6 +12,17 @@ one becomes a compile-time diagnostic. `try`/`catch` is not supported. Use
 `ct.@assert` for explicit runtime checks.
 
 
+## Per-element branches run both arms
+
+A scalar function broadcast or mapped over a tile (`f.(tile)`) runs once for
+the whole tile, so a branch on an element's value (`x < 0 ? a : b`, or the
+special cases in Base's `asin` and `hypot`) cannot jump. Instead, both arms are
+computed for every element and each element selects its own result. This
+requires both arms to be free of side effects such as memory accesses or
+printing. A `throw` in an arm becomes an assertion that no element takes it.
+Loops whose trip count depends on the element's value are not supported.
+
+
 ## Some operations are non-throwing
 
 Float-to-integer conversions such as `Int32(x)`, `trunc(Int32, x)`, and

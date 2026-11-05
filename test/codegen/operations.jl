@@ -2133,6 +2133,86 @@ end
         end
     end
 
+    @testset "branches in broadcast functions" begin
+        # A branch on a per-element condition executes both arms and selects.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "sqrt"
+            @check "select"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                f(x) = isinf(x) ? Inf32 : sqrt(x * x + 1f0)
+                ct.store(a, 1, f.(tile))
+                return
+            end
+        end
+
+        # A throw in such a branch asserts that no element takes it.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "assert {{.*}}, \"DomainError"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                g(x) = x < 0f0 ? throw(DomainError(x)) : sqrt(x)
+                ct.store(a, 1, g.(tile))
+                return
+            end
+        end
+
+        # A division in an arm also runs for lanes it is undefined for, so it
+        # divides by 1 for those.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "[[DIVISOR:%.+]] = select"
+            @check "divi {{.*}}, [[DIVISOR]] signed"
+            code_tiled(Tuple{ct.TileArray{Int32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                d(x) = x != Int32(0) ? Int32(100) ÷ x : Int32(0)
+                ct.store(a, 1, d.(tile))
+                return
+            end
+        end
+
+        # A `@boundscheck` in an arm is folded before flattening.
+        @test @filecheck begin
+            @check_label "entry"
+            @check_not "if"
+            @check "select"
+            code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+                tile = ct.load(a, 1, (16,))
+                @inline function checked(x)
+                    @boundscheck x > 100f0 && throw(ArgumentError("out of range"))
+                    2f0 * x
+                end
+                f(x) = x > 0f0 ? checked(x) : 0f0
+                ct.store(a, 1, f.(tile))
+                return
+            end
+        end
+
+        # A branch that cannot be flattened is reported, not passed to tileiras.
+        @test_throws "Cannot branch on a per-element condition" code_tiled(
+                Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
+            tile = ct.load(a, 1, (16,))
+            h(x) = (for i in 1:4; x > Float32(i) || return Float32(i); end; 0f0)
+            ct.store(a, 1, h.(tile))
+            return
+        end
+        # Neither is a load, which lanes not taking the arm may not be allowed
+        # to perform.
+        @test_throws "Cannot branch on a per-element condition" code_tiled(
+                Tuple{ct.TileArray{Int32,1,Int32,spec1d},
+                      ct.TileArray{Int32,1,Int32,spec1d}}) do a, b
+            tile = ct.load(a, 1, (16,))
+            l(x) = x > Int32(0) ? sum(ct.load(b, 1, (16,); check_bounds=false)) : Int32(0)
+            ct.store(a, 1, l.(tile))
+            return
+        end
+    end
+
     @testset "scalar literal promotion" begin
         @test @filecheck begin
             @check_label "entry"
