@@ -627,9 +627,10 @@ rhs_scale) + acc`, where each scale element multiplies a contiguous block of
 (Tile IR v13.3+).
 
 `lhs`/`rhs` are low-precision floats (`f8e4m3fn`, `f8e5m2`, or `f4e2m1fn`),
-`lhs_scale`/`rhs_scale` are `f8e8m0fnu` or `f8e4m3fn`, and `acc`/result are
-`f32`. The block size `K ÷ K_s` and the exact (operand, scale) dtype pairing are
-validated by tileiras (see its `mmaf_scaled` verifier for the supported table).
+`lhs_scale`/`rhs_scale` are `f8e8m0fnu`, `f8e4m3fn`, or `f8e5m3fnu` (v13.4+),
+and `acc`/result are `f32`. The block size `K ÷ K_s` and the exact (operand,
+scale) dtype pairing are validated by tileiras (see its `mmaf_scaled` verifier
+for the supported table).
 """
 @intrinsic mma_scaled(lhs, lhs_scale, rhs, rhs_scale, acc)
 tfunc(𝕃, ::typeof(Intrinsics.mma_scaled), @nospecialize(lhs), @nospecialize(lhs_scale),

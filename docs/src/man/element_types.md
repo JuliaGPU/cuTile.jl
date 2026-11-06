@@ -7,7 +7,7 @@ Tiles and arrays are containers; this chapter is about what goes in them.
 - **Boolean:** `Bool`
 - **Arithmetic floats:** `Float16`, `BFloat16`, `Float32`, `Float64`
 - **Numeric floats:** `TFloat32`\*, `Float8_E4M3FN`\*\*, `Float8_E5M2`\*\*,
-  `Float8_E8M0FNU`\*\*, `Float4_E2M1FN`\*\*
+  `Float8_E8M0FNU`\*\*, `Float8_E5M3FNU`\*\*, `Float4_E2M1FN`\*\*
 
 \* [`cuTile.TFloat32`](@ref cuTile.TFloat32) is a public 32-bit floating-point
 numeric type with truncated mantissa (10 bits), made for tensor core operations.
@@ -85,6 +85,9 @@ equivalent.
 bytecode v13.3 for `Float32`, `TFloat32`, `Float16`, `BFloat16`,
 `Float8_E8M0FNU`, and `Float4_E2M1FN`; `Float64`, `Float8_E5M2`, and
 `Float8_E4M3FN` sources require v13.4.
+
+Conversions to `Float8_E5M3FNU` accept only `RoundNearest`, and conversions from
+it to `Float16` accept only `RoundNearest` and `RoundToZero`.
 
 `reinterpret` covers same-width bit reinterpretation directly. When the element
 width changes, it preserves the total bit count by scaling the first tile

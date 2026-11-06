@@ -29,6 +29,25 @@ function encode_varint!(buf::Vector{UInt8}, x::Integer)
 end
 
 """
+    decode_varint(buf, pos=1) -> (value, next_pos)
+
+Decode an unsigned varint written by [`encode_varint!`](@ref), starting at
+`buf[pos]`. Returns the value and the position just past its last byte.
+"""
+function decode_varint(buf::AbstractVector{UInt8}, pos::Int=1)
+    value = 0
+    shift = 0
+    while pos <= length(buf)
+        byte = buf[pos]
+        pos += 1
+        value |= Int(byte & 0x7f) << shift
+        byte & 0x80 == 0 && return value, pos
+        shift += 7
+    end
+    throw(ArgumentError("truncated varint"))
+end
+
+"""
     encode_signed_varint!(buf, x)
 
 Encode a signed integer using zigzag + varint encoding.
