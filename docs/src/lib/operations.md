@@ -79,14 +79,16 @@ trailing batch dimensions.
 
 `ct.muladd_scaled` multiplies each operand by a low-precision block scale before the matmul:
 each scale element covers a contiguous block of `B = K ÷ K_s` elements along the K dimension.
-Requires Blackwell. The supported operand/scale/accumulator dtypes and block sizes are:
+Requires Blackwell or newer; Hopper has no native block scaling. The supported
+operand/scale/accumulator dtypes and block sizes are below, and some dtypes need a newer
+architecture still (see [Compatibility](../man/compatibility.md#Features-by-architecture)):
 
 | Input (`a`/`b`) | Scale | Acc/Output | B |
 |-----------------|-------|------------|--------|
 | `Float8_E4M3FN`, `Float8_E5M2` | `Float8_E8M0FNU` | `Float32` | 32 |
 | `Float4_E2M1FN` | `Float8_E8M0FNU` | `Float32` | 16, 32 |
 | `Float4_E2M1FN` | `Float8_E4M3FN` | `Float32` | 16 |
-| `Float4_E2M1FN` | `Float8_E5M3FNU` (Rubin only) | `Float32` | 16, 32 |
+| `Float4_E2M1FN` | `Float8_E5M3FNU` | `Float32` | 16, 32 |
 
 
 ## Reductions and scans
