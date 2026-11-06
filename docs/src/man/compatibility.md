@@ -60,7 +60,7 @@ Everything not listed here works at v13.1.
 | Feature | Notes |
 |---------|-------|
 | `Float4_E2M1FN` | Element type |
-| `ct.muladd_scaled` | Also requires Blackwell |
+| `ct.muladd_scaled` | |
 | `muladd(a, b, acc; fast_acc=true)` | FP8 inputs only; only takes effect on Hopper |
 | `exp` with approximate rounding | `ct.@fpmode rounding_mode=ct.Rounding.Approx` |
 | `ct.atomic_store_*` | View-based atomic reductions |
@@ -79,7 +79,7 @@ Everything not listed here works at v13.1.
 | `ct.insert` | Replace a non-overlapping sub-tile |
 | `check_bounds=false` | On `ct.load` and `ct.store` only; on `ct.gather`/`ct.scatter` it merely skips the bounds mask |
 | `ct.Intrinsics.powi` | Integer exponents through `cuda_tile.fpowi` |
-| `Float8_E5M3FNU` | Element type, used as an FP4 block scale; also requires Rubin (sm_107) |
+| `Float8_E5M3FNU` | Element type, used as an FP4 block scale |
 | Directed float conversion rounding | `RoundToZero`, `RoundDown`, `RoundUp`, or `RoundNearestTiesAway`; supported pairs vary |
 | Programmatic dependent launch | Also requires Hopper (sm_90) or newer |
 
@@ -96,11 +96,12 @@ Everything not listed here works at v13.1.
 | Feature | Requirement | Behaviour otherwise |
 |---------|-------------|---------------------|
 | `ct.muladd_scaled` | Blackwell (≥ sm_100) | Error |
+| `Float8_E4M3FN` and `Float8_E5M2` | Hopper (≥ sm_90), or Ada (sm_89) with a CUDA 13.5 or newer `tileiras` | Error |
+| `Float8_E8M0FNU` and `Float4_E2M1FN` | Blackwell (≥ sm_100) | Error |
 | `Float8_E5M3FNU` | Rubin (sm_107) | Error |
 | Atomic add on `BFloat16` | Hopper (≥ sm_90) | Error |
 | `fast_acc=true` | Hopper (sm_90) | Silently ignored |
 | Programmatic dependent launch | Hopper (≥ sm_90) | Error |
-| `Float8_E4M3FN` and `Float8_E5M2` | Hopper (≥ sm_90), or Ada (sm_89) with a CUDA 13.5 or newer `tileiras` | Error |
 
 `fast_acc` is the exception to the pattern: it is a throughput hint rather than
 a capability, so on architectures where it does nothing, it is accepted and

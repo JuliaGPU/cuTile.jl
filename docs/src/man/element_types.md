@@ -19,8 +19,8 @@ numeric types, exported by
 `Float8_E4M3FN` and `Float8_E5M2` (FP8) are also exported by
 [DLFP8Types.jl](https://github.com/chengchingwen/DLFP8Types.jl).
 
-Which types are available depends on the Tile IR bytecode version in use; see
-[Compatibility](compatibility.md#Features-by-bytecode-version).
+Which types are available depends on the Tile IR bytecode version in use and on
+the GPU architecture; see [Compatibility](compatibility.md#Features-by-bytecode-version).
 
 
 ## Arithmetic versus numeric floats
