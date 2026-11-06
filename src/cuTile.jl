@@ -138,4 +138,6 @@ end
 
 include("precompile.jl")
 
+include("experimental/Experimental.jl")
+
 end # module cuTile
