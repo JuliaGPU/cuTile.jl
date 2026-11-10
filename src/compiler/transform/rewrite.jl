@@ -198,8 +198,22 @@ mutable struct RewriteDriver
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
     constants::Union{Nothing, ConstantInfo}
-    modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
+    # Operand-modified cascade state. `modified[v] = g` means v's operands
+    # changed due to forwarding generation `g` (one generation per RBind
+    # rewrite). `cascaded[v]` is the generation that was current when v last
+    # propagated its mark to its users. A mark with generation <= cascaded[v]
+    # is stale: every IR change it stands for happened before that cascade,
+    # so cascading again cannot enable anything new. Without this check, a
+    # node reachable along k paths cascades k times, which is exponential in
+    # the depth of diamond-shaped use chains (e.g. add-with-carry chains).
+    modified::Dict{SSAValue, Int}
+    cascaded::Dict{SSAValue, Int}
+    generation::Int
     max_rewrites::Int
+end
+
+function mark_modified!(driver::RewriteDriver, val::SSAValue, gen::Int)
+    driver.modified[val] = max(get(driver.modified, val, 0), gen)
 end
 
 #=============================================================================
@@ -247,6 +261,7 @@ function notify_erased!(d::RewriteDriver, ::Block, val::SSAValue,
     delete!(d.defs, val)
     remove!(d.worklist, val)
     delete!(d.modified, val)
+    delete!(d.cascaded, val)
 end
 
 #=============================================================================
@@ -408,8 +423,9 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         # driver propagates to THEIR users (see modified check in main loop).
         # This gives MLIR-style notifyOperationModified cascading.
         new_val = match.bindings[rule.rhs.name]
+        driver.generation += 1
         for u in users_of(driver, val)
-            push!(driver.modified, u)
+            mark_modified!(driver, u, driver.generation)
             push!(driver.worklist, u)
         end
         replace_uses!(driver.rewriter, val, new_val)
@@ -489,7 +505,8 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
     end
 
     rewriter = Rewriter(sci)
-    driver = RewriteDriver(rewriter, defs, dispatch, wl, constants, Set{SSAValue}(),
+    driver = RewriteDriver(rewriter, defs, dispatch, wl, constants,
+                           Dict{SSAValue, Int}(), Dict{SSAValue, Int}(), 0,
                            max_rewrites)
     rewriter.listener = driver
 
@@ -538,12 +555,16 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         # if this instruction's operands were changed by a forwarding rewrite but
         # no rule fired here, propagate to users — the operand change may enable
         # new matches further up the use chain. Mark users as modified too so the
-        # cascade continues through the fixpoint.
-        if !matched && val in driver.modified
-            delete!(driver.modified, val)
-            for u in users_of(driver, val)
-                push!(driver.modified, u)
-                haskey(driver.defs, u) && push!(driver.worklist, u)
+        # cascade continues through the fixpoint. Each node cascades at most
+        # once per forwarding generation (see `RewriteDriver.cascaded`).
+        if !matched && haskey(driver.modified, val)
+            gen = pop!(driver.modified, val)
+            if gen > get(driver.cascaded, val, 0)
+                driver.cascaded[val] = driver.generation
+                for u in users_of(driver, val)
+                    mark_modified!(driver, u, gen)
+                    haskey(driver.defs, u) && push!(driver.worklist, u)
+                end
             end
         end
     end
