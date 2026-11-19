@@ -117,6 +117,33 @@ digest(out) = match(r"CUBIN_SHA=([0-9a-f]+)", out)
             res = compile_vadd()
             @test res.cubin isa Vector{UInt8} && !isempty(res.cubin)
             @test bytes2hex(OC.keyhash(0, res.cubin)) == $expected_sha
+
+            # The separate candidate cache must still read existing disk entries.
+            temporary = Base.ScopedValues.with(ct.temporary_compilation => true) do
+                compile_vadd()
+            end
+            @test temporary.cubin == res.cubin
+        end
+        check_child(ok, out)
+    end
+end
+
+@testset "autotune candidates do not write CUBINs" begin
+    mktempdir() do dir
+        ok, out = @with_objcache dir "JULIA_OBJCACHE" => "1" begin
+            @test OC.enabled()
+            # Catch submission itself: a later lookup could race an async write.
+            @eval OC function put!(ns::AbstractString, key::AbstractVector{UInt8},
+                                   value::AbstractVector{UInt8})
+                error("temporary compilation submitted an object-cache write")
+            end
+            res = Base.ScopedValues.with(ct.temporary_compilation => true) do
+                compile_vadd()
+            end
+            @test !isempty(res.cubin)
+            @test OC.get(ct.CUBIN_CACHE_NS, cubin_key(res)) === nothing
+            @test !ct.temporary_compilation[]
+            @test get(ct.inference_cache(vadd_job()), vadd_job().source, nothing) === nothing
         end
         check_child(ok, out)
     end
