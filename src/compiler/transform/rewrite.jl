@@ -198,7 +198,6 @@ mutable struct RewriteDriver
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
     constants::Union{Nothing, ConstantInfo}
-    modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end
 
@@ -207,9 +206,9 @@ end
 =============================================================================#
 
 # The driver has its own state on top of the Rewriter's index: a `defs` map
-# keyed by func, the `worklist`, and a `modified` set for cascading. These
-# `notify_*` hooks let the Rewriter keep that state in sync, so the driver
-# doesn't need to wrap every mutation callsite. Same pattern as MLIR's
+# keyed by func, and the `worklist`. These `notify_*` hooks let the Rewriter
+# keep that state in sync, so the driver doesn't need to wrap every mutation
+# callsite. Same pattern as MLIR's
 # `RewriterBase::Listener::notifyOperation{Inserted,Modified,Erased}`.
 
 function notify_inserted!(d::RewriteDriver, block::Block, inst::Instruction)
@@ -246,7 +245,6 @@ function notify_erased!(d::RewriteDriver, ::Block, val::SSAValue,
     end
     delete!(d.defs, val)
     remove!(d.worklist, val)
-    delete!(d.modified, val)
 end
 
 #=============================================================================
@@ -403,15 +401,9 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         return true
     elseif rule.rhs isa RBind
         # Forwarding: replace all uses of root with the bound value, delete root.
-        # Mark immediate users as modified — their operands are about to change.
-        # When these are later popped from the worklist without a match, the
-        # driver propagates to THEIR users (see modified check in main loop).
-        # This gives MLIR-style notifyOperationModified cascading.
+        # The users' operands change, so revisit them.
         new_val = match.bindings[rule.rhs.name]
-        for u in users_of(driver, val)
-            push!(driver.modified, u)
-            push!(driver.worklist, u)
-        end
+        add_users_to_worklist!(driver, val)
         replace_uses!(driver.rewriter, val, new_val)
         erase!(driver.rewriter, entry.block, val)
     else
@@ -451,6 +443,11 @@ end
  Driver
 =============================================================================#
 
+# When set (the test suite does), every `rewrite_patterns!` call runs the rules
+# a second time with `at_fixpoint=true`, which throws if any rule still fires:
+# the driver failed to revisit an instruction after a change it could observe.
+const verify_rewrites = Ref(false)
+
 """
     rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule}; max_rewrites=10_000)
 
@@ -460,7 +457,7 @@ Dead code left behind is cleaned up by the pipeline's `dce_pass!`.
 """
 function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
                            max_rewrites::Int=10_000,
-                           constants=nothing)
+                           constants=nothing, at_fixpoint::Bool=false)
     # Build dispatch table
     dispatch = Dict{Any, Vector{RewriteRule}}()
     for rule in rules
@@ -479,18 +476,24 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         end
     end
 
-    # Seed worklist (forward order → reversed by LIFO → processes top-down)
-    wl = Worklist()
+    # Seed the LIFO worklist in reverse program order, so that the initial sweep
+    # visits instructions after their operands' defs. A rewrite then mostly
+    # changes instructions that have yet to be visited, and the driver only
+    # re-queues the direct users of a changed instruction (as MLIR's greedy
+    # driver does). Instructions inserted by a rewrite don't follow this order;
+    # `verify_rewrites` checks that the current rules still reach a fixpoint.
+    seed = SSAValue[]
     for block in eachblock(sci)
         for inst in instructions(block)
             val = ssavalue(inst)
-            haskey(defs, val) && push!(wl, val)
+            haskey(defs, val) && push!(seed, val)
         end
     end
+    wl = Worklist()
+    foreach(val -> push!(wl, val), Iterators.reverse(seed))
 
     rewriter = Rewriter(sci)
-    driver = RewriteDriver(rewriter, defs, dispatch, wl, constants, Set{SSAValue}(),
-                           max_rewrites)
+    driver = RewriteDriver(rewriter, defs, dispatch, wl, constants, max_rewrites)
     rewriter.listener = driver
 
     num_rewrites = 0
@@ -519,32 +522,24 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
 
         # Look up applicable rules by function
         applicable = get(driver.dispatch, entry.func, nothing)
-        matched = false
         if applicable !== nothing
             for rule in applicable
                 m = pattern_match(driver, val, rule.lhs)
                 m === nothing && continue
                 rule.guard !== nothing && !rule.guard(m, driver) && continue
+                stmt = entry.block[val.id][:stmt]
                 if apply_rewrite!(driver, entry.block, val, rule, m) === false
                     continue  # RFunc declined — try next rule
                 end
+                at_fixpoint && error("rewrite_patterns! missed a rewrite: ", rule.lhs,
+                                     " still applies to ", val, " = ", stmt)
                 num_rewrites += 1
-                matched = true
                 break
             end
         end
+    end
 
-        # Operand-modified propagation (MLIR notifyOperationModified equivalent):
-        # if this instruction's operands were changed by a forwarding rewrite but
-        # no rule fired here, propagate to users — the operand change may enable
-        # new matches further up the use chain. Mark users as modified too so the
-        # cascade continues through the fixpoint.
-        if !matched && val in driver.modified
-            delete!(driver.modified, val)
-            for u in users_of(driver, val)
-                push!(driver.modified, u)
-                haskey(driver.defs, u) && push!(driver.worklist, u)
-            end
-        end
+    if verify_rewrites[] && !at_fixpoint && num_rewrites < max_rewrites
+        rewrite_patterns!(sci, rules; max_rewrites, constants, at_fixpoint=true)
     end
 end

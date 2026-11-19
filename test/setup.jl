@@ -174,4 +174,10 @@ function ParallelTestRunner.print_test_failed(record::cuTileTestRecord, wrkr, te
 end
 
 
+## internal consistency checks
+
+import cuTile
+cuTile.verify_rewrites[] = true
+
+
 nothing # File is loaded via include; ensure it returns "nothing".

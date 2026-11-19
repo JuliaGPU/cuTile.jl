@@ -238,15 +238,11 @@ const POWER_RULES = RewriteRule[
 
 # Phase split: normalization runs to fixpoint *before* fusion sees the IR.
 #
-# The greedy worklist driver uses bottom-up traversal (MLIR's default —
-# roots popped first, matches larger patterns). When `subf(broadcast(mulf),
-# broadcast(mulf))` is popped, neither FMA rule matches because both
-# operands are still wrapped in identity broadcasts. By the time the subf
-# is retried, only one of the two broadcasts has been eliminated, so the
-# surviving FMA match is asymmetric: rule 4 (`fma(neg(x), y, z)`) fires
-# instead of rule 3 (`fma(x, y, neg(z))`, what Python's `fuse_mul_addsub`
-# produces). Running normalization to fixpoint *first* removes the identity
-# ops before fusion looks at the IR, so rule 3 fires naturally.
+# This way FMA rules never see a `subf(broadcast(mulf), broadcast(mulf))`
+# with only one of the identity broadcasts eliminated, where the asymmetric
+# rule 4 (`fma(neg(x), y, z)`) would fire instead of rule 3
+# (`fma(x, y, neg(z))`, what Python's `fuse_mul_addsub` produces), regardless
+# of the order in which the driver visits instructions.
 const NORMALIZATION_RULES = RewriteRule[
     IDENTITY_RULES...,
     ALGEBRA_RULES...,
