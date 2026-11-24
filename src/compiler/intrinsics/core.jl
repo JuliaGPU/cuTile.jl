@@ -70,7 +70,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     target_shape = RowMajorShape(julia_shape)
 
     # If already the right shape, return unchanged
-    if source.shape == target_shape
+    if tile_shape(source) == target_shape
         return source
     end
 
@@ -78,7 +78,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     result_type_id = tile_type!(tt, dtype, target_shape)
     result_jltype = Tile{source_elem, Tuple{target_shape_tuple...}}
 
-    source_shape = Tuple(ColMajorShape(source.shape).dims)
+    source_shape = Tuple(ColMajorShape(tile_shape(source)).dims)
     broadcastable = length(source_shape) <= length(target_shape_tuple)
     padded_shape = broadcastable ?
         (source_shape..., ntuple(_ -> 1, length(target_shape_tuple) - length(source_shape))...) : ()
@@ -95,23 +95,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
         c = something(source.constant)
         if c isa Number
             v = encode_ConstantOp!(cb, result_type_id, constant_to_bytes(c, source_elem))
-            return CGVal(v, result_type_id, result_jltype, target_shape,
-                         nothing, source.constant, nothing)
+            return CGVal(v, result_type_id, result_jltype, nothing, source.constant, nothing)
         elseif c isa AbstractArray
             counts = ntuple(i -> target_shape_tuple[i] ÷ padded_shape[i],
                             length(target_shape_tuple))
             payload = repeat(reshape(c, padded_shape), counts...)
             v = encode_ConstantOp!(cb, result_type_id,
                                    dense_constants_to_bytes(vec(payload), source_elem))
-            return CGVal(v, result_type_id, result_jltype, target_shape,
-                         nothing, Some(payload), nothing)
+            return CGVal(v, result_type_id, result_jltype, nothing, Some(payload), nothing)
         end
     end
 
     # Use the existing broadcast helper
     result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
 
-    CGVal(result_v, result_type_id, result_jltype, target_shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """
@@ -122,7 +120,7 @@ Returns the value after broadcasting, or the original value if shapes already ma
 """
 function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
                                    target_shape::RowMajorShape, dtype::TypeId)
-    src_shape = tv.shape
+    src_shape = tile_shape(tv)
 
     # Already the right shape?
     if src_shape == target_shape
@@ -193,8 +191,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
 
     # lhs/rhs must share rank, element type, and shape in every non-cat
     # dimension; validate up-front for a clean Julia-level error.
-    lhs_shape = lhs.shape
-    rhs_shape = rhs.shape
+    lhs_shape = tile_shape(lhs)
+    rhs_shape = tile_shape(rhs)
     length(lhs_shape) == length(rhs_shape) ||
         throw(IRError("cat: operand ranks differ — lhs has $(length(lhs_shape)) " *
                       "dims, rhs has $(length(rhs_shape))"))
@@ -233,7 +231,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
 
     if lhs.constant !== nothing && rhs.constant !== nothing && elem_type <: Number
         payload(tv) = let c = something(tv.constant)
-            c isa AbstractArray ? c : fill(convert(elem_type, c), Tuple(ColMajorShape(tv.shape).dims))
+            c isa AbstractArray ? c : fill(convert(elem_type, c), Tuple(ColMajorShape(tile_shape(tv)).dims))
         end
         merged = Base.cat(payload(lhs), payload(rhs); dims = julia_axis + 1)
         bytes, constant = if allequal(merged)
@@ -243,14 +241,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
             dense_constants_to_bytes(vec(merged), elem_type), Some(merged)
         end
         v = encode_ConstantOp!(cb, output_tile_type, bytes)
-        return CGVal(v, output_tile_type, result_jltype, output_shape,
-                     nothing, constant, nothing)
+        return CGVal(v, output_tile_type, result_jltype, nothing, constant, nothing)
     end
 
     # Emit CatOp (Tile IR axis)
     result = encode_CatOp!(cb, output_tile_type, lhs.v, rhs.v, tileir_axis)
 
-    CGVal(result, output_tile_type, result_jltype, output_shape)
+    CGVal(result, output_tile_type, result_jltype)
 end
 
 """
@@ -292,13 +289,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     if tv.constant !== nothing && something(tv.constant) isa Number
         value_bytes = constant_to_bytes(something(tv.constant), elem_type)
         result = encode_ConstantOp!(cb, tile_type, value_bytes)
-        return CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape,
-                     nothing, tv.constant, nothing)
+        return CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, nothing, tv.constant, nothing)
     end
 
     # Runtime value: broadcast 0D tile to the target shape
     result = broadcast_tile_to_shape!(cb, tt, tv, tile_shape, dtype)
-    CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
+    CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}})
 end
 
 # TODO: cuda_tile.entry
@@ -339,7 +335,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     output_shape = RowMajorShape(ColMajorShape(shape_tuple))
 
     # Validate index and shape against the input tile (Julia order, 0-based index)
-    input_shape = Tuple(ColMajorShape(source.shape).dims)
+    input_shape = Tuple(ColMajorShape(tile_shape(source)).dims)
     length(shape_tuple) == length(input_shape) ||
         throw(IRError("extract() shape has $(length(shape_tuple)) dimensions, but input tile has $(length(input_shape))"))
     length(index_tuple) == length(input_shape) ||
@@ -373,7 +369,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     # Emit ExtractOp
     result = encode_ExtractOp!(cb, output_tile_type, source.v, index_vals)
 
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple{shape_tuple...}}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple{shape_tuple...}})
 end
 
 @intrinsic insert(tile, index, value)
@@ -389,14 +385,14 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.insert), args)
     eltype(value_type) === T ||
         throw(IRError("insert: value element type $(eltype(value_type)) does not match destination element type $T"))
 
-    destination_shape = Tuple(ColMajorShape(destination.shape).dims)
-    value_shape = Tuple(ColMajorShape(value.shape).dims)
+    destination_shape = Tuple(ColMajorShape(tile_shape(destination)).dims)
+    value_shape = Tuple(ColMajorShape(tile_shape(value)).dims)
     if isempty(value_shape)
         value_shape = ntuple(_ -> 1, length(destination_shape))
         dtype = lookup_dtype!(ctx.tt, T)
         reshaped_type = tile_type!(ctx.tt, dtype, RowMajorShape(ColMajorShape(value_shape)))
         value = CGVal(encode_ReshapeOp!(ctx.cb, reshaped_type, value.v), reshaped_type,
-                      Tile{T, Tuple{value_shape...}}, RowMajorShape(ColMajorShape(value_shape)))
+                      Tile{T, Tuple{value_shape...}})
     elseif length(value_shape) != length(destination_shape)
         throw(IRError("insert: value rank $(length(value_shape)) does not match destination rank $(length(destination_shape))"))
     end
@@ -418,7 +414,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.insert), args)
     index_values = reverse(Value[index_tv.v for index_tv in index_tvs])
     result = encode_InsertOp!(ctx.cb, destination.type_id, value.v,
                               destination.v, index_values)
-    return CGVal(result, destination.type_id, destination.jltype, destination.shape)
+    return CGVal(result, destination.type_id, destination.jltype)
 end
 
 # TODO: cuda_tile.get_global
@@ -506,7 +502,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     # Emit IotaOp
     result = encode_IotaOp!(cb, tile_type)
 
-    CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}}, tile_shape)
+    CGVal(result, tile_type, Tile{elem_type, Tuple{shape...}})
 end
 
 """
@@ -615,7 +611,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
                       "matching float (mmaf) or i8 × i8 → i32 (mmai)"))
     end
 
-    CGVal(result, acc.type_id, acc.jltype, acc.shape)
+    CGVal(result, acc.type_id, acc.jltype)
 end
 
 """
@@ -667,7 +663,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma_scaled), args)
 
     result = encode_MmaFScaledOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v,
                                   lhs_scale.v, rhs_scale.v)
-    CGVal(result, acc.type_id, acc.jltype, acc.shape)
+    CGVal(result, acc.type_id, acc.jltype)
 end
 
 # TODO: cuda_tile.module
@@ -723,8 +719,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
 
     # Common shape: pick the operand with more dimensions; broadcast the
     # other to match. The underlying OffsetOp requires same-shape operands.
-    common_shape = length(base_tv.shape) >= length(offsets_tv.shape) ?
-                   base_tv.shape : offsets_tv.shape
+    base_shape, offsets_shape = tile_shape(base_tv), tile_shape(offsets_tv)
+    common_shape = length(base_shape) >= length(offsets_shape) ? base_shape : offsets_shape
     ptr_tile_type = tile_type!(tt, ptr_dtype, common_shape)
 
     base = broadcast_tile_to_shape!(cb, tt, base_tv, common_shape, ptr_dtype)
@@ -735,7 +731,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
 
     julia_shape = ColMajorShape(common_shape)
     result_jltype = Tile{Ptr{ptr_elem_type}, TupleType(julia_shape)}
-    CGVal(pointers, ptr_tile_type, result_jltype, common_shape)
+    CGVal(pointers, ptr_tile_type, result_jltype)
 end
 
 # TODO: cudatile.pack
@@ -768,7 +764,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     source = emit_value!(ctx, args[1])
     source === nothing && throw(IRError("Cannot resolve source operand for permute()"))
 
-    input_shape = source.shape
+    input_shape = tile_shape(source)
     isempty(input_shape) && throw(IRError("Cannot determine tile shape for permute()"))
 
     # Extract permutation (0-indexed Julia order) and transform to Tile IR order
@@ -795,7 +791,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     result = encode_PermuteOp!(cb, output_tile_type, source.v, tileir_perm)
 
     julia_output = ColMajorShape(output_shape)
-    CGVal(result, output_tile_type, Tile{elem_type, TupleType(julia_output)}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, TupleType(julia_output)})
 end
 
 
@@ -842,7 +838,7 @@ function emit_reduce!(ctx::CGCtx, args)
     identity_vals = resolve_constant_tuple(ctx, args[4], "reduce identities")
 
     # Get shapes from the first tile (already in Tile IR order)
-    input_shape = tile_tvs[1].shape
+    input_shape = tile_shape(tile_tvs[1])
     isempty(input_shape) && throw(IRError("Cannot reduce scalar tile"))
 
     # Julia and Tile IR use opposite dimension orders.
@@ -968,10 +964,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     validate_tile_shape(collect(Int, target_shape_tuple), "reshape")
     target_shape = RowMajorShape(ColMajorShape(target_shape_tuple))
 
-    src_n = isempty(source.shape) ? 1 : prod(source.shape.dims)
+    source_shape = tile_shape(source)
+    src_n = isempty(source_shape) ? 1 : prod(source_shape.dims)
     tgt_n = isempty(target_shape_tuple) ? 1 : prod(target_shape_tuple)
     src_n == tgt_n || throw(IRError(
-        "reshape: source shape $(Tuple(source.shape.dims)) ($src_n elements) " *
+        "reshape: source shape $(Tuple(source_shape.dims)) ($src_n elements) " *
         "and target shape $target_shape_tuple ($tgt_n elements) must have the same number of elements"))
 
     elem_type = eltype(CC.widenconst(source.jltype))
@@ -982,7 +979,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     result_type_id = tile_type!(tt, dtype, target_shape)
     result = encode_ReshapeOp!(cb, result_type_id, source.v)
 
-    CGVal(result, result_type_id, Tile{elem_type, Tuple{target_shape_tuple...}}, target_shape)
+    CGVal(result, result_type_id, Tile{elem_type, Tuple{target_shape_tuple...}})
 end
 
 """
@@ -1024,7 +1021,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     end
 
     # Get shapes from the first tile (already in Tile IR order)
-    input_shape = tile_tvs[1].shape
+    input_shape = tile_shape(tile_tvs[1])
     isempty(input_shape) && throw(IRError("Cannot scan scalar tile"))
 
     # Flip axis from Julia 0-indexed to Tile IR order
@@ -1120,7 +1117,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
 
     result = encode_SelectOp!(cb, x_tv.type_id, cond_tv.v, x_tv.v, y_tv.v)
 
-    CGVal(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
+    CGVal(result, x_tv.type_id, x_tv.jltype)
 end
 
 """

@@ -10,8 +10,7 @@ function broadcast_to_shape!(cb, tt, tv::CGVal, target_shape)
     # `target_shape` is row-major; the Julia type carries the column-major shape.
     # `tv` may be a scalar literal.
     jltype = Tile{elem_type, Tuple{ColMajorShape(target_shape).dims...}}
-    CGVal(bv, tile_type!(tt, dtype, target_shape), jltype, target_shape,
-          nothing, tv.constant, nothing)
+    CGVal(bv, tile_type!(tt, dtype, target_shape), jltype, nothing, tv.constant, nothing)
 end
 
 # Broadcast the smaller-shaped operand to match the larger when shapes differ.
@@ -19,11 +18,12 @@ end
 # Operands may differ in element type (`fpowi` takes an integer exponent), so
 # each side is broadcast under its own dtype.
 function broadcast_match_shapes!(cb, tt, lhs::CGVal, rhs::CGVal)
-    lhs.shape == rhs.shape && return (lhs, rhs)
-    if length(lhs.shape) < length(rhs.shape)
-        lhs = broadcast_to_shape!(cb, tt, lhs, rhs.shape)
+    lhs_shape, rhs_shape = tile_shape(lhs), tile_shape(rhs)
+    lhs_shape == rhs_shape && return (lhs, rhs)
+    if length(lhs_shape) < length(rhs_shape)
+        lhs = broadcast_to_shape!(cb, tt, lhs, rhs_shape)
     else
-        rhs = broadcast_to_shape!(cb, tt, rhs, lhs.shape)
+        rhs = broadcast_to_shape!(cb, tt, rhs, lhs_shape)
     end
     return (lhs, rhs)
 end
@@ -96,7 +96,7 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
     # Broadcast smaller-shaped operand to match the larger (e.g., 0D constant
     # meeting a shaped tile after constant folding removes reshape/broadcast)
     lhs_tv, rhs_tv = broadcast_match_shapes!(cb, tt, lhs_tv, rhs_tv)
-    result_shape = lhs_tv.shape
+    result_shape = tile_shape(lhs_tv)
     result_jltype = lhs_tv.jltype
 
     dtype = lookup_dtype!(tt, elem_type)
@@ -104,7 +104,7 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
 
     result_v = encoder(cb, result_type_id, lhs_tv.v, rhs_tv.v; kwargs...)
 
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 function emit_unop!(ctx::CGCtx, args, encoder::Function; kwargs...)
@@ -116,7 +116,7 @@ function emit_unop!(ctx::CGCtx, args, encoder::Function; kwargs...)
 
     source_type = CC.widenconst(source.jltype)
     elem_type = eltype(source_type)
-    result_shape = source.shape
+    result_shape = tile_shape(source)
     result_jltype = source.jltype
 
     dtype = lookup_dtype!(tt, elem_type)
@@ -124,7 +124,7 @@ function emit_unop!(ctx::CGCtx, args, encoder::Function; kwargs...)
 
     result_v = encoder(cb, result_type_id, source.v; kwargs...)
 
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 
@@ -214,7 +214,7 @@ function emit_cmpi!(ctx::CGCtx, lhs::CGVal, rhs::CGVal, predicate, signedness)
     # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
     lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
 
-    result_shape = lhs.shape
+    result_shape = tile_shape(lhs)
 
     bool_dtype = I1(tt)
     result_type_id = tile_type!(tt, bool_dtype, result_shape)
@@ -222,7 +222,7 @@ function emit_cmpi!(ctx::CGCtx, lhs::CGVal, rhs::CGVal, predicate, signedness)
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v; predicate, signedness)
     lhs_type = CC.widenconst(lhs.jltype)
     result_jltype = similar_type(lhs_type, Bool)
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """
@@ -251,10 +251,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.egal), args)
             throw(IRError("=== is not supported for $T values"))
         U = Base.uinttype(T)
         lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
-        type_id = tile_type!(tt, lookup_dtype!(tt, U), lhs.shape)
-        jltype = Tile{U, Tuple{ColMajorShape(lhs.shape).dims...}}
+        shape = tile_shape(lhs)
+        type_id = tile_type!(tt, lookup_dtype!(tt, U), shape)
+        jltype = Tile{U, Tuple{ColMajorShape(shape).dims...}}
         lhs, rhs = map((lhs, rhs)) do tv
-            CGVal(encode_BitcastOp!(cb, type_id, tv.v), type_id, jltype, tv.shape)
+            CGVal(encode_BitcastOp!(cb, type_id, tv.v), type_id, jltype)
         end
     end
     emit_cmpi!(ctx, lhs, rhs, ComparisonPredicate.Equal, Signedness.Unsigned)
@@ -533,7 +534,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     # Broadcast mismatched shapes (e.g., 0D constant vs shaped tile)
     lhs, rhs = broadcast_match_shapes!(cb, tt, lhs, rhs)
 
-    result_shape = lhs.shape
+    result_shape = tile_shape(lhs)
 
     bool_dtype = I1(tt)
     result_type_id = tile_type!(tt, bool_dtype, result_shape)
@@ -541,7 +542,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     result_v = encode_CmpFOp!(cb, result_type_id, lhs.v, rhs.v; predicate, ordering)
     lhs_type = CC.widenconst(lhs.jltype)
     result_jltype = similar_type(lhs_type, Bool)
-    CGVal(result_v, result_type_id, result_jltype, result_shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """

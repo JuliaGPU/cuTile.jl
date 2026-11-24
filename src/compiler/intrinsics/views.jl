@@ -163,7 +163,7 @@ function emit_view_load!(ctx::CGCtx, args, name::String; resolve_indices=default
     ctx.result_tokens[ctx.current_ssa_idx] = result_token
 
     julia_shape = ColMajorShape(tile_shape)
-    return CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)}, tile_shape)
+    return CGVal(tile_val, tile_type, Tile{elem_type, TupleType(julia_shape)})
 end
 
 function emit_view_store!(ctx::CGCtx, args, name::String;
@@ -184,16 +184,15 @@ function emit_view_store!(ctx::CGCtx, args, name::String;
 
     tile_tv = emit_value!(ctx, args[2])
     tile_tv === nothing && throw(IRError("$name() requires a tile argument"))
-    tile_shape = tile_tv.shape
-    tile_shape === nothing && throw(IRError("Cannot determine tile shape for $name()"))
+    shape = tile_shape(tile_tv)
 
     # Gather/scatter stores fix the tile shape to the view's static shape (no
     # rank-normalizing reshape); partition/strided stores accept any tile.
     if check_tile_shape
         view_type = CC.widenconst(view_arg.jltype)
         expected_shape = RowMajorShape(ColMajorShape(size(view_type)))
-        tile_shape == expected_shape ||
-            throw(IRError("$name(): tile shape $(Tuple(tile_shape)) does not match view shape $(Tuple(expected_shape))"))
+        shape == expected_shape ||
+            throw(IRError("$name(): tile shape $(Tuple(shape)) does not match view shape $(Tuple(expected_shape))"))
     end
 
     elem_type = eltype(CC.widenconst(tile_tv.jltype))
@@ -202,7 +201,7 @@ function emit_view_store!(ctx::CGCtx, args, name::String;
     # 0-D scalar stores reshape to 1-D (views require at least 1-D).
     tile_val = tile_tv.v
     actual_ndim = ndim
-    if length(tile_shape) == 0
+    if length(shape) == 0
         actual_ndim = 1
         tile_1d_type = tile_type!(tt, dtype, RowMajorShape([1]))
         tile_val = encode_ReshapeOp!(cb, tile_1d_type, tile_val)
@@ -393,7 +392,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, dim_map, padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, RowMajorShape(()), nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{shape...}}, nothing, Some(ndim), nothing)
 end
 
 """
@@ -458,7 +457,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_strided_view), arg
     elem_type = eltype(tensor_view.jltype)
     CGVal(strided, sv_type,
           StridedView{elem_type, ndim, Tuple{shape...}, Tuple{strides...}},
-          RowMajorShape(()), nothing, Some(ndim), nothing)
+          nothing, Some(ndim), nothing)
 end
 
 """
@@ -512,7 +511,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_gather_scatter_vie
     elem_type = eltype(tensor_view.jltype)
     CGVal(view, view_type,
           GatherScatterView{elem_type, ndim, Tuple{shape...}, Int(sparse_dim)},
-          RowMajorShape(()), nothing, Some(ndim), nothing)
+          nothing, Some(ndim), nothing)
 end
 
 """

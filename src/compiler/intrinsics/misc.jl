@@ -84,7 +84,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.assume), args)
     x = @something emit_value!(ctx, args[1]) throw(IRError("assume: cannot resolve value"))
     x.v === nothing && throw(IRError("assume: value must be materialized"))
     new_val = encode_AssumeOp!(ctx.cb, x.type_id, x.v, pred)
-    return CGVal(new_val, x.type_id, x.jltype, x.shape)
+    return CGVal(new_val, x.type_id, x.jltype)
 end
 
 # cuda_tile.print_tko

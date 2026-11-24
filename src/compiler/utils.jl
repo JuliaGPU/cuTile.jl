@@ -158,26 +158,10 @@ A CGVal takes one of four forms, distinguished by field states:
 | Lazy argument ref    | `nothing`        | `nothing`    | `(idx, chain)` | Deferred field access into destructured args   |
 | Ghost value          | `nothing`        | `TypeId(-1)` | `nothing`      | Zero-size type, compile-time only              |
 
-## Dual-level type representation
+## Shape
 
-CGVal deliberately separates **Julia-level type information** (`jltype`) from **IR-level
-representation** (`shape`, `type_id`, `v`). `jltype` drives dispatch during interpretation
-(determining which overlay methods are selected), while `shape`/`type_id`/`v` describe the
-actual Tile IR value being compiled. Normally these agree — `shape == extract_tile_shape(jltype)`
-— but they can be independently controlled when the interpretation requires a different
-Julia type than what the IR carries.
-
-The `to_scalar`/`from_scalar` pair is the primary use of this flexibility today:
-
-- **`to_scalar`**: changes `jltype` from `Tile{T,S}` to scalar `T` while keeping the
-  IR-side `shape`, `type_id`, and `v` unchanged. This lets the value flow through
-  Julia's scalar overlay dispatch (e.g., `abs(::Float32)`) while the IR still operates on
-  the shaped tile.
-
-- **`from_scalar`**: restores `jltype` back to `Tile{T,S}`, re-aligning the two levels.
-
-This same mechanism could be used in other contexts where the Julia dispatch type needs to
-diverge from the underlying IR type (e.g., broadcasting semantics, type promotion views).
+The Tile IR shape is not stored: `tile_shape(tv)` derives it from `jltype`, so the two
+cannot disagree. Values that are not tiles (tokens, views, tuples, ...) have an empty shape.
 
 ## Auxiliary fields
 
@@ -189,7 +173,6 @@ struct CGVal
     v::Union{Value, Vector{Value}, Nothing}  # Single value, multi-value, or nothing
     type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs or multi-value)
     jltype::Any               # Original Julia type
-    shape::TileShape        # Tile shape (empty dims for scalars)
     # Lazy argument reference: (arg_idx, [field_indices...])
     # e.g., (1, [2, 1]) means "argument 1, field 2, sub-field 1"
     arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
@@ -199,18 +182,15 @@ end
 
 # Convenience constructors for concrete values
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    CGVal(v, type_id, jltype, RowMajorShape(()), nothing, nothing, nothing)
-
-CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::TileShape) =
-    CGVal(v, type_id, jltype, shape, nothing, nothing, nothing)
+    CGVal(v, type_id, jltype, nothing, nothing, nothing)
 
 # Constructor for multi-value results (from loops, ifs)
 CGVal(v::Vector{Value}, @nospecialize(jltype)) =
-    CGVal(v, nothing, jltype, RowMajorShape(()), nothing, nothing, nothing)
+    CGVal(v, nothing, jltype, nothing, nothing, nothing)
 
 # Constructor for lazy argument references
 function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
-    CGVal(nothing, nothing, jltype, RowMajorShape(()), (arg_idx, chain), nothing, nothing)
+    CGVal(nothing, nothing, jltype, (arg_idx, chain), nothing, nothing)
 end
 
 """
@@ -219,8 +199,8 @@ end
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, Some(constant), nothing)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, nothing, nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, nothing, Some(constant), nothing)
 
 """
     tuple_value(jltype, component_refs, component_constants) -> CGVal
@@ -235,7 +215,7 @@ function tuple_value(@nospecialize(jltype), component_refs::Vector{Any}, compone
     else
         nothing
     end
-    CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, constant, component_refs)
+    CGVal(nothing, TypeId(-1), jltype, nothing, constant, component_refs)
 end
 
 """
@@ -251,6 +231,13 @@ is_ghost(tv::CGVal) = tv.v === nothing && tv.arg_ref === nothing
 Check if a CGVal is a lazy argument reference.
 """
 is_arg_ref(tv::CGVal) = tv.arg_ref !== nothing
+
+"""
+    tile_shape(tv::CGVal) -> TileShape
+
+The Tile IR shape of a value, derived from its Julia type (empty for non-tiles).
+"""
+tile_shape(tv::CGVal) = RowMajorShape(extract_tile_shape(tv.jltype))
 
 
 #=============================================================================
@@ -586,8 +573,7 @@ function resolve_tuple(ctx::CGCtx, @nospecialize(arg), name::AbstractString)
         T_jl isa DataType && T_jl <: Tuple || throw(IRError("$name must be a tuple"))
         return CGVal[
             let elem_T = T_jl.parameters[i]
-                CGVal(tv.v[i], tile_type_for_julia!(ctx, elem_T), elem_T,
-                      RowMajorShape(extract_tile_shape(elem_T)))
+                CGVal(tv.v[i], tile_type_for_julia!(ctx, elem_T), elem_T)
             end
             for i in eachindex(tv.v)
         ]

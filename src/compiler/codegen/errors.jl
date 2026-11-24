@@ -53,7 +53,7 @@ type-specialised helper).
 function poison_value(ctx::CGCtx)
     tid = poison_type!(ctx)
     v = encode_ConstantOp!(ctx.cb, tid, constant_to_bytes(Int32(0), Int32))
-    CGVal(v, tid, Tile{Int32, Tuple{}}, RowMajorShape(()), nothing, nothing, nothing)
+    CGVal(v, tid, Tile{Int32, Tuple{}}, nothing, nothing, nothing)
 end
 
 """

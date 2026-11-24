@@ -79,7 +79,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exp), args)
 
     result = encode_ExpOp!(cb, source.type_id, source.v)
 
-    CGVal(result, source.type_id, source.jltype, source.shape)
+    CGVal(result, source.type_id, source.jltype)
 end
 
 """
@@ -124,7 +124,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
 
     result_v = encode_FmaOp!(cb, a.type_id, a.v, b.v, c.v; fpmode_kwargs(ctx)...)
 
-    CGVal(result_v, a.type_id, a.jltype, a.shape)
+    CGVal(result_v, a.type_id, a.jltype)
 end
 
 """
@@ -145,7 +145,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log2), args)
 
     result = encode_Log2Op!(cb, source.type_id, source.v)
 
-    CGVal(result, source.type_id, source.jltype, source.shape)
+    CGVal(result, source.type_id, source.jltype)
 end
 
 """
@@ -166,7 +166,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
 
     result = encode_LogOp!(cb, source.type_id, source.v)
 
-    CGVal(result, source.type_id, source.jltype, source.shape)
+    CGVal(result, source.type_id, source.jltype)
 end
 
 """
@@ -253,11 +253,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.powi), args)
     exponent_type = eltype(CC.widenconst(exponent.jltype))
     if exponent_type === UInt8 || exponent_type === UInt16
         target_type = exponent_type === UInt8 ? Int16 : Int32
-        result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), exponent.shape)
+        result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), tile_shape(exponent))
         result_v = encode_ExtIOp!(cb, result_type_id, exponent.v;
                                  signedness=Signedness.Unsigned)
         jltype = similar_type(CC.widenconst(exponent.jltype), target_type)
-        exponent = CGVal(result_v, result_type_id, jltype, exponent.shape)
+        exponent = CGVal(result_v, result_type_id, jltype)
     elseif !(exponent_type <: Union{Bool,Int8,Int16,Int32})
         throw(IRError("cuda_tile.fpowi does not support $exponent_type exponents"))
     end
@@ -265,10 +265,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.powi), args)
     base, exponent = broadcast_match_shapes!(cb, tt, base, exponent)
 
     elem_type = eltype(CC.widenconst(base.jltype))
-    result_type_id = tile_type!(tt, lookup_dtype!(tt, elem_type), base.shape)
+    result_type_id = tile_type!(tt, lookup_dtype!(tt, elem_type), tile_shape(base))
     result_v = encode_FPowIOp!(cb, result_type_id, base.v, exponent.v)
 
-    CGVal(result_v, result_type_id, base.jltype, base.shape)
+    CGVal(result_v, result_type_id, base.jltype)
 end
 
 """
