@@ -11,7 +11,7 @@
     @test generic_rt == Union{Int32, Float32}
 
     # Every job of a kernel shares its inference result; results are stored per
-    # config on the generic CodeInstance, or on the const-seeded entry.
+    # config on the generic CodeInstance, or on the const-seeded one.
     generic_job = ct.tile_job(mi, world; sm_arch=v"10.0", bytecode_version=v"13.2")
     @test ct.infer(generic_job) === ci
     generic = ct.cached_results(generic_job)
@@ -24,9 +24,9 @@
     for (flag, expected_rt) in ((true, Int32), (false, Float32))
         const_argtypes = (ct.CC.Const(choose_type), ct.CC.Const(flag), Int32)
         job = ct.tile_job(mi, world; const_argtypes, sm_arch=v"10.0", bytecode_version=v"13.2")
-        entry = ct.infer(job)
-        @test entry isa ct.SpecializedResult{ct.JobResults}
-        @test entry === ct.infer(cache, mi, collect(Any, const_argtypes))
+        seeded_ci = ct.infer(job)
+        @test seeded_ci isa Core.CodeInstance && seeded_ci !== ci
+        @test seeded_ci === ct.infer(cache, mi, collect(Any, const_argtypes))
         @test ct.infer(cache, mi) === ci
 
         ir, rt = ct.emit_julia(job)
@@ -44,7 +44,7 @@
         equivalent = ct.tile_job(mi, world; sm_arch=v"10.0", bytecode_version=v"13.2",
                                  const_argtypes=(ct.CC.Const(choose_type), ct.CC.Const(flag), Int32))
         @test equivalent === job
-        @test ct.infer(equivalent) === entry
+        @test ct.infer(equivalent) === seeded_ci
         @test ct.cached_results(equivalent) === res
     end
 end

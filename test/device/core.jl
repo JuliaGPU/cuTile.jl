@@ -130,6 +130,34 @@ end
     @test all(Array(b) .≈ 1.0f0)
 end
 
+# Subprograms of a kernel with constant arguments are cached apart from the kernel,
+# which is inferred with its constants (#358).
+@testset "redefine reduce subprogram with constant arguments" begin
+    mod = @eval module $(gensym())
+        import cuTile as ct
+        combine(a, b) = a + b
+        function reduce_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1}, n)
+            pid = ct.bid(1)
+            tile = ct.load(a, (pid, 1), (1, n))
+            sums = reduce(combine, tile; dims=2, init=0.0f0)
+            ct.store(b, pid, sums)
+            return
+        end
+    end
+
+    m, n = 64, 128
+    a = CUDA.ones(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    @cuda backend=cuTile blocks=m mod.reduce_kernel(a, b, ct.Constant(n))
+    @test all(Array(b) .≈ Float32(n))
+
+    @eval mod combine(a, b) = max(a, b)
+
+    @cuda backend=cuTile blocks=m mod.reduce_kernel(a, b, ct.Constant(n))
+    @test all(Array(b) .≈ 1.0f0)
+end
+
 @testset "redefine scan subprogram" begin
     mod = @eval module $(gensym())
         import cuTile as ct
