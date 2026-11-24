@@ -40,36 +40,6 @@ function code_ircode(mi::MethodInstance; world::UInt=Base.get_world_counter(),
     return ir, rettype
 end
 
-"""
-    process_const_argtypes(f, argtypes) -> (stripped, const_argtypes)
-
-Split `Constant{T,V}` types from argtypes for method lookup, and build the
-`(f, args...)` tuple with `CC.Const(V)` entries seeding const-prop inference
-(see `TileJob`).
-
-Returns `(stripped, nothing)` when no Constant types are present.
-"""
-function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
-    params = argtypes isa DataType ? argtypes.parameters :
-             argtypes isa Tuple ? argtypes : fieldtypes(argtypes)
-    has_consts = any(T -> T <: Constant || CC.isconstType(T), params)
-    stripped_params = map(params) do T
-        T <: Constant ? constant_eltype(T) : T
-    end
-    stripped = Tuple{stripped_params...}
-    has_consts || return stripped, nothing
-    const_argtypes = map(params) do T
-        if T <: Constant
-            CC.Const(constant_value(T))
-        elseif CC.isconstType(T)
-            CC.Const(T.parameters[1])
-        else
-            T
-        end
-    end
-    return stripped, (function_argtype(f), const_argtypes...)
-end
-
 # The entry of the kernel function `f` in `const_argtypes`. Only a singleton is
 # seeded as a constant: the values a closure captures are kernel parameters.
 function_argtype(@nospecialize(f)) =
@@ -78,18 +48,60 @@ function_argtype(@nospecialize(f)) =
 constant_eltype(::Type{Constant{T,V}}) where {T,V} = T
 constant_value(::Type{Constant{T,V}}) where {T,V} = V
 
-function tile_job(@nospecialize(f), @nospecialize(argtypes);
-                  world::UInt=Base.get_world_counter(), kwargs...)
-    stripped, const_argtypes = process_const_argtypes(f, argtypes)
-    mi = lookup_method_instance(f, stripped; world)
+"""
+    unwrap_argtypes(f, tt) -> (argtypes::Type{<:Tuple}, const_argtypes::Union{Tuple,Nothing})
+
+Split the argument types of a kernel signature into:
+- `argtypes`: the dispatch tuple to look the method up with, with `Constant{T,V}`
+  slots unwrapped to `T`;
+- `const_argtypes`: `(f, args...)` with `Constant{T,V}` and `Type{X}` slots
+  replaced by `CC.Const(V)` and `CC.Const(X)`, seeding const-prop inference (see
+  `TileJob`), or `nothing` when there is nothing to seed.
+
+Launches and reflection both go through this and `kernel_method_instance`,
+so that reflecting on a signature yields the job a launch compiles. `@generated`
+so that launches pay nothing for it: only the entry for the function value
+(`function_argtype`) is built at runtime.
+"""
+@generated function unwrap_argtypes(@nospecialize(f), ::Type{TT}) where TT <: Tuple
+    params = TT.parameters
+    argtypes = Tuple{map(t -> t <: Constant ? constant_eltype(t) : t, params)...}
+    Base.isdispatchtuple(argtypes) ||
+        return :(throw(ArgumentError("requires a dispatch tuple, got non-concrete signature $TT")))
+    any(t -> t <: Constant || CC.isconstType(t), params) || return :(($argtypes, nothing))
+
+    const_argtypes = Any[:(function_argtype(f))]
+    for t in params
+        push!(const_argtypes, t <: Constant ? CC.Const(constant_value(t)) :
+                              CC.isconstType(t) ? CC.Const(t.parameters[1]) : t)
+    end
+    return :(($argtypes, ($(const_argtypes...),)))
+end
+
+# The MethodInstance a kernel compiles: the one for exactly `argtypes`, even
+# where Julia's own specialization heuristics would widen the signature.
+function kernel_method_instance(@nospecialize(f), @nospecialize(argtypes), world::UInt)
+    mi = method_instance(f, argtypes; world)
+    mi === nothing && throw(MethodError(f, argtypes))
+    if !Base.isdispatchtuple(mi.specTypes)
+        sig = Base.signature_type(f, argtypes)
+        mi = CC.specialize_method(mi.def, sig, mi.sparam_vals)::Core.MethodInstance
+    end
+    return mi
+end
+
+Base.@nospecializeinfer function tile_job(@nospecialize(f), @nospecialize(argtypes);
+                                          world::UInt=Base.get_world_counter(), kwargs...)
+    argtypes, const_argtypes = unwrap_argtypes(f, Base.to_tuple_type(argtypes))
+    mi = kernel_method_instance(f, argtypes, world)
     tile_job(mi, world; const_argtypes, kwargs...)
 end
 
 # The Julia-level stages need only inference: without target keywords, they
 # skip the job (and the toolchain probe behind its default bytecode version).
 function emit_julia(@nospecialize(f), @nospecialize(argtypes); world::UInt)
-    stripped, const_argtypes = process_const_argtypes(f, argtypes)
-    mi = lookup_method_instance(f, stripped; world)
+    argtypes, const_argtypes = unwrap_argtypes(f, Base.to_tuple_type(argtypes))
+    mi = kernel_method_instance(f, argtypes, world)
     cache = inference_cache(world)
     inferred = const_argtypes === nothing ? infer(cache, mi) :
                                             infer(cache, mi, collect(Any, const_argtypes))

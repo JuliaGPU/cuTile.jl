@@ -567,42 +567,6 @@ function validate_tile_ir_target(sm_arch::VersionNumber, version::VersionNumber)
 end
 
 #=============================================================================
- Argument-type unwrapping for cufunction.
-=============================================================================#
-
-"""
-    unwrap_argtypes(f, tt) -> (argtypes::Type{<:Tuple}, const_argtypes::Union{Tuple,Nothing})
-
-Compile-time-specialized derivation of:
-- `argtypes::Type{<:Tuple}` — concrete dispatch tuple for `method_instance(f, argtypes)`,
-  with `Constant{T,V}` slots unwrapped to `T`.
-- `const_argtypes` — `(f, args...)` with `Constant{T,V}` slots replaced by
-  `CC.Const(V)`, seeding const-prop inference (see `TileJob`). `nothing` when no
-  `Constant` arguments are present (skips the const-seeding pipeline entirely).
-
-`@generated` so the unwrapped `Tuple` type and the `Constant`-vs-not branching
-fold to constants at the call site. Only the entry for the function value
-(`function_argtype`) is built at runtime.
-"""
-@generated function unwrap_argtypes(@nospecialize(f), ::Type{TT}) where TT <: Tuple
-    unwrapped = map(t -> t <: Constant ? constant_eltype(t) : t, TT.parameters)
-    argtypes_T = Tuple{unwrapped...}
-    has_consts = any(t -> t <: Constant, TT.parameters)
-    has_consts || return :(($argtypes_T, nothing))
-
-    cats_exprs = Any[:(function_argtype(f))]
-    for t in TT.parameters
-        if t <: Constant
-            push!(cats_exprs, :(CC.Const($(t.parameters[2]))))
-        else
-            push!(cats_exprs, t)
-        end
-    end
-    return :(($argtypes_T, ($(cats_exprs...),)))
-end
-
-
-#=============================================================================
  Compilation: bytecode → CUBIN → CuFunction.
 =============================================================================#
 
@@ -779,21 +743,6 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, opts)::TileKernel{Core.Typeof(f), tt}
 end
 
-# The job of a launch: the kernel's MethodInstance for the unwrapped argument
-# types, in the current world, with the launch's options.
-Base.@nospecializeinfer function launch_job(@nospecialize(f), @nospecialize(argtypes),
-                                            @nospecialize(const_argtypes::Union{Tuple, Nothing}),
-                                            @nospecialize(opts::NamedTuple))
-    world = Base.get_world_counter()
-    mi = method_instance(f, argtypes; world)
-    mi === nothing && throw(MethodError(f, argtypes))
-    if !Base.isdispatchtuple(mi.specTypes)
-        sig = Base.signature_type(f, argtypes)
-        mi = CC.specialize_method(mi.def, sig, mi.sparam_vals)::Core.MethodInstance
-    end
-    return tile_job(mi, world; const_argtypes, opts...)
-end
-
 # Inner compilation routine; called via `invoke_frozen` so its method dispatches
 # happen in the world captured at __init__, reusing precompiled native code
 # even when later-loaded packages would otherwise have invalidated it. It isn't
@@ -803,7 +752,8 @@ Base.@nospecializeinfer function cufunction_compile(@nospecialize(f), @nospecial
                                                     @nospecialize(argtypes),
                                                     @nospecialize(const_argtypes::Union{Tuple, Nothing}),
                                                     @nospecialize(opts::NamedTuple))
-    job = launch_job(f, argtypes, const_argtypes, opts)
+    world = Base.get_world_counter()
+    job = tile_job(kernel_method_instance(f, argtypes, world), world; const_argtypes, opts...)
     res = compile_or_lookup(job)
 
     # Resolve the kernel for the active context. `CuFunction`s are session-local

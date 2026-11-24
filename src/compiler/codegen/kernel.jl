@@ -362,7 +362,7 @@ end
     emit_subprogram!(ctx, func, arg_types, block_args, block_type_ids) -> Vector{Value}
 
 Compile a Julia function into the current region body. Resolves `func` via the cuTile
-pipeline (method_instance → code_ircode → StructuredIRCode), creates a sub-context,
+pipeline (inference → StructuredIRCode → passes), creates a sub-context,
 maps `block_args` to the function's positional arguments, emits the body, and returns
 the yielded result values.
 
