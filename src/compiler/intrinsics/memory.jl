@@ -36,13 +36,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     pointers = wrap_for(ctx, ptrs_tv.v::Value, ptrs_tv.type_id::TypeId,
                         op_predicates(ctx.divby_info, ctx.bounds_info,
                                       args[1], :ptr))
-    tile_shape = ptrs_tv.shape
+    shape = tile_shape(ptrs_tv)
 
     ptrs_type = CC.widenconst(ptrs_tv.jltype)
     ptr_type = eltype(ptrs_type)
     elem_type = eltype(ptr_type)
     dtype = lookup_dtype!(tt, elem_type)
-    result_tile_type = tile_type!(tt, dtype, tile_shape)
+    result_tile_type = tile_type!(tt, dtype, shape)
     token_type = Token(tt)
 
     latency = @something get_constant(ctx, args[2]) throw(IRError("latency must be a compile-time constant"))
@@ -69,9 +69,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     # Store result token for TokenResultNode
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
 
-    julia_shape = ColMajorShape(tile_shape)
+    julia_shape = ColMajorShape(shape)
     result_jltype = Tile{elem_type, TupleType(julia_shape)}
-    return CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
+    return CGVal(tile_val, result_tile_type, result_jltype)
 end
 
 """

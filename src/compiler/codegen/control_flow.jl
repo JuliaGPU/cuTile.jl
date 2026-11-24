@@ -94,9 +94,9 @@ function emit_if_op!(ctx::CGCtx, op::IfOp, @nospecialize(parent_result_type), ss
     # Get condition value
     cond_tv = emit_value!(ctx, op.condition)
     cond_tv === nothing && throw(IRError("Cannot resolve condition for IfOp"))
-    isempty(cond_tv.shape) || throw(IRError(
+    isempty(tile_shape(cond_tv)) || throw(IRError(
         "Cannot branch on a per-element condition (a Bool tile of size " *
-        "$(Tuple(ColMajorShape(cond_tv.shape).dims))); a branch in a function lifted over " *
+        "$(Tuple(ColMajorShape(tile_shape(cond_tv)).dims))); a branch in a function lifted over " *
         "a tile must be free of loops and side effects in both arms, or throw in one"))
 
     # Determine result types from parent_result_type (token_order_pass! already
@@ -187,8 +187,7 @@ function emit_for_op!(ctx::CGCtx, op::ForOp, @nospecialize(parent_result_type), 
         ctx[iv_arg] = CGVal(block_args[1], iv_type, iv_jl_type)
         for i in 1:n_carries
             arg = body_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(arg.type))
-            ctx[arg] = CGVal(block_args[i + 1], result_types[i], arg.type, shape)
+            ctx[arg] = CGVal(block_args[i + 1], result_types[i], arg.type)
         end
         emit_block!(ctx, body_blk)
         # If body has no terminator, emit a ContinueOp with all carried values
@@ -233,8 +232,7 @@ function emit_loop_op!(ctx::CGCtx, op::LoopOp, @nospecialize(parent_result_type)
         # (includes both user values and token carries added by token_order_pass!)
         for i in 1:n_carries
             arg = body_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(arg.type))
-            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
+            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type)
         end
         emit_block!(ctx, body_blk)
         # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
@@ -286,8 +284,7 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
         # (includes both user values and token carries added by token_order_pass!)
         for i in 1:n_carries
             arg = before_blk.args[i]
-            shape = RowMajorShape(extract_tile_shape(arg.type))
-            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
+            ctx[arg] = CGVal(block_args[i], result_types[i], arg.type)
         end
 
         # Emit "before" region
@@ -299,9 +296,9 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
 
         cond_tv = emit_value!(ctx, cond_op.condition)
         (cond_tv === nothing || cond_tv.v === nothing) && throw(IRError("Cannot resolve WhileOp condition"))
-        isempty(cond_tv.shape) || throw(IRError(
+        isempty(tile_shape(cond_tv)) || throw(IRError(
             "Cannot loop on a per-element condition (a Bool tile of size " *
-            "$(Tuple(ColMajorShape(cond_tv.shape).dims))); a loop in a function lifted over " *
+            "$(Tuple(ColMajorShape(tile_shape(cond_tv)).dims))); a loop in a function lifted over " *
             "a tile cannot depend on the element's value"))
 
         # Emit conditional break: if (cond) { yield } else { break }
@@ -337,13 +334,11 @@ function emit_while_op!(ctx::CGCtx, op::WhileOp, @nospecialize(parent_result_typ
                 if tv !== nothing
                     ctx[arg] = tv
                 else
-                    shape = RowMajorShape(extract_tile_shape(arg.type))
-                    ctx[arg] = CGVal(block_args[i], result_types[i], arg.type, shape)
+                    ctx[arg] = CGVal(block_args[i], result_types[i], arg.type)
                 end
             else
                 # Token carries beyond ConditionOp.args: use block_args directly
-                ctx[arg] = CGVal(block_args[i], result_types[i], arg.type,
-                                  RowMajorShape(extract_tile_shape(arg.type)))
+                ctx[arg] = CGVal(block_args[i], result_types[i], arg.type)
             end
         end
 
@@ -459,6 +454,5 @@ function emit_loop_getfield!(ctx::CGCtx, args::Vector{Any})
     value_idx = count(i -> !is_empty_tile_type(ref_cgval.jltype.parameters[i]), 1:field_idx)
     v = ref_cgval.v[value_idx]
     type_id = tile_type_for_julia!(ctx, elem_type)
-    shape = RowMajorShape(extract_tile_shape(elem_type))
-    CGVal(v, type_id, elem_type, shape)
+    CGVal(v, type_id, elem_type)
 end

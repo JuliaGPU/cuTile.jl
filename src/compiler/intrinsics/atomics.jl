@@ -68,7 +68,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     memory_scope = @something get_constant(ctx, args[6]) throw(IRError("atomic CAS requires constant memory_scope"))
     check_atomic_memory_order(memory_order, "atomic_cas")
 
-    shape = ptr_tv.shape
+    shape = tile_shape(ptr_tv)
 
     # Get element type from pointer tile: Tile{Ptr{T}, S} -> T
     ptrs_type = CC.widenconst(ptr_tv.jltype)
@@ -101,7 +101,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
 
     julia_shape = ColMajorShape(shape)
-    CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
+    CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)})
 end
 
 function select_rmw_mode(base_mode::AtomicRMWMode.T, @nospecialize(elem_type))
@@ -135,7 +135,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     memory_scope = @something get_constant(ctx, args[5]) throw(IRError("atomic RMW requires constant memory_scope"))
     check_atomic_memory_order(memory_order, "atomic RMW")
 
-    shape = ptr_tv.shape
+    shape = tile_shape(ptr_tv)
 
     # Get element type from pointer tile: Tile{Ptr{T}, S} -> T
     ptrs_type = CC.widenconst(ptr_tv.jltype)
@@ -172,7 +172,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode.
     ctx.result_tokens[ctx.current_ssa_idx] = new_token
 
     julia_shape = ColMajorShape(shape)
-    CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)}, shape)
+    CGVal(old_val, result_tile_type, Tile{elem_type, TupleType(julia_shape)})
 end
 
 # cuda_tile.atomic_rmw_tko variants

@@ -171,7 +171,7 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
                 # Primitive: emit ConstantOp (jltype promoted to 0D tile)
                 bytes = constant_to_bytes(val, T)
                 v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, Tile{T, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
+                tv = CGVal(v, type_id, Tile{T, Tuple{}}, nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)

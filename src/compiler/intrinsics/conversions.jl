@@ -38,7 +38,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("bitcast: requires compile-time target type"))
 
     dtype = lookup_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, tile_shape(source))
 
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
@@ -46,11 +46,11 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     # No-op when source and target map to the same Tile IR type (e.g., Int32 ↔ UInt32).
     # Tile IR integers are signless, so these are the same type.
     if result_type_id == source.type_id
-        return CGVal(source.v, source.type_id, result_jltype, source.shape)
+        return CGVal(source.v, source.type_id, result_jltype)
     end
 
     result_v = encode_BitcastOp!(cb, result_type_id, source.v)
-    CGVal(result_v, result_type_id, result_jltype, source.shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 @inline lookup_bitwidth(@nospecialize(T::Type)) =
@@ -83,15 +83,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
     source = @something emit_value!(ctx, args[1]) throw(IRError("pack: cannot resolve source"))
     bytecode_version(tt) >= v"13.3" ||
         throw(IRError("cuda_tile.pack requires Tile IR bytecode v13.3+, got v$(bytecode_version(tt))"))
-    length(source.shape) == 1 ||
-        throw(IRError("pack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
+    length(tile_shape(source)) == 1 ||
+        throw(IRError("pack: requires a rank-1 tile, got a $(length(tile_shape(source)))-D tile"))
 
     src_type = CC.widenconst(source.jltype)
     S = eltype(src_type)
     sbits = lookup_bitwidth(S)
     sbits == 8 &&
         throw(IRError("pack: 8-bit element type $S should be reinterpreted via bitcast, not packed"))
-    n = source.shape[1]
+    n = tile_shape(source)[1]
     (n * sbits) % 8 == 0 ||
         throw(IRError("pack: a $n-element $S tile ($(n * sbits) bits) is not a whole number of bytes"))
     new_n = (n * sbits) ÷ 8
@@ -99,7 +99,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
     new_shape = RowMajorShape([new_n])
     result_type_id = tile_type!(tt, lookup_dtype!(tt, UInt8), new_shape)
     result_v = encode_PackOp!(cb, result_type_id, source.v)
-    CGVal(result_v, result_type_id, Tile{UInt8, Tuple{new_n}}, new_shape)
+    CGVal(result_v, result_type_id, Tile{UInt8, Tuple{new_n}})
 end
 
 """
@@ -132,8 +132,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("unpack: requires compile-time target type"))
     bytecode_version(tt) >= v"13.3" ||
         throw(IRError("cuda_tile.unpack requires Tile IR bytecode v13.3+, got v$(bytecode_version(tt))"))
-    length(source.shape) == 1 ||
-        throw(IRError("unpack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
+    length(tile_shape(source)) == 1 ||
+        throw(IRError("unpack: requires a rank-1 tile, got a $(length(tile_shape(source)))-D tile"))
 
     src_type = CC.widenconst(source.jltype)
     eltype(src_type) === UInt8 ||
@@ -141,7 +141,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
     tbits = lookup_bitwidth(target_type)
     tbits == 8 &&
         throw(IRError("unpack: 8-bit target $target_type should be reinterpreted via bitcast, not unpacked"))
-    n = source.shape[1]
+    n = tile_shape(source)[1]
     (n * 8) % tbits == 0 ||
         throw(IRError("unpack: $n bytes ($(n * 8) bits) do not evenly divide into $target_type ($tbits-bit) elements"))
     new_n = (n * 8) ÷ tbits
@@ -149,7 +149,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
     new_shape = RowMajorShape([new_n])
     result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), new_shape)
     result_v = encode_UnpackOp!(cb, result_type_id, source.v)
-    CGVal(result_v, result_type_id, Tile{target_type, Tuple{new_n}}, new_shape)
+    CGVal(result_v, result_type_id, Tile{target_type, Tuple{new_n}})
 end
 
 """
@@ -176,12 +176,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("exti: requires compile-time signedness"))
 
     dtype = lookup_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, tile_shape(source))
 
     result_v = encode_ExtIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
-    CGVal(result_v, result_type_id, result_jltype, source.shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """
@@ -291,7 +291,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("ftof: requires compile-time target type"))
 
     dtype = lookup_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, tile_shape(source))
 
     rounding_mode = if length(args) == 3
         mode = @something get_constant(ctx, args[3]) throw(IRError("ftof: requires a compile-time rounding mode"))
@@ -306,7 +306,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     result_v = encode_FToFOp!(cb, result_type_id, source.v; rounding_mode)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
-    CGVal(result_v, result_type_id, result_jltype, source.shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """
@@ -334,12 +334,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("ftoi: requires compile-time signedness"))
 
     dtype = lookup_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, tile_shape(source))
 
     result_v = encode_FToIOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
-    CGVal(result_v, result_type_id, result_jltype, source.shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """
@@ -367,12 +367,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     signedness = @something get_constant(ctx, args[3]) throw(IRError("itof: requires compile-time signedness"))
 
     dtype = lookup_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, tile_shape(source))
 
     result_v = encode_IToFOp!(cb, result_type_id, source.v; signedness)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
-    CGVal(result_v, result_type_id, result_jltype, source.shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 """
@@ -399,12 +399,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     target_type = @something get_constant(ctx, args[2]) throw(IRError("trunci: requires compile-time target type"))
 
     dtype = lookup_dtype!(tt, target_type)
-    result_type_id = tile_type!(tt, dtype, source.shape)
+    result_type_id = tile_type!(tt, dtype, tile_shape(source))
 
     result_v = encode_TruncIOp!(cb, result_type_id, source.v)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
-    CGVal(result_v, result_type_id, result_jltype, source.shape)
+    CGVal(result_v, result_type_id, result_jltype)
 end
 
 # cuda_tile.int_to_ptr, cuda_tile.ptr_to_int# NOTE: Used internally by atomic operations, not exposed as user intrinsics
