@@ -49,7 +49,7 @@ import REPL
             requirement = tile_ir_requirement(sm_arch)
             requirement === nothing && continue
             bv < requirement[2] && continue
-            compile_or_lookup(tile_job(f, Tuple(tt.parameters); sm_arch, bytecode_version=bv))
+            compile_or_lookup(tile_job(f, tt; sm_arch, bytecode_version=bv))
         end
         return
     end
