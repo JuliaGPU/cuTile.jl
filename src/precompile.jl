@@ -43,14 +43,10 @@ import REPL
         # Without `tileiras` (e.g. a pre-13.2 CUDA_Compiler_jll) kernels cannot
         # compile; still allow the package itself to precompile.
         tileiras_available() || return
-        bv = bytecode_version()
-        for sm_arch in [v"8.0", v"8.6", v"8.7", v"8.9",
-                        v"10.0", v"11.0", v"12.0", v"12.1"]
-            requirement = tile_ir_requirement(sm_arch)
-            requirement === nothing && continue
-            bv < requirement[2] && continue
-            compile_or_lookup(tile_job(f, tt; sm_arch, bytecode_version=bv))
-        end
+        # The device isn't known here, but `sm_arch` is a runtime value, so the
+        # compiler's native code is the same for every target. Blackwell accepts
+        # the oldest bytecode version, so every supported `tileiras` can build it.
+        compile_or_lookup(tile_job(f, tt; sm_arch=v"10.0"))
         return
     end
 
