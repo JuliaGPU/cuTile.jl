@@ -30,7 +30,7 @@ function throw_constant(sci::StructuredIRCode, def_index, @nospecialize(x))
             return Some(string(vals...))
         end
         return nothing
-    elseif x isa Union{Argument, SlotNumber, BlockArgument, Expr}
+    elseif x isa Union{Argument, BlockArgument, Expr}
         return nothing
     else
         return Some(x)
@@ -40,7 +40,7 @@ end
 function thrown_type(block::Block, @nospecialize(exception))
     if exception isa QuoteNode
         return typeof(exception.value)
-    elseif !(exception isa Union{SSAValue, Argument, SlotNumber, BlockArgument, Expr, GlobalRef})
+    elseif !(exception isa Union{SSAValue, Argument, BlockArgument, Expr, GlobalRef})
         return typeof(exception)
     end
     T = value_type(block, exception)

@@ -29,8 +29,6 @@ function emit_statement!(ctx::CGCtx, @nospecialize(stmt), ssa_idx::Int, @nospeci
         tv = emit_value!(ctx, stmt)
     elseif stmt isa QuoteNode
         tv = emit_constant!(ctx, stmt.value, result_type)
-    elseif stmt isa SlotNumber
-        tv = ctx[stmt]
     elseif stmt isa Argument
         tv = emit_value!(ctx, stmt)
     elseif stmt isa SSAValue

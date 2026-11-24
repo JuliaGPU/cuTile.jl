@@ -1089,8 +1089,7 @@ const _CODEGEN_TEST_FLOAT64 = 3.14159
     end
 
     @testset "external constant assigned to local variable" begin
-        # Bug 2: GlobalRef on RHS of assignment in emit_rhs! returned nothing.
-        # Using a local variable forces Julia to emit an assignment from the GlobalRef.
+        # Bug 2: a GlobalRef bound to a local variable was emitted as nothing.
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
