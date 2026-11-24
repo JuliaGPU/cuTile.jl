@@ -1,7 +1,7 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, hints=EntryHints(), const_argtypes=nothing)
+    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch, hints=EntryHints(), const_argtypes=nothing)
 
 Compile a StructuredIRCode to Tile IR bytecode.
 
@@ -13,8 +13,7 @@ emitted instead. The `const_argtypes` vector is 1-indexed matching `sci.argtypes
 Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                                               sci::StructuredIRCode, rettype::Type;
                                               name::String,
-                                              sm_arch::Union{VersionNumber, Nothing} = nothing,
-                                              is_entry::Bool = true,
+                                              sm_arch::VersionNumber,
                                               hints::EntryHints = EntryHints(),
                                               cache::CacheView,
                                               @nospecialize(const_argtypes::Union{Vector{Any}, Nothing} = nothing),
@@ -99,7 +98,7 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
 
     # Create function
     cb = add_function!(writer, func_buf, name, param_types, result_types;
-                       is_entry, entry_hints, func_debug_attr)
+                       is_entry=true, entry_hints, func_debug_attr)
     ctx.cb = cb
 
     # Set function-level debug attr as default so setup operations

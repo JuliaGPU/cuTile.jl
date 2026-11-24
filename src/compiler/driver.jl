@@ -321,13 +321,13 @@ end
     resolve_hint(explicit, kernel_meta, key, sm_arch)
 
 Resolve a hint value with precedence: explicit kwarg > @compiler_options meta > nothing.
-Meta hints depend on the architecture, so they are skipped without one.
+Meta hints can depend on the architecture, so they are resolved against `sm_arch`.
 """
 function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
-                      sm_arch::Union{VersionNumber, Nothing})
+                      sm_arch::VersionNumber)
     val = if explicit !== nothing
         explicit
-    elseif haskey(kernel_meta, key) && sm_arch !== nothing
+    elseif haskey(kernel_meta, key)
         resolve(kernel_meta[key], sm_arch)
     else
         nothing
