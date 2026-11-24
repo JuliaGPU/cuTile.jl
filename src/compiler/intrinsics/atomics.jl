@@ -217,7 +217,7 @@ const RED_VIEW_ADD_DTYPES = (RED_VIEW_INT_DTYPES..., Float16, BFloat16, Float32,
 function check_atomic_bf16_support(ctx::CGCtx, mode::AtomicRMWMode.T, @nospecialize(elem_type))
     mode == AtomicRMWMode.ADDF && elem_type === BFloat16 || return
 
-    if ctx.sm_arch !== nothing && ctx.sm_arch < v"9"
+    if ctx.sm_arch < v"9"
         throw(IRError(
             "atomic add on BFloat16 requires Hopper (sm_90) or newer, got " *
             format_sm_arch(ctx.sm_arch)))

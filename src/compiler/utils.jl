@@ -314,7 +314,7 @@ mutable struct CGCtx
     type_cache::Dict{Type, TypeId}
 
     # Target architecture (e.g., v"10.0" for sm_100)
-    sm_arch::Union{VersionNumber, Nothing}
+    sm_arch::VersionNumber
 
     # Compilation cache (needed for combiner compilation)
     cache::CacheView
@@ -374,7 +374,7 @@ end
 function CGCtx(; cb::CodeBuilder, sci::StructuredIRCode,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
-                 sm_arch::Union{VersionNumber, Nothing} = nothing,
+                 sm_arch::VersionNumber,
                  cache::CacheView,
                  debug_emitter = nothing,
                  linkage_name::String = "")

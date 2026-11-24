@@ -729,11 +729,10 @@ function format_sm_arch(cap::VersionNumber)
     "sm_$(cap.major)$(cap.minor)$(suffix)"
 end
 
-function make_load_store_hints(sm_arch::Union{VersionNumber, Nothing}, version::VersionNumber,
+function make_load_store_hints(sm_arch::VersionNumber, version::VersionNumber,
                                hints::LoadStoreHints)
     # v13.3+ keys hints under "default", applying them to every architecture
     version >= v"13.3" && return OptimizationHints([("default", hints)])
-    isnothing(sm_arch) && throw(ArgumentError("sm_arch must be explicitly passed when load/store hints are present"))
     OptimizationHints([(format_sm_arch(sm_arch), hints)])
 end
 
@@ -774,7 +773,7 @@ Encoded as a dictionary attribute in bytecode.
     num_worker_warps::Union{Int, Nothing} = nothing   # 1, 2, 4, 8, 16, 32
 end
 
-function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber, Nothing}, hints::EntryHints)
+function encode_entry_hints(writer::BytecodeWriter, sm_arch::VersionNumber, hints::EntryHints)
     validate_hint(:num_ctas, hints.num_ctas)
     validate_hint(:occupancy, hints.occupancy)
     validate_hint(:num_worker_warps, hints.num_worker_warps)
@@ -782,8 +781,7 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     # CTA clusters (num_cta_in_cga > 1) are a Blackwell feature. Older tileiras
     # versions rejected the bytecode for non-Blackwell targets; tileiras 13.3
     # silently accepts and ignores the hint, so emit our own clear error.
-    if hints.num_ctas !== nothing && hints.num_ctas > 1 &&
-       sm_arch !== nothing && sm_arch < v"10"
+    if hints.num_ctas !== nothing && hints.num_ctas > 1 && sm_arch < v"10"
         throw(ArgumentError(
             "num_cta_in_cga > 1 requires Blackwell (sm_100+), but target is " *
             "$(format_sm_arch(sm_arch))"))
@@ -807,17 +805,11 @@ function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{VersionNumber
     isnothing(hints.occupancy) || push!(items, ("occupancy", hints.occupancy))
     isnothing(hints.num_worker_warps) || push!(items, ("num_worker_warps_per_cta", hints.num_worker_warps))
 
-    # Always emit optimization hints when sm_arch is specified, even with an empty
-    # dict. Python cuTile emits `optimization_hints=<sm_NNN = {}>` unconditionally
-    # so the CUBIN compiler knows the target architecture. On v13.3+ the hints
-    # are keyed under "default" instead, applying them to every architecture.
-    sm_arch === nothing && isempty(items) && return nothing
-    arch = if version >= v"13.3"
-        "default"
-    else
-        arch_ver = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
-        format_sm_arch(arch_ver)
-    end
+    # Always emit optimization hints, even with an empty dict. Python cuTile emits
+    # `optimization_hints=<sm_NNN = {}>` unconditionally so the CUBIN compiler
+    # knows the target architecture. On v13.3+ the hints are keyed under
+    # "default" instead, applying them to every architecture.
+    arch = version >= v"13.3" ? "default" : format_sm_arch(sm_arch)
 
     buf = UInt8[]
 
