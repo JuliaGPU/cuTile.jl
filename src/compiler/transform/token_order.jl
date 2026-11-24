@@ -30,7 +30,7 @@
 #
 # Mirrors cuTile Python's `token_order_pass`.
 
-using Core: SSAValue, Argument, SlotNumber
+using Core: SSAValue, Argument
 
 #=============================================================================
  Per-block memory effects

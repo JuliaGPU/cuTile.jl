@@ -59,7 +59,6 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
             tv = ghost_value(argtype_unwrapped,
                              Base.issingletontype(argtype_unwrapped) ?
                                  argtype_unwrapped.instance : nothing)
-            ctx[SlotNumber(i)] = tv
             ctx[Argument(i)] = tv
             continue
         elseif is_const_arg(i)
@@ -157,7 +156,6 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
             # body is uniformly tile-typed after scalar_elim_pass!.
             jltype = boundary_jltype(argtype)
             tv = CGVal(val, type_id, jltype)
-            ctx[SlotNumber(arg_idx)] = tv
             ctx[Argument(arg_idx)] = tv
         end
     end
@@ -179,7 +177,6 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)
             end
-            ctx[SlotNumber(i)] = tv
             ctx[Argument(i)] = tv
         end
     end
@@ -188,7 +185,6 @@ Base.@nospecializeinfer function emit_kernel!(writer::BytecodeWriter, func_buf::
     for (arg_idx, argtype) in enumerate(ctx.arg_types)
         argtype === nothing && continue
         tv = arg_ref_value(arg_idx, Int[], argtype)
-        ctx[SlotNumber(arg_idx)] = tv
         ctx[Argument(arg_idx)] = tv
     end
 

@@ -24,11 +24,10 @@
     LatticeAnchor
 
 The keys that dataflow results are indexed by: an SSA value defined in some
-block, a block argument, or a kernel parameter reference (`Argument` /
-`SlotNumber`). `BlockArgument` is used for loop-carried values and IfOp
-outputs.
+block, a block argument, or a kernel parameter reference (`Argument`).
+`BlockArgument` is used for loop-carried values and IfOp outputs.
 """
-const LatticeAnchor = Union{SSAValue, BlockArgument, Argument, SlotNumber}
+const LatticeAnchor = Union{SSAValue, BlockArgument, Argument}
 
 
 #=============================================================================

@@ -284,7 +284,6 @@ mutable struct CGCtx
     # Loop/if ops store a CGVal with tuple_values field (extracted by getfield statements)
     values::Dict{Int, CGVal}
     args::Dict{Int, CGVal}        # Argument index -> CGVal
-    slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArgument id -> CGVal (for control flow)
 
     # Destructured argument handling: path-keyed flat values
@@ -384,7 +383,6 @@ function CGCtx(; cb::CodeBuilder, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        Dict{Int, CGVal}(),
         Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Vector{Union{Type, Nothing}}(nothing, length(sci.argtypes) + 1),
         cb,
@@ -437,20 +435,12 @@ function Base.getindex(ctx::CGCtx, arg::Argument)
     get(ctx.args, arg.n, nothing)
 end
 
-function Base.getindex(ctx::CGCtx, slot::SlotNumber)
-    get(ctx.slots, slot.id, nothing)
-end
-
 function Base.setindex!(ctx::CGCtx, tv::CGVal, ssa::SSAValue)
     ctx.values[ssa.id] = tv
 end
 
 function Base.setindex!(ctx::CGCtx, tv::CGVal, arg::Argument)
     ctx.args[arg.n] = tv
-end
-
-function Base.setindex!(ctx::CGCtx, tv::CGVal, slot::SlotNumber)
-    ctx.slots[slot.id] = tv
 end
 
 function Base.getindex(ctx::CGCtx, block_arg::BlockArgument)
@@ -791,22 +781,6 @@ end
 #-----------------------------------------------------------------------------
 # Argument helpers
 #-----------------------------------------------------------------------------
-
-"""
-    extract_argument_index(arg) -> Union{Int, Nothing}
-
-Extract the raw argument index from a SlotNumber or Argument.
-Returns the index that corresponds directly to `ir.argtypes[idx]`.
-Note: index 1 is the function itself; user args start at index 2.
-"""
-function extract_argument_index(@nospecialize(arg))
-    if arg isa SlotNumber
-        return arg.id
-    elseif arg isa Argument
-        return arg.n
-    end
-    nothing
-end
 
 #-----------------------------------------------------------------------------
 # Tile helpers

@@ -8,7 +8,7 @@ using IRStructurizer: Block, ControlFlowOp, BlockArgument,
 import IRStructurizer: operands, replace_uses!, insert_before!
 
 using Base: compilerbarrier, donotdelete
-using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
+using Core: MethodInstance, CodeInfo, SSAValue, Argument,
             ReturnNode, PiNode, QuoteNode, GlobalRef
 using Core.Compiler
 const CC = Core.Compiler

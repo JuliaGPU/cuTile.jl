@@ -248,7 +248,7 @@ non-anchor operands like literals) collapse to `ALIAS_UNIVERSE` — the
 "may alias anything" default policy is encoded here, once.
 """
 function alias_class(info::AliasInfo, @nospecialize(op))
-    op isa SSAValue || op isa Argument || op isa SlotNumber || return ALIAS_UNIVERSE
+    op isa SSAValue || op isa Argument || return ALIAS_UNIVERSE
     return something(info[op], ALIAS_UNIVERSE)
 end
 

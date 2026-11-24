@@ -14,7 +14,6 @@ function emit_value!(ctx::CGCtx, ssa::SSAValue)
     return tv
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
-emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
 emit_value!(ctx::CGCtx, block_arg::BlockArgument) = ctx[block_arg]
 
 function emit_value!(ctx::CGCtx, val::Integer)
@@ -101,7 +100,7 @@ and unwrap in one step.
 """
 function get_constant(ctx::CGCtx, @nospecialize(ref))
     # Direct values (not IR references) - return as-is
-    if !(ref isa SSAValue || ref isa Argument || ref isa SlotNumber ||
+    if !(ref isa SSAValue || ref isa Argument ||
          ref isa Expr || ref isa GlobalRef || ref isa QuoteNode)
         return Some(ref)
     end
