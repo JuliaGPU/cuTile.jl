@@ -323,9 +323,15 @@ function TileArray(ptr::Ptr{T}, sizes::NTuple{N, I}, strides::NTuple{N, I}) wher
     TileArray{T, N, I, spec}(ptr, sizes, strides)
 end
 
+# Narrowest index type that represents the sizes, the strides, and the linear
+# offset of every element. The offset of the last element can exceed
+# `typemax(Int32)` when no single size or stride does, e.g. for a 65536×65536
+# matrix.
 function array_indextype(sizes, strides)
-    all(x -> typemin(Int32) <= x <= typemax(Int32), sizes) &&
-    all(x -> typemin(Int32) <= x <= typemax(Int32), strides) ? Int32 : Int64
+    fits(x) = typemin(Int32) <= x <= typemax(Int32)
+    all(fits, sizes) && all(fits, strides) || return Int64
+    extent = sum(((sz, st),) -> max(Int64(sz) - 1, 0) * abs(Int64(st)), zip(sizes, strides); init=Int64(0))
+    return fits(extent) ? Int32 : Int64
 end
 
 function check_indextype(@nospecialize(I))
@@ -339,8 +345,9 @@ end
 
 Create a TileArray from a device array (CuArray or similar).
 Automatically extracts pointer, sizes, strides, and computes ArraySpec.
-Sizes and strides use `Int32` when possible and `Int64` otherwise. Pass
-`index=Int32` or `index=Int64` to select the width explicitly.
+Sizes and strides use `Int32` when they and the linear offset of every element
+fit, and `Int64` otherwise. Pass `index=Int32` or `index=Int64` to select the
+width explicitly.
 
 This method works with any array type that supports:
 - `pointer(arr)` - returns device pointer
