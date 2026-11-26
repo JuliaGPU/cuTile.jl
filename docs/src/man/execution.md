@@ -114,9 +114,17 @@ each become a separate kernel parameter. This is why a kernel taking three
 vectors and a constant tile size has nine runtime parameters rather than four.
 
 Array sizes and strides use `Int32` when they fit, and switch to `Int64`
-automatically when either exceeds the 32-bit range. The index width is part of
-the converted argument type, so crossing that boundary compiles a new kernel.
-Use `ct.TileArray(array; index=Int64)` to select the wide path explicitly.
+automatically when a size, a stride, or the offset of the last element exceeds
+the 32-bit range. The last condition covers arrays with more than
+`typemax(Int32)` elements, such as a 65536×65536 matrix, whose sizes and strides
+all fit while their element offsets do not. The index width is part of the
+converted argument type, so crossing that boundary compiles a new kernel.
+
+Use `ct.TileArray(array; index=Int64)` or `index=Int32` to select the width
+explicitly. An explicit `Int32` is honored as long as every size and stride
+fits, even when element offsets do not. `ct.load` and `ct.store` stay correct in
+that case, but `ct.gather`, `ct.scatter` and `@view` compute offsets in the
+index type, which then overflows.
 
 
 ## Compile-time arguments
@@ -156,8 +164,8 @@ These things therefore trigger a recompile:
 **The element type and rank of each array**, as you would expect.
 
 **Each array's index width.** Sizes and strides normally use `Int32`, but an
-array with a size or stride outside that range uses `Int64` and therefore has a
-different converted type.
+array with a size, a stride or an element offset outside that range uses
+`Int64` and therefore has a different converted type.
 
 **Each `Constant` value**, since it lands in the type. `ct.Constant(64)` and
 `ct.Constant(128)` have types `Constant{Int64,64}` and `Constant{Int64,128}`, so

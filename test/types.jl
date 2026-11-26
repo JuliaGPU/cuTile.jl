@@ -112,6 +112,7 @@ end
     # element does not.
     long = TestDeviceArray(ptr, (Int64(65536), Int64(65536)), (Int64(1), Int64(65536)))
     @test ct.indextype(ct.TileArray(long)) === Int64
+    @test ct.indextype(ct.TileArray(long; index=Int32)) === Int32
     longest_narrow = TestDeviceArray(ptr, (Int64(65536), Int64(32768)), (Int64(1), Int64(65536)))
     @test ct.indextype(ct.TileArray(longest_narrow)) === Int32
     reversed = TestDeviceArray(ptr, (Int64(65536), Int64(65536)), (Int64(1), -Int64(65536)))
