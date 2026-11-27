@@ -107,6 +107,18 @@ end
     @test ct.indextype(wide_tile) === Int64
     @test ct.indextype(forced_wide_tile) === Int64
     @test_throws InexactError ct.TileArray(wide; index=Int32)
+
+    # Sizes and strides fit in Int32, but the linear offset of the last
+    # element does not.
+    long = TestDeviceArray(ptr, (Int64(65536), Int64(65536)), (Int64(1), Int64(65536)))
+    @test ct.indextype(ct.TileArray(long)) === Int64
+    @test ct.indextype(ct.TileArray(long; index=Int32)) === Int32
+    longest_narrow = TestDeviceArray(ptr, (Int64(65536), Int64(32768)), (Int64(1), Int64(65536)))
+    @test ct.indextype(ct.TileArray(longest_narrow)) === Int32
+    reversed = TestDeviceArray(ptr, (Int64(65536), Int64(65536)), (Int64(1), -Int64(65536)))
+    @test ct.indextype(ct.TileArray(reversed)) === Int64
+    empty = TestDeviceArray(ptr, (Int64(0), Int64(8)), (Int64(1), Int64(0)))
+    @test ct.indextype(ct.TileArray(empty)) === Int32
     @test_throws ArgumentError ct.TileArray(small; index=UInt32)
 end
 
