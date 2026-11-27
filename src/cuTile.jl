@@ -13,8 +13,6 @@ using Core: MethodInstance, CodeInfo, SSAValue, Argument,
 using Core.Compiler
 const CC = Core.Compiler
 
-using CUDA_Tile_jll
-
 using CUDACore: CUDACore, CuArray
 
 using BFloat16s: BFloat16

@@ -211,15 +211,26 @@ function tileiras_cmd(args...)
 end
 
 """
+    tileir_disassembler_available() -> Bool
+
+Whether a Tile IR disassembler is available. `tileirdisasm` ships with CUDA 13.4
+and newer, next to `tileiras`: in `CUDA_Compiler_jll`, or in the toolkit of the
+`tileiras` preference.
+"""
+tileir_disassembler_available() =
+    tileiras_override !== nothing ?
+        isfile(joinpath(dirname(tileiras_override), "tileirdisasm")) :
+        CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :tileirdisasm)
+
+"""
     tileir_disassembler(; debuginfo=false) -> Cmd
 
-Return the lazily-resolved Tile IR disassembler. An override requires
-`tileirdisasm` from the same toolkit.
+Return the lazily-resolved Tile IR disassembler, `tileirdisasm` from the same
+toolkit as `tileiras`.
 """
 function tileir_disassembler(; debuginfo::Bool=false)
-    info = get!(discover_tileir_disassembler, tileir_disassembler_cache)
-    cmd = info.command
-    return debuginfo ? `$cmd $(info.debuginfo_flag)` : cmd
+    cmd = get!(discover_tileir_disassembler, tileir_disassembler_cache).command
+    return debuginfo ? `$cmd --print-debug-info` : cmd
 end
 
 tileir_disassembler_version() =
@@ -227,35 +238,29 @@ tileir_disassembler_version() =
 
 struct TileIRDisassembler
     command::Cmd
-    debuginfo_flag::String
     version::VersionNumber
 end
 
 const tileir_disassembler_cache = LazyInitialized{TileIRDisassembler}()
 
 function discover_tileir_disassembler()
-    if tileiras_override !== nothing
-        disasm = joinpath(dirname(tileiras_override), "tileirdisasm")
-        isfile(disasm) || error("no `tileirdisasm` next to $(tileiras_path())")
-        proc, log = run_and_collect(`$disasm --version`)
-        success(proc) || error("tileirdisasm --version failed with exit code " *
-                               "$(proc.exitcode):\n$log")
-        return TileIRDisassembler(`$disasm`, "--print-debug-info",
-                                  parse_tileiras_version(log))
+    if !tileir_disassembler_available()
+        tileiras_override === nothing || error(
+            "no `tileirdisasm` next to $(tileiras_override); Tile IR disassembly " *
+            "requires CUDA 13.4 or newer")
+        CUDA_Compiler_jll.is_available() || error(
+            "No CUDA compiler is available to disassemble Tile IR; select CUDA 13.4 " *
+            "or newer with the CUDA_Compiler_jll `version` preference")
+        error("The selected CUDA_Compiler_jll (CUDA $(CUDA_Compiler_jll.cuda_version)) " *
+              "does not provide `tileirdisasm`; Tile IR disassembly requires CUDA 13.4 " *
+              "or newer")
     end
-    # Prefer the disassembler shipped next to `tileiras` (CUDA 13.4+), which is
-    # version-matched to the compiler and thus decodes any bytecode we emit.
-    if CUDA_Compiler_jll.is_available() && isdefined(CUDA_Compiler_jll, :tileirdisasm)
-        proc, log = run_and_collect(`$(CUDA_Compiler_jll.tileirdisasm()) --version`)
-        success(proc) || error("tileirdisasm --version failed with exit code " *
-                               "$(proc.exitcode):\n$log")
-        return TileIRDisassembler(CUDA_Compiler_jll.tileirdisasm(), "--print-debug-info",
-                                  parse_tileiras_version(log))
-    end
-    CUDA_Tile_jll.is_available() || error("CUDA_Tile_jll is not available")
-    translate = `$(CUDA_Tile_jll.cuda_tile_translate()) --cudatilebc-to-mlir`
-    return TileIRDisassembler(translate, "--mlir-print-debuginfo",
-                              Base.pkgversion(CUDA_Tile_jll))
+    disasm = tileiras_override === nothing ? CUDA_Compiler_jll.tileirdisasm() :
+                                             `$(joinpath(dirname(tileiras_override), "tileirdisasm"))`
+    proc, log = run_and_collect(`$disasm --version`)
+    success(proc) || error("tileirdisasm --version failed with exit code " *
+                           "$(proc.exitcode):\n$log")
+    return TileIRDisassembler(disasm, parse_tileiras_version(log))
 end
 
 # `tileiras` runs `ptxas`, which a `tileiras` killed alone leaves running. Outside of

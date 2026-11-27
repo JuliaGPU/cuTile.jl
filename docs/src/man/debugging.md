@@ -36,6 +36,11 @@ Spelling out those types is only worth it when you have no GPU, since
 `code_tiled` does not need CUDA.jl. Otherwise let the launch site derive them
 for you with `ct.@device_code_tiled`, described next.
 
+`code_tiled` disassembles the bytecode with `tileirdisasm`, which ships with the
+CUDA 13.4 and newer compiler artifacts. Without a GPU, `CUDA_Compiler_jll`
+selects no artifact, so pick one with its `version` preference, e.g.
+`version = "13.5"` under `[CUDA_Compiler_jll]` in `LocalPreferences.toml`.
+
 By default `code_tiled` compiles for the active CUDA device with the
 toolchain's bytecode version, so its output matches what a launch emits,
 including architecture-dependent `ct.@compiler_options` hints. Pass `sm_arch`
@@ -162,13 +167,6 @@ The resulting files can be disassembled with NVIDIA's `tileirdisasm`:
 
 ```
 ❯ tileirdisasm /tmp/julia_tiles/example.ln42.cutile
-```
-
-CUDA toolkits older than 13.4 ship `cuda-tile-translate` instead, which needs an
-explicit flag and cannot read bytecode newer than its own version:
-
-```
-❯ cuda-tile-translate --cudatilebc-to-mlir /tmp/julia_tiles/example.ln42.cutile
 ```
 
 This is the same mechanism cuTile Python exposes through

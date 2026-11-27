@@ -1286,7 +1286,7 @@ end
             code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, Int32, spec1d}}; sm_arch=v"10.0", bytecode_version=v"13.4", num_worker_warps=2)
         end
 
-        if ct.bytecode_version() >= v"13.5" && ct.tileir_disassembler_version() >= v"13.5"
+        if ct.bytecode_version() >= v"13.5"
             @test @filecheck begin
                 @check "num_worker_warps_per_cta = 1"
                 ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, Int32, spec1d}}; sm_arch=v"10.0", bytecode_version=v"13.5", num_worker_warps=1)
