@@ -14,6 +14,15 @@ releases](https://github.com/JuliaGPU/cuTile.jl/releases).
   float used as the block scale of FP4 `ct.muladd_scaled`
   ([#334](https://github.com/JuliaGPU/cuTile.jl/pull/334)).
 
+*Minor changes*:
+
+- `CUDA_Tile_jll` is no longer a dependency. `code_tiled` and
+  `@device_code_tiled` disassemble with the `tileirdisasm` that ships with CUDA
+  13.4 and newer, which `CUDA_Compiler_jll` selects by default on any CUDA 13
+  driver; with an older compiler selected, they now throw an error. Without a
+  GPU, select a compiler through the `CUDA_Compiler_jll` `version` preference;
+  macOS can no longer disassemble Tile IR. Kernel compilation is unaffected.
+
 
 ## v1.0 (August 2026)
 

@@ -1,6 +1,6 @@
 using CUDA
 
-@testset "job reflection uses launch options" begin
+ct.tileir_disassembler_available() && @testset "job reflection uses launch options" begin
     function hinted_kernel(a, n)
         ct.store(a, 1, fill(1.0f0, (n,)))
         return
@@ -113,15 +113,17 @@ end
     @test occursin("cuda_kernel", ptx)
     @test occursin("tile_kernel", ptx)
 
-    tiled = sprint() do io
-        ct.@device_code_tiled io=io begin
-            @cuda cuda_kernel(a)
-            @cuda backend=cuTile tile_kernel(a)
+    if ct.tileir_disassembler_available()
+        tiled = sprint() do io
+            ct.@device_code_tiled io=io begin
+                @cuda cuda_kernel(a)
+                @cuda backend=cuTile tile_kernel(a)
+            end
         end
+        @test occursin("tile_kernel", tiled)
+        @test !occursin("cuda_kernel", tiled)
+        @test_throws "no kernels executed" ct.@device_code_tiled @cuda cuda_kernel(a)
     end
-    @test occursin("tile_kernel", tiled)
-    @test !occursin("cuda_kernel", tiled)
-    @test_throws "no kernels executed" ct.@device_code_tiled @cuda cuda_kernel(a)
     CUDA.synchronize()
 end
 

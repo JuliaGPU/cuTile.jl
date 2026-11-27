@@ -177,6 +177,9 @@ Analogous to `code_llvm`. Keyword arguments are those of [`tile_job`](@ref):
 by default the code targets the current CUDA device, as a launch would. To
 inspect the job of an actual launch, use [`@device_code_tiled`](@ref).
 
+The bytecode is disassembled with `tileirdisasm`, which ships with CUDA 13.4 and
+newer.
+
 Set `remarks=true` to also run `tileiras` and print its optimization remarks.
 This requires `tileiras` 13.4 or newer.
 """

@@ -337,7 +337,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             end
         end
 
-        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}, ct.TileArray{Float32,2,Int32,spec2d}}) do a, b
@@ -408,7 +408,7 @@ spec4d = ct.ArraySpec{4}(16, true)
             return
         end
 
-        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d}}) do a
@@ -1606,40 +1606,38 @@ end
         end
 
         # Directed rounding needs a disassembler that understands v13.4.
-        if ct.tileir_disassembler_version() >= v"13.4"
-            for (mode, attr) in ((RoundToZero, "zero"),
-                                 (RoundDown, "negative_inf"),
-                                 (RoundUp, "positive_inf"))
-                @test @filecheck begin
-                    @check_label "entry"
-                    code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
-                                     ct.TileArray{Float32,1,Int32,spec1d}};
-                               bytecode_version=v"13.4") do a, b
-                        pid = ct.bid(1)
-                        tile = ct.load(a, pid, (16,))
-                        @check "ftof"
-                        @check "rounding<$attr>"
-                        ct.store(b, pid, Float32.(tile, mode))
-                        return
-                    end
-                end
-            end
-
-            # Explicit nearest-even and nearest-away through map and scalar conversion.
+        for (mode, attr) in ((RoundToZero, "zero"),
+                             (RoundDown, "negative_inf"),
+                             (RoundUp, "positive_inf"))
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
-                                 ct.TileArray{Float32,1,Int32,spec1d}, Float32};
-                           bytecode_version=v"13.4") do a, b, x
+                                 ct.TileArray{Float32,1,Int32,spec1d}};
+                           bytecode_version=v"13.4") do a, b
                     pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
-                    mapped = map(y -> Float32(y, RoundNearest), tile)
-                    @check "rounding<nearest_away>"
-                    Base.donotdelete(ct.TFloat32(x, RoundNearestTiesAway))
-                    ct.store(b, pid, mapped)
+                    @check "rounding<$attr>"
+                    ct.store(b, pid, Float32.(tile, mode))
                     return
                 end
+            end
+        end
+
+        # Explicit nearest-even and nearest-away through map and scalar conversion.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,Int32,spec1d},
+                             ct.TileArray{Float32,1,Int32,spec1d}, Float32};
+                       bytecode_version=v"13.4") do a, b, x
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "ftof"
+                mapped = map(y -> Float32(y, RoundNearest), tile)
+                @check "rounding<nearest_away>"
+                Base.donotdelete(ct.TFloat32(x, RoundNearestTiesAway))
+                ct.store(b, pid, mapped)
+                return
             end
         end
 
@@ -2429,7 +2427,7 @@ end
             end
         end
 
-        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
@@ -2454,7 +2452,7 @@ end
             return
         end
 
-        if ct.bytecode_version() >= v"13.4" && ct.tileir_disassembler_version() >= v"13.4"
+        if ct.bytecode_version() >= v"13.4"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,Int32,spec1d},
@@ -3061,7 +3059,7 @@ end
             return
         end
 
-        if ct.bytecode_version() >= v"13.5" && ct.tileir_disassembler_version() >= v"13.5"
+        if ct.bytecode_version() >= v"13.5"
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,Int32,spec2d}}) do a
@@ -3568,10 +3566,7 @@ end
 
     @test @filecheck begin
         @check_label "entry"
-        @check cond=(ct.tileir_disassembler_version() >= v"13.4") "constant <i1: [true, false, false, true]> : tile<4xi1>"
-        # Pre-v13.4 disassemblers print packed i1 data as a splat, regardless
-        # of the bytecode version. A newer disassembler may read older bytecode.
-        @check cond=(ct.tileir_disassembler_version() < v"13.4") "constant <i1: true> : tile<4xi1>"
+        @check "constant <i1: [true, false, false, true]> : tile<4xi1>"
         @check_not "cat"
         code_tiled(Tuple{}) do
             Base.donotdelete(Bool[true, false, false, true])

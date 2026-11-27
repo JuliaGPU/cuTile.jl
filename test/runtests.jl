@@ -43,6 +43,17 @@ if !device_tests
     end
 end
 
+# Tests that disassemble Tile IR need `tileirdisasm`, which ships with CUDA 13.4+.
+if !cuTile.tileir_disassembler_available()
+    @warn "No Tile IR disassembler available; skipping codegen tests"
+    for name in keys(testsuite)
+        if startswith(name, "codegen/") ||
+           name in ("extensions/DLFP8Types", "extensions/Microfloats/codegen")
+            delete!(testsuite, name)
+        end
+    end
+end
+
 # Add examples to the test suite (only on Julia 1.12+, where they're supported)
 examples_root = joinpath(@__DIR__, "..", "examples")
 if VERSION >= v"1.12" && device_tests

@@ -161,7 +161,7 @@ end
 
 end # invalidations
 
-@testset "reflection macros" begin
+ct.tileir_disassembler_available() && @testset "reflection macros" begin
     function reflect_vadd(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                           c::ct.TileArray{Float32,1})
         pid = ct.bid(1)
