@@ -611,17 +611,14 @@ end
 # Compilation and module loading run outside the lock.
 const job_results_lock = ReentrantLock()
 
-job_results(cache::CacheView, ci::Core.CodeInstance) = results(cache, ci)
-job_results(::CacheView, entry::SpecializedResult) = results(entry)
-
 """
-    cached_results(job::TileJob) -> TileCompilerResults
+    cached_results(job::TileJob, [ci]) -> TileCompilerResults
 
-The results slot of a job, created empty on first access. Runs inference if the
-job's source has not been inferred yet.
+The results slot of a job on its CodeInstance `ci`, created empty on first
+access. Runs inference if the job's source has not been inferred yet.
 """
-function cached_results(job::TileJob)
-    table = job_results(inference_cache(job), infer(job))
+function cached_results(job::TileJob, ci::Core.CodeInstance=infer(job))
+    table = results(inference_cache(job), ci)
     Base.@lock job_results_lock begin
         for (config, res) in table.entries
             # configs are immutable, so `===` compares them structurally
@@ -641,10 +638,13 @@ concurrently; the `@device_code_*` hook observes hits as well as misses. No
 CUDA context required.
 """
 function compile_or_lookup(job::TileJob)
-    res = cached_results(job)
+    # Compile the source of the CodeInstance holding the results: a later lookup
+    # may find another one (e.g. once a package image dropped this one's source).
+    ci = infer(job)
+    res = cached_results(job, ci)
     cubin = Base.@lock job_results_lock res.cubin
     if cubin === nothing
-        cubin = compile(job)
+        cubin = compile(job, ci)
         Base.@lock job_results_lock begin
             # Another task may have compiled the same job in the meantime.
             res.cubin === nothing && (res.cubin = cubin)

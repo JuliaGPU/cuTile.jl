@@ -140,9 +140,9 @@ end
 #=============================================================================
  Inference
 
- Inference is shared across targets and hints. Constant arguments select a
- SpecializedResult on the generic CodeInstance. CompilerCaching attaches
- JobResults to the corresponding inference result.
+ Inference is shared across targets and hints. Constant arguments seed an
+ inference of their own, cached as a CodeInstance in CompilerCaching's
+ `seeded` view of the cache. JobResults are attached to the CodeInstance.
 =============================================================================#
 
 const TILE_CACHE_OWNER = :cuTile
@@ -152,12 +152,11 @@ inference_cache(job::TileJob) = inference_cache(job.world)
 
 """
     infer(cache, mi) -> CodeInstance
-    infer(cache, mi, argtypes::Vector{Any}) -> SpecializedResult
-    infer(job::TileJob) -> Union{CodeInstance, SpecializedResult}
+    infer(cache, mi, argtypes::Vector{Any}) -> CodeInstance
+    infer(job::TileJob) -> CodeInstance
 
-The inference result of a method instance in `cache`, or of a job: its
-CodeInstance, or the const-seeded entry on it for `argtypes`. Runs inference on
-a miss.
+The CodeInstance of a method instance in `cache`, inferred generically or with
+the const-seeded `argtypes`, or that of a job. Runs inference on a miss.
 """
 function infer(cache::CacheView, mi::MethodInstance)
     ci = get(cache, mi, nothing)
@@ -168,12 +167,11 @@ function infer(cache::CacheView, mi::MethodInstance)
 end
 
 function infer(cache::CacheView, mi::MethodInstance, argtypes::Vector{Any})
-    ci = infer(cache, mi)
-    entry = specialization(cache, ci, argtypes)
-    entry === nothing || return entry
-    entry = typeinf!(cache, cuTileInterpreter(cache), mi, argtypes)
-    entry === nothing && error("Inference failed for $mi on $argtypes")
-    return entry
+    ci = get(seeded(cache, argtypes), mi, nothing)
+    ci === nothing || return ci
+    ci = typeinf!(cuTileInterpreter(cache), mi, argtypes)
+    ci === nothing && error("Inference failed for $mi on $argtypes")
+    return ci
 end
 
 function infer(job::TileJob)
@@ -183,7 +181,6 @@ function infer(job::TileJob)
 end
 
 inferred_rettype(ci::Core.CodeInstance) = CC.widenconst(ci.rettype)
-inferred_rettype(entry::SpecializedResult) = CC.widenconst(entry.rettype)
 
 
 #=============================================================================
@@ -195,17 +192,17 @@ inferred_rettype(entry::SpecializedResult) = CC.widenconst(entry.rettype)
 =============================================================================#
 
 """
-    emit_julia(job::TileJob) -> (IRCode, rettype)
+    emit_julia(job::TileJob, [ci]) -> (IRCode, rettype)
     emit_julia(cache, mi::MethodInstance) -> (IRCode, rettype)
 
-Julia phase: the inferred, optimized IR of a job, or of a callee (subprogram)
-method instance in `cache`.
+Julia phase: the inferred, optimized IR of a job (or of its CodeInstance `ci`),
+or of a callee (subprogram) method instance in `cache`.
 """
 function emit_julia(mi::MethodInstance, inferred)
     src = @something get_source(inferred) error("No inferred source for $mi")
     return CC.inflate_ir(src, mi), inferred_rettype(inferred)
 end
-emit_julia(job::TileJob) = emit_julia(job.source, infer(job))
+emit_julia(job::TileJob, ci::Core.CodeInstance=infer(job)) = emit_julia(job.source, ci)
 emit_julia(cache::CacheView, mi::MethodInstance) = emit_julia(mi, infer(cache, mi))
 
 """
@@ -222,7 +219,7 @@ end
 
 """
     emit_tile(job::TileJob, sci, rettype, kernel_meta) -> (; bytecode, opt_level)
-    emit_tile(job::TileJob) -> (; bytecode, opt_level)
+    emit_tile(job::TileJob, [ci]) -> (; bytecode, opt_level)
 
 Tile IR phase: generate bytecode from StructuredIRCode, resolving the job's
 hints against the kernel's `@compiler_options`. Also returns the resolved
@@ -250,24 +247,24 @@ function emit_tile(job::TileJob, sci::StructuredIRCode, rettype, kernel_meta::Di
     return (; bytecode, opt_level)
 end
 
-function emit_tile(job::TileJob)
-    ir, rettype = emit_julia(job)
+function emit_tile(job::TileJob, ci::Core.CodeInstance=infer(job))
+    ir, rettype = emit_julia(job, ci)
     sci, rettype, kernel_meta = emit_structured(ir, rettype)
     return emit_tile(job, sci, rettype, kernel_meta)
 end
 
 """
-    compile(job::TileJob) -> Vector{UInt8}
+    compile(job::TileJob, [ci]) -> Vector{UInt8}
 
-Compile a job to a CUBIN: Tile IR bytecode, assembled with `tileiras` (through
+Compile a job (or its CodeInstance `ci`) to a CUBIN: Tile IR bytecode, assembled with `tileiras` (through
 the object cache). Reports the job to the `@device_code_*` hook. Uncached;
 `compile_or_lookup` caches for launches.
 """
-function compile(job::TileJob)
+function compile(job::TileJob, ci::Core.CodeInstance=infer(job))
     (; sm_arch, bytecode_version) = job.config.target
     validate_tileiras_target(bytecode_version)
     GPUCompiler.run_compile_hook(job)
-    (; bytecode, opt_level) = emit_tile(job)
+    (; bytecode, opt_level) = emit_tile(job, ci)
     dump_bytecode(job.source, bytecode)
     return assemble(bytecode, sm_arch, opt_level)
 end

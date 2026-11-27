@@ -22,8 +22,8 @@ using EnumX
 public BFloat16
 
 import CompilerCaching
-using CompilerCaching: CacheView, SpecializedResult, method_instance, match_method_instance,
-                       typeinf!, specialization, results, get_source
+using CompilerCaching: CacheView, method_instance, match_method_instance, typeinf!, seeded,
+                       results, get_source
 
 # cuTile has its own compiler, but shares GPUCompiler's reflection protocol: the
 # compile hook behind the `@device_code_*` macros, and the `code_*` generics.
